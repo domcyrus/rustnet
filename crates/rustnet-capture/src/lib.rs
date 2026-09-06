@@ -18,6 +18,8 @@ use anyhow::{Result, anyhow};
 use pcap::{Active, Capture, Device, Error as PcapError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod capture_wait;
+
 /// Why the macOS PKTAP fast path could not be used during capture setup.
 ///
 /// PKTAP attaches process metadata to captured packets, but it requires root,
@@ -204,7 +206,11 @@ fn find_best_device() -> Result<Device> {
     }
 }
 
-/// Setup packet capture with the given configuration
+/// Set up a nonblocking capture with the given configuration.
+///
+/// libpcap's packet-buffer timeout does not bound an idle read on every
+/// backend, especially in immediate mode. Nonblocking reads let the caller
+/// observe shutdown even after traffic stops.
 pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, String, i32)> {
     // Try PKTAP first on macOS for process metadata, but only when:
     // - No interface is explicitly specified
@@ -222,7 +228,8 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                     .timeout(config.timeout_ms)
                     .immediate_mode(true)
                     .want_pktap(true)
-                    .open();
+                    .open()
+                    .and_then(Capture::setnonblock);
 
                 match pktap_cap {
                     Ok(mut cap) => {
@@ -326,14 +333,13 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
         .timeout(config.timeout_ms)
         .immediate_mode(true); // Parse packets ASAP
 
-    let mut cap = cap.open()?;
+    let mut cap = cap.open()?.setnonblock()?;
 
     if let Some(filter) = &config.filter {
         log::info!("Applying BPF filter: {}", filter);
         cap.filter(filter, true)?;
     }
 
-    // Note: We're not setting non-blocking mode as we're using timeout instead
     let linktype = cap.get_datalink();
 
     Ok((cap, device_name, linktype.0))
@@ -529,9 +535,16 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
     }
 }
 
-/// Simple packet reader that handles timeouts gracefully
+const IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Packet reader for a capture from [`setup_packet_capture`].
+///
+/// Empty nonblocking reads wait briefly so callers can poll shutdown without
+/// spinning. Native capture readiness wakes the wait early where supported;
+/// otherwise a short sleep bounds idle polling. Neither path requires traffic.
 pub struct PacketReader {
     capture: Capture<Active>,
+    idle_wait: capture_wait::CaptureWait,
 }
 
 /// A captured link-layer frame with the timestamp reported by libpcap/Npcap.
@@ -544,13 +557,16 @@ pub struct CapturedPacket {
 
 impl PacketReader {
     pub fn new(capture: Capture<Active>) -> Self {
-        Self { capture }
+        let idle_wait = capture_wait::CaptureWait::new(&capture);
+        Self { capture, idle_wait }
     }
 
-    /// Read next packet, returning None on timeout.
+    /// Read the next packet, returning `None` after a bounded idle delay when
+    /// no packet is available. Captures supplied directly must be nonblocking.
     pub fn next_packet(&mut self) -> Result<Option<CapturedPacket>> {
         match self.capture.next_packet() {
             Ok(packet) => {
+                self.idle_wait.packet_received();
                 let ts = packet.header.ts;
                 Ok(Some(CapturedPacket {
                     data: packet.data.to_vec(),
@@ -558,7 +574,10 @@ impl PacketReader {
                     original_len: packet.header.len,
                 }))
             }
-            Err(PcapError::TimeoutExpired) => Ok(None),
+            Err(PcapError::TimeoutExpired) => {
+                self.idle_wait.wait(&self.capture);
+                Ok(None)
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -609,8 +628,18 @@ pub struct CaptureStats {
 }
 
 impl CaptureStats {
+    /// Packets dropped because the capture buffer had no room.
+    pub fn capture_drops(&self) -> u32 {
+        self.dropped
+    }
+
+    /// Packets dropped by the network interface or its driver.
+    pub fn interface_drops(&self) -> u32 {
+        self.if_dropped
+    }
+
     /// Get total packets dropped (both kernel and interface level)
-    pub(crate) fn total_dropped(&self) -> u32 {
+    pub fn total_dropped(&self) -> u32 {
         self.dropped.saturating_add(self.if_dropped)
     }
 }
@@ -624,5 +653,18 @@ mod tests {
         let config = CaptureConfig::default();
         assert_eq!(config.snaplen, 1514);
         assert!(config.filter.is_none());
+    }
+
+    #[test]
+    fn capture_stats_expose_distinct_drop_sources() {
+        let stats = CaptureStats {
+            received: 20,
+            dropped: 3,
+            if_dropped: 5,
+        };
+
+        assert_eq!(stats.capture_drops(), 3);
+        assert_eq!(stats.interface_drops(), 5);
+        assert_eq!(stats.total_dropped(), 8);
     }
 }

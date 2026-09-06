@@ -8,6 +8,7 @@ use crate::{DegradationReason, MatchQuality, ProcessAttribution, ProcessLookup, 
 use anyhow::Result;
 use rustnet_core::network::types::Connection;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 
 /// Why the PKTAP fast path is unavailable, as reported by the orchestrator.
 ///
@@ -58,6 +59,10 @@ impl ProcessLookup for PktapProcessLookup {
 
     fn refresh(&self) -> Result<()> {
         self.socket_lookup.refresh()
+    }
+
+    fn refresh_interruptible(&self, cancelled: &AtomicBool) -> Result<()> {
+        self.socket_lookup.refresh_interruptible(cancelled)
     }
 
     fn get_detection_method(&self) -> &str {
@@ -143,5 +148,24 @@ mod tests {
     fn pktap_factory_reports_its_detection_method() {
         let lookup = create_process_lookup(true).unwrap();
         assert_eq!(lookup.get_detection_method(), "pktap");
+    }
+
+    #[test]
+    fn pktap_socket_refresh_honors_cancellation() {
+        let lookup = PktapProcessLookup {
+            socket_lookup: MacOSProcessLookup::empty_for_test(),
+        };
+        let cancelled = AtomicBool::new(true);
+
+        let error = lookup
+            .refresh_interruptible(&cancelled)
+            .expect_err("cancelled refresh must not launch lsof");
+
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::Interrupted)
+        );
     }
 }

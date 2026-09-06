@@ -93,7 +93,6 @@ ratatui = { version = "0.30", features = ["all-widgets", "unstable-rendered-line
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"
-regex-lite = "0.1"
 # Note: dns-lookup, ring, aes, flate2, and maxminddb moved to rustnet-core,
 # which is the only place they are used. They are re-exported transitively
 # through the `crate::network` facade in src/network/mod.rs.
@@ -108,6 +107,8 @@ windows = { workspace = true, features = [
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
     "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",

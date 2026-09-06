@@ -29,6 +29,7 @@ maxminddb = "0.30"
 flate2 = "1"
 ring = "0.17"
 aes = "0.9"
+regex-lite = "0.1"
 
 [target.'cfg(any(target_os = "macos", target_os = "freebsd"))'.dependencies]
 libc.workspace = true

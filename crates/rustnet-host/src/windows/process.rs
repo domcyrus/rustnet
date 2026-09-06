@@ -66,7 +66,8 @@ pub(super) struct WindowsProcessLookup {
     process_details: RwLock<HashMap<u32, WindowsProcessDetails>>,
     socket_snapshot: RwLock<SocketSnapshot>,
     etw_cache: Arc<EtwProcessCache>,
-    _etw: Option<EtwAttribution>,
+    etw: Option<EtwAttribution>,
+    etw_start_attempted: bool,
 }
 
 struct ProcessCache {
@@ -213,19 +214,6 @@ impl WindowsProcessLookup {
             .unwrap_or_else(|| now.checked_sub(Duration::from_secs(60)).unwrap_or(now));
 
         let etw_cache = Arc::new(EtwProcessCache::default());
-        let etw = match EtwAttribution::start(Arc::clone(&etw_cache)) {
-            Ok(trace) => {
-                log::info!("Windows ETW process attribution enabled");
-                Some(trace)
-            }
-            Err(error) => {
-                log::warn!(
-                    "Windows ETW process attribution unavailable; using IP Helper polling: {}",
-                    error
-                );
-                None
-            }
-        };
 
         let lookup = Self {
             cache: RwLock::new(ProcessCache {
@@ -235,7 +223,8 @@ impl WindowsProcessLookup {
             process_details: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::default()),
             etw_cache,
-            _etw: etw,
+            etw: None,
+            etw_start_attempted: false,
         };
         lookup.refresh()?;
         Ok(lookup)
@@ -542,6 +531,28 @@ impl WindowsProcessLookup {
 }
 
 impl ProcessLookup for WindowsProcessLookup {
+    fn start_runtime(&mut self) -> Result<()> {
+        if self.etw_start_attempted {
+            return Ok(());
+        }
+        self.etw_start_attempted = true;
+
+        match EtwAttribution::start(Arc::clone(&self.etw_cache)) {
+            Ok(trace) => {
+                log::info!("Windows ETW process attribution enabled");
+                self.etw = Some(trace);
+            }
+            Err(error) => {
+                log::warn!(
+                    "Windows ETW process attribution unavailable; using IP Helper polling: {}",
+                    error
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (pid, name) = self.lookup_process(conn)?;
         let mut attribution = ProcessAttribution::new(pid, name, MatchQuality::Unspecified);
@@ -589,7 +600,7 @@ impl ProcessLookup for WindowsProcessLookup {
     }
 
     fn get_detection_method(&self) -> &str {
-        if self._etw.is_some() {
+        if self.etw.is_some() {
             "windows-etw+iphlpapi"
         } else {
             "windows-iphlpapi"
@@ -597,7 +608,7 @@ impl ProcessLookup for WindowsProcessLookup {
     }
 
     fn get_degradation_reason(&self) -> DegradationReason {
-        if self._etw.is_some() {
+        if self.etw.is_some() {
             DegradationReason::None
         } else {
             DegradationReason::EtwUnavailable
@@ -789,6 +800,14 @@ mod tests {
     use super::*;
     use rustnet_core::network::types::ProtocolState;
     use std::net::UdpSocket;
+
+    #[test]
+    fn defers_etw_until_runtime_start() {
+        let lookup = WindowsProcessLookup::new().unwrap();
+
+        assert!(!lookup.etw_start_attempted);
+        assert!(lookup.etw.is_none());
+    }
 
     #[test]
     fn skips_rows_whose_owner_no_longer_exists() {

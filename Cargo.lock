@@ -2640,6 +2640,7 @@ name = "rustnet-capture"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "libc",
  "log",
  "pcap",
  "windows 0.62.2",
@@ -2659,6 +2660,7 @@ dependencies = [
  "log",
  "maxminddb",
  "pnet_datalink",
+ "regex-lite",
  "ring",
  "rustc-hash",
  "windows 0.62.2",
@@ -2700,7 +2702,6 @@ dependencies = [
  "log",
  "pcap",
  "ratatui",
- "regex-lite",
  "rustc-hash",
  "rustnet-capture",
  "rustnet-core",

@@ -17,6 +17,8 @@
 //!   DNS, SSH, QUIC, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, NetBIOS, and more.
 //! - **Connection merging**: fold parsed packets into long-lived connection
 //!   state with protocol-aware lifecycle tracking and TCP analytics.
+//! - **Reusable filtering and retention policy** through `ConnectionFilter`
+//!   and `TrackerConfig`, independent of any frontend.
 //! - **GeoIP** lookups against MaxMind GeoLite2 databases.
 //! - **Reverse DNS** with background async resolution and caching.
 //! - **OUI** vendor resolution and **service** name resolution (baked-in

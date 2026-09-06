@@ -4,9 +4,11 @@
 use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
 use log::{debug, error, info, warn};
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -18,15 +20,21 @@ use crate::network::{
 };
 
 use super::logging::{JsonLineWriter, log_connection_closed, log_connection_event};
+use super::packet_queue::{CAPTURE_QUEUE_WAIT, send_with_backpressure};
 use super::pcapng_export::{PcapngRecord, send_pcapng_record};
+use super::runtime::InitStatus;
 use super::state::App;
 use super::types::AppStats;
-use super::{MAX_PACKET_QUEUE, PCAPNG_ATTRIBUTION_WAIT};
+use super::{PACKET_BATCH_QUEUE_CAPACITY, PACKET_BATCH_SIZE, PCAPNG_ATTRIBUTION_WAIT};
 
 #[cfg(target_os = "linux")]
 const ANY_INTERFACE_RETRY_DELAY: Duration = Duration::from_millis(100);
 #[cfg(target_os = "linux")]
 const ANY_INTERFACE_RETRY_WINDOW: Duration = Duration::from_secs(5);
+const FINAL_BATCH_SEND_TIMEOUT: Duration = Duration::from_secs(1);
+/// Amortize ordered-commit handoffs without waiting for more traffic. Each
+/// worker owns at most 16 capture batches (1,600 normally sized packets).
+const PROCESSOR_BATCH_GROUP_LIMIT: usize = 16;
 
 /// Current packet-capture health exposed to the UI.
 #[derive(Debug, Default)]
@@ -49,6 +57,225 @@ pub(super) enum LinktypeWait {
     CaptureFailed,
     /// Shutdown was requested before the linktype became available.
     Stopped,
+}
+
+/// Capture resources opened during the privileged startup phase and moved
+/// into the capture worker only after the sandbox has been applied.
+pub(super) struct PreparedCapture {
+    capture: pcap::Capture<pcap::Active>,
+    device_name: String,
+    packet_tx: Sender<Vec<CapturedPacket>>,
+    pcap_writer: Option<ClassicPcapWriter>,
+}
+
+impl PreparedCapture {
+    /// Flush a staged PCAP header if shutdown happens before the capture worker
+    /// takes ownership of this prepared resource.
+    pub(super) fn flush_pcap(&mut self) -> io::Result<()> {
+        if let Some(writer) = &mut self.pcap_writer {
+            writer.flush()?;
+        }
+        Ok(())
+    }
+}
+
+/// Minimal classic-PCAP writer over the descriptor opened by the entry point.
+/// Keeping serialization in-process avoids any platform-specific pathname
+/// reopen in libpcap, including on Windows.
+struct ClassicPcapWriter {
+    output: BufWriter<File>,
+}
+
+impl ClassicPcapWriter {
+    fn new(file: File, linktype: i32, snaplen: u32) -> io::Result<Self> {
+        let mut output = BufWriter::new(file);
+        output.write_all(&0xa1b2c3d4u32.to_le_bytes())?;
+        output.write_all(&2u16.to_le_bytes())?;
+        output.write_all(&4u16.to_le_bytes())?;
+        output.write_all(&0i32.to_le_bytes())?;
+        output.write_all(&0u32.to_le_bytes())?;
+        output.write_all(&snaplen.to_le_bytes())?;
+        output.write_all(&(linktype as u32).to_le_bytes())?;
+        Ok(Self { output })
+    }
+
+    fn write_packet(
+        &mut self,
+        timestamp: SystemTime,
+        data: &[u8],
+        original_len: u32,
+    ) -> io::Result<()> {
+        let elapsed = timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "PCAP timestamp predates Unix epoch",
+                )
+            })?;
+        let seconds = u32::try_from(elapsed.as_secs()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "PCAP timestamp exceeds u32 seconds",
+            )
+        })?;
+        let captured_len = u32::try_from(data.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "captured packet is too large")
+        })?;
+        self.output.write_all(&seconds.to_le_bytes())?;
+        self.output
+            .write_all(&elapsed.subsec_micros().to_le_bytes())?;
+        self.output.write_all(&captured_len.to_le_bytes())?;
+        self.output
+            .write_all(&original_len.max(captured_len).to_le_bytes())?;
+        self.output.write_all(data)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
+}
+
+/// Assign a monotonically increasing sequence to groups of batches as they
+/// leave the shared receiver. The receiver and counter share one lock so
+/// processors cannot observe a later batch before an earlier one is numbered.
+struct OrderedBatchReceiver<T> {
+    state: Mutex<OrderedBatchReceiverState<T>>,
+}
+
+struct OrderedBatchReceiverState<T> {
+    receiver: Receiver<T>,
+    next_sequence: u64,
+}
+
+impl<T> OrderedBatchReceiver<T> {
+    fn new(receiver: Receiver<T>) -> Self {
+        Self {
+            state: Mutex::new(OrderedBatchReceiverState {
+                receiver,
+                next_sequence: 0,
+            }),
+        }
+    }
+
+    /// Receive one batch, then take only immediately available successors.
+    /// Number the whole group under the receiver lock so different workers
+    /// cannot interleave their groups. Retain the original allocations rather
+    /// than copying packets into a larger input vector under this lock.
+    fn recv_group_timeout(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<
+        (u64, [Option<T>; PROCESSOR_BATCH_GROUP_LIMIT]),
+        crossbeam::channel::RecvTimeoutError,
+    > {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let first = state.receiver.recv_timeout(timeout)?;
+        let mut group = std::array::from_fn(|_| None);
+        group[0] = Some(first);
+        for slot in &mut group[1..] {
+            match state.receiver.try_recv() {
+                Ok(batch) => *slot = Some(batch),
+                Err(_) => break,
+            }
+        }
+        let sequence = state.next_sequence;
+        state.next_sequence = state.next_sequence.wrapping_add(1);
+        Ok((sequence, group))
+    }
+}
+
+/// Serializes tracker mutations in capture order while allowing parsing to run
+/// concurrently. A guard advances the sequence even when the commit closure
+/// unwinds, preventing one failed commit from permanently blocking shutdown.
+#[derive(Default)]
+struct OrderedBatchCommitter {
+    state: Mutex<OrderedCommitState>,
+    turn_changed: Condvar,
+}
+
+#[derive(Default)]
+struct OrderedCommitState {
+    next_sequence: u64,
+    waiters: usize,
+}
+
+impl OrderedBatchCommitter {
+    fn ticket(self: &Arc<Self>, sequence: u64) -> OrderedCommitTicket {
+        OrderedCommitTicket {
+            committer: Arc::clone(self),
+            sequence,
+            completed: false,
+        }
+    }
+
+    fn commit<R>(&self, sequence: u64, commit: impl FnOnce() -> R) -> R {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        while state.next_sequence != sequence {
+            state.waiters += 1;
+            state = self
+                .turn_changed
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+            state.waiters -= 1;
+        }
+
+        let guard = OrderedCommitGuard {
+            committer: self,
+            sequence,
+        };
+        drop(state);
+        let result = commit();
+        drop(guard);
+        result
+    }
+}
+
+/// Advances an assigned sequence if a processor unwinds before committing.
+/// Without this ticket, one failed parser worker could strand every later
+/// batch behind a sequence that will never arrive.
+struct OrderedCommitTicket {
+    committer: Arc<OrderedBatchCommitter>,
+    sequence: u64,
+    completed: bool,
+}
+
+impl OrderedCommitTicket {
+    fn commit<R>(mut self, commit: impl FnOnce() -> R) -> R {
+        self.completed = true;
+        self.committer.commit(self.sequence, commit)
+    }
+}
+
+impl Drop for OrderedCommitTicket {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.completed = true;
+            self.committer.commit(self.sequence, || ());
+        }
+    }
+}
+
+struct OrderedCommitGuard<'a> {
+    committer: &'a OrderedBatchCommitter,
+    sequence: u64,
+}
+
+impl Drop for OrderedCommitGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .committer
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        debug_assert_eq!(state.next_sequence, self.sequence);
+        state.next_sequence = state.next_sequence.wrapping_add(1);
+        // A single worker, or a batch completed before later parsing, needs
+        // no condition-variable broadcast.
+        if state.waiters != 0 {
+            self.committer.turn_changed.notify_all();
+        }
+    }
 }
 
 /// Poll until the capture thread publishes the linktype, capture setup
@@ -111,49 +338,215 @@ fn is_recoverable_any_interface_error(device_name: &str, error: &anyhow::Error) 
         )
 }
 
-fn system_time_to_timeval(timestamp: SystemTime) -> libc::timeval {
-    let duration = timestamp
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    #[cfg(unix)]
-    {
-        libc::timeval {
-            tv_sec: duration.as_secs() as libc::time_t,
-            tv_usec: duration.subsec_micros() as libc::suseconds_t,
+/// Send one batch, briefly waiting for a full queue to drain. Queue overflow
+/// is counted in packets, including the actual size of a partial batch.
+fn try_send_packet_batch<T>(
+    packet_tx: &Sender<Vec<T>>,
+    batch: &mut Vec<T>,
+    stats: &AppStats,
+) -> ControlFlow<()> {
+    let to_send = std::mem::replace(batch, Vec::with_capacity(PACKET_BATCH_SIZE));
+    debug!("try_send: batch of {} packets", to_send.len());
+    match send_with_backpressure(packet_tx, to_send, CAPTURE_QUEUE_WAIT) {
+        Ok(()) => ControlFlow::Continue(()),
+        Err(crossbeam::channel::SendTimeoutError::Timeout(rejected)) => {
+            stats
+                .packets_dropped
+                .fetch_add(rejected.len() as u64, Ordering::Relaxed);
+            ControlFlow::Continue(())
         }
-    }
-    #[cfg(windows)]
-    {
-        libc::timeval {
-            tv_sec: duration.as_secs() as libc::c_long,
-            tv_usec: duration.subsec_micros() as libc::c_long,
+        Err(crossbeam::channel::SendTimeoutError::Disconnected(rejected)) => {
+            stats
+                .packets_dropped
+                .fetch_add(rejected.len() as u64, Ordering::Relaxed);
+            ControlFlow::Break(())
         }
     }
 }
 
+/// Give processors a bounded chance to accept the final partial batch. They
+/// keep draining until the capture sender disconnects, so a short blocking
+/// send preserves tail packets without making shutdown unbounded.
+fn send_final_packet_batch<T>(
+    packet_tx: &Sender<Vec<T>>,
+    batch: &mut Vec<T>,
+    stats: &AppStats,
+    timeout: Duration,
+) -> ControlFlow<()> {
+    let to_send = std::mem::replace(batch, Vec::with_capacity(PACKET_BATCH_SIZE));
+    match packet_tx.send_timeout(to_send, timeout) {
+        Ok(()) => ControlFlow::Continue(()),
+        Err(crossbeam::channel::SendTimeoutError::Timeout(rejected))
+        | Err(crossbeam::channel::SendTimeoutError::Disconnected(rejected)) => {
+            stats
+                .packets_dropped
+                .fetch_add(rejected.len() as u64, Ordering::Relaxed);
+            ControlFlow::Break(())
+        }
+    }
+}
+
+/// Add only the change from libpcap's lifetime counters. The UI counters can
+/// then be cleared without the next sample restoring pre-clear loss.
+fn record_capture_drop_sample(
+    stats: &AppStats,
+    previous: &mut (u32, u32),
+    capture_drops: u32,
+    interface_drops: u32,
+) {
+    let capture_delta = capture_drops.wrapping_sub(previous.0) as u64;
+    let interface_delta = interface_drops.wrapping_sub(previous.1) as u64;
+    stats
+        .capture_packets_dropped
+        .fetch_add(capture_delta, Ordering::Relaxed);
+    stats
+        .interface_packets_dropped
+        .fetch_add(interface_delta, Ordering::Relaxed);
+    *previous = (capture_drops, interface_drops);
+}
+
+/// Initialize classic-PCAP output on the descriptor opened securely by the
+/// entry point. No platform reopens the configured pathname.
+fn prepare_pcap_writer(
+    file: Option<File>,
+    linktype: i32,
+    snaplen: u32,
+) -> io::Result<Option<ClassicPcapWriter>> {
+    let Some(file) = file else {
+        return Ok(None);
+    };
+    ClassicPcapWriter::new(file, linktype, snaplen).map(Some)
+}
+
+fn packet_predates_attribution_start(
+    timestamp: SystemTime,
+    capture_not_before: Option<SystemTime>,
+) -> bool {
+    capture_not_before.is_some_and(|cutoff| timestamp < cutoff)
+}
+
+fn route_pre_attribution_packet(
+    packet: CapturedPacket,
+    capture_not_before: Option<SystemTime>,
+    pcapng_tx: Option<&Sender<PcapngRecord>>,
+    stats: &AppStats,
+) -> Option<CapturedPacket> {
+    if !packet_predates_attribution_start(packet.timestamp, capture_not_before) {
+        return Some(packet);
+    }
+
+    stats
+        .pre_attribution_packets
+        .fetch_add(1, Ordering::Relaxed);
+    send_pcapng_record(
+        pcapng_tx,
+        stats,
+        PcapngRecord {
+            data: packet.data,
+            timestamp: packet.timestamp,
+            original_len: packet.original_len,
+            key: None,
+            conn_created_at: None,
+            deadline: Instant::now(),
+        },
+    );
+    None
+}
+
 impl App {
-    /// Privileged half of capture startup: opens the raw socket. The receiver
-    /// is stashed in `self.packet_rx` for [`App::start_packet_processors`],
-    /// which runs after the sandbox has been applied.
-    ///
-    /// Returns a receiver that fires once the capture thread has finished its
-    /// privileged setup (capture device opened, or setup failed).
-    pub(super) fn start_packet_capture_pipeline(
-        &mut self,
-    ) -> Result<std::sync::mpsc::Receiver<()>> {
-        // Sender batches; receiver gets one Vec per batch.
-        let (packet_tx, packet_rx) = channel::bounded::<Vec<CapturedPacket>>(MAX_PACKET_QUEUE);
+    pub(super) fn record_unavailable_pcap_export(&mut self) {
+        if self.config.pcap_export_file.is_some() {
+            self.pcap_export_file.take();
+            self.stats.record_pcap_export_error();
+            error!("Classic PCAP export is unavailable because capture setup failed");
+        }
+    }
 
-        let capture_ready_rx = self.start_capture_thread(packet_tx)?;
+    /// Open privileged capture resources synchronously, without starting a
+    /// worker that could outlive the pre-sandbox phase. Capture-open failures
+    /// become typed status so the TUI can retain process-only fallback while a
+    /// future headless frontend can choose a fatal policy.
+    pub(super) fn prepare_packet_capture_pipeline(&mut self) -> InitStatus {
+        // Sender batches; derive the channel capacity from the packet limit so
+        // queued packet data cannot exceed MAX_PACKET_QUEUE.
+        let (packet_tx, packet_rx) =
+            channel::bounded::<Vec<CapturedPacket>>(PACKET_BATCH_QUEUE_CAPACITY);
 
-        // Stash the receiver; the processor threads are spawned post-sandbox.
-        self.packet_rx = Some(packet_rx);
+        let capture_config = CaptureConfig {
+            interface: self.config.interface.clone(),
+            filter: self.config.bpf_filter.clone(),
+            ..Default::default()
+        };
+        let capture_snaplen = capture_config.snaplen as u32;
+        *self.capture_status.write().unwrap() = CaptureStatus::Healthy;
 
-        Ok(capture_ready_rx)
+        match setup_packet_capture(capture_config) {
+            Ok((capture, device_name, linktype)) => {
+                *self.current_interface.write().unwrap() = Some(device_name.clone());
+                *self.linktype.write().unwrap() = Some(linktype);
+
+                #[cfg(target_os = "macos")]
+                self.record_pktap_status(linktype);
+
+                let pcap_writer = match prepare_pcap_writer(
+                    self.pcap_export_file.take(),
+                    linktype,
+                    capture_snaplen,
+                ) {
+                    Ok(savefile) => {
+                        if self.config.pcap_export_file.is_some() {
+                            info!("PCAP export initialized from pre-opened descriptor");
+                        }
+                        savefile
+                    }
+                    Err(error) => {
+                        error!("Failed to initialize PCAP savefile: {}", error);
+                        self.stats.record_pcap_export_error();
+                        None
+                    }
+                };
+
+                info!(
+                    "Packet capture initialized on interface: {} (linktype: {})",
+                    device_name, linktype
+                );
+
+                self.packet_rx = Some(packet_rx);
+                self.prepared_capture = Some(PreparedCapture {
+                    capture,
+                    device_name,
+                    packet_tx,
+                    pcap_writer,
+                });
+                InitStatus::Ready
+            }
+            Err(error) => {
+                self.record_unavailable_pcap_export();
+                let error_msg = error.to_string();
+                *self.capture_status.write().unwrap() = CaptureStatus::Failed(
+                    capture_failure_message("Capture failed to start", &error),
+                );
+
+                if error_msg.contains("Insufficient privileges") {
+                    error!("Failed to start packet capture due to insufficient privileges:");
+                    for line in error_msg.lines() {
+                        error!("{}", line);
+                    }
+                } else {
+                    error!("Failed to start packet capture: {}", error);
+                    error!(
+                        "Make sure you have permission to capture packets (try running with sudo)"
+                    );
+                }
+
+                warn!("Application will run in process-only mode");
+                InitStatus::Failed(error_msg)
+            }
+        }
     }
 
     /// Spawn the DPI packet-processor threads, draining the channel stashed by
-    /// [`App::start_packet_capture_pipeline`].
+    /// [`App::prepare_packet_capture_pipeline`].
     pub(super) fn start_packet_processors(
         &mut self,
         tracker: Arc<ConnectionTracker>,
@@ -168,123 +561,54 @@ impl App {
             .unwrap_or(4)
             .min(4);
 
+        let packet_rx = Arc::new(OrderedBatchReceiver::new(packet_rx));
+        let batch_committer = Arc::new(OrderedBatchCommitter::default());
         for i in 0..num_processors {
-            self.start_packet_processor(i, packet_rx.clone(), tracker.clone(), pcapng_tx.clone());
+            self.start_packet_processor(
+                i,
+                num_processors,
+                Arc::clone(&packet_rx),
+                Arc::clone(&batch_committer),
+                tracker.clone(),
+                pcapng_tx.clone(),
+            )?;
         }
 
         Ok(())
     }
 
-    /// Start packet capture thread.
-    ///
-    /// Returns a receiver that fires once the capture device has been opened
-    /// (or the open failed). Callers use it to keep root privileges alive
-    /// until the open, which needs them, has actually happened.
-    fn start_capture_thread(
-        &self,
-        packet_tx: Sender<Vec<CapturedPacket>>,
-    ) -> Result<std::sync::mpsc::Receiver<()>> {
-        // Validate interface exists before spawning thread (fail fast)
-        crate::network::capture::validate_interface(&self.config.interface)?;
-
-        let capture_config = CaptureConfig {
-            interface: self.config.interface.clone(),
-            filter: self.config.bpf_filter.clone(),
-            ..Default::default()
+    /// Move the prepared capture handle into its long-lived worker. This is
+    /// called only after sandboxing, so the worker inherits the restricted
+    /// execution context rather than retaining startup privileges.
+    pub(super) fn start_capture_thread(
+        &mut self,
+        capture_not_before: Option<SystemTime>,
+        pcapng_tx: Option<Sender<PcapngRecord>>,
+    ) -> Result<bool> {
+        let Some(PreparedCapture {
+            capture,
+            device_name,
+            packet_tx,
+            mut pcap_writer,
+        }) = self.prepared_capture.take()
+        else {
+            return Ok(false);
         };
-
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
-        let current_interface = Arc::clone(&self.current_interface);
-        let linktype_storage = Arc::clone(&self.linktype);
         let capture_status = Arc::clone(&self.capture_status);
-        let _pktap_active = Arc::clone(&self.pktap_active);
-        let pcap_export_file = self.config.pcap_export_file.clone();
-        *capture_status.write().unwrap() = CaptureStatus::Healthy;
 
-        // Fires once the privileged part of capture setup is done (device
-        // opened or open failed), so the main thread can drop privileges.
-        let (capture_ready_tx, capture_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
-
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("pcap_tx".to_string())
             .spawn(move || {
-            match setup_packet_capture(capture_config) {
-                Ok((capture, device_name, linktype)) => {
-                    *current_interface.write().unwrap() = Some(device_name.clone());
-                    *linktype_storage.write().unwrap() = Some(linktype);
-
-                    // Drop CAP_NET_RAW now that the socket is open (Linux only)
-                    #[cfg(all(target_os = "linux", feature = "landlock"))]
-                    rustnet_sandbox::capabilities::drop_unused_thread_caps(
-                        "capture thread",
-                    );
-
-                    #[cfg(target_os = "macos")]
-                    {
-                        use crate::network::link_layer::pktap;
-                        if pktap::is_pktap_linktype(linktype) {
-                            _pktap_active.store(true, Ordering::Relaxed);
-                            info!("✓ PKTAP is active - process metadata will be provided directly");
-                        } else {
-                            // PKTAP not active: bridge the capture layer's reason into
-                            // the process-attribution degradation reason. This keeps
-                            // rustnet-host decoupled from rustnet-capture; the app
-                            // (which orchestrates both) does the translation.
-                            use crate::network::capture::PktapUnavailable;
-                            use crate::network::platform::{
-                                DegradationReason, report_pktap_degradation,
-                            };
-                            let reason = match crate::network::capture::PKTAP_DEGRADATION_REASON
-                                .get()
-                            {
-                                Some(PktapUnavailable::NoBpfDeviceAccess) => {
-                                    DegradationReason::NoBpfDeviceAccess
-                                }
-                                Some(PktapUnavailable::InterfaceSpecified) => {
-                                    DegradationReason::InterfaceSpecified
-                                }
-                                Some(PktapUnavailable::BpfFilterIncompatible) => {
-                                    DegradationReason::BpfFilterIncompatible
-                                }
-                                Some(PktapUnavailable::MissingRootPrivileges) | None => {
-                                    DegradationReason::MissingRootPrivileges
-                                }
-                            };
-                            report_pktap_degradation(reason);
-                        }
-                    }
-
-                    info!(
-                        "Packet capture started successfully on interface: {} (linktype: {})",
-                        device_name, linktype
-                    );
-
-                    // Initialize PCAP export if configured (must be before PacketReader consumes capture)
-                    let mut pcap_savefile = if let Some(ref pcap_path) = pcap_export_file {
-                        match capture.savefile(pcap_path) {
-                            Ok(savefile) => {
-                                info!("PCAP export started: {}", pcap_path);
-                                Some(savefile)
-                            }
-                            Err(e) => {
-                                error!("Failed to create PCAP savefile: {}", e);
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
-
-                    // Privileged setup is complete; the main thread may now
-                    // drop root / apply the sandbox.
-                    let _ = capture_ready_tx.send(());
-
+                    info!("Packet capture worker started on interface: {}", device_name);
                     let mut reader = PacketReader::new(capture);
                     let mut packets_read = 0u64;
+                    let mut pre_attribution_packets = 0u64;
                     let mut last_log = Instant::now();
                     let mut last_stats_check = Instant::now();
-                    let mut batch: Vec<CapturedPacket> = Vec::with_capacity(100);
+                    let mut previous_capture_drops = (0, 0);
+                    let mut batch: Vec<CapturedPacket> = Vec::with_capacity(PACKET_BATCH_SIZE);
                     let mut batch_deadline = Instant::now() + Duration::from_millis(100);
                     #[cfg(target_os = "linux")]
                     let mut interface_change_retry_started: Option<Instant> = None;
@@ -301,19 +625,9 @@ impl App {
                     // Hand the current batch to the processors and reset the
                     // deadline. Returns `Break` when the receiving side is gone
                     // and the capture loop must exit.
-                    let send_batch = |batch: &mut Vec<CapturedPacket>,
-                                      batch_deadline: &mut Instant,
-                                      what: &str|
-                     -> ControlFlow<()> {
-                        let to_send = std::mem::replace(batch, Vec::with_capacity(100));
-                        let batch_size = to_send.len() as u64;
-                        debug!("try_send: {} batch of {} packets", what, batch_size);
-                        match packet_tx.try_send(to_send) {
-                            Ok(()) => {}
-                            Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                stats.packets_dropped.fetch_add(batch_size, Ordering::Relaxed);
-                            }
-                            Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                    let send_batch =
+                        |batch: &mut Vec<CapturedPacket>, batch_deadline: &mut Instant| {
+                            if try_send_packet_batch(&packet_tx, batch, &stats).is_break() {
                                 warn!("Packet channel closed");
                                 record_failure(capture_failure_message(
                                     "Capture stopped",
@@ -321,13 +635,20 @@ impl App {
                                 ));
                                 return ControlFlow::Break(());
                             }
-                        }
-                        *batch_deadline = Instant::now() + Duration::from_millis(100);
-                        ControlFlow::Continue(())
-                    };
+                            *batch_deadline = Instant::now() + Duration::from_millis(100);
+                            ControlFlow::Continue(())
+                        };
 
                     loop {
                         if should_stop.load(Ordering::Relaxed) {
+                            if !batch.is_empty() {
+                                let _ = send_final_packet_batch(
+                                    &packet_tx,
+                                    &mut batch,
+                                    &stats,
+                                    FINAL_BATCH_SEND_TIMEOUT,
+                                );
+                            }
                             info!("Capture thread stopping");
                             break;
                         }
@@ -340,6 +661,36 @@ impl App {
                                         "Packet capture on 'any' resumed after an interface change"
                                     );
                                 }
+
+                                if let Some(ref mut writer) = pcap_writer {
+                                    match writer.write_packet(
+                                        packet.timestamp,
+                                        &packet.data,
+                                        packet.original_len,
+                                    ) {
+                                        Ok(()) => {
+                                            stats
+                                                .pcap_records_written
+                                                .fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        Err(error) => {
+                                            error!("Failed to write PCAP packet: {error}");
+                                            stats.record_pcap_export_error();
+                                            pcap_writer = None;
+                                        }
+                                    }
+                                }
+
+                                let Some(packet) = route_pre_attribution_packet(
+                                    packet,
+                                    capture_not_before,
+                                    pcapng_tx.as_ref(),
+                                    &stats,
+                                ) else {
+                                    pre_attribution_packets =
+                                        pre_attribution_packets.saturating_add(1);
+                                    continue;
+                                };
 
                                 packets_read += 1;
 
@@ -358,25 +709,11 @@ impl App {
                                     last_log = Instant::now();
                                 }
 
-                                if let Some(ref mut savefile) = pcap_savefile {
-                                    let ts = system_time_to_timeval(packet.timestamp);
-                                    let header = pcap::PacketHeader {
-                                        ts,
-                                        caplen: packet.data.len() as u32,
-                                        len: packet.original_len.max(packet.data.len() as u32),
-                                    };
-                                    savefile.write(&pcap::Packet {
-                                        header: &header,
-                                        data: &packet.data,
-                                    });
-                                    stats.pcap_records_written.fetch_add(1, Ordering::Relaxed);
-                                }
-
                                 batch.push(packet);
 
-                                if (batch.len() >= 100 || Instant::now() >= batch_deadline)
-                                    && send_batch(&mut batch, &mut batch_deadline, "sending")
-                                        .is_break()
+                                if (batch.len() >= PACKET_BATCH_SIZE
+                                    || Instant::now() >= batch_deadline)
+                                    && send_batch(&mut batch, &mut batch_deadline).is_break()
                                 {
                                     break;
                                 }
@@ -392,26 +729,11 @@ impl App {
                                 // Timeout - flush partial batch if deadline reached
                                 if !batch.is_empty()
                                     && Instant::now() >= batch_deadline
-                                    && send_batch(&mut batch, &mut batch_deadline, "flushing partial")
-                                        .is_break()
+                                    && send_batch(&mut batch, &mut batch_deadline).is_break()
                                 {
                                     break;
                                 }
 
-                                if last_stats_check.elapsed() > Duration::from_secs(1) {
-                                    if let Ok(capture_stats) = reader.stats() {
-                                        if capture_stats.received > 0 {
-                                            debug!(
-                                                "Capture stats - Received: {}, Dropped: {}",
-                                                capture_stats.received, capture_stats.dropped
-                                            );
-                                        }
-                                        stats
-                                            .packets_dropped
-                                            .store(capture_stats.dropped as u64, Ordering::Relaxed);
-                                    }
-                                    last_stats_check = Instant::now();
-                                }
                             }
                             Err(e) => {
                                 #[cfg(target_os = "linux")]
@@ -426,12 +748,7 @@ impl App {
                                             );
                                         }
                                         if !batch.is_empty()
-                                            && send_batch(
-                                                &mut batch,
-                                                &mut batch_deadline,
-                                                "flushing before interface-change retry",
-                                            )
-                                            .is_break()
+                                            && send_batch(&mut batch, &mut batch_deadline).is_break()
                                         {
                                             break;
                                         }
@@ -440,62 +757,116 @@ impl App {
                                     }
                                 }
 
+                                if !batch.is_empty() {
+                                    let _ = send_final_packet_batch(
+                                        &packet_tx,
+                                        &mut batch,
+                                        &stats,
+                                        FINAL_BATCH_SEND_TIMEOUT,
+                                    );
+                                }
                                 error!("Capture error: {}", e);
                                 record_failure(capture_failure_message("Capture stopped", &e));
                                 break;
                             }
                         }
+
+                        // Poll independently of packet availability. Under a
+                        // sustained stream `next_packet` may never time out,
+                        // which is also when kernel loss is most likely.
+                        if last_stats_check.elapsed() > Duration::from_secs(1) {
+                            if let Ok(capture_stats) = reader.stats() {
+                                if capture_stats.received > 0 {
+                                    debug!(
+                                        "Capture stats - Received: {}, Dropped: {}, Interface dropped: {}",
+                                        capture_stats.received,
+                                        capture_stats.capture_drops(),
+                                        capture_stats.interface_drops()
+                                    );
+                                }
+                                record_capture_drop_sample(
+                                    &stats,
+                                    &mut previous_capture_drops,
+                                    capture_stats.capture_drops(),
+                                    capture_stats.interface_drops(),
+                                );
+                            }
+                            last_stats_check = Instant::now();
+                        }
                     }
 
-                    if let Some(ref mut savefile) = pcap_savefile {
-                        if let Err(e) = savefile.flush() {
+                    // Capture may stop before the next periodic sample. Fold in
+                    // one final delta so shutdown reporting is complete.
+                    if let Ok(capture_stats) = reader.stats() {
+                        record_capture_drop_sample(
+                            &stats,
+                            &mut previous_capture_drops,
+                            capture_stats.capture_drops(),
+                            capture_stats.interface_drops(),
+                        );
+                    }
+
+                    if let Some(ref mut writer) = pcap_writer {
+                        if let Err(e) = writer.flush() {
                             error!("Failed to flush PCAP savefile: {}", e);
+                            stats.record_pcap_export_error();
                         } else {
                             info!("PCAP export completed");
                         }
+                    }
+
+                    if pre_attribution_packets > 0 {
+                        info!(
+                            "Skipped attribution for {} packet(s) captured before ETW started",
+                            pre_attribution_packets
+                        );
                     }
 
                     info!(
                         "Capture thread exiting, total packets read: {}",
                         packets_read
                     );
-                }
-                Err(e) => {
-                    *capture_status.write().unwrap() = CaptureStatus::Failed(
-                        capture_failure_message("Capture failed to start", &e),
-                    );
-                    let _ = capture_ready_tx.send(());
-                    let error_msg = format!("{}", e);
+                })
+            .map_err(|error| anyhow::anyhow!("failed to spawn capture worker: {error}"))?;
+        self.runtime.register(handle);
 
-                    if error_msg.contains("Insufficient privileges") {
-                        error!("Failed to start packet capture due to insufficient privileges:");
-                        // The error message already contains detailed instructions
-                        for line in error_msg.lines() {
-                            error!("{}", line);
-                        }
-                    } else {
-                        error!("Failed to start packet capture: {}", e);
-                        error!(
-                            "Make sure you have permission to capture packets (try running with sudo)"
-                        );
-                    }
+        Ok(true)
+    }
 
-                    warn!("Application will run in process-only mode");
-                }
+    #[cfg(target_os = "macos")]
+    fn record_pktap_status(&self, linktype: i32) {
+        use crate::network::capture::PktapUnavailable;
+        use crate::network::link_layer::pktap;
+        use crate::network::platform::{DegradationReason, report_pktap_degradation};
+
+        if pktap::is_pktap_linktype(linktype) {
+            self.pktap_active.store(true, Ordering::Relaxed);
+            info!("✓ PKTAP is active - process metadata will be provided directly");
+            return;
+        }
+
+        let reason = match crate::network::capture::PKTAP_DEGRADATION_REASON.get() {
+            Some(PktapUnavailable::NoBpfDeviceAccess) => DegradationReason::NoBpfDeviceAccess,
+            Some(PktapUnavailable::InterfaceSpecified) => DegradationReason::InterfaceSpecified,
+            Some(PktapUnavailable::BpfFilterIncompatible) => {
+                DegradationReason::BpfFilterIncompatible
             }
-        })
-        .expect("Failed to spawn pcap_tx thread");
-
-        Ok(capture_ready_rx)
+            Some(PktapUnavailable::MissingRootPrivileges) | None => {
+                DegradationReason::MissingRootPrivileges
+            }
+        };
+        report_pktap_degradation(reason);
     }
 
     fn start_packet_processor(
-        &self,
+        &mut self,
         id: usize,
-        packet_rx: Receiver<Vec<CapturedPacket>>,
+        worker_count: usize,
+        packet_rx: Arc<OrderedBatchReceiver<Vec<CapturedPacket>>>,
+        batch_committer: Arc<OrderedBatchCommitter>,
         tracker: Arc<ConnectionTracker>,
         pcapng_tx: Option<Sender<PcapngRecord>>,
-    ) {
+    ) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
@@ -509,7 +880,7 @@ impl App {
             ..Default::default()
         };
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name(format!("pcap_rx_{}", id))
             .spawn(move || {
                 info!("Packet processor {} started", id);
@@ -538,26 +909,33 @@ impl App {
                     };
                 let mut total_processed = 0u64;
                 let mut last_log = Instant::now();
+                // Parallel workers retain parsed packets until their commit
+                // turn. A sole worker can parse and commit each packet in
+                // order without staging its DPI allocations in this buffer.
+                let mut parsed_batch = Vec::with_capacity(if worker_count == 1 {
+                    0
+                } else {
+                    PACKET_BATCH_SIZE * PROCESSOR_BATCH_GROUP_LIMIT
+                });
                 const LOCAL_ADDRESS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
                 loop {
-                    if should_stop.load(Ordering::Relaxed) {
-                        info!("Packet processor {} stopping", id);
-                        break;
-                    }
-
-                    // Block until sender delivers a full batch (no spin, no polling)
-                    let batch = match packet_rx.recv_timeout(Duration::from_millis(100)) {
-                        Ok(batch) => {
-                            debug!("pcap_rx_{}: received batch of {} packets", id, batch.len());
-                            batch
-                        }
-                        Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
-                        Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                            info!("pcap_rx_{}: channel disconnected, exiting", id);
-                            return;
-                        }
-                    };
+                    // Keep draining after shutdown is requested. The capture
+                    // thread drops the final sender after flushing its partial
+                    // batch, and disconnection is the processor's completion
+                    // barrier.
+                    let (batch_sequence, batches) =
+                        match packet_rx.recv_group_timeout(Duration::from_millis(100)) {
+                            Ok((sequence, batch)) => (sequence, batch),
+                            Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                                info!("Packet processor {} stopping", id);
+                                break;
+                            }
+                        };
+                    let commit_ticket = batch_committer.ticket(batch_sequence);
+                    let batch_len = batches.iter().flatten().map(Vec::len).sum::<usize>();
+                    debug!("pcap_rx_{}: received group of {} packets", id, batch_len);
 
                     // Process batch. Each packet parse is isolated with
                     // catch_unwind so that a single malformed/adversarial
@@ -567,23 +945,36 @@ impl App {
                     // Connections are stamped with each packet's own capture
                     // time, not one clock read shared by the batch. Handshake
                     // RTT is the gap between two packets' timestamps, and a
-                    // batch spans up to 100 packets or 100ms, wide enough to
-                    // swallow a whole handshake and report its round trip as
-                    // zero. libpcap already hands us the kernel's timestamp, so
-                    // this costs no extra clock reads.
+                    // capture batch spans up to 100 packets or 100ms, and a
+                    // processor group can contain 16 such batches. Either
+                    // can swallow a whole handshake and report its round trip
+                    // as zero. libpcap already supplies the kernel timestamp,
+                    // so this costs no extra clock reads.
                     parser.refresh_local_ips_if_due(LOCAL_ADDRESS_REFRESH_INTERVAL);
-                    let mut parsed_count = 0;
-                    let batch_len = batch.len();
                     let pcapng_enabled = pcapng_tx.is_some();
-                    for packet in batch {
-                        let packet_timestamp = packet.timestamp;
-                        let packet_original_len = packet.original_len;
+                    let mut parse_packet = |packet: &CapturedPacket| {
                         let parse_result =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 parser.parse_packet_with_refresh(&packet.data)
                             }));
-                        let key = match parse_result {
-                            Ok(Some(parsed)) => {
+                        match parse_result {
+                            Ok(parsed) => parsed,
+                            Err(_) => {
+                                warn!(
+                                    "pcap_rx_{}: parser panicked on a packet ({} bytes); skipping",
+                                    id,
+                                    packet.data.len()
+                                );
+                                None
+                            }
+                        }
+                    };
+
+                    // Both worker modes share the exact tracker/export path.
+                    let commit_packet =
+                        |packet: &mut CapturedPacket, parsed: Option<&ParsedPacket>| {
+                            let packet_timestamp = packet.timestamp;
+                            let key = parsed.and_then(|parsed| {
                                 let outcome = update_connection(
                                     &tracker,
                                     parsed,
@@ -593,45 +984,68 @@ impl App {
                                     &pcap_sidecar_file,
                                     dns_resolver.as_deref(),
                                 );
-                                parsed_count += 1;
                                 if outcome.dropped || outcome.ignored_late {
                                     None
                                 } else {
                                     Some(outcome.key)
                                 }
-                            }
-                            Ok(None) => None,
-                            Err(_) => {
-                                warn!(
-                                    "pcap_rx_{}: parser panicked on a packet ({} bytes); skipping",
-                                    id,
-                                    packet.data.len()
-                                );
-                                None
-                            }
-                        };
-                        if pcapng_enabled {
-                            let conn_created_at = key.and_then(|key| {
-                                tracker.connections().get(&key).map(|conn| conn.created_at)
                             });
-                            send_pcapng_record(
-                                pcapng_tx.as_ref(),
-                                &stats,
-                                PcapngRecord {
-                                    data: packet.data,
-                                    timestamp: packet_timestamp,
-                                    original_len: packet_original_len,
-                                    key,
-                                    conn_created_at,
-                                    deadline: if key.is_some() {
-                                        Instant::now() + PCAPNG_ATTRIBUTION_WAIT
-                                    } else {
-                                        Instant::now()
+                            if pcapng_enabled {
+                                let conn_created_at = key.and_then(|key| {
+                                    tracker.connections().get(&key).map(|conn| conn.created_at)
+                                });
+                                send_pcapng_record(
+                                    pcapng_tx.as_ref(),
+                                    &stats,
+                                    PcapngRecord {
+                                        data: std::mem::take(&mut packet.data),
+                                        timestamp: packet_timestamp,
+                                        original_len: packet.original_len,
+                                        key,
+                                        conn_created_at,
+                                        deadline: if key.is_some() {
+                                            Instant::now() + PCAPNG_ATTRIBUTION_WAIT
+                                        } else {
+                                            Instant::now()
+                                        },
                                     },
-                                },
-                            );
+                                );
+                            }
+                            usize::from(parsed.is_some())
+                        };
+                    let parsed_count = if worker_count == 1 {
+                        // This is selected from the actual total worker count,
+                        // never a worker ID. Retain the ordered ticket and its
+                        // unwind guard, but release each parsed packet before
+                        // parsing the next one so small DPI allocations can be
+                        // reused immediately. Shutdown still drains the input.
+                        commit_ticket.commit(|| {
+                            let mut parsed_count = 0;
+                            for mut packet in batches.into_iter().flatten().flatten() {
+                                let parsed = parse_packet(&packet);
+                                parsed_count += commit_packet(&mut packet, parsed.as_ref());
+                            }
+                            parsed_count
+                        })
+                    } else {
+                        for packet in batches.into_iter().flatten().flatten() {
+                            let parsed = parse_packet(&packet);
+                            parsed_batch.push((packet, parsed));
                         }
-                    }
+                        // Parallel parsing still completes before waiting for
+                        // this group's turn to mutate tracker/export state.
+                        commit_ticket.commit(|| {
+                            let mut parsed_count = 0;
+                            for (packet, parsed) in &mut parsed_batch {
+                                parsed_count += commit_packet(packet, parsed.as_ref());
+                            }
+                            parsed_count
+                        })
+                    };
+                    // Ingestion only borrows parsed data. Drop frame and DPI
+                    // storage after releasing the ordered commit, retaining
+                    // the scratch vector's capacity for the next batch.
+                    parsed_batch.clear();
 
                     total_processed += batch_len as u64;
                     stats
@@ -654,7 +1068,9 @@ impl App {
                     id, total_processed
                 );
             })
-            .unwrap_or_else(|_| panic!("Failed to spawn pcap_rx_{} thread", id));
+            .map_err(|error| anyhow::anyhow!("failed to spawn packet processor {id}: {error}"))?;
+        self.runtime.register(handle);
+        Ok(())
     }
 }
 
@@ -666,14 +1082,14 @@ impl App {
 /// the tracker's [`IngestOutcome`].
 fn update_connection(
     tracker: &ConnectionTracker,
-    parsed: ParsedPacket,
+    parsed: &ParsedPacket,
     now: SystemTime,
     stats: &AppStats,
     json_log_file: &Option<Arc<JsonLineWriter>>,
     pcap_sidecar_file: &Option<Arc<JsonLineWriter>>,
     dns_resolver: Option<&DnsResolver>,
 ) -> IngestOutcome {
-    let outcome = tracker.ingest_at(&parsed, now);
+    let outcome = tracker.ingest_at(parsed, now);
 
     if outcome.retransmits > 0 {
         stats
@@ -740,9 +1156,20 @@ fn update_connection(
 
 #[cfg(test)]
 mod capture_failure_message_tests {
-    use super::capture_failure_message;
     #[cfg(target_os = "linux")]
     use super::is_recoverable_any_interface_error;
+    use super::{
+        OrderedBatchCommitter, OrderedBatchReceiver, PROCESSOR_BATCH_GROUP_LIMIT,
+        capture_failure_message, record_capture_drop_sample, send_final_packet_batch,
+        try_send_packet_batch,
+    };
+    use crate::app::types::AppStats;
+    use crate::app::{MAX_PACKET_QUEUE, PACKET_BATCH_QUEUE_CAPACITY, PACKET_BATCH_SIZE};
+    use crossbeam::channel;
+    use std::ops::ControlFlow;
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn collapses_multi_line_errors_and_terminates_the_sentence() {
@@ -773,6 +1200,390 @@ mod capture_failure_message_tests {
         );
     }
 
+    #[test]
+    fn packet_batch_channel_is_bounded_by_packets_not_batches() {
+        assert_eq!(
+            PACKET_BATCH_QUEUE_CAPACITY * PACKET_BATCH_SIZE,
+            MAX_PACKET_QUEUE
+        );
+
+        let (packet_tx, _packet_rx) = channel::bounded::<Vec<u8>>(PACKET_BATCH_QUEUE_CAPACITY);
+        let stats = AppStats::default();
+
+        for _ in 0..PACKET_BATCH_QUEUE_CAPACITY {
+            let mut batch = vec![0; PACKET_BATCH_SIZE];
+            assert_eq!(
+                try_send_packet_batch(&packet_tx, &mut batch, &stats),
+                ControlFlow::Continue(())
+            );
+        }
+
+        let mut rejected = vec![0; PACKET_BATCH_SIZE];
+        assert_eq!(
+            try_send_packet_batch(&packet_tx, &mut rejected, &stats),
+            ControlFlow::Continue(())
+        );
+        assert_eq!(
+            stats.packets_dropped.load(Ordering::Relaxed),
+            PACKET_BATCH_SIZE as u64
+        );
+    }
+
+    #[test]
+    fn queue_overflow_counts_the_size_of_a_partial_batch() {
+        let (packet_tx, _packet_rx) = channel::bounded::<Vec<u8>>(1);
+        packet_tx.send(vec![0; PACKET_BATCH_SIZE]).unwrap();
+        let stats = AppStats::default();
+        let mut partial_batch = vec![0; 37];
+
+        assert_eq!(
+            try_send_packet_batch(&packet_tx, &mut partial_batch, &stats),
+            ControlFlow::Continue(())
+        );
+        assert!(partial_batch.is_empty());
+        assert_eq!(stats.packets_dropped.load(Ordering::Relaxed), 37);
+    }
+
+    #[test]
+    fn disconnected_processor_counts_the_rejected_batch() {
+        let (packet_tx, packet_rx) = channel::bounded::<Vec<u8>>(1);
+        drop(packet_rx);
+        let stats = AppStats::default();
+        let mut rejected = vec![0; 23];
+
+        assert_eq!(
+            try_send_packet_batch(&packet_tx, &mut rejected, &stats),
+            ControlFlow::Break(())
+        );
+        assert_eq!(stats.packets_dropped.load(Ordering::Relaxed), 23);
+    }
+
+    #[test]
+    fn final_batch_waits_for_a_draining_processor() {
+        let (tx, rx) = channel::bounded(1);
+        tx.send(vec![1]).unwrap();
+        let consumer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            assert_eq!(rx.recv().unwrap(), vec![1]);
+            assert_eq!(rx.recv().unwrap(), vec![2, 3]);
+        });
+        let stats = AppStats::default();
+        let mut final_batch = vec![2, 3];
+
+        assert!(
+            send_final_packet_batch(&tx, &mut final_batch, &stats, Duration::from_secs(1))
+                .is_continue()
+        );
+        drop(tx);
+        consumer.join().unwrap();
+        assert_eq!(stats.packets_dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn dropped_batches_do_not_create_commit_sequence_gaps() {
+        let (packet_tx, packet_rx) = channel::bounded::<Vec<u8>>(1);
+        let ordered_rx = OrderedBatchReceiver::new(packet_rx);
+        let stats = AppStats::default();
+
+        let mut first = vec![1];
+        assert_eq!(
+            try_send_packet_batch(&packet_tx, &mut first, &stats),
+            ControlFlow::Continue(())
+        );
+        let mut dropped = vec![2];
+        assert_eq!(
+            try_send_packet_batch(&packet_tx, &mut dropped, &stats),
+            ControlFlow::Continue(())
+        );
+
+        let (first_sequence, first_group) = ordered_rx.recv_group_timeout(Duration::ZERO).unwrap();
+        assert_eq!(first_sequence, 0);
+        assert_eq!(first_group[0], Some(vec![1]));
+        assert!(first_group[1..].iter().all(Option::is_none));
+
+        let mut third = vec![3];
+        assert_eq!(
+            try_send_packet_batch(&packet_tx, &mut third, &stats),
+            ControlFlow::Continue(())
+        );
+        let (second_sequence, second_group) =
+            ordered_rx.recv_group_timeout(Duration::ZERO).unwrap();
+        assert_eq!(second_sequence, 1);
+        assert_eq!(second_group[0], Some(vec![3]));
+        assert!(second_group[1..].iter().all(Option::is_none));
+        assert_eq!(stats.packets_dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn grouped_receive_is_bounded_ordered_and_drains_disconnected_buffers() {
+        let (tx, rx) = channel::unbounded();
+        let total = PROCESSOR_BATCH_GROUP_LIMIT * 2 + 1;
+        for value in 0..total {
+            tx.send(vec![value]).unwrap();
+        }
+        drop(tx);
+        let receiver = OrderedBatchReceiver::new(rx);
+
+        for sequence in 0..3 {
+            let (received_sequence, group) = receiver.recv_group_timeout(Duration::ZERO).unwrap();
+            assert_eq!(received_sequence, sequence as u64);
+            let start = sequence * PROCESSOR_BATCH_GROUP_LIMIT;
+            let end = (start + PROCESSOR_BATCH_GROUP_LIMIT).min(total);
+            assert_eq!(group.iter().flatten().count(), end - start);
+            assert_eq!(
+                group.into_iter().flatten().flatten().collect::<Vec<_>>(),
+                (start..end).collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(
+            receiver.recv_group_timeout(Duration::ZERO),
+            Err(channel::RecvTimeoutError::Disconnected)
+        );
+    }
+
+    #[test]
+    fn empty_batches_count_toward_the_group_limit() {
+        let (tx, rx) = channel::unbounded();
+        for _ in 0..PROCESSOR_BATCH_GROUP_LIMIT {
+            tx.send(Vec::<u8>::new()).unwrap();
+        }
+        tx.send(vec![1, 2, 3]).unwrap();
+        let receiver = OrderedBatchReceiver::new(rx);
+
+        let (sequence, group) = receiver.recv_group_timeout(Duration::ZERO).unwrap();
+        assert_eq!(sequence, 0);
+        assert!(
+            group
+                .iter()
+                .all(|slot| slot.as_ref().is_some_and(Vec::is_empty))
+        );
+        let (sequence, group) = receiver.recv_group_timeout(Duration::ZERO).unwrap();
+        assert_eq!(sequence, 1);
+        assert_eq!(group[0], Some(vec![1, 2, 3]));
+        assert!(group[1..].iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn grouped_receive_does_not_wait_to_fill_a_partial_group() {
+        let (tx, rx) = channel::unbounded();
+        tx.send(vec![1, 2]).unwrap();
+        let receiver = OrderedBatchReceiver::new(rx);
+        let (done_tx, done_rx) = channel::unbounded();
+        let worker = std::thread::spawn(move || {
+            done_tx
+                .send(receiver.recv_group_timeout(Duration::from_secs(60)))
+                .unwrap();
+        });
+
+        // Keep the sender connected and empty. The first item is ready, so
+        // returning must not depend on the receive timeout or disconnection.
+        let result = done_rx.recv_timeout(Duration::from_secs(5));
+        drop(tx);
+        worker.join().unwrap();
+        let (sequence, group) = result
+            .expect("partial group waited for more traffic")
+            .unwrap();
+        assert_eq!(sequence, 0);
+        assert_eq!(group[0], Some(vec![1, 2]));
+        assert!(group[1..].iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn grouped_receive_timeout_does_not_consume_a_sequence() {
+        let (tx, rx) = channel::unbounded();
+        let receiver = OrderedBatchReceiver::new(rx);
+        assert_eq!(
+            receiver.recv_group_timeout(Duration::ZERO),
+            Err(channel::RecvTimeoutError::Timeout)
+        );
+        tx.send(vec![1]).unwrap();
+        assert_eq!(receiver.recv_group_timeout(Duration::ZERO).unwrap().0, 0);
+        assert_eq!(
+            receiver.recv_group_timeout(Duration::ZERO),
+            Err(channel::RecvTimeoutError::Timeout)
+        );
+        tx.send(vec![2]).unwrap();
+        drop(tx);
+        assert_eq!(receiver.recv_group_timeout(Duration::ZERO).unwrap().0, 1);
+    }
+
+    #[test]
+    fn grouped_batches_commit_in_capture_order_after_out_of_order_parsing() {
+        let (tx, rx) = channel::unbounded();
+        for value in 0..PROCESSOR_BATCH_GROUP_LIMIT * 2 {
+            tx.send(vec![value]).unwrap();
+        }
+        drop(tx);
+        let receiver = OrderedBatchReceiver::new(rx);
+        let (first_sequence, first) = receiver.recv_group_timeout(Duration::ZERO).unwrap();
+        let (second_sequence, second) = receiver.recv_group_timeout(Duration::ZERO).unwrap();
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let later_ticket = committer.ticket(second_sequence);
+        let later_committed = Arc::clone(&committed);
+        let later = std::thread::spawn(move || {
+            later_ticket.commit(|| {
+                later_committed
+                    .lock()
+                    .unwrap()
+                    .extend(second.into_iter().flatten().flatten());
+            });
+        });
+
+        wait_for_commit_waiters(&committer, 1);
+        assert!(committed.lock().unwrap().is_empty());
+        committer.ticket(first_sequence).commit(|| {
+            committed
+                .lock()
+                .unwrap()
+                .extend(first.into_iter().flatten().flatten());
+        });
+        later.join().unwrap();
+        assert_eq!(
+            *committed.lock().unwrap(),
+            (0..PROCESSOR_BATCH_GROUP_LIMIT * 2).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn commits_batches_in_capture_order_when_parsing_finishes_out_of_order() {
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let (release_earlier_tx, release_earlier_rx) = std::sync::mpsc::channel();
+        let (later_parsed_tx, later_parsed_rx) = std::sync::mpsc::channel();
+
+        let earlier_committer = Arc::clone(&committer);
+        let earlier_committed = Arc::clone(&committed);
+        let earlier = std::thread::spawn(move || {
+            release_earlier_rx.recv().unwrap();
+            earlier_committer.commit(0, || earlier_committed.lock().unwrap().push(0));
+        });
+
+        let later_committer = Arc::clone(&committer);
+        let later_committed = Arc::clone(&committed);
+        let later = std::thread::spawn(move || {
+            later_parsed_tx.send(()).unwrap();
+            later_committer.commit(1, || later_committed.lock().unwrap().push(1));
+        });
+
+        // Batch 1 has finished its simulated parse before batch 0 is allowed
+        // to finish, but it cannot mutate the tracker-facing state first.
+        later_parsed_rx.recv().unwrap();
+        assert!(committed.lock().unwrap().is_empty());
+        release_earlier_tx.send(()).unwrap();
+
+        earlier.join().unwrap();
+        later.join().unwrap();
+        assert_eq!(*committed.lock().unwrap(), vec![0, 1]);
+    }
+
+    #[test]
+    fn abandoned_batch_ticket_does_not_block_later_commits() {
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        drop(committer.ticket(0));
+
+        let mut committed = false;
+        committer.ticket(1).commit(|| committed = true);
+
+        assert!(committed);
+    }
+
+    fn wait_for_commit_waiters(committer: &OrderedBatchCommitter, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let waiters = committer
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .waiters;
+            if waiters == expected {
+                return;
+            }
+            assert!(Instant::now() < deadline, "commit waiter did not arrive");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn abandoned_ticket_wakes_an_already_waiting_commit() {
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let abandoned = committer.ticket(0);
+        let next = committer.ticket(1);
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            next.commit(|| finished_tx.send(()).unwrap());
+        });
+
+        wait_for_commit_waiters(&committer, 1);
+        drop(abandoned);
+
+        finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        let state = committer.state.lock().unwrap();
+        assert_eq!(state.next_sequence, 2);
+        assert_eq!(state.waiters, 0);
+    }
+
+    #[test]
+    fn panicking_commit_wakes_waiters_and_preserves_later_order() {
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let mut workers = Vec::new();
+        for sequence in (1..=3).rev() {
+            let ticket = committer.ticket(sequence);
+            let committed = Arc::clone(&committed);
+            let finished_tx = finished_tx.clone();
+            workers.push(std::thread::spawn(move || {
+                ticket.commit(|| committed.lock().unwrap().push(sequence));
+                finished_tx.send(()).unwrap();
+            }));
+        }
+        wait_for_commit_waiters(&committer, 3);
+
+        let failed = std::panic::catch_unwind(|| {
+            committer.ticket(0).commit(|| {
+                // Exercise unwinding without panic-hook backtrace latency.
+                std::panic::resume_unwind(Box::new("commit failed"));
+            });
+        });
+        assert!(failed.is_err());
+        for _ in 0..3 {
+            finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        assert_eq!(*committed.lock().unwrap(), vec![1, 2, 3]);
+        let state = committer
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(state.next_sequence, 4);
+        assert_eq!(state.waiters, 0);
+    }
+
+    #[test]
+    fn capture_drop_deltas_survive_ui_counter_resets() {
+        let stats = AppStats::default();
+        stats.packets_dropped.store(23, Ordering::Relaxed);
+        let mut previous = (0, 0);
+
+        record_capture_drop_sample(&stats, &mut previous, 41, 7);
+
+        assert_eq!(stats.packets_dropped.load(Ordering::Relaxed), 23);
+        assert_eq!(stats.capture_packets_dropped.load(Ordering::Relaxed), 41);
+        assert_eq!(stats.interface_packets_dropped.load(Ordering::Relaxed), 7);
+
+        stats.capture_packets_dropped.store(0, Ordering::Relaxed);
+        stats.interface_packets_dropped.store(0, Ordering::Relaxed);
+        record_capture_drop_sample(&stats, &mut previous, 44, 9);
+
+        assert_eq!(stats.capture_packets_dropped.load(Ordering::Relaxed), 3);
+        assert_eq!(stats.interface_packets_dropped.load(Ordering::Relaxed), 2);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn retries_typed_interface_disappearance_only_for_linux_any() {
@@ -794,9 +1605,281 @@ mod capture_failure_message_tests {
     }
 }
 
+#[cfg(all(test, unix))]
+mod prepared_pcap_tests {
+    use super::prepare_pcap_writer;
+    use crate::app::scratch_dir::ScratchDir;
+    use std::fs::OpenOptions;
+    use std::time::SystemTime;
+
+    #[test]
+    fn classic_pcap_writer_uses_retained_descriptor_instead_of_path() {
+        let dir = ScratchDir::new("capture", "retained_pcap_fd");
+        let original_path = dir.join("capture.pcap");
+        let retained_path = dir.join("retained.pcap");
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&original_path)
+            .unwrap();
+
+        std::fs::rename(&original_path, &retained_path).unwrap();
+        std::fs::write(&original_path, b"replacement").unwrap();
+
+        let mut writer = prepare_pcap_writer(Some(file), 1, 65_535).unwrap().unwrap();
+        writer
+            .write_packet(SystemTime::UNIX_EPOCH, &[1, 2, 3, 4], 4)
+            .unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+
+        assert_eq!(std::fs::read(&original_path).unwrap(), b"replacement");
+        assert!(std::fs::metadata(&retained_path).unwrap().len() > 24);
+    }
+}
+
 #[cfg(test)]
-#[path = "../test_support/scratch_dir.rs"]
-mod scratch_dir;
+mod packet_worker_tests {
+    use super::*;
+    use crate::app::{AppOutputHandles, Config};
+
+    fn udp_frame(marker: u8) -> Vec<u8> {
+        // Ethernet/IPv4 UDP from loopback to 198.51.100.10, with a valid
+        // IPv4 checksum and the optional IPv4 UDP checksum left disabled.
+        let mut frame = vec![
+            2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x08, 0x00, 0x45, 0, 0, 30, 0, 0, 0, 0, 64, 17,
+            0xd1, 0x90, 127, 0, 0, 1, 198, 51, 100, 10, 0x27, 0x10, 0x27, 0x0f, 0, 10, 0, 0,
+        ];
+        frame.extend_from_slice(&[marker, !marker]);
+        frame
+    }
+
+    fn tcp_frame(flags: u8, sequence: u32) -> Vec<u8> {
+        let mut frame = udp_frame(0);
+        frame.truncate(34);
+        frame[16..18].copy_from_slice(&40u16.to_be_bytes());
+        frame[23] = 6;
+        frame[24..26].fill(0);
+        let mut checksum = frame[14..34]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|word| u32::from(u16::from_be_bytes(*word)))
+            .sum::<u32>();
+        while checksum > u16::MAX as u32 {
+            checksum = (checksum & 0xffff) + (checksum >> 16);
+        }
+        frame[24..26].copy_from_slice(&(!(checksum as u16)).to_be_bytes());
+        frame.extend_from_slice(&[0x27, 0x10, 0x27, 0x0f]);
+        frame.extend_from_slice(&sequence.to_be_bytes());
+        frame.extend_from_slice(&0u32.to_be_bytes());
+        frame.extend_from_slice(&[0x50, flags, 0xff, 0xff, 0, 0, 0, 0]);
+        frame
+    }
+
+    #[test]
+    fn grouped_workers_preserve_tcp_generation_attribution_within_and_between_groups() {
+        assert_worker_tcp_generation_attribution(2);
+    }
+
+    #[test]
+    fn single_worker_preserves_tcp_generation_attribution_without_staging() {
+        assert_worker_tcp_generation_attribution(1);
+    }
+
+    fn assert_worker_tcp_generation_attribution(worker_count: usize) {
+        let config = Config {
+            enable_dpi: false,
+            resolve_dns: false,
+            disable_geoip: true,
+            filter_localhost: false,
+            ..Config::default()
+        };
+        let mut app = App::new_with_output_handles(config, AppOutputHandles::default()).unwrap();
+        *app.linktype.write().unwrap() = Some(1);
+        let batch_count = PROCESSOR_BATCH_GROUP_LIMIT * 2 + 1;
+        let (packet_tx, packet_rx) = channel::bounded(batch_count);
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let mut expected = Vec::new();
+        let mut generation_start = started;
+        // Populate three groups for any chosen limit of at least four. Split
+        // generations both at group boundaries and inside a batch. Empty
+        // batches still occupy a group slot.
+        let mut flag_batches = vec![vec![16]; batch_count];
+        flag_batches[0] = vec![2];
+        flag_batches[PROCESSOR_BATCH_GROUP_LIMIT - 1] = vec![4];
+        flag_batches[PROCESSOR_BATCH_GROUP_LIMIT] = vec![2, 4, 2];
+        flag_batches[PROCESSOR_BATCH_GROUP_LIMIT + 1] = vec![];
+        flag_batches[PROCESSOR_BATCH_GROUP_LIMIT * 2 - 1] = vec![4];
+        flag_batches[PROCESSOR_BATCH_GROUP_LIMIT * 2] = vec![2];
+        for flags in flag_batches {
+            let mut batch = Vec::new();
+            for flags in flags {
+                let timestamp = started + Duration::from_millis(expected.len() as u64);
+                if flags == 2 {
+                    generation_start = timestamp;
+                }
+                let data = tcp_frame(flags, expected.len() as u32);
+                let packet = CapturedPacket {
+                    original_len: data.len() as u32,
+                    data,
+                    timestamp,
+                };
+                expected.push((packet.clone(), generation_start));
+                batch.push(packet);
+            }
+            packet_tx.send(batch).unwrap();
+        }
+        drop(packet_tx);
+
+        let receiver = Arc::new(OrderedBatchReceiver::new(packet_rx));
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let (pcapng_tx, pcapng_rx) = channel::bounded(expected.len());
+        for worker in 0..worker_count {
+            app.start_packet_processor(
+                worker,
+                worker_count,
+                Arc::clone(&receiver),
+                Arc::clone(&committer),
+                Arc::clone(&app.tracker),
+                Some(pcapng_tx.clone()),
+            )
+            .unwrap();
+        }
+        drop(pcapng_tx);
+
+        let mut first_key = None;
+        for (packet, generation_start) in &expected {
+            let record = pcapng_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(record.data, packet.data);
+            assert_eq!(record.timestamp, packet.timestamp);
+            assert_eq!(record.original_len, packet.original_len);
+            let key = record.key.expect("TCP packet must be attributed");
+            assert_eq!(*first_key.get_or_insert(key), key);
+            assert_eq!(record.conn_created_at, Some(*generation_start));
+        }
+        assert!(matches!(
+            pcapng_rx.recv_timeout(Duration::from_secs(5)),
+            Err(channel::RecvTimeoutError::Disconnected)
+        ));
+        let report = app.runtime.stop_and_join(|_| {}, |_| {});
+        assert_eq!(report.timed_out_workers, 0);
+        assert_eq!(report.panicked_workers, 0);
+        assert_eq!(committer.state.lock().unwrap().next_sequence, 3);
+        assert_eq!(app.tracker.len(), 1);
+        assert_eq!(app.tracker.historic_len(), 3);
+        assert_eq!(
+            app.stats.packets_processed.load(Ordering::Relaxed),
+            expected.len() as u64
+        );
+        assert_eq!(app.stats.pcapng_records_dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn reused_worker_buffers_preserve_pcapng_bytes_order_and_attribution() {
+        assert_worker_packet_bytes_order_and_attribution(2);
+    }
+
+    #[test]
+    fn single_worker_preserves_pcapng_bytes_order_and_attribution_without_staging() {
+        assert_worker_packet_bytes_order_and_attribution(1);
+    }
+
+    fn assert_worker_packet_bytes_order_and_attribution(worker_count: usize) {
+        let config = Config {
+            enable_dpi: false,
+            resolve_dns: false,
+            disable_geoip: true,
+            filter_localhost: false,
+            ..Config::default()
+        };
+        let mut app = App::new_with_output_handles(config, AppOutputHandles::default()).unwrap();
+        *app.linktype.write().unwrap() = Some(1);
+        let batch_count = PROCESSOR_BATCH_GROUP_LIMIT * 3 + 1;
+        let (packet_tx, packet_rx) = channel::bounded(batch_count);
+        let mut expected = Vec::new();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        // Four groups across two workers require scratch-buffer reuse even
+        // when the chosen group limit changes. Empty and short batches must
+        // not retain packets from a preceding group.
+        for batch_len in [3, 0, 1, 4, 2, 0, 3, 1, 4, 2]
+            .into_iter()
+            .cycle()
+            .take(batch_count)
+        {
+            let mut batch = Vec::new();
+            for _ in 0..batch_len {
+                let packet_index = expected.len();
+                let marker = packet_index as u8;
+                let invalid = packet_index % 5 == 4;
+                let packet = CapturedPacket {
+                    data: if invalid {
+                        vec![marker]
+                    } else {
+                        udp_frame(marker)
+                    },
+                    timestamp: started + Duration::from_millis(packet_index as u64),
+                    original_len: 64 + packet_index as u32,
+                };
+                expected.push((packet.clone(), invalid));
+                batch.push(packet);
+            }
+            packet_tx.send(batch).unwrap();
+        }
+        drop(packet_tx);
+
+        let packet_rx = Arc::new(OrderedBatchReceiver::new(packet_rx));
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let (pcapng_tx, pcapng_rx) = channel::bounded(expected.len());
+        for worker in 0..worker_count {
+            app.start_packet_processor(
+                worker,
+                worker_count,
+                Arc::clone(&packet_rx),
+                Arc::clone(&committer),
+                Arc::clone(&app.tracker),
+                Some(pcapng_tx.clone()),
+            )
+            .unwrap();
+        }
+        drop(pcapng_tx);
+
+        let mut first_key = None;
+        for (packet, invalid) in &expected {
+            let record = pcapng_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(record.data, packet.data);
+            assert_eq!(record.timestamp, packet.timestamp);
+            assert_eq!(record.original_len, packet.original_len);
+            if *invalid {
+                assert!(record.key.is_none());
+                assert!(record.conn_created_at.is_none());
+            } else {
+                let key = record.key.expect("valid packet must be attributed");
+                assert_eq!(*first_key.get_or_insert(key), key);
+                assert_eq!(record.conn_created_at, Some(started));
+            }
+        }
+        assert!(matches!(
+            pcapng_rx.recv_timeout(Duration::from_secs(5)),
+            Err(channel::RecvTimeoutError::Disconnected)
+        ));
+        let report = app.runtime.stop_and_join(|_| {}, |_| {});
+        assert_eq!(report.timed_out_workers, 0);
+        assert_eq!(report.panicked_workers, 0);
+        assert_eq!(committer.state.lock().unwrap().next_sequence, 4);
+        assert_eq!(
+            app.stats.packets_processed.load(Ordering::Relaxed),
+            expected.len() as u64
+        );
+        assert_eq!(app.stats.pcapng_records_dropped.load(Ordering::Relaxed), 0);
+        let connection = app.tracker.connections().get(&first_key.unwrap()).unwrap();
+        assert_eq!(
+            connection.packets_sent + connection.packets_received,
+            expected.iter().filter(|(_, invalid)| !invalid).count() as u64
+        );
+    }
+}
 
 #[cfg(test)]
 mod connection_lifecycle_tests {
@@ -806,7 +1889,7 @@ mod connection_lifecycle_tests {
     use std::net::SocketAddr;
     use std::path::Path;
 
-    use super::scratch_dir::ScratchDir;
+    use crate::app::scratch_dir::ScratchDir;
 
     fn tcp_packet(flags: TcpFlags) -> ParsedPacket {
         let mut packet = ParsedPacket::new(
@@ -860,7 +1943,7 @@ mod connection_lifecycle_tests {
 
         update_connection(
             &tracker,
-            tcp_packet(flags(true, false)),
+            &tcp_packet(flags(true, false)),
             started,
             &stats,
             &no_log,
@@ -869,7 +1952,7 @@ mod connection_lifecycle_tests {
         );
         update_connection(
             &tracker,
-            tcp_packet(flags(false, true)),
+            &tcp_packet(flags(false, true)),
             started + Duration::from_secs(1),
             &stats,
             &no_log,
@@ -878,7 +1961,7 @@ mod connection_lifecycle_tests {
         );
         update_connection(
             &tracker,
-            tcp_packet(flags(true, false)),
+            &tcp_packet(flags(true, false)),
             started + Duration::from_secs(2),
             &stats,
             &no_log,
@@ -888,6 +1971,66 @@ mod connection_lifecycle_tests {
 
         assert_eq!(stats.total_connections_created.load(Ordering::Relaxed), 2);
         assert_eq!(stats.total_connections_archived.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn out_of_order_parse_completion_preserves_tracker_capture_order() {
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let tracker = Arc::new(ConnectionTracker::new());
+        let stats = Arc::new(AppStats::default());
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let key = tcp_packet(flags(false, false)).connection_key();
+        let earlier_ticket = committer.ticket(0);
+        let later_ticket = committer.ticket(1);
+        let (release_earlier_tx, release_earlier_rx) = std::sync::mpsc::channel();
+        let (later_parsed_tx, later_parsed_rx) = std::sync::mpsc::channel();
+
+        let earlier_tracker = Arc::clone(&tracker);
+        let earlier_stats = Arc::clone(&stats);
+        let earlier = std::thread::spawn(move || {
+            let parsed = tcp_packet(flags(false, false));
+            release_earlier_rx.recv().unwrap();
+            earlier_ticket.commit(|| {
+                update_connection(
+                    &earlier_tracker,
+                    &parsed,
+                    started,
+                    &earlier_stats,
+                    &None,
+                    &None,
+                    None,
+                );
+            });
+        });
+
+        let later_tracker = Arc::clone(&tracker);
+        let later_stats = Arc::clone(&stats);
+        let later = std::thread::spawn(move || {
+            let parsed = tcp_packet(flags(false, false));
+            later_parsed_tx.send(()).unwrap();
+            later_ticket.commit(|| {
+                update_connection(
+                    &later_tracker,
+                    &parsed,
+                    started + Duration::from_secs(1),
+                    &later_stats,
+                    &None,
+                    &None,
+                    None,
+                );
+            });
+        });
+
+        // The later batch has finished parsing but cannot create the
+        // connection until the earlier batch reaches the commit phase.
+        later_parsed_rx.recv().unwrap();
+        assert!(tracker.connections().is_empty());
+        release_earlier_tx.send(()).unwrap();
+
+        earlier.join().unwrap();
+        later.join().unwrap();
+        assert_eq!(tracker.connections().get(&key).unwrap().created_at, started);
+        assert_eq!(stats.total_connections_created.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -903,7 +2046,7 @@ mod connection_lifecycle_tests {
 
         update_connection(
             &tracker,
-            tcp_packet(flags(true, false)),
+            &tcp_packet(flags(true, false)),
             started,
             &stats,
             &events,
@@ -912,7 +2055,7 @@ mod connection_lifecycle_tests {
         );
         update_connection(
             &tracker,
-            tcp_packet(flags(false, true)),
+            &tcp_packet(flags(false, true)),
             started + Duration::from_secs(1),
             &stats,
             &events,
@@ -921,7 +2064,7 @@ mod connection_lifecycle_tests {
         );
         update_connection(
             &tracker,
-            tcp_packet(flags(true, false)),
+            &tcp_packet(flags(true, false)),
             started + Duration::from_secs(2),
             &stats,
             &events,
@@ -945,5 +2088,49 @@ mod connection_lifecycle_tests {
         let sidecar_lines = std::fs::read_to_string(sidecar_path).unwrap();
         assert_eq!(sidecar_lines.lines().count(), 1);
         assert!(sidecar_lines.contains("\"protocol\":\"TCP\""));
+    }
+}
+
+#[cfg(test)]
+mod attribution_cutoff_tests {
+    use super::{packet_predates_attribution_start, route_pre_attribution_packet};
+    use crate::app::types::AppStats;
+    use crate::network::capture::CapturedPacket;
+    use crossbeam::channel;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn packets_from_before_attribution_start_are_discarded() {
+        let cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        assert!(packet_predates_attribution_start(
+            cutoff - Duration::from_nanos(100),
+            Some(cutoff)
+        ));
+        assert!(!packet_predates_attribution_start(cutoff, Some(cutoff)));
+        assert!(!packet_predates_attribution_start(
+            SystemTime::UNIX_EPOCH,
+            None
+        ));
+    }
+
+    #[test]
+    fn pre_attribution_packet_is_counted_and_exported_without_a_key() {
+        let cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        let packet = CapturedPacket {
+            data: vec![1, 2, 3],
+            timestamp: cutoff - Duration::from_nanos(100),
+            original_len: 3,
+        };
+        let stats = AppStats::default();
+        let (tx, rx) = channel::bounded(1);
+
+        assert!(route_pre_attribution_packet(packet, Some(cutoff), Some(&tx), &stats).is_none());
+        assert_eq!(stats.pre_attribution_packets.load(Ordering::Relaxed), 1);
+        let exported = rx
+            .try_recv()
+            .expect("packet should remain in PCAPNG output");
+        assert_eq!(exported.data, vec![1, 2, 3]);
+        assert!(exported.key.is_none());
     }
 }
