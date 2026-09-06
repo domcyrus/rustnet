@@ -117,10 +117,6 @@ color_accessors! { rx, tx }
 const STALE_FADE_START: f32 = 0.5;
 
 ramp_accessors! {
-    /// RX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
-    rx_wave => rx_ramp,
-    /// TX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
-    tx_wave => tx_ramp,
     /// Accent wave gradient for non-directional graphs like the connection
     /// count, at intensity `t` (0 = dim base, 1 = crest).
     accent_wave => accent_ramp,
@@ -137,6 +133,38 @@ ramp_accessors! {
     /// Warn-to-err glow at fade intensity `t` (0 = yellow at the start of the
     /// staleness window, 1 = red at removal).
     expiry_glow => expiry_ramp,
+}
+
+/// Restrained data-bar shading, derived from the active theme's neutral and
+/// direction tokens. The tip stops at the token itself, never at white.
+pub(super) fn bar_tint(color: Color, t: f64) -> Color {
+    match color {
+        Color::Rgb(r, g, b) => {
+            let neutral = match faint() {
+                Color::Rgb(r, g, b) => (r, g, b),
+                _ => active().muted_seed,
+            };
+            let (r, g, b) = derive::blend(neutral, (r, g, b), 0.35 + 0.65 * t.clamp(0.0, 1.0));
+            Color::Rgb(r, g, b)
+        }
+        // ANSI colours belong to the user's terminal palette. Texture gives
+        // those bars depth without guessing the palette's RGB values.
+        _ => color,
+    }
+}
+
+/// Traffic waves respect the terminal's own ANSI palette. RGB themes retain
+/// their shading; explicitly configured wave overrides remain independent.
+pub(super) fn rx_wave(t: f64) -> Color {
+    active()
+        .rx_wave_color
+        .unwrap_or_else(|| walk_ramp(&active().rx_ramp, t))
+}
+
+pub(super) fn tx_wave(t: f64) -> Color {
+    active()
+        .tx_wave_color
+        .unwrap_or_else(|| walk_ramp(&active().tx_ramp, t))
 }
 
 /// Style for the removal countdown of a stale row at fade intensity `t`
@@ -540,10 +568,10 @@ mod tests {
     fn primary_wave_ramps_match_flow_direction_colors() {
         let white = Color::Rgb(0xFF, 0xFF, 0xFF);
 
-        assert_eq!(rx_wave(0.0), Color::Rgb(0x3B, 0x82, 0xF6));
-        assert_eq!(tx_wave(0.0), Color::Rgb(0x10, 0xB9, 0x81));
-        assert_eq!(rx_wave(1.0), white);
-        assert_eq!(tx_wave(1.0), white);
+        assert_eq!(rx_wave(0.0), rx());
+        assert_eq!(tx_wave(0.0), tx());
+        assert_eq!(rx_wave(1.0), rx());
+        assert_eq!(tx_wave(1.0), tx());
         assert_eq!(accent_wave(1.0), white);
         assert_eq!(ok_wave(1.0), white);
     }
@@ -711,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn default_theme_matches_historical_muted_palette() {
+    fn default_theme_keeps_semantic_palette_and_matches_graph_directions() {
         assert_eq!(accent(), Color::Cyan);
         assert_eq!(ok(), Color::Green);
         assert_eq!(warn(), Color::Yellow);

@@ -443,12 +443,11 @@ fn muted_or_vivid(vivid: bool) -> ThemeSpec {
         } else {
             ansi_only(Color::DarkGray)
         },
+        // Preserve the established default convention: RX green, TX blue.
         rx: rgb(0x10B981, Color::Green),
         tx: rgb(0x3B82F6, Color::Blue),
-        // Wave colors are swapped relative to the rx/tx text colors: blue RX
-        // wave, green TX wave, while table text stays Green/Blue.
-        rx_wave: Some(rgb(0x3B82F6, Color::Blue)),
-        tx_wave: Some(rgb(0x10B981, Color::Green)),
+        rx_wave: None,
+        tx_wave: None,
         selection_bg: None,
         selection_fg: None,
         status_bg: None,
@@ -592,6 +591,15 @@ mod tests {
         assert!(!truecolor_from(None, Some("xterm-256color")));
         assert!(!truecolor_from(Some("8bit"), Some("screen")));
         assert!(!truecolor_from(None, None));
+    }
+
+    #[test]
+    fn built_in_traffic_waves_follow_direction_tokens() {
+        for preset in ThemePreset::ALL {
+            let spec = ThemeSpec::builtin(preset);
+            assert_eq!(spec.rx_wave, None, "{} RX", preset.name());
+            assert_eq!(spec.tx_wave, None, "{} TX", preset.name());
+        }
     }
 
     #[test]

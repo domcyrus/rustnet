@@ -81,7 +81,7 @@ pub(in crate::ui) fn render_scrolled_table(
     let scroll = scroll.clamp_for_render(max_scroll) as usize;
 
     let table = Table::new(rows.into_iter().skip(scroll), widths.iter().copied())
-        .header(header.style(theme::fg(theme::heading())));
+        .header(header.style(theme::bold_fg(theme::heading())));
     let table_area = Rect::new(
         inner.x,
         inner.y,

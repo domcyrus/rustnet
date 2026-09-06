@@ -10,7 +10,7 @@ expression: output
   systemd-resolved (82… 1.1.1.1:53              192.168.1.10:53    dns        UDP                      UDP_ACTIVE        - -             -/-
   sshd (1500)           10.0.0.5:51022          192.168.1.10:22    ssh        TCP                      ESTABLISHED       - ok            -/-
                                                                                                                                             
-▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy                                                                          
+▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────────────────────────────────────────────────────────────────
 Connection                                                            Application                                                          ▐
 Protocol              TCP                                             Detected              -                                              ▐
 Status                Active (last seen <T> ago)                                                                                            ▐
@@ -34,7 +34,7 @@ City                  -
 ASN                   -                                                                                                                     
                                                                                                                                             
                                                                                                                                             
-▎ Traffic Statistics                                                                                                                        
+▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
 Total 234.38 KB  ·  234 packets                                       Total 12.21 KB  ·  12 packets                                         
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
