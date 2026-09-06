@@ -52,6 +52,9 @@ jobs:
           run: |
             cargo build --locked --verbose --release --no-default-features
             cargo test --locked --workspace --no-default-features --verbose
+            # The VM runs as root. These tests use only reserved loopback UDP
+            # ports and bound their worker waits internally.
+            cargo test --locked -p rustnet-capture --test live_capture -- --ignored
 
   trigger-freebsd-build:
     name: trigger-freebsd-build

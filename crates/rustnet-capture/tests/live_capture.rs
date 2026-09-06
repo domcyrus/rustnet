@@ -8,18 +8,21 @@ use std::time::{Duration, Instant};
 
 use rustnet_capture::{CaptureConfig, PacketReader, setup_packet_capture};
 
-#[test]
-#[ignore = "requires packet-capture permissions on the loopback interface"]
-fn idle_capture_returns_after_traffic_stops_without_busy_spinning() {
-    let interface = if cfg!(target_os = "linux") {
+fn loopback_interface() -> &'static str {
+    if cfg!(target_os = "linux") {
         "lo"
     } else {
         "lo0"
-    };
+    }
+}
+
+#[test]
+#[ignore = "requires packet-capture permissions on the loopback interface"]
+fn idle_capture_returns_after_traffic_stops_without_busy_spinning() {
     let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
     let address = receiver.local_addr().unwrap();
     let (capture, _, _) = setup_packet_capture(CaptureConfig {
-        interface: Some(interface.to_owned()),
+        interface: Some(loopback_interface().to_owned()),
         // Capture only this test's reserved loopback UDP port. The sender
         // sends once and stops, reproducing the transition to an idle read.
         filter: Some(format!(
@@ -74,14 +77,13 @@ fn idle_capture_returns_after_traffic_stops_without_busy_spinning() {
     worker.join().unwrap();
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires packet-capture permissions on the loopback interface"]
 fn packet_arriving_after_an_idle_read_is_not_consumed_by_the_readiness_wait() {
     let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
     let address = receiver.local_addr().unwrap();
     let (capture, _, _) = setup_packet_capture(CaptureConfig {
-        interface: Some("lo".to_owned()),
+        interface: Some(loopback_interface().to_owned()),
         filter: Some(format!(
             "udp and dst host 127.0.0.1 and dst port {}",
             address.port()

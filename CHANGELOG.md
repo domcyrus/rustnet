@@ -33,8 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the ordered commit and skip notifications without waiters.
   The queue remains bounded at 10,000 packets,
   plus up to 1,600 in-flight packets per worker (6,400 across at most four workers).
-  A full queue uses a 5 ms send timeout. Linux capture uses readiness notifications
-  where supported to wake for new traffic while keeping idle waits bounded.
+  A full queue uses a 5 ms send timeout. Linux, macOS, FreeBSD, and Windows capture
+  share bounded idle-wait and fallback handling, using Unix descriptor readiness
+  or Npcap events where supported to wake promptly for new traffic.
   Overload can still cause queue or capture-backend loss
 - **Runtime Lifecycle Foundation**: privileged capture and process attribution
   are prepared synchronously before sandboxing, while all long-lived workers

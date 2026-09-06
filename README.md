@@ -47,8 +47,10 @@ and updates each packet immediately, without staging DPI allocations. The queue
 holds at most 10,000 packets, plus up to 1,600 in-flight packets per worker
 (6,400 across at most four workers), separate from other app memory.
 A full queue uses a 5 ms send timeout
-before dropping that batch. On Linux, supported capture backends wake the reader
-when new traffic arrives, while idle waits remain bounded. Bursts or sustained
+before dropping that batch. On Linux, macOS, FreeBSD, and Windows, supported
+capture backends wake the reader when new traffic arrives. A shared 10 ms idle
+wait budget preserves shutdown and partial-batch flushing, with sleep polling
+when native readiness is unavailable. This is not a per-packet delay. Bursts or sustained
 overload can still drop packets in the queue or capture backend.
 
 ## Why RustNet?

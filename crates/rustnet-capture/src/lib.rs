@@ -18,7 +18,6 @@ use anyhow::{Result, anyhow};
 use pcap::{Active, Capture, Device, Error as PcapError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-#[cfg(target_os = "linux")]
 mod capture_wait;
 
 /// Why the macOS PKTAP fast path could not be used during capture setup.
@@ -541,11 +540,10 @@ const IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis
 /// Packet reader for a capture from [`setup_packet_capture`].
 ///
 /// Empty nonblocking reads wait briefly so callers can poll shutdown without
-/// spinning. On Linux, capture readiness wakes the wait early; otherwise a
-/// short sleep bounds idle polling. Neither path requires a packet to arrive.
+/// spinning. Native capture readiness wakes the wait early where supported;
+/// otherwise a short sleep bounds idle polling. Neither path requires traffic.
 pub struct PacketReader {
     capture: Capture<Active>,
-    #[cfg(target_os = "linux")]
     idle_wait: capture_wait::CaptureWait,
 }
 
@@ -559,13 +557,8 @@ pub struct CapturedPacket {
 
 impl PacketReader {
     pub fn new(capture: Capture<Active>) -> Self {
-        #[cfg(target_os = "linux")]
         let idle_wait = capture_wait::CaptureWait::new(&capture);
-        Self {
-            capture,
-            #[cfg(target_os = "linux")]
-            idle_wait,
-        }
+        Self { capture, idle_wait }
     }
 
     /// Read the next packet, returning `None` after a bounded idle delay when
@@ -573,7 +566,6 @@ impl PacketReader {
     pub fn next_packet(&mut self) -> Result<Option<CapturedPacket>> {
         match self.capture.next_packet() {
             Ok(packet) => {
-                #[cfg(target_os = "linux")]
                 self.idle_wait.packet_received();
                 let ts = packet.header.ts;
                 Ok(Some(CapturedPacket {
@@ -583,10 +575,7 @@ impl PacketReader {
                 }))
             }
             Err(PcapError::TimeoutExpired) => {
-                #[cfg(target_os = "linux")]
-                self.idle_wait.wait();
-                #[cfg(not(target_os = "linux"))]
-                std::thread::sleep(IDLE_POLL_INTERVAL);
+                self.idle_wait.wait(&self.capture);
                 Ok(None)
             }
             Err(e) => Err(e.into()),
