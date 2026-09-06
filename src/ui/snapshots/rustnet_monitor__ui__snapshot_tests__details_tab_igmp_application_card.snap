@@ -10,7 +10,7 @@ expression: output
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-▎ ? → 224.0.0.251:0 [REPORT_V2(224.0.0.251)] · click a field to copy                                                                        
+▎ ? → 224.0.0.251:0 [REPORT_V2(224.0.0.251)] · click a field to copy ───────────────────────────────────────────────────────────────────────
 Connection                                                            Application: IGMP                                                    ▐
 Protocol              IGMP                                            Message               Membership Report v2                           ▐
 Status                Active (last seen <T> ago)                       Group Address         224.0.0.251                                    ▐
@@ -34,7 +34,7 @@ City                  -
 ASN                   -                                                                                                                     
                                                                                                                                             
                                                                                                                                             
-▎ Traffic Statistics                                                                                                                        
+▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  

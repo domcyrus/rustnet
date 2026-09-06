@@ -4,39 +4,39 @@ expression: "render_activity(&app, ActivityDirection::Egress)"
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                              ● eth0
 ─────────────────────────────────────━━━━━━━━━━───────────────────────────────────────────────────────────────────────────────────────────────────────
-▎ Traffic Pulse                                                                                                                                       
-TX now 2.88 MB/s   60s captured 5.85 MB / eth0 8.00 MB   73.1% observed                                                                               
-TX 60s coverage ███████████████████████████████████████████████████████████████████████████████████████████████···································    
-RX now 1.70 MB/s   60s captured 3.67 MB / eth0 4.00 MB   91.8% observed                                                                               
-RX 60s coverage ███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▍··········    
-retained TX 5.85 MB   RX 3.67 MB                                                                                                                      
-process attribution TX 100.0%  unknown 0 B   RX 100.0%  unknown 0 B                                                                                   
-60s coverage = captured ÷ interface  |  Retained = active + recent closed  |  Attribution = mapped to PID/name                                        
+▎ Egress (TX) ───────────────────────────────────────   ▎ Ingress (RX) ──────────────────────────────────────   ▎ Capture coverage · 60s ─────────────
+2.88 MB/s  now                                          1.70 MB/s  now                                          TX                               73.1%
+                                                                                                                ░░░░░░░▒▒▒▒▒▒▒▓▓▓▓▓▓▓██████▊··········
+Captured · 60s                                5.85 MB   Captured · 60s                                3.67 MB                                         
+Retained                                      5.85 MB   Retained                                      3.67 MB   RX                               91.8%
+                                                                                                                ░░░░░░░░░▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓███████▉···
                                                                                                                                                       
+▎ Processes · Egress (TX)  Retained TX ↓ ────────────────────────────────────────────────────────────────────   eth0 TX                        8.00 MB
+Process              Share                TX now    60s %    Retained     Conns   Remote Top remote peer        eth0 RX                        4.00 MB
                                                                                                                                                       
-▎ Top Processes: Egress (TX)  Retained TX ↓                                                                                                           
-Process                  Pulse               TX now     Peak TX    60s % Iface 60s      TX 60s    Retained     Conns   Remote Top remote peer         
-firefox (2001)           ███████████▌··   2.38 MB/s   2.38 MB/s    81.7%     59.8%     4.78 MB     4.78 MB       1/1        1 140.82.121.4:443        
-sshd (1500)              ██▌··········· 488.28 KB/s 488.28 KB/s    17.7%     13.0%     1.04 MB     1.04 MB       1/1        1 10.0.0.5:51022          
-systemd-resolved (820)   ▏·············  15.62 KB/s  15.62 KB/s     0.5%      0.4%    32.42 KB    32.42 KB       1/1        1 1.1.1.1:53              
-curl (9876)              ··············           -           -     0.0%      0.0%         0 B         0 B       1/1        1 151.101.1.195:443       
+firefox (2001)       ░░░░▒▒▒▓▓▓██▎··   2.38 MB/s    81.7%     4.78 MB       1/1        1 140.82.121.4:443       ▎ Process attribution ────────────────
+                                                                                                                TX                       100.0% mapped
+sshd (1500)          ██▋············ 488.28 KB/s    17.7%     1.04 MB       1/1        1 10.0.0.5:51022         Unknown                            0 B
                                                                                                                                                       
+systemd-resolved (8… ▏··············  15.62 KB/s     0.5%    32.42 KB       1/1        1 1.1.1.1:53             RX                       100.0% mapped
+                                                                                                                Unknown                            0 B
+curl (9876)          ···············           -     0.0%         0 B       1/1        1 151.101.1.195:443                                            
                                                                                                                                                       
-                                                                                                                                                      
-                                                                                                                                                      
-                                                                                                                                                      
-                                                                                                                                                      
-                                                                                                                                                      
+                                                                                                                ▎ Interfaces · TX ────────────────────
+                                                                                                                eth0       ░░░▒▒▒▓▓▓██ ↑4.0M ↓2.0M    
                                                                                                                                                       
                                                                                                                                                       
                                                                                                                                                       
                                                                                                                                                       
                                                                                                                                                       
-▎ Egress (TX) Share (60s)                                                              ▎ Interface Pulse: TX                                          
-firefox (2001)     ███████████████████████████████████████████████▍··········  81.7%   eth0       ████████████████████████████████████ ↑4.0M ↓2.0M    
-sshd (1500)        ██████████▎···············································  17.7%                                                                  
-systemd-resolved…  ▍·························································   0.5%                                                                  
-curl (9876)        ··························································   0.0%                                                                  
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
                                                                                                                                                       
                                                                                                                                                       
                                                                                                                                                       
