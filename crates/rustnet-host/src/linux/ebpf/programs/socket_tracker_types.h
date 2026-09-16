@@ -38,11 +38,13 @@ struct conn_info
     __u32 gid;
     char comm[TASK_COMM_LEN];
     __u64 timestamp;
-};
+} __attribute__((aligned(8)));
 
 _Static_assert(sizeof(struct conn_key) == CONN_KEY_SIZE,
                "conn_key map ABI size changed");
 _Static_assert(sizeof(struct conn_info) == CONN_INFO_SIZE,
                "conn_info map ABI size changed");
+_Static_assert(__alignof__(struct conn_info) == 8,
+               "conn_info map ABI alignment changed");
 
 #endif
