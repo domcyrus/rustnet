@@ -3,8 +3,10 @@
 use crate::{
     ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
     ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketScan, SocketSnapshot,
-    ancestor_display_name, collect_process_lineage, decode_process_name, memoized, owner_match,
-    parse_socket_addr_text, path_from_c_buffer, remote_if_present,
+    ancestor_display_name, collect_process_lineage,
+    command::{PROCESS_TABLE_COMMAND_TIMEOUT, output_with_timeout_or_cancel},
+    decode_process_name, memoized, owner_match, parse_socket_addr_text, path_from_c_buffer,
+    remote_if_present,
 };
 use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
@@ -13,6 +15,7 @@ use std::mem::{MaybeUninit, size_of};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const SOCKSTAT_PATH: &str = "/usr/bin/sockstat";
 
@@ -37,7 +40,7 @@ struct FreeBsdProcessDetails {
 
 impl FreeBSDProcessLookup {
     pub(super) fn new() -> Result<Self> {
-        let scan = Self::build_process_map()?;
+        let scan = Self::build_process_map(None)?;
         Ok(Self {
             cache: RwLock::new(scan.lookup),
             process_details: RwLock::new(HashMap::new()),
@@ -167,7 +170,7 @@ impl FreeBSDProcessLookup {
     /// Build connection -> process mapping using sockstat. The TCP, TCP6,
     /// UDP and UDP6 tables are scanned in that order, so a later table wins
     /// when two report the same tuple.
-    fn build_process_map() -> Result<SocketScan> {
+    fn build_process_map(cancelled: Option<&AtomicBool>) -> Result<SocketScan> {
         let mut scan = SocketScan::default();
 
         for (protocol, ipv6) in [
@@ -176,31 +179,52 @@ impl FreeBSDProcessLookup {
             (Protocol::Udp, false),
             (Protocol::Udp, true),
         ] {
-            if let Ok(table) = Self::parse_sockstat_output(protocol, ipv6) {
-                scan.lookup.extend(table.lookup);
-                scan.sockets.extend(table.sockets);
+            match Self::parse_sockstat_output(protocol, ipv6, cancelled) {
+                Ok(table) => {
+                    scan.lookup.extend(table.lookup);
+                    scan.sockets.extend(table.sockets);
+                }
+                Err(error) if command_was_interrupted(&error) => return Err(error),
+                Err(error) => {
+                    log::debug!("sockstat table scan failed for {protocol:?}: {error}");
+                }
             }
+        }
+
+        if cancellation_requested(cancelled) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "sockstat scan cancelled",
+            )
+            .into());
         }
 
         Ok(scan)
     }
 
     /// Parse sockstat output for a given protocol and address family.
-    fn parse_sockstat_output(protocol: Protocol, ipv6: bool) -> Result<SocketScan> {
+    fn parse_sockstat_output(
+        protocol: Protocol,
+        ipv6: bool,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<SocketScan> {
         use std::process::Command;
 
         let is_tcp = protocol == Protocol::Tcp;
 
         // -4/-6: address family, -n: numeric UIDs, -s: TCP state column,
         // -P: protocol filter
-        let output = Command::new(SOCKSTAT_PATH)
-            .arg(if ipv6 { "-6" } else { "-4" })
-            .arg("-n")
-            .args(is_tcp.then_some("-s"))
-            .arg("-P")
-            .arg(if is_tcp { "tcp" } else { "udp" })
-            .output()
-            .context("Failed to execute sockstat")?;
+        let output = output_with_timeout_or_cancel(
+            Command::new(SOCKSTAT_PATH)
+                .arg(if ipv6 { "-6" } else { "-4" })
+                .arg("-n")
+                .args(is_tcp.then_some("-s"))
+                .arg("-P")
+                .arg(if is_tcp { "tcp" } else { "udp" }),
+            PROCESS_TABLE_COMMAND_TIMEOUT,
+            cancelled,
+        )
+        .context("Failed to execute sockstat")?;
 
         if !output.status.success() {
             return Ok(SocketScan::default());
@@ -308,19 +332,11 @@ impl ProcessLookup for FreeBSDProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
-        let scan = Self::build_process_map()?;
+        self.refresh_cache(None)
+    }
 
-        *self.cache.write().expect("cache lock poisoned") = scan.lookup;
-        *self
-            .socket_snapshot
-            .write()
-            .expect("socket snapshot lock poisoned") = SocketSnapshot::new(scan.sockets);
-        self.process_details
-            .write()
-            .expect("process details cache lock poisoned")
-            .clear();
-
-        Ok(())
+    fn refresh_interruptible(&self, cancelled: &AtomicBool) -> Result<()> {
+        self.refresh_cache(Some(cancelled))
     }
 
     fn get_detection_method(&self) -> &str {
@@ -335,10 +351,55 @@ impl ProcessLookup for FreeBSDProcessLookup {
     }
 }
 
+impl FreeBSDProcessLookup {
+    fn refresh_cache(&self, cancelled: Option<&AtomicBool>) -> Result<()> {
+        let scan = Self::build_process_map(cancelled)?;
+
+        *self.cache.write().expect("cache lock poisoned") = scan.lookup;
+        *self
+            .socket_snapshot
+            .write()
+            .expect("socket snapshot lock poisoned") = SocketSnapshot::new(scan.sockets);
+        self.process_details
+            .write()
+            .expect("process details cache lock poisoned")
+            .clear();
+
+        Ok(())
+    }
+}
+
+fn cancellation_requested(cancelled: Option<&AtomicBool>) -> bool {
+    cancelled.is_some_and(|flag| flag.load(Ordering::Acquire))
+}
+
+fn command_was_interrupted(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::Interrupted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::tcp_connection;
+
+    #[test]
+    fn cancelled_sockstat_scan_returns_an_error() {
+        let cancelled = AtomicBool::new(true);
+
+        let error = match FreeBSDProcessLookup::build_process_map(Some(&cancelled)) {
+            Ok(_) => panic!("cancelled scan must not replace the process cache"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::Interrupted)
+        );
+    }
 
     #[test]
     fn sockstat_numeric_uid_reaches_attribution_without_process_details() {

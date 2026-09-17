@@ -31,7 +31,7 @@
 - **进程级归属识别**：每一条 TCP、UDP、QUIC 连接都能追溯到所属进程。Linux 使用 eBPF，macOS 使用 PKTAP，Windows 使用 ETW 并在不可用时自动回退到 IP Helper，FreeBSD 则走原生 API。详情会显示 PID、可执行文件、用户/组名称、匹配可信度，以及每个平台都提供的父进程链（有层级上限）。Wireshark 与 tcpdump 做不到这一点；`netstat` / `ss` 也无法展示实时状态。
 - **深度包检测**：无需外部解析器即可识别 HTTP、带 SNI 的 HTTPS/TLS、DNS、SSH、FTP、QUIC、MQTT、BitTorrent、WireGuard、OpenVPN、STUN、NTP、mDNS、LLMNR、DHCP、SNMP、SSDP 及 NetBIOS。
 - **带注释的 PCAPNG 导出**：`--pcapng-export` 可写出能直接用 Wireshark 打开的捕获文件，并将进程、PID、方向、DPI/SNI 和 GeoIP 作为逐包注释嵌入。每个数据包都会直接标明所属进程，无需后处理。也可使用经典的 `--pcap-export` 配合 JSONL sidecar 进行离线关联。
-- **安全沙箱**：Linux 5.13+ 使用 Landlock，macOS 使用 Seatbelt，Windows 通过 token 降权 + job-object 阻止子进程创建。libpcap 初始化完成后立即丢弃特权。详见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
+- **安全沙箱**：Linux 5.13+ 使用 Landlock，macOS 使用 Seatbelt，Windows 通过 token 降权 + job-object 阻止子进程创建。初始化完成后丢弃特权；如果请求的 UID/GID 降权失败，启动会中止，不会启动数据包处理线程。详见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
 - **网络分析**：实时统计 TCP、QUIC 握手、DNS 响应及 ICMP 回显的往返时延，并检测 TCP 重传、乱序包和快重传。概览表格通过按协议显示的健康徽标，呈现 TCP 问题、明确可见的 QUIC Retry/版本协商事件，以及事务型 UDP 的重试/超时，并按严重程度排序。
 - **智能连接生命周期**：按协议设置超时，空闲连接行会显示由黄变红的左侧条纹和移除倒计时，并逐渐柔化为灰色。按 `t` 可保留历史（已关闭）连接以便事后追溯。
 - **Vim / fzf 风格过滤**：支持 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:`、`proto:`，以及 `/(?i)pattern/` 形式的正则。
@@ -39,6 +39,9 @@
 - **局域网设备识别**：链路内设备和网关的 MAC 地址及厂商（来自内嵌的 IEEE OUI 数据库），从 ARP 流量中被动学习，并显示在详情页中。
 - **Kubernetes 归属识别**（可选 `kubernetes` feature）：将连接映射到所属 pod、namespace 和 container，并在详情面板、JSON/PCAPNG 导出以及 `pod:`、`ns:`、`container:` 过滤器中显示。官方 Docker 镜像已启用该功能；在集群上可使用 [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) 插件以临时调试 pod 运行。详见 [USAGE.zh-CN.md](USAGE.zh-CN.md#--kubernetes-mode-optional-feature)。
 - **跨平台**：Linux、macOS、Windows、FreeBSD。
+
+数据包并行解析，连接更新和带注释的导出更新仍按捕获顺序执行。
+并行处理线程将已入队的最多 16 个批次合并为一次有序更新，不等待凑满。只有一个处理线程时，每个数据包解析后立即更新，不暂存 DPI 分配的内存。队列最多容纳 10,000 个数据包，此外每个处理线程最多持有 1,600 个处理中的数据包（最多四个线程合计 6,400 个），这些上限不包含应用的其他内存使用量。队列满时，发送超时设为 5 毫秒，超时仍无法入队才丢弃该批次。在 Linux、macOS、FreeBSD 和 Windows 上，支持就绪通知的捕获后端会在新流量到达时唤醒读取线程。各平台共享 10 毫秒的空闲等待预算，以便检查退出请求并提交未满批次；原生就绪通知不可用时回退到休眠轮询。这不是每个数据包的固定延迟。突发流量或持续过载时，队列或捕获后端仍可能丢包。
 
 ## 为什么选 RustNet？
 

@@ -15,6 +15,17 @@ pub(crate) struct LocalAddresses {
     pub(crate) gateways: HashSet<IpAddr>,
 }
 
+impl LocalAddresses {
+    fn add_unicast(&mut self, ip: IpAddr, prefix: u8) {
+        self.ips.insert(ip);
+        if let IpAddr::V4(v4) = ip
+            && let Some(broadcast) = v4_subnet_broadcast(v4, prefix)
+        {
+            self.v4_broadcasts.insert(broadcast);
+        }
+    }
+}
+
 /// Directed-broadcast address of `ip`'s subnet, or `None` when the prefix has
 /// no broadcast (/31 point-to-point per RFC 3021, /32 host routes).
 fn v4_subnet_broadcast(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
@@ -32,28 +43,20 @@ fn v4_subnet_broadcast(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
 /// Collect every address currently assigned to the host, together with the
 /// broadcast addresses of its IPv4 subnets.
 ///
-/// `pnet_datalink` supplies the portable implementation. Its Windows backend
-/// still uses the IPv4-only `GetAdaptersInfo`, so Windows supplements it with
-/// `GetAdaptersAddresses` to include all IPv4 and IPv6 unicast addresses.
+/// Unix uses `pnet_datalink`; Windows uses `GetAdaptersAddresses` for IPv4,
+/// IPv6, and subnet prefixes without requiring the packet-capture driver.
 pub(crate) fn collect_local_addresses() -> LocalAddresses {
     let mut local = LocalAddresses::default();
+    #[cfg(not(windows))]
     for interface in pnet_datalink::interfaces() {
         for network in interface.ips {
-            let ip = network.ip();
-            local.ips.insert(ip);
-            if let IpAddr::V4(v4) = ip
-                && let Some(broadcast) = v4_subnet_broadcast(v4, network.prefix())
-            {
-                local.v4_broadcasts.insert(broadcast);
-            }
+            local.add_unicast(network.ip(), network.prefix());
         }
     }
 
-    // The Windows supplement stays IP-only: its added value is IPv6 (which
-    // has no broadcast concept); IPv4 prefixes are already covered above.
     #[cfg(windows)]
     match windows_unicast_addresses() {
-        Ok(addresses) => local.ips.extend(addresses),
+        Ok(addresses) => local = addresses,
         Err(code) => {
             // Warn once so a persistent failure is visible at default log
             // levels without repeating every refresh interval.
@@ -61,7 +64,7 @@ pub(crate) fn collect_local_addresses() -> LocalAddresses {
                 std::sync::atomic::AtomicBool::new(false);
             let message = format!(
                 "GetAdaptersAddresses failed while refreshing local addresses: {code}; \
-                 IPv6 endpoint orientation may be degraded"
+                 endpoint orientation may be degraded"
             );
             if FAILURE_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 log::debug!("{message}");
@@ -78,7 +81,7 @@ pub(crate) fn collect_local_addresses() -> LocalAddresses {
 }
 
 #[cfg(windows)]
-fn windows_unicast_addresses() -> Result<Vec<IpAddr>, u32> {
+fn windows_unicast_addresses() -> Result<LocalAddresses, u32> {
     use std::mem::{size_of, size_of_val};
     use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
     use windows::Win32::NetworkManagement::IpHelper::{
@@ -121,13 +124,13 @@ fn windows_unicast_addresses() -> Result<Vec<IpAddr>, u32> {
             return Err(result);
         }
 
-        let mut addresses = Vec::new();
+        let mut addresses = LocalAddresses::default();
         let mut adapter = adapters;
         while let Some(current_adapter) = unsafe { adapter.as_ref() } {
             let mut unicast = current_adapter.FirstUnicastAddress;
             while let Some(current_unicast) = unsafe { unicast.as_ref() } {
                 if let Some(ip) = unsafe { socket_address_to_ip(&current_unicast.Address) } {
-                    addresses.push(ip);
+                    addresses.add_unicast(ip, current_unicast.OnLinkPrefixLength);
                 }
                 unicast = current_unicast.Next;
             }
@@ -202,13 +205,42 @@ mod tests {
         assert_eq!(v4_subnet_broadcast(Ipv4Addr::new(10, 0, 0, 1), 32), None);
     }
 
+    #[test]
+    fn unicast_collection_keeps_addresses_without_inventing_broadcasts() {
+        let mut addresses = LocalAddresses::default();
+        let subnet = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+        let point_to_point = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2));
+        let host = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 3));
+        let invalid_prefix = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 4));
+        let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+
+        for (ip, prefix) in [
+            (subnet, 24),
+            (point_to_point, 31),
+            (host, 32),
+            (invalid_prefix, u8::MAX),
+            (v6, 64),
+        ] {
+            addresses.add_unicast(ip, prefix);
+        }
+
+        assert_eq!(
+            addresses.ips,
+            HashSet::from([subnet, point_to_point, host, invalid_prefix, v6])
+        );
+        assert_eq!(
+            addresses.v4_broadcasts,
+            HashSet::from([Ipv4Addr::new(192, 0, 2, 255)])
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn combined_snapshot_contains_windows_native_addresses() {
         let native = windows_unicast_addresses().expect("GetAdaptersAddresses should succeed");
         let combined = collect_local_addresses().ips;
 
-        for address in native {
+        for address in native.ips {
             assert!(
                 combined.contains(&address),
                 "native Windows address {address} missing from combined snapshot"

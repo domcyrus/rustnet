@@ -62,9 +62,11 @@ jobs:
           - build: windows-x64-msvc
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            run-tests: true
           - build: windows-x86-msvc
             os: windows-latest
             target: i686-pc-windows-msvc
+            run-tests: true
 
     steps:
       - name: Checkout repository
@@ -89,12 +91,50 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cargo-command: ${{ matrix.cargo }}
-          default-features: ${{ contains(matrix.target, 'linux') && 'true' || 'false' }}
+          default-features: ${{ (contains(matrix.target, 'linux') || contains(matrix.target, 'apple')) && 'true' || 'false' }}
           strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
 
-      - name: Run tests
+      - name: Configure Windows workspace test linking
+        if: runner.os == 'Windows' && matrix.run-tests
+        shell: powershell
+        run: |
+          # The binary build verifies and extracts the SDK. Standalone crate
+          # tests also need its import libraries and the binary's delay-loading
+          # policy, so unit tests do not require a live Npcap installation.
+          $sdk = Get-ChildItem -Path 'target\${{ matrix.target }}\release\build\rustnet-monitor-*\out\npcap_sdk' -Directory |
+            Select-Object -First 1
+          if (-not $sdk -or
+              -not (Test-Path (Join-Path $sdk.FullName 'wpcap.lib')) -or
+              -not (Test-Path (Join-Path $sdk.FullName 'Packet.lib'))) {
+            throw 'The verified Npcap SDK libraries were not found'
+          }
+          "LIBPCAP_LIBDIR=$($sdk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # pnet also links Packet.lib in crates without a pcap dependency,
+          # so LIBPCAP_LIBDIR alone does not reach every test executable.
+          # Encoded flags preserve an SDK path containing spaces as one value.
+          $rustflags = @(
+            '-L', "native=$($sdk.FullName)",
+            '-C', 'link-arg=/DELAYLOAD:Packet.dll',
+            '-C', 'link-arg=/DELAYLOAD:wpcap.dll',
+            '-C', 'link-arg=/DEFAULTLIB:delayimp.lib'
+          )
+          "CARGO_ENCODED_RUSTFLAGS=$($rustflags -join [char]0x1f)" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run workspace tests
         if: matrix.run-tests
-        run: cargo test --verbose
+        run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
+
+      - name: Test macOS capture idle waits and packet arrival
+        if: matrix.run-tests && runner.os == 'macOS'
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_executable=$(cargo test --locked -p rustnet-capture --test live_capture --target '${{ matrix.target }}' --no-run --message-format=json |
+            jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_capture" and .executable != null) | .executable')
+          test -n "$test_executable"
+          sudo /usr/bin/perl -e 'alarm 15; exec @ARGV or die "exec: $!"' "$test_executable" --ignored
 
       # For test builds: upload raw binary
       - name: Upload binary artifact
@@ -342,4 +382,3 @@ jobs:
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
-

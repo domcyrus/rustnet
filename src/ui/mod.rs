@@ -100,7 +100,7 @@ pub fn set_no_color(enabled: bool) {
 }
 
 mod state;
-pub(crate) use state::process_group_label;
+pub(crate) use crate::network::process_activity::process_group_label;
 pub use state::{
     ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, HostView,
     PaneScroll, SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,
@@ -1390,6 +1390,67 @@ mod snapshot_tests {
         assert!(output.contains("Live Connections · 1 shown"));
         assert!(output.contains("Processes: 4"));
         assert!(output.contains("Total Connections: 4"));
+    }
+
+    #[test]
+    fn overview_filter_uses_the_shared_core_filter() {
+        let app = test_app();
+        let connections = overview_connections();
+        app.set_connections_snapshot_for_test(connections);
+        let ui_state = UiState {
+            filter_query: "process:firefox port:443".to_string(),
+            ..Default::default()
+        };
+
+        // This assignment is a compile-time guard that the root compatibility
+        // export remains the exact filter type owned by rustnet-core.
+        let filter: rustnet_core::network::filter::ConnectionFilter =
+            crate::filter::ConnectionFilter::parse(&ui_state.filter_query);
+        let filtered = app.get_filtered_connections(&ui_state.filter_query);
+
+        assert_eq!(filtered.len(), 1);
+        assert!(filter.matches(&filtered[0]));
+
+        let output = render_app(&app, &ui_state, &filtered, None, 140, 40);
+        assert!(output.contains("Live Connections · 1 shown"));
+        assert!(output.contains("firefox"));
+        assert!(!output.contains("sshd (1500)"));
+    }
+
+    #[test]
+    fn overview_keeps_queue_and_capture_drops_separate() {
+        use std::sync::atomic::Ordering;
+
+        let app = test_app();
+        let connections = overview_connections();
+        let stats = app.get_stats();
+        stats.packets_dropped.store(7, Ordering::Relaxed);
+        stats.capture_packets_dropped.store(11, Ordering::Relaxed);
+        stats.interface_packets_dropped.store(5, Ordering::Relaxed);
+
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &UiState::default(),
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw overview with packet-drop counters");
+        });
+
+        assert!(
+            output.contains("Queue Drops: 7 (backpressure)"),
+            "queue backpressure count should be rendered independently:\n{output}"
+        );
+        assert!(
+            output.contains("Capture Drops: 16"),
+            "capture and interface loss should be combined:\n{output}"
+        );
+        assert!(!output.contains("Capture Drops: 7"));
     }
 
     #[test]

@@ -19,7 +19,7 @@ use crate::ui::UiState;
 pub fn clipboard_available(app: &App) -> bool {
     #[cfg(target_os = "linux")]
     {
-        let sandbox = app.get_sandbox_info();
+        let sandbox = app.sandbox_report();
         !(sandbox.fs_restricted || sandbox.scope_restricted)
     }
     #[cfg(not(target_os = "linux"))]

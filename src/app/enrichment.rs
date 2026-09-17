@@ -4,18 +4,45 @@ use anyhow::Result;
 use log::{debug, error, info};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::platform::create_process_lookup;
 use crate::network::tracker::ConnectionTracker;
 use crate::network::types::{Connection, ProcessLineage, UNKNOWN_PROCESS_NAME};
 
+use super::runtime::ShutdownSignal;
 use super::sampling::spawn_loop;
 use super::state::App;
 use super::types::ProcessDetectionStatus;
+
+/// Process-attribution resources initialized during the privileged startup
+/// phase and moved into the long-lived worker after sandboxing.
+///
+/// On Linux the loaded object owns the program, link, and map descriptors.
+/// CAP_BPF and CAP_PERFMON are needed to create and attach those objects, but
+/// later map operations through the existing descriptors are authorized by
+/// their read/write modes. The worker therefore needs no retained capability.
+pub(super) struct PreparedProcessEnrichment {
+    process_lookup: Box<dyn rustnet_host::ProcessLookup>,
+}
+
+fn prepare_process_lookup_with<F>(use_pktap: bool, create: F) -> Result<PreparedProcessEnrichment>
+where
+    F: FnOnce(bool) -> Result<Box<dyn rustnet_host::ProcessLookup>>,
+{
+    create(use_pktap).map(|process_lookup| PreparedProcessEnrichment { process_lookup })
+}
+
+fn activate_process_lookup(
+    prepared: PreparedProcessEnrichment,
+) -> Result<Box<dyn rustnet_host::ProcessLookup>> {
+    let mut process_lookup = prepared.process_lookup;
+    process_lookup.start_runtime()?;
+    Ok(process_lookup)
+}
 
 /// Whether a connection needs no further process enrichment. A connection
 /// still carrying the [`UNKNOWN_PROCESS_NAME`] placeholder (a PID whose
@@ -32,99 +59,105 @@ fn process_enrichment_complete(conn: &Connection) -> bool {
 }
 
 impl App {
-    /// Spawn the process enrichment thread; on macOS it first waits for PKTAP
-    /// detection to decide between libproc and lsof.
-    pub(super) fn start_process_enrichment_conditional(
-        &self,
+    /// Initialize process attribution synchronously while startup privileges
+    /// are still available. In particular, Linux eBPF programs and maps are
+    /// loaded here, but no thread is allowed to outlive this pre-sandbox phase.
+    pub(super) fn prepare_process_enrichment(&self) -> Result<PreparedProcessEnrichment> {
+        // Capture preparation has already recorded the link type, so PKTAP
+        // selection is known without starting a thread or waiting for packets.
+        let use_pktap = self.pktap_active.load(Ordering::Relaxed);
+        let prepared = match prepare_process_lookup_with(use_pktap, create_process_lookup) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                if let Ok(mut status) = self.process_detection_status.write() {
+                    *status = ProcessDetectionStatus::degraded(
+                        "unavailable",
+                        "process attribution",
+                        error.to_string(),
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let process_lookup = &prepared.process_lookup;
+
+        if let Ok(mut snapshot) = self.socket_snapshot.write() {
+            *snapshot = process_lookup.socket_snapshot();
+        }
+
+        Ok(prepared)
+    }
+
+    /// Move the prepared process lookup into its long-lived worker. The typed
+    /// application lifecycle calls this only from the post-sandbox phase.
+    pub(super) fn start_process_enrichment_thread(
+        &mut self,
         tracker: Arc<ConnectionTracker>,
-        process_ready_tx: std::sync::mpsc::SyncSender<()>,
-    ) -> Result<()> {
-        let pktap_active = Arc::clone(&self.pktap_active);
-        let should_stop = Arc::clone(&self.should_stop);
+        prepared: PreparedProcessEnrichment,
+    ) -> Result<Option<SystemTime>> {
+        let process_lookup = activate_process_lookup(prepared)?;
         let process_detection_status = Arc::clone(&self.process_detection_status);
         let socket_snapshot = Arc::clone(&self.socket_snapshot);
+        let method = process_lookup.get_detection_method().to_string();
+        let capture_not_before =
+            (cfg!(target_os = "windows") && method == "windows-etw+iphlpapi").then(SystemTime::now);
+        let degradation = process_lookup.get_degradation_reason();
+        *process_detection_status
+            .write()
+            .map_err(|_| anyhow::anyhow!("process detection status lock is poisoned"))? =
+            if degradation != rustnet_host::DegradationReason::None {
+                ProcessDetectionStatus::degraded(
+                    method,
+                    degradation.unavailable_feature().unwrap_or("enhanced"),
+                    degradation.description(),
+                )
+            } else {
+                ProcessDetectionStatus::with_method(method)
+            };
+        let shutdown = self.runtime.shutdown_signal();
         #[cfg(feature = "kubernetes")]
         let kubernetes_mode = self.config.kubernetes_mode;
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("process-enrichment".to_string())
             .spawn(move || {
-            #[cfg(target_os = "macos")]
-            {
-                // Wait up to 5 seconds for PKTAP so lsof is not spawned needlessly.
-                let wait_start = Instant::now();
-                while wait_start.elapsed() < Duration::from_secs(5)
-                    && !should_stop.load(Ordering::Relaxed)
-                    && !pktap_active.load(Ordering::Relaxed)
-                {
-                    thread::sleep(Duration::from_millis(50));
-                }
-
-                if pktap_active.load(Ordering::Relaxed) {
-                    info!(
-                        "PKTAP is active, starting libproc enrichment for packet process metadata"
-                    );
-                    if let Ok(mut status) = process_detection_status.write() {
-                        *status = ProcessDetectionStatus::with_method("pktap");
+                let failure_status = Arc::clone(&process_detection_status);
+                if let Err(e) = Self::run_process_enrichment(
+                    process_lookup,
+                    tracker,
+                    shutdown,
+                    socket_snapshot,
+                    #[cfg(feature = "kubernetes")]
+                    kubernetes_mode,
+                ) {
+                    if let Ok(mut status) = failure_status.write() {
+                        *status = ProcessDetectionStatus::degraded(
+                            "unavailable",
+                            "process attribution",
+                            e.to_string(),
+                        );
                     }
-                } else {
-                    info!(
-                        "⚠️  PKTAP not detected after 5 seconds, starting process enrichment thread with lsof"
-                    );
-                    info!(
-                        "    This may cause process name formatting differences with PKTAP if it activates later"
-                    );
+                    error!("Process enrichment thread failed: {}", e);
                 }
-            }
+            })
+            .map_err(|error| {
+                anyhow::anyhow!("failed to spawn process-enrichment worker: {error}")
+            })?;
+        self.runtime.register(handle);
 
-            if let Err(e) = Self::run_process_enrichment(
-                tracker,
-                should_stop,
-                pktap_active,
-                process_detection_status,
-                socket_snapshot,
-                process_ready_tx,
-                #[cfg(feature = "kubernetes")]
-                kubernetes_mode,
-            ) {
-                error!("Process enrichment thread failed: {}", e);
-            }
-        })
-        .expect("Failed to spawn process-enrichment thread");
-
-        Ok(())
+        Ok(capture_not_before)
     }
 
     fn run_process_enrichment(
+        process_lookup: Box<dyn rustnet_host::ProcessLookup>,
         tracker: Arc<ConnectionTracker>,
-        should_stop: Arc<AtomicBool>,
-        pktap_active: Arc<AtomicBool>,
-        process_detection_status: Arc<RwLock<ProcessDetectionStatus>>,
+        shutdown: ShutdownSignal,
         socket_snapshot: Arc<RwLock<rustnet_host::SocketSnapshot>>,
-        process_ready_tx: std::sync::mpsc::SyncSender<()>,
         #[cfg(feature = "kubernetes")] kubernetes_mode: crate::network::kubernetes::KubernetesMode,
     ) -> Result<()> {
-        use crate::network::platform::DegradationReason;
-
-        let use_pktap = pktap_active.load(Ordering::Relaxed);
-
-        let process_lookup = create_process_lookup(use_pktap)?;
-        if let Ok(mut snapshot) = socket_snapshot.write() {
-            *snapshot = process_lookup.socket_snapshot();
+        if shutdown.is_requested() {
+            return Ok(());
         }
-        #[cfg(target_os = "macos")]
-        let mut process_lookup = process_lookup;
-        #[cfg(target_os = "macos")]
-        let mut using_pktap = use_pktap;
-
-        // Linux capabilities are per-thread. This thread inherited the startup
-        // capabilities before loading eBPF, so drop the ones it will not use
-        // again. CAP_BPF and CAP_PERFMON deliberately stay: this thread keeps
-        // reading the eBPF socket map for the process lifetime, and with
-        // kernel.unprivileged_bpf_disabled set every bpf(2) call (map lookups
-        // included) is rejected without CAP_BPF.
-        #[cfg(all(target_os = "linux", feature = "landlock"))]
-        rustnet_sandbox::capabilities::drop_thread_cap_net_raw("process enrichment thread");
 
         // Kubernetes pod/container attribution. `auto` enables only when rustnet
         // is itself running inside a pod, so the resolver and the cross-namespace
@@ -144,10 +177,6 @@ impl App {
         if let Some(resolver) = &kubernetes_resolver {
             k8s_socket_table = crate::network::kubernetes::KubernetesSocketTable::build(resolver);
         }
-
-        // Signal that process detection (including eBPF loading) is complete.
-        // The main thread waits for this before dropping eBPF capabilities.
-        let _ = process_ready_tx.send(());
 
         // Fast/slow enrichment cadence. Young connections are retried on a
         // quick tick so their process name appears almost immediately (the
@@ -171,24 +200,6 @@ impl App {
         // the map is cleared on every full pass.
         let mut lineages: HashMap<u32, Arc<ProcessLineage>> = HashMap::new();
 
-        // A PKTAP status set by the startup wait wins over the lookup's own.
-        if let Ok(mut status) = process_detection_status.write()
-            && status.method != "pktap"
-        {
-            let method = process_lookup.get_detection_method().to_string();
-            let degradation = process_lookup.get_degradation_reason();
-
-            *status = if degradation != DegradationReason::None {
-                ProcessDetectionStatus::degraded(
-                    method,
-                    degradation.unavailable_feature().unwrap_or("enhanced"),
-                    degradation.description(),
-                )
-            } else {
-                ProcessDetectionStatus::with_method(method)
-            };
-        }
-
         info!(
             "Process enrichment thread started with detection method: {}",
             process_lookup.get_detection_method()
@@ -196,29 +207,13 @@ impl App {
         let mut last_refresh = Instant::now();
 
         loop {
-            if should_stop.load(Ordering::Relaxed) {
+            if shutdown.is_requested() {
                 info!("Process enrichment thread stopping");
                 break;
             }
 
-            // If PKTAP activates after the startup grace period, use its
-            // packet-provided identity for attribution. The replacement also
-            // keeps a low-frequency lsof scan for the host socket inventory.
-            #[cfg(target_os = "macos")]
-            if !using_pktap && pktap_active.load(Ordering::Relaxed) {
-                process_lookup = create_process_lookup(true)?;
-                if let Ok(mut snapshot) = socket_snapshot.write() {
-                    *snapshot = process_lookup.socket_snapshot();
-                }
-                using_pktap = true;
-                if let Ok(mut status) = process_detection_status.write() {
-                    *status = ProcessDetectionStatus::with_method("pktap");
-                }
-                info!("PKTAP became active, switched process enrichment from lsof to libproc");
-            }
-
             if last_refresh.elapsed() > Duration::from_secs(5) {
-                if let Err(e) = process_lookup.refresh() {
+                if let Err(e) = process_lookup.refresh_interruptible(shutdown.requested_flag()) {
                     debug!("Process lookup refresh failed: {}", e);
                 } else if let Ok(mut snapshot) = socket_snapshot.write() {
                     *snapshot = process_lookup.socket_snapshot();
@@ -378,14 +373,17 @@ impl App {
                 debug!("Enriched {} connections with process info", enriched);
             }
 
-            thread::sleep(tick);
+            if shutdown.wait_timeout(tick) {
+                info!("Process enrichment thread stopping");
+                break;
+            }
         }
 
         Ok(())
     }
 
     pub(super) fn start_geoip_enrichment_thread(
-        &self,
+        &mut self,
         tracker: Arc<ConnectionTracker>,
     ) -> Result<()> {
         let geoip_resolver = match &self.geoip_resolver {
@@ -393,12 +391,12 @@ impl App {
             None => return Ok(()), // No resolver available
         };
 
-        spawn_loop(
+        let handle = spawn_loop(
             "geoip-enrichment",
             "GeoIP enrichment thread started",
             "GeoIP enrichment thread stopping",
             Duration::from_millis(500),
-            Arc::clone(&self.should_stop),
+            self.runtime.shutdown_signal(),
             move || {
                 let mut enriched = 0;
                 for mut entry in tracker.connections().iter_mut() {
@@ -417,7 +415,8 @@ impl App {
                 }
             },
         )
-        .expect("Failed to spawn GeoIP enrichment thread");
+        .map_err(|error| anyhow::anyhow!("failed to spawn GeoIP enrichment worker: {error}"))?;
+        self.runtime.register(handle);
 
         Ok(())
     }
@@ -425,7 +424,9 @@ impl App {
 
 #[cfg(test)]
 mod process_enrichment_tests {
-    use super::process_enrichment_complete;
+    use super::{
+        activate_process_lookup, prepare_process_lookup_with, process_enrichment_complete,
+    };
     use crate::app::logging::process_lineage_json;
     use crate::network::types::UNKNOWN_PROCESS_NAME;
     use crate::network::types::{
@@ -434,6 +435,35 @@ mod process_enrichment_tests {
     };
     use serde_json::json;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    struct ThreadRecordingLookup {
+        calls: Arc<Mutex<Vec<thread::ThreadId>>>,
+        runtime_starts: Arc<Mutex<Vec<thread::ThreadId>>>,
+    }
+
+    impl rustnet_host::ProcessLookup for ThreadRecordingLookup {
+        fn start_runtime(&mut self) -> anyhow::Result<()> {
+            self.runtime_starts
+                .lock()
+                .unwrap()
+                .push(thread::current().id());
+            Ok(())
+        }
+
+        fn get_process_attribution(
+            &self,
+            _conn: &Connection,
+        ) -> Option<rustnet_host::ProcessAttribution> {
+            None
+        }
+
+        fn get_detection_method(&self) -> &str {
+            self.calls.lock().unwrap().push(thread::current().id());
+            "test"
+        }
+    }
 
     fn connection() -> Connection {
         Connection::new(
@@ -442,6 +472,39 @@ mod process_enrichment_tests {
             "1.1.1.1:443".parse().unwrap(),
             ProtocolState::Tcp(TcpState::Established),
         )
+    }
+
+    #[test]
+    fn prepared_lookup_starts_inline_after_the_sandbox_handoff() {
+        let caller = thread::current().id();
+        let construction_thread = Arc::new(Mutex::new(None));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runtime_starts = Arc::new(Mutex::new(Vec::new()));
+
+        let prepared = prepare_process_lookup_with(false, {
+            let construction_thread = Arc::clone(&construction_thread);
+            let calls = Arc::clone(&calls);
+            let runtime_starts = Arc::clone(&runtime_starts);
+            move |use_pktap| {
+                assert!(!use_pktap);
+                *construction_thread.lock().unwrap() = Some(thread::current().id());
+                Ok(Box::new(ThreadRecordingLookup {
+                    calls,
+                    runtime_starts,
+                }) as Box<dyn rustnet_host::ProcessLookup>)
+            }
+        })
+        .unwrap();
+
+        assert_eq!(*construction_thread.lock().unwrap(), Some(caller));
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(runtime_starts.lock().unwrap().is_empty());
+
+        let process_lookup = activate_process_lookup(prepared).unwrap();
+        process_lookup.get_detection_method();
+
+        assert_eq!(runtime_starts.lock().unwrap().as_slice(), &[caller]);
+        assert_eq!(calls.lock().unwrap().as_slice(), &[caller]);
     }
 
     #[test]

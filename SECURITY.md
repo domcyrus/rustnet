@@ -4,6 +4,12 @@
 
 RustNet processes untrusted network data, making defense-in-depth security critical. This document describes the security measures implemented.
 
+On Linux, macOS, and FreeBSD, a requested root UID/GID drop must succeed before
+packet-processing workers start, even in best-effort mode. A failed transition
+aborts startup instead of continuing as root or with a partially changed identity.
+Unavailable optional sandbox layers may still degrade gracefully. Explicit
+`--no-uid-drop` or `--no-sandbox` opt-outs retain their existing behavior.
+
 ## Table of Contents
 
 - [Landlock Sandboxing (Linux)](#landlock-sandboxing-linux)

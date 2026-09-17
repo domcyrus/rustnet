@@ -7,11 +7,21 @@
 mod capture;
 mod enrichment;
 mod logging;
+mod output;
+mod packet_queue;
 mod pcapng_export;
+mod runtime;
 mod sampling;
+#[cfg(test)]
+#[path = "../test_support/scratch_dir.rs"]
+mod scratch_dir;
 mod state;
 mod types;
+#[cfg(target_os = "windows")]
+mod windows_output;
 
+pub use output::{open_private_append_file, precreate_private_file};
+pub use runtime::{InitStatus, StopReport, WorkerStartupPermit};
 pub use state::App;
 pub(crate) use types::ConnectionCounts;
 pub use types::{AppOutputHandles, AppStats, Config};
@@ -19,8 +29,13 @@ pub use types::{AppOutputHandles, AppStats, Config};
 use std::time::Duration;
 
 /// Maximum queued packets before backpressure drops packets.
-/// At ~1500 bytes per packet, 10,000 packets ≈ 15 MB of buffer.
+/// At the capture snap length, 10,000 packets is about 15 MB of packet data.
 const MAX_PACKET_QUEUE: usize = 10_000;
+/// Maximum packets grouped into one capture-to-processor channel item.
+const PACKET_BATCH_SIZE: usize = 100;
+/// The channel stores batches, so derive its capacity from the packet limit.
+const PACKET_BATCH_QUEUE_CAPACITY: usize = MAX_PACKET_QUEUE / PACKET_BATCH_SIZE;
+const _: () = assert!(MAX_PACKET_QUEUE.is_multiple_of(PACKET_BATCH_SIZE));
 const MAX_PCAPNG_QUEUE: usize = 10_000;
 const MAX_PCAPNG_RETRY_RECORDS: usize = 10_000;
 const MAX_PCAPNG_RETRY_BYTES: usize = 64 * 1024 * 1024;

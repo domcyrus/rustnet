@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use std::fs::File;
 use std::io::Write;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use crate::network::dns::DnsResolver;
@@ -48,6 +48,7 @@ pub(super) struct JsonLineWriter {
     file: Mutex<File>,
     path: String,
     failure_reported: AtomicBool,
+    failed_writes: AtomicU64,
 }
 
 impl JsonLineWriter {
@@ -56,10 +57,11 @@ impl JsonLineWriter {
             file: Mutex::new(file),
             path,
             failure_reported: AtomicBool::new(false),
+            failed_writes: AtomicU64::new(0),
         }
     }
 
-    pub(super) fn write(&self, value: &serde_json::Value) {
+    pub(super) fn write(&self, value: &serde_json::Value) -> bool {
         let result = serde_json::to_string(value)
             .map_err(std::io::Error::other)
             .and_then(|json| {
@@ -70,14 +72,23 @@ impl JsonLineWriter {
                 writeln!(file, "{json}")
             });
 
-        if let Err(e) = result
-            && !self.failure_reported.swap(true, Ordering::Relaxed)
-        {
-            warn!(
-                "Failed to write JSONL output '{}': {}. Further write errors will be suppressed.",
-                self.path, e
-            );
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                self.failed_writes.fetch_add(1, Ordering::Relaxed);
+                if !self.failure_reported.swap(true, Ordering::Relaxed) {
+                    warn!(
+                        "Failed to write JSONL output '{}': {}. Further write errors will be suppressed.",
+                        self.path, e
+                    );
+                }
+                false
+            }
         }
+    }
+
+    pub(super) fn failed_writes(&self) -> u64 {
+        self.failed_writes.load(Ordering::Relaxed)
     }
 }
 
@@ -227,7 +238,7 @@ pub(super) fn log_connection_event(
     conn: &Connection,
     duration_secs: Option<u64>,
     dns_resolver: Option<&DnsResolver>,
-) {
+) -> bool {
     let mut event = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "event": event_type,
@@ -294,11 +305,11 @@ pub(super) fn log_connection_event(
         }
     }
 
-    writer.write(&event);
+    writer.write(&event)
 }
 
 /// Log a connection to the PCAP sidecar (JSONL).
-pub(super) fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
+pub(super) fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) -> bool {
     let mut event = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "protocol": conn.protocol.to_string(),
@@ -327,7 +338,7 @@ pub(super) fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
         add_geoip_fields(&mut event, geoip);
     }
 
-    writer.write(&event);
+    writer.write(&event)
 }
 
 /// Domain reported for a connection: DNS query name, or the hostname from
@@ -336,5 +347,21 @@ pub(super) fn dpi_domain(application: &ApplicationProtocol) -> Option<&str> {
     match application {
         ApplicationProtocol::Dns(info) => info.query_name.as_deref(),
         _ => application.hostname(),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_counts_each_failed_write() {
+        let directory = std::env::temp_dir();
+        let file = File::open(&directory).unwrap();
+        let writer = JsonLineWriter::new(file, directory.display().to_string());
+
+        assert!(!writer.write(&json!({"record": 1})));
+        assert!(!writer.write(&json!({"record": 2})));
+        assert_eq!(writer.failed_writes(), 2);
     }
 }

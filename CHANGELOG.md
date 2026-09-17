@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Reusable Connection Filters**: the complete filter language now lives in
+  `rustnet-core`, with the existing TUI path retained as a compatibility
+  re-export for future headless frontends
 - **Inline Connection Health**: connection rows now show compact TCP
   retransmit/out-of-order, QUIC Retry/version, and transactional UDP
   retry/timeout badges, with a severity-first Health sort. The Details
@@ -23,6 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Packet Processing**: consolidate tracker lookups, reuse parsed-packet buffers,
+  and group up to 16 already queued batches per ordered update without waiting
+  to fill the group. A sole processor parses and updates each packet immediately,
+  without staging DPI allocations. Parallel workers keep packet cleanup outside
+  the ordered commit and skip notifications without waiters.
+  The queue remains bounded at 10,000 packets,
+  plus up to 1,600 in-flight packets per worker (6,400 across at most four workers).
+  A full queue uses a 5 ms send timeout. Linux, macOS, FreeBSD, and Windows capture
+  share bounded idle-wait and fallback handling, using Unix descriptor readiness
+  or Npcap events where supported to wake promptly for new traffic.
+  Overload can still cause queue or capture-backend loss
+- **Runtime Lifecycle Foundation**: privileged capture and process attribution
+  are prepared synchronously before sandboxing, while all long-lived workers
+  start through a typed post-sandbox handoff and stop under one owned,
+  bounded supervisor
 - **Staleness Cue**: idle connection rows now show a stripe at their left
   edge and a removal countdown in the bandwidth column from halfway through
   their timeout (previously 75%), both running yellow to red as cleanup
@@ -58,6 +76,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Required UID Drop**: abort startup before packet-processing workers when a
+  requested root UID/GID drop fails, including in best-effort mode
+- **Windows Connection History**: connections that reuse a tuple with the
+  same capture timestamp keep distinct history entries
+- **Idle Capture Shutdown**: nonblocking capture reads and bounded idle
+  polling let worker shutdown finish even after packet traffic stops
+- **Windows Address Discovery**: collect IPv4, IPv6, and subnet broadcasts
+  through IP Helper without loading the Npcap capture driver
+- **Loss and Export Accounting**: queue backpressure drops are reported
+  separately from libpcap and interface drops, partial batches drain during
+  shutdown, and classic PCAP output remains bound to its securely pre-opened
+  file descriptor
 - **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now
   show as SYN received instead of an unknown state
 
