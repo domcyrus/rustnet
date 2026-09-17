@@ -22,7 +22,7 @@ pub(super) struct ConnKey {
 }
 
 /// Raw process identity matching `socket_tracker_types.h`.
-#[repr(C)]
+#[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ConnInfo {
     pub tgid: u32,

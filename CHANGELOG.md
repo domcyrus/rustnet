@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **32-bit eBPF Map ABI**: explicitly align the shared C and Rust `ConnInfo`
+  structures to 8 bytes, fixing compilation on i586 (#611)
 - **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now
   show as SYN received instead of an unknown state
 
