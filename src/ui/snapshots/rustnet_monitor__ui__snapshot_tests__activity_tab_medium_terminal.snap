@@ -1,0 +1,36 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                      ● eth0
+─────────────────────────────────────━━━━━━━━━━───────────────────────────────────────────────────────────────
+▎ Egress (TX) ────────────────────────────────────────   ▎ Ingress (RX) ──────────────────────────────────────
+2.88 MB/s  now                                           1.70 MB/s  now                                       
+                                                                                                              
+Captured · 60s                                 5.85 MB   Captured · 60s                                3.67 MB
+Retained                                       5.85 MB   Retained                                      3.67 MB
+Coverage · 60s                                   73.1%   Coverage · 60s                                  91.8%
+Attributed                                      100.0%   Attributed                                     100.0%
+                                                                                                              
+▎ Processes · Egress (TX)  Retained TX ↓ ─────────────────────────────────────────────────────────────────────
+Process              Share                 TX now    60s %    Retained     Conns   Remote Top remote peer     
+                                                                                                              
+firefox (2001)       ░░░░▒▒▒▓▓▓▓██▏··   2.38 MB/s    81.7%     4.78 MB       1/1        1 140.82.121.4:443    
+                                                                                                              
+sshd (1500)          ██▉············· 488.28 KB/s    17.7%     1.04 MB       1/1        1 10.0.0.5:51022      
+                                                                                                              
+systemd-resolved (8… ▏···············  15.62 KB/s     0.5%    32.42 KB       1/1        1 1.1.1.1:53          
+                                                                                                              
+curl (9876)          ················           -     0.0%         0 B       1/1        1 151.101.1.195:443   
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+ d tx/rx  s sort  S order  esc back                                                            h help  q quit

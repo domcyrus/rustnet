@@ -391,7 +391,7 @@ pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UiState) ->
         let style = if active {
             theme::bold_underline_fg(theme::accent())
         } else {
-            theme::fg(theme::heading())
+            theme::bold_fg(theme::heading())
         };
 
         if col.id == ColumnId::Bandwidth {

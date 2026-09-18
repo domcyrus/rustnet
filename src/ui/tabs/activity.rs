@@ -1,18 +1,18 @@
-//! Activity tab: retained process traffic, glowing traffic-share bars,
+//! Activity tab: retained process traffic, directional traffic-share bars,
 //! and attribution coverage.
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Table},
 };
 
 use crate::app::App;
-use crate::network::process_activity::{ProcessActivity, ProcessActivitySnapshot, ProcessIdentity};
+use crate::network::process_activity::{ProcessActivity, ProcessActivitySnapshot};
 use crate::ui::{
     ActivityDirection, ActivitySort, ClickableRegions, Component, ComponentContext, Effect,
     HandlerContext, UiState, draw_placeholder,
@@ -98,208 +98,211 @@ pub(in crate::ui) fn draw_activity(
     let snapshot = app.get_process_activity_snapshot();
     let basis = interface_basis(app);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .spacing(1)
-        .constraints([
+    // Keep capture quality separate from process ranking on wide terminals;
+    // narrow terminals fold the essentials into the traffic summaries.
+    let sidebar = area.width >= 140 && area.height >= 22;
+    let columns = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(if sidebar { 38 } else { 0 }),
+    ])
+    .spacing(if sidebar { 3 } else { 0 })
+    .split(area);
+    let main = Layout::vertical([
+        Constraint::Length(if sidebar { 6 } else { 7 }),
+        Constraint::Min(5),
+    ])
+    .spacing(1)
+    .split(columns[0]);
+    let summary = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .spacing(3)
+        .split(main[0]);
+    draw_direction_pulse(
+        f,
+        &snapshot,
+        &basis,
+        ActivityDirection::Egress,
+        sidebar,
+        summary[0],
+    );
+    draw_direction_pulse(
+        f,
+        &snapshot,
+        &basis,
+        ActivityDirection::Ingress,
+        sidebar,
+        summary[1],
+    );
+    draw_process_table(f, &snapshot, &basis, ui_state, main[1]);
+    if sidebar {
+        let panels = Layout::vertical([
             Constraint::Length(9),
-            Constraint::Min(8),
-            Constraint::Length(9),
+            Constraint::Length(7),
+            Constraint::Min(4),
         ])
-        .split(area);
-
-    draw_traffic_pulse(f, &snapshot, &basis, chunks[0]);
-    draw_process_table(f, &snapshot, &basis, ui_state, chunks[1]);
-
-    let bottom = Layout::default()
-        .direction(Direction::Horizontal)
-        .spacing(2)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(chunks[2]);
-    draw_traffic_share(f, &snapshot, ui_state.activity_direction, bottom[0]);
-    draw_interface_pulse(f, app, ui_state.activity_direction, bottom[1]);
-
+        .spacing(1)
+        .split(columns[1]);
+        draw_coverage(f, &snapshot, &basis, panels[0]);
+        draw_attribution(f, &snapshot, panels[1]);
+        draw_interface_pulse(f, app, ui_state.activity_direction, panels[2]);
+    }
     Ok(())
 }
 
-/// The "now / 60s captured" summary line and the coverage bar for one
-/// direction. The TX and RX rows differ only in labels, colors, and
-/// which counters they read, so both come from here.
-fn pulse_lines(
+fn metric_line(label: &str, value: String, style: Style, width: u16) -> Line<'static> {
+    let value_width = Span::raw(&value).width();
+    let label_width = usize::from(width).saturating_sub(value_width + 1);
+    let label = truncate_with_ellipsis(label, label_width);
+    let gap = usize::from(width).saturating_sub(Span::raw(&label).width() + value_width);
+    Line::from(vec![
+        Span::styled(label, theme::fg(theme::muted())),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(value, style),
+    ])
+}
+
+fn draw_direction_pulse(
+    f: &mut Frame,
     snapshot: &ProcessActivitySnapshot,
     basis: &InterfaceBasis,
     direction: ActivityDirection,
-    bar_width: usize,
-) -> [Line<'static>; 2] {
-    let fraction = coverage_fraction(
-        snapshot_window_bytes(snapshot, direction),
-        interface_window_bytes(basis, direction),
+    sidebar: bool,
+    area: Rect,
+) {
+    let inner = section_header(
+        f,
+        area,
+        section_title(format!(" {}", direction.display_name_with_rate())),
     );
-    let basis_marker = if basis.exact { "" } else { "~" };
-    let label = direction.rate_label();
-
-    let summary = Line::from(vec![
-        Span::styled(format!("{label} now "), theme::fg(theme::muted())),
-        Span::styled(
-            format_rate(snapshot_current_bps(snapshot, direction)),
-            theme::bold_fg(direction_ramp(direction)(1.0)),
-        ),
-        Span::styled("   60s captured ", theme::fg(theme::muted())),
-        Span::styled(
-            format_bytes(snapshot_window_bytes(snapshot, direction)),
-            theme::bold_fg(direction_color(direction)),
-        ),
-        Span::styled(" / ", theme::fg(theme::muted())),
-        Span::styled(
-            format!(
-                "{} {}",
-                basis.label,
-                format_bytes(interface_window_bytes(basis, direction))
+    let color = direction_color(direction);
+    let captured = snapshot_window_bytes(snapshot, direction);
+    let retained = direction.pick(snapshot.retained_tx_bytes, snapshot.retained_rx_bytes);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format_rate(snapshot_current_bps(snapshot, direction)),
+                theme::bold_fg(color),
             ),
-            theme::fg(theme::accent()),
+            Span::styled("  now", theme::fg(theme::muted())),
+        ]),
+        Line::default(),
+        metric_line(
+            "Captured · 60s",
+            format_bytes(captured),
+            theme::fg(theme::text()),
+            inner.width,
         ),
-        Span::styled(
-            coverage_label(fraction, basis_marker),
-            theme::fg(if fraction.is_some_and(|fraction| fraction > 1.05) {
-                theme::warn()
-            } else {
-                theme::muted()
-            }),
+        metric_line(
+            "Retained",
+            format_bytes(retained),
+            theme::fg(theme::text()),
+            inner.width,
         ),
-    ]);
-
-    let mut spans = vec![Span::styled(
-        format!("{label} 60s coverage "),
-        theme::fg(theme::muted()),
-    )];
-    spans.extend(glow_bar::spans(
-        fraction.unwrap_or_default(),
-        bar_width,
-        direction_ramp(direction),
-    ));
-
-    [summary, Line::from(spans)]
+    ];
+    if !sidebar {
+        let coverage = coverage_text(
+            coverage_fraction(captured, interface_window_bytes(basis, direction)),
+            basis.exact,
+        );
+        lines.push(metric_line(
+            "Coverage · 60s",
+            coverage,
+            theme::fg(color),
+            inner.width,
+        ));
+        let percentage =
+            direction.pick(snapshot.tx_attribution_pct(), snapshot.rx_attribution_pct());
+        lines.push(metric_line(
+            "Attributed",
+            format!("{percentage:.1}%"),
+            attribution_style(percentage),
+            inner.width,
+        ));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_traffic_pulse(
+fn coverage_text(fraction: Option<f64>, exact: bool) -> String {
+    fraction.map_or_else(
+        || "n/a".to_string(),
+        |f| format!("{}{:.1}%", if exact { "" } else { "~" }, f * 100.0),
+    )
+}
+
+fn draw_coverage(
     f: &mut Frame,
     snapshot: &ProcessActivitySnapshot,
     basis: &InterfaceBasis,
     area: Rect,
 ) {
-    let inner = section_header(f, area, section_title(" Traffic Pulse"));
-    if inner.height == 0 {
-        return;
-    }
-
-    let unknown_tx = snapshot
-        .retained_tx_bytes
-        .saturating_sub(snapshot.attributed_tx_bytes);
-    let unknown_rx = snapshot
-        .retained_rx_bytes
-        .saturating_sub(snapshot.attributed_rx_bytes);
-
-    let bar_width = inner.width.saturating_sub(20) as usize;
-    let [tx_line, tx_bar] = pulse_lines(snapshot, basis, ActivityDirection::Egress, bar_width);
-    let [rx_line, rx_bar] = pulse_lines(snapshot, basis, ActivityDirection::Ingress, bar_width);
-
-    f.render_widget(
-        Paragraph::new(tx_line),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
-
-    if inner.height > 1 {
-        f.render_widget(
-            Paragraph::new(tx_bar),
-            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    let inner = section_header(f, area, section_title(" Capture coverage · 60s"));
+    let mut lines = Vec::new();
+    for direction in [ActivityDirection::Egress, ActivityDirection::Ingress] {
+        let color = direction_color(direction);
+        let fraction = coverage_fraction(
+            snapshot_window_bytes(snapshot, direction),
+            interface_window_bytes(basis, direction),
         );
+        lines.push(metric_line(
+            direction.rate_label(),
+            coverage_text(fraction, basis.exact),
+            theme::fg(color),
+            inner.width,
+        ));
+        lines.push(Line::from(glow_bar::themed_spans(
+            fraction.unwrap_or_default(),
+            usize::from(inner.width),
+            color,
+        )));
+        lines.push(Line::default());
     }
+    lines.push(metric_line(
+        &format!("{} TX", basis.label),
+        format_bytes(basis.tx_window_bytes),
+        theme::fg(theme::muted()),
+        inner.width,
+    ));
+    lines.push(metric_line(
+        &format!("{} RX", basis.label),
+        format_bytes(basis.rx_window_bytes),
+        theme::fg(theme::muted()),
+        inner.width,
+    ));
+    f.render_widget(Paragraph::new(lines), inner);
+}
 
-    if inner.height > 2 {
-        f.render_widget(
-            Paragraph::new(rx_line),
-            Rect::new(inner.x, inner.y + 2, inner.width, 1),
+fn draw_attribution(f: &mut Frame, snapshot: &ProcessActivitySnapshot, area: Rect) {
+    let inner = section_header(f, area, section_title(" Process attribution"));
+    let mut lines = Vec::new();
+    for direction in [ActivityDirection::Egress, ActivityDirection::Ingress] {
+        let percentage =
+            direction.pick(snapshot.tx_attribution_pct(), snapshot.rx_attribution_pct());
+        let unknown = direction.pick(
+            snapshot
+                .retained_tx_bytes
+                .saturating_sub(snapshot.attributed_tx_bytes),
+            snapshot
+                .retained_rx_bytes
+                .saturating_sub(snapshot.attributed_rx_bytes),
         );
+        lines.push(metric_line(
+            direction.rate_label(),
+            format!("{percentage:.1}% mapped"),
+            attribution_style(percentage),
+            inner.width,
+        ));
+        lines.push(metric_line(
+            "Unknown",
+            format_bytes(unknown),
+            unknown_style(unknown),
+            inner.width,
+        ));
+        lines.push(Line::default());
     }
-
-    if inner.height > 3 {
-        f.render_widget(
-            Paragraph::new(rx_bar),
-            Rect::new(inner.x, inner.y + 3, inner.width, 1),
-        );
-    }
-
-    if inner.height > 4 {
-        let retained = Line::from(vec![
-            Span::styled("retained TX ", theme::fg(theme::muted())),
-            Span::styled(
-                format_bytes(snapshot.retained_tx_bytes),
-                theme::bold_fg(theme::tx()),
-            ),
-            Span::styled("   RX ", theme::fg(theme::muted())),
-            Span::styled(
-                format_bytes(snapshot.retained_rx_bytes),
-                theme::bold_fg(theme::rx()),
-            ),
-        ]);
-        f.render_widget(
-            Paragraph::new(retained),
-            Rect::new(inner.x, inner.y + 4, inner.width, 1),
-        );
-    }
-
-    if inner.height > 5 {
-        let attribution = Line::from(vec![
-            Span::styled("process attribution TX ", theme::fg(theme::muted())),
-            Span::styled(
-                format!("{:.1}%", snapshot.tx_attribution_pct()),
-                attribution_style(snapshot.tx_attribution_pct()),
-            ),
-            Span::styled(
-                format!("  unknown {}", format_bytes(unknown_tx)),
-                unknown_style(unknown_tx),
-            ),
-            Span::styled("   RX ", theme::fg(theme::muted())),
-            Span::styled(
-                format!("{:.1}%", snapshot.rx_attribution_pct()),
-                attribution_style(snapshot.rx_attribution_pct()),
-            ),
-            Span::styled(
-                format!("  unknown {}", format_bytes(unknown_rx)),
-                unknown_style(unknown_rx),
-            ),
-        ]);
-        f.render_widget(
-            Paragraph::new(attribution),
-            Rect::new(inner.x, inner.y + 5, inner.width, 1),
-        );
-    }
-
-    if inner.height > 6 {
-        let legend = Line::from(vec![
-            Span::styled("60s coverage", theme::fg(theme::accent())),
-            Span::styled(" = captured ÷ interface  |  ", theme::fg(theme::muted())),
-            Span::styled("Retained", theme::fg(theme::accent())),
-            Span::styled(" = active + recent closed  |  ", theme::fg(theme::muted())),
-            Span::styled("Attribution", theme::fg(theme::accent())),
-            Span::styled(" = mapped to PID/name", theme::fg(theme::muted())),
-        ]);
-        f.render_widget(
-            Paragraph::new(legend),
-            Rect::new(inner.x, inner.y + 6, inner.width, 1),
-        );
-    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn coverage_fraction(captured_bytes: u64, interface_bytes: u64) -> Option<f64> {
     (interface_bytes > 0).then(|| (captured_bytes as f64 / interface_bytes as f64).min(1.0))
-}
-
-fn coverage_label(fraction: Option<f64>, basis_marker: &str) -> String {
-    fraction.map_or_else(
-        || "   coverage n/a".to_string(),
-        |fraction| format!("   {basis_marker}{:.1}% observed", fraction * 100.0),
-    )
 }
 
 fn attribution_style(percentage: f64) -> Style {
@@ -316,10 +319,6 @@ fn unknown_style(bytes: u64) -> Style {
     } else {
         theme::muted()
     })
-}
-
-fn direction_ramp(direction: ActivityDirection) -> fn(f64) -> Color {
-    direction.pick(theme::tx_wave, theme::rx_wave)
 }
 
 fn direction_color(direction: ActivityDirection) -> Color {
@@ -430,7 +429,7 @@ fn draw_process_table(
         area,
         Line::from(vec![
             section_title(format!(
-                " Top Processes: {}",
+                " Processes · {}",
                 traffic_direction.display_name_with_rate()
             )),
             Span::styled(
@@ -456,12 +455,21 @@ fn draw_process_table(
     );
     let visible = inner
         .height
-        .saturating_sub(1)
+        .saturating_sub(2)
+        .div_euclid(2)
         .min(MAX_VISIBLE_PROCESSES as u16) as usize;
-    let wide = inner.width >= 132;
-    let medium = inner.width >= 90;
-    let pulse_width = if wide { 14 } else { 10 };
-    let name_width = if wide { 24 } else { 20 };
+    let wide = inner.width >= 148;
+    let medium = inner.width >= 105;
+    let pulse_width = if wide {
+        14
+    } else {
+        usize::from(inner.width).saturating_sub(94).clamp(10, 22)
+    };
+    let name_width = if wide {
+        24
+    } else {
+        usize::from(inner.width / 4).clamp(8, 20)
+    };
 
     let rows: Vec<Row> = processes
         .into_iter()
@@ -473,26 +481,43 @@ fn draw_process_table(
                 retained_share(&process, traffic_direction) / 100.0
             };
             let name = truncate_with_ellipsis(&process.identity.display_name(), name_width);
-            let name_cell = match process_tint(&process.identity) {
-                Some(style) => Cell::from(name).style(style),
-                None => Cell::from(name),
-            };
+            let name_cell = Cell::from(if medium {
+                vec![Line::from(name)]
+            } else {
+                vec![
+                    Line::from(name),
+                    Line::from(glow_bar::themed_spans(
+                        pulse_fraction,
+                        name_width.min(14),
+                        if process.identity.attributed {
+                            direction_color(traffic_direction)
+                        } else {
+                            theme::warn()
+                        },
+                    )),
+                ]
+            })
+            .style(if process.identity.attributed {
+                theme::bold_fg(theme::text())
+            } else {
+                theme::bold_fg(theme::warn())
+            });
             let mut cells = vec![name_cell];
             if medium {
-                cells.push(Cell::from(Line::from(glow_bar::spans(
+                cells.push(Cell::from(Line::from(glow_bar::themed_spans(
                     pulse_fraction,
                     pulse_width,
                     if process.identity.attributed {
-                        direction_ramp(traffic_direction)
+                        direction_color(traffic_direction)
                     } else {
-                        theme::warn_wave
+                        theme::warn()
                     },
                 ))));
             }
-            cells.push(right_cell(format_rate(current_rate(
-                &process,
-                traffic_direction,
-            ))));
+            cells.push(
+                right_cell(format_rate(current_rate(&process, traffic_direction)))
+                    .style(theme::bold_fg(direction_color(traffic_direction))),
+            );
             if wide {
                 cells.push(right_cell(format_rate(peak_rate(
                     &process,
@@ -550,14 +575,17 @@ fn draw_process_table(
             } else {
                 theme::fg(theme::warn())
             };
-            Row::new(cells).style(style)
+            Row::new(cells)
+                .style(style)
+                .height(if medium { 1 } else { 2 })
+                .bottom_margin(u16::from(medium))
         })
         .collect();
 
     let mut headers = vec![Cell::from("Process")];
     let mut constraints = vec![Constraint::Length(name_width as u16)];
     if medium {
-        headers.push(Cell::from("Pulse"));
+        headers.push(Cell::from("Share"));
         constraints.push(Constraint::Length(pulse_width as u16));
     }
     headers.push(right_cell(format!(
@@ -591,11 +619,14 @@ fn draw_process_table(
         headers.push(right_cell("Remote".to_string()));
         headers.push(Cell::from("Top remote peer"));
         constraints.push(Constraint::Length(8));
-        constraints.push(Constraint::Min(12));
+        constraints.push(Constraint::Min(20));
     }
 
-    let table =
-        Table::new(rows, constraints).header(Row::new(headers).style(theme::fg(theme::heading())));
+    let table = Table::new(rows, constraints).header(
+        Row::new(headers)
+            .style(theme::bold_fg(theme::heading()))
+            .bottom_margin(1),
+    );
     f.render_widget(table, inner);
 }
 
@@ -603,80 +634,11 @@ fn right_cell(value: String) -> Cell<'static> {
     Cell::from(Line::from(value).right_aligned())
 }
 
-/// Stable per-process tint for a process name, so the same process keeps
-/// the same hue wherever it appears. `None` keeps the caller's own style:
-/// the theme withholds a tint on NO_COLOR, non-truecolor terminals, and
-/// the vivid preset, and unattributed rows keep their warning color so
-/// the "could not be mapped" cue is never painted over.
-fn process_tint(identity: &ProcessIdentity) -> Option<Style> {
-    identity
-        .attributed
-        .then(|| theme::identity_color(&identity.name))
-        .flatten()
-        .map(theme::fg)
-}
-
-fn draw_traffic_share(
-    f: &mut Frame,
-    snapshot: &ProcessActivitySnapshot,
-    direction: ActivityDirection,
-    area: Rect,
-) {
-    let inner = section_header(
-        f,
-        area,
-        section_title(format!(
-            " {} Share (60s)",
-            direction.display_name_with_rate()
-        )),
-    );
-    if snapshot.processes.is_empty() {
-        draw_placeholder(f, inner, "Waiting for traffic...");
-        return;
-    }
-
-    let mut processes = snapshot.processes.clone();
-    processes.sort_by(|a, b| {
-        window_bytes(b, direction)
-            .cmp(&window_bytes(a, direction))
-            .then_with(|| retained_bytes(b, direction).cmp(&retained_bytes(a, direction)))
-    });
-    let name_width = (inner.width as usize / 4).clamp(10, 18);
-    let bar_width = (inner.width as usize).saturating_sub(name_width + 9).max(1);
-    let lines: Vec<Line> = processes
-        .into_iter()
-        .take(inner.height as usize)
-        .map(|process| {
-            let name = truncate_with_ellipsis(&process.identity.display_name(), name_width);
-            let mut spans = vec![Span::styled(
-                format!("{name:<name_width$} "),
-                process_tint(&process.identity)
-                    .unwrap_or_else(|| theme::fg(theme::field_process())),
-            )];
-            spans.extend(glow_bar::spans(
-                window_share(&process, direction) / 100.0,
-                bar_width,
-                if process.identity.attributed {
-                    direction_ramp(direction)
-                } else {
-                    theme::warn_wave
-                },
-            ));
-            spans.push(Span::styled(
-                format!(" {:>5.1}%", window_share(&process, direction)),
-                theme::fg(direction_color(direction)),
-            ));
-            Line::from(spans)
-        })
-        .collect();
-    f.render_widget(Paragraph::new(lines), inner);
-}
-
 fn draw_interface_pulse(f: &mut Frame, app: &App, direction: ActivityDirection, area: Rect) {
     let inner = section_header(
         f,
         area,
-        section_title(format!(" Interface Pulse: {}", direction.rate_label())),
+        section_title(format!(" Interfaces · {}", direction.rate_label())),
     );
     let rates = app.get_interface_rates();
     if rates.is_empty() {
@@ -713,12 +675,12 @@ fn draw_interface_pulse(f: &mut Frame, app: &App, direction: ActivityDirection, 
                     "{:<name_width$} ",
                     truncate_with_ellipsis(&name, name_width)
                 ),
-                theme::fg(theme::field_local_addr()),
+                theme::fg(theme::text()),
             )];
-            spans.extend(glow_bar::spans(
+            spans.extend(glow_bar::themed_spans(
                 selected_rate as f64 / peak as f64,
                 bar_width,
-                direction_ramp(direction),
+                direction_color(direction),
             ));
             spans.push(Span::styled(
                 format!(
@@ -809,11 +771,8 @@ mod tests {
     #[test]
     fn coverage_requires_interface_window_data() {
         assert_eq!(coverage_fraction(100, 0), None);
-        assert_eq!(coverage_label(None, ""), "   coverage n/a");
         assert_eq!(coverage_fraction(50, 100), Some(0.5));
-        assert_eq!(coverage_label(Some(0.5), "~"), "   ~50.0% observed");
         assert_eq!(coverage_fraction(120, 100), Some(1.0));
-        assert_eq!(coverage_label(Some(1.0), "~"), "   ~100.0% observed");
     }
 
     #[test]
@@ -823,31 +782,11 @@ mod tests {
     }
 
     #[test]
-    fn unattributed_processes_keep_their_warning_style() {
-        let mut identity = ProcessIdentity {
-            pid: Some(42),
-            name: "firefox".to_string(),
-            attributed: false,
-        };
-        assert_eq!(process_tint(&identity), None);
-        // Attributed names only get a tint where the theme offers one, so
-        // the tint must equal the theme's answer for the same name.
-        identity.attributed = true;
-        assert_eq!(
-            process_tint(&identity),
-            theme::identity_color("firefox").map(theme::fg)
-        );
-    }
-
-    #[test]
-    fn direction_bars_match_graph_wave_colors() {
-        assert_eq!(
-            direction_ramp(ActivityDirection::Egress)(0.75),
-            theme::tx_wave(0.75)
-        );
-        assert_eq!(
-            direction_ramp(ActivityDirection::Ingress)(0.75),
-            theme::rx_wave(0.75)
-        );
+    fn directional_bar_tips_preserve_the_theme_token() {
+        for direction in [ActivityDirection::Egress, ActivityDirection::Ingress] {
+            let color = direction_color(direction);
+            let spans = glow_bar::themed_spans(0.625, 4, color);
+            assert_eq!(spans[2].style, theme::fg(color));
+        }
     }
 }

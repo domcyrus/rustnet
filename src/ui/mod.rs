@@ -165,6 +165,14 @@ pub(crate) fn section_header<'a, T: Into<Line<'a>>>(
     let mut line: Line = title.into();
     line.spans
         .insert(0, Span::styled("▎", theme::fg(theme::accent())));
+    // A quiet rule links each title to its panel without boxing in the data.
+    let remaining = usize::from(area.width).saturating_sub(line.width() + 1);
+    if remaining > 0 {
+        line.spans.push(Span::styled(
+            format!(" {}", "─".repeat(remaining)),
+            theme::fg(theme::faint()),
+        ));
+    }
     f.render_widget(
         Paragraph::new(line),
         Rect::new(area.x, area.y, area.width, 1),
@@ -177,10 +185,9 @@ pub(crate) fn section_header<'a, T: Into<Line<'a>>>(
     )
 }
 
-/// Bold default-foreground title span for [`section_header`].
+/// Theme-aware bold heading span for [`section_header`].
 pub(crate) fn section_title(text: impl Into<String>) -> ratatui::text::Span<'static> {
-    use ratatui::style::{Modifier, Style};
-    ratatui::text::Span::styled(text.into(), Style::default().add_modifier(Modifier::BOLD))
+    ratatui::text::Span::styled(text.into(), theme::bold_fg(theme::heading()))
 }
 
 /// Muted empty-state text filling a section that has nothing to show yet.
@@ -2430,6 +2437,75 @@ mod snapshot_tests {
     fn activity_tab_process_ingress() {
         let app = seeded_activity_app();
         insta::assert_snapshot!(render_activity(&app, ActivityDirection::Ingress));
+    }
+
+    #[test]
+    fn activity_tab_compact_terminal() {
+        let app = seeded_activity_app();
+        let ui_state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        let output = render_app(&app, &ui_state, &app.get_connections(), None, 80, 24);
+        assert!(output.contains("firefox (2001)"));
+        assert!(output.contains("Coverage"));
+        assert!(!output.contains("Share (60s)"));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn activity_tab_medium_terminal() {
+        let app = seeded_activity_app();
+        let ui_state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        let output = render_app(&app, &ui_state, &app.get_connections(), None, 110, 32);
+        assert!(output.contains("Top remote peer"));
+        assert!(output.contains("firefox (2001)"));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn activity_tab_empty_terminal() {
+        let app = test_app();
+        let ui_state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        let output = render_app(&app, &ui_state, &[], None, 80, 24);
+        assert!(output.contains("n/a"));
+        assert!(output.contains("Waiting for process traffic"));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn narrow_tabs_keep_all_five_shortcuts_visible_and_clickable() {
+        for width in [24, 40, 50, 60] {
+            let mut regions = ClickableRegions::default();
+            let ui_state = UiState {
+                selected_tab: 4,
+                ..Default::default()
+            };
+            let output = render(width, 2, |f| {
+                draw_tabs(
+                    f,
+                    &ui_state,
+                    &CaptureCluster::default(),
+                    f.area(),
+                    &mut regions,
+                )
+            });
+            assert!(
+                output.lines().next().unwrap().contains('5'),
+                "width {width}"
+            );
+            assert!(
+                (0..width)
+                    .any(|x| matches!(regions.hit_test(x, 0), Some(ClickAction::SwitchTab(4)))),
+                "width {width}"
+            );
+        }
     }
 
     #[test]

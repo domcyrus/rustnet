@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
+  process ranking, and a separate capture-quality sidebar on wide terminals.
+  Share bars use theme-derived gradients with textured ANSI fallbacks.
+  The default keeps TX blue / RX green; other themes retain their own traffic
+  tokens. Shared section rules and table headings improve hierarchy throughout
+  the TUI, with responsive navigation and NO_COLOR support.
 - **Staleness Cue**: idle connection rows now show a stripe at their left
   edge and a removal countdown in the bandwidth column from halfway through
   their timeout (previously 75%), both running yellow to red as cleanup

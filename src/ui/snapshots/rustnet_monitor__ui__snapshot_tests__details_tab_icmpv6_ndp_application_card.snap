@@ -10,7 +10,7 @@ expression: output
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-▎ ? → [fe80::2]:0 [ICMP_OTHER] · click a field to copy                                                                                      
+▎ ? → [fe80::2]:0 [ICMP_OTHER] · click a field to copy ─────────────────────────────────────────────────────────────────────────────────────
 Connection                                                            Application: ICMPv6                                                  ▐
 Protocol              ICMP                                            Message               Neighbor Advertisement                         ▐
 Status                Active (last seen <T> ago)                       Echo ID               -                                              ▐
@@ -34,7 +34,7 @@ City                  -
 ASN                   -                                                                                                                     
                                                                                                                                             
                                                                                                                                             
-▎ Traffic Statistics                                                                                                                        
+▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
