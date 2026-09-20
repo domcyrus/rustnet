@@ -16,8 +16,8 @@ Waiting for traffic data...                             Waiting for connection d
                                                                                 
                                                                                 
 ▎ Observed Network Health   ▎ TCP Counters ───────────  ▎ Observed TCP States ──
-Waiting for health data...    Retransmits         0          ESTAB ███████    2 
-                              Out of Order        0      TIME_WAIT ███    1     
+Waiting for health data...    Retransmits         0          ESTAB ░░▒▒▓▓█    2 
+                              Out of Order        0      TIME_WAIT ░▒▓▌···    1 
                               Fast Retrans        0                             
                                                                                 
                                                                                 

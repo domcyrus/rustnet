@@ -9,7 +9,6 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::export::pcapng::{self, PcapngWriter};
@@ -52,7 +51,7 @@ impl App {
             warn!(
                 "PCAPNG export configured but no pre-created file handle was provided; skipping export"
             );
-            stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+            stats.record_pcapng_export_error();
             return Ok(None);
         };
         let export_path = self.config.pcapng_export_file.clone().unwrap_or_default();
@@ -62,9 +61,8 @@ impl App {
         let capture_status = Arc::clone(&self.capture_status);
         let current_interface = Arc::clone(&self.current_interface);
 
-        thread::Builder::new()
-            .name("pcapng-export".to_string())
-            .spawn(move || {
+        self.runtime
+            .spawn_monitored("pcapng-export", move || {
                 info!("PCAPNG export thread starting: {}", export_path);
                 let linktype =
                     match wait_for_linktype(&linktype_storage, &capture_status, &should_stop) {
@@ -73,7 +71,7 @@ impl App {
                             warn!(
                                 "PCAPNG export could not observe capture linktype because capture setup failed; writing empty fallback section"
                             );
-                            stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+                            stats.record_pcapng_export_error();
                             None
                         }
                         LinktypeWait::Stopped => {
@@ -95,7 +93,7 @@ impl App {
                     Ok(writer) => writer,
                     Err(e) => {
                         error!("Failed to initialize PCAPNG writer: {}", e);
-                        stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+                        stats.record_pcapng_export_error();
                         return;
                     }
                 };
@@ -105,10 +103,6 @@ impl App {
                 let mut next_retry_scan = Instant::now() + Duration::from_millis(50);
 
                 loop {
-                    if should_stop.load(Ordering::Relaxed) && rx.is_empty() {
-                        break;
-                    }
-
                     match rx.recv_timeout(Duration::from_millis(50)) {
                         Ok(record) => {
                             handle_pcapng_record(
@@ -157,7 +151,7 @@ impl App {
                 );
                 if let Err(e) = writer.flush() {
                     error!("Failed to flush PCAPNG export: {}", e);
-                    stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+                    stats.record_pcapng_export_error();
                 }
                 let dropped = stats.pcapng_records_dropped.load(Ordering::Relaxed);
                 if dropped > 0 {
@@ -168,7 +162,7 @@ impl App {
                 }
                 info!("PCAPNG export completed: {}", export_path);
             })
-            .expect("Failed to spawn pcapng-export thread");
+            .map_err(|error| anyhow::anyhow!("failed to spawn PCAPNG export worker: {error}"))?;
 
         Ok(Some(tx))
     }
@@ -193,7 +187,13 @@ pub(super) fn send_pcapng_record(
                 warn!("PCAPNG export queue full; dropping export records under load");
             }
         }
-        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {}
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+            stats.pcapng_records_dropped.fetch_add(1, Ordering::Relaxed);
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                warn!("PCAPNG export worker exited; dropping remaining export records");
+            }
+        }
     }
 }
 
@@ -272,7 +272,7 @@ fn write_pcapng_record<W: Write>(
     if let Err(e) =
         writer.write_packet(record.timestamp, &record.data, record.original_len, comment)
     {
-        stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+        stats.record_pcapng_export_error();
         static WARNED: AtomicBool = AtomicBool::new(false);
         if !WARNED.swap(true, Ordering::Relaxed) {
             error!("Failed to write PCAPNG packet: {}", e);
@@ -430,6 +430,18 @@ mod pcapng_export_tests {
             conn_created_at: None,
             deadline,
         }
+    }
+
+    #[test]
+    fn disconnected_writer_counts_every_rejected_record() {
+        let (tx, rx) = channel::bounded(1);
+        drop(rx);
+        let stats = AppStats::default();
+
+        send_pcapng_record(Some(&tx), &stats, record(0xAA, None, Instant::now()));
+
+        assert_eq!(stats.pcapng_records_queued.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.pcapng_records_dropped.load(Ordering::Relaxed), 1);
     }
 
     /// A queued record must only be annotated with metadata from the exact

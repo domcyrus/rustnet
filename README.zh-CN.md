@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">RustNet</h1>
   <p align="center">
-    <strong>面向终端的进程级网络监控工具：实时呈现 TCP、UDP、QUIC 连接，自带深度包检测，默认沙箱隔离运行。</strong>
+    <strong>面向终端与自动化的进程级网络监控工具：实时呈现 TCP、UDP、QUIC 连接，自带深度包检测，默认沙箱隔离运行。</strong>
   </p>
   <p align="center">
     <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Built With Ratatui"></a>
@@ -31,14 +31,18 @@
 - **进程级归属识别**：每一条 TCP、UDP、QUIC 连接都能追溯到所属进程。Linux 使用 eBPF，macOS 使用 PKTAP，Windows 使用 ETW 并在不可用时自动回退到 IP Helper，FreeBSD 则走原生 API。详情会显示 PID、可执行文件、用户/组名称、匹配可信度，以及每个平台都提供的父进程链（有层级上限）。Wireshark 与 tcpdump 做不到这一点；`netstat` / `ss` 也无法展示实时状态。
 - **深度包检测**：无需外部解析器即可识别 HTTP、带 SNI 的 HTTPS/TLS、DNS、SSH、FTP、QUIC、MQTT、BitTorrent、WireGuard、OpenVPN、STUN、NTP、mDNS、LLMNR、DHCP、SNMP、SSDP 及 NetBIOS。
 - **带注释的 PCAPNG 导出**：`--pcapng-export` 可写出能直接用 Wireshark 打开的捕获文件，并将进程、PID、方向、DPI/SNI 和 GeoIP 作为逐包注释嵌入。每个数据包都会直接标明所属进程，无需后处理。也可使用经典的 `--pcap-export` 配合 JSONL sidecar 进行离线关联。
-- **安全沙箱**：Linux 5.13+ 使用 Landlock，macOS 使用 Seatbelt，Windows 通过 token 降权 + job-object 阻止子进程创建。libpcap 初始化完成后立即丢弃特权。详见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
+- **安全沙箱**：Linux 5.13+ 使用 Landlock，macOS 使用 Seatbelt，Windows 通过 token 降权 + job-object 阻止子进程创建。初始化完成后丢弃特权；如果请求的 UID/GID 降权失败，启动会中止，不会启动数据包处理线程。详见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
 - **网络分析**：实时统计 TCP、QUIC 握手、DNS 响应及 ICMP 回显的往返时延，并检测 TCP 重传、乱序包和快重传。概览表格通过按协议显示的健康徽标，呈现 TCP 问题、明确可见的 QUIC Retry/版本协商事件，以及事务型 UDP 的重试/超时，并按严重程度排序。
 - **智能连接生命周期**：按协议设置超时，空闲连接行会显示由黄变红的左侧条纹和移除倒计时，并逐渐柔化为灰色。按 `t` 可保留历史（已关闭）连接以便事后追溯。
 - **Vim / fzf 风格过滤**：支持 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:`、`proto:`，以及 `/(?i)pattern/` 形式的正则。
+- **无界面自动化**：无需 TUI 即可流式输出带版本号的 JSONL 快照，或在结束时输出一份最终 JSON 快照，并支持与交互界面相同的连接过滤语法。
 - **GeoIP 增强**：基于本地 MaxMind GeoLite2 数据库查询国家信息，不发起任何网络请求。
 - **局域网设备识别**：链路内设备和网关的 MAC 地址及厂商（来自内嵌的 IEEE OUI 数据库），从 ARP 流量中被动学习，并显示在详情页中。
 - **Kubernetes 归属识别**（可选 `kubernetes` feature）：将连接映射到所属 pod、namespace 和 container，并在详情面板、JSON/PCAPNG 导出以及 `pod:`、`ns:`、`container:` 过滤器中显示。官方 Docker 镜像已启用该功能；在集群上可使用 [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) 插件以临时调试 pod 运行。详见 [USAGE.zh-CN.md](USAGE.zh-CN.md#--kubernetes-mode-optional-feature)。
 - **跨平台**：Linux、macOS、Windows、FreeBSD。
+
+数据包并行解析，连接更新和带注释的导出更新仍按捕获顺序执行。
+并行处理线程将已入队的最多 16 个批次合并为一次有序更新，不等待凑满。只有一个处理线程时，每个数据包解析后立即更新，不暂存 DPI 分配的内存。队列最多容纳 10,000 个数据包，此外每个处理线程最多持有 1,600 个处理中的数据包（最多四个线程合计 6,400 个），这些上限不包含应用的其他内存使用量。队列满时，发送超时设为 5 毫秒，超时仍无法入队才丢弃该批次。在 Linux、macOS、FreeBSD 和 Windows 上，支持就绪通知的捕获后端会在新流量到达时唤醒读取线程。各平台共享 10 毫秒的空闲等待预算，以便检查退出请求并提交未满批次；原生就绪通知不可用时回退到休眠轮询。这不是每个数据包的固定延迟。突发流量或持续过载时，队列或捕获后端仍可能丢包。
 
 ## 为什么选 RustNet？
 
@@ -193,6 +197,22 @@ rustnet -r 500               # 设置刷新间隔(毫秒)
 rustnet --theme tokyo-night  # 主题：muted(默认)、vivid、catppuccin-mocha、tokyo-night、gruvbox、nord
 rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 ```
+
+默认仍会启动 TUI。脚本和服务可使用无界面模式：
+
+```bash
+rustnet --headless                                      # 流式输出 JSONL 快照
+rustnet --headless --duration 30 --output json         # 输出一份最终快照
+rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
+```
+
+无界面模式默认使用 `--output jsonl`，按配置的刷新间隔流式输出带版本号的快照。`--output json` 会在监控停止时输出一份带版本号的最终快照。`--duration` 会在指定秒数后停止抓包，`--filter` 接受与 TUI 相同的语法。无界面模式的 stdout 仅包含机器可读输出。抓包启动失败时，程序会以非零状态退出。
+
+快照中的连接 ID 在转为历史记录后保持不变，并区分复用同一端点的不同连接。流量速率字段明确命名为 `outgoing_bytes_per_second` 和 `incoming_bytes_per_second`，单位为字节每秒。关闭超时会报告 `stopping` 及未完成的工作线程数量，并以非零状态退出。
+
+快照 JSONL 是采样状态，并非完整流量历史。即使丢包计数为零，短连接或复用端点的连接仍可能缺失。逐包分析应使用独立的 `--pcap-export capture.pcap`，检查抓包丢包情况；要求完整性时，还应与独立抓包对照。连接数量较多时，完整快照的开销可能很高，请按实际负载选择刷新间隔和保留预算。参见[流量历史与抓包文件](USAGE.zh-CN.md#流量历史与抓包文件)。
+
+重定向的 stdout、JSON 日志、PCAP 导出及其旁路记录、PCAPNG 导出必须使用不同的输出文件。RustNet 会在截断配置的输出前拒绝重叠目标，但 shell 的 `>` 重定向可能在程序启动前就已截断文件。
 
 主题及各颜色的覆盖也可在 `~/.config/rustnet/config.toml` 中设置；`--theme` 优先。配置格式见 [USAGE.zh-CN.md](USAGE.zh-CN.md#--theme-preset)。
 

@@ -154,7 +154,9 @@ impl ConnectionCounts {
                 Protocol::Udp => counts.udp += 1,
                 _ => {}
             }
-            processes.insert(crate::ui::process_group_label(connection));
+            processes.insert(crate::network::process_activity::process_group_label(
+                connection,
+            ));
         }
 
         counts.processes = processes.len();
@@ -166,7 +168,15 @@ impl ConnectionCounts {
 #[derive(Debug)]
 pub struct AppStats {
     pub packets_processed: AtomicU64,
+    /// Packets rejected by the bounded capture-to-processor queue.
     pub packets_dropped: AtomicU64,
+    /// Packets libpcap reports dropping because its capture buffer was full.
+    pub capture_packets_dropped: AtomicU64,
+    /// Packets libpcap reports dropping at the network interface or driver.
+    pub interface_packets_dropped: AtomicU64,
+    /// Windows packets captured before ETW attribution became active. Raw
+    /// exports retain them, but connection tracking intentionally skips them.
+    pub pre_attribution_packets: AtomicU64,
     pub connections_tracked: AtomicU64,
     pub total_connections_created: AtomicU64,
     pub total_connections_archived: AtomicU64,
@@ -176,12 +186,16 @@ pub struct AppStats {
     pub total_tcp_out_of_order: AtomicU64,
     pub total_tcp_fast_retransmits: AtomicU64,
     pub pcap_records_written: AtomicU64,
+    pub pcap_export_errors: AtomicU64,
     pub pcapng_records_queued: AtomicU64,
     pub pcapng_records_written: AtomicU64,
     pub pcapng_records_annotated: AtomicU64,
     pub pcapng_records_unannotated: AtomicU64,
     pub pcapng_records_dropped: AtomicU64,
     pub pcapng_export_errors: AtomicU64,
+    /// Monotonic export failures used for the final process result. Unlike the
+    /// visible session counters, this is intentionally not cleared by the UI.
+    output_errors_total: AtomicU64,
 }
 
 impl Default for AppStats {
@@ -189,6 +203,9 @@ impl Default for AppStats {
         Self {
             packets_processed: AtomicU64::new(0),
             packets_dropped: AtomicU64::new(0),
+            capture_packets_dropped: AtomicU64::new(0),
+            interface_packets_dropped: AtomicU64::new(0),
+            pre_attribution_packets: AtomicU64::new(0),
             connections_tracked: AtomicU64::new(0),
             total_connections_created: AtomicU64::new(0),
             total_connections_archived: AtomicU64::new(0),
@@ -197,12 +214,14 @@ impl Default for AppStats {
             total_tcp_out_of_order: AtomicU64::new(0),
             total_tcp_fast_retransmits: AtomicU64::new(0),
             pcap_records_written: AtomicU64::new(0),
+            pcap_export_errors: AtomicU64::new(0),
             pcapng_records_queued: AtomicU64::new(0),
             pcapng_records_written: AtomicU64::new(0),
             pcapng_records_annotated: AtomicU64::new(0),
             pcapng_records_unannotated: AtomicU64::new(0),
             pcapng_records_dropped: AtomicU64::new(0),
             pcapng_export_errors: AtomicU64::new(0),
+            output_errors_total: AtomicU64::new(0),
         }
     }
 }
@@ -211,10 +230,13 @@ impl AppStats {
     /// Every atomic counter, in declaration order. This is the single place
     /// a new counter has to be registered so that snapshots and resets stay
     /// complete.
-    fn counters(&self) -> [&AtomicU64; 15] {
+    fn counters(&self) -> [&AtomicU64; 19] {
         [
             &self.packets_processed,
             &self.packets_dropped,
+            &self.capture_packets_dropped,
+            &self.interface_packets_dropped,
+            &self.pre_attribution_packets,
             &self.connections_tracked,
             &self.total_connections_created,
             &self.total_connections_archived,
@@ -222,6 +244,7 @@ impl AppStats {
             &self.total_tcp_out_of_order,
             &self.total_tcp_fast_retransmits,
             &self.pcap_records_written,
+            &self.pcap_export_errors,
             &self.pcapng_records_queued,
             &self.pcapng_records_written,
             &self.pcapng_records_annotated,
@@ -248,6 +271,20 @@ impl AppStats {
             dst.store(src.load(Ordering::Relaxed), Ordering::Relaxed);
         }
         snapshot
+    }
+
+    pub(super) fn record_pcap_export_error(&self) {
+        self.pcap_export_errors.fetch_add(1, Ordering::Relaxed);
+        self.output_errors_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn record_pcapng_export_error(&self) {
+        self.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+        self.output_errors_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn output_errors_total(&self) -> u64 {
+        self.output_errors_total.load(Ordering::Relaxed)
     }
 }
 
@@ -328,5 +365,41 @@ mod conn_rate_history_tests {
         history.push_for_generation(second_generation, 10, 20, 10);
         assert_eq!(history.rx, [10]);
         assert_eq!(history.tx, [20]);
+    }
+}
+
+#[cfg(test)]
+mod app_stats_tests {
+    use super::*;
+
+    #[test]
+    fn snapshots_and_resets_every_counter() {
+        let stats = AppStats::default();
+        for (index, counter) in stats.counters().into_iter().enumerate() {
+            counter.store(index as u64 + 1, Ordering::Relaxed);
+        }
+
+        let snapshot = stats.snapshot();
+        for (index, counter) in snapshot.counters().into_iter().enumerate() {
+            assert_eq!(counter.load(Ordering::Relaxed), index as u64 + 1);
+        }
+
+        stats.reset_counters();
+        for counter in stats.counters() {
+            assert_eq!(counter.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn clearing_visible_counters_preserves_lifetime_output_failures() {
+        let stats = AppStats::default();
+        stats.record_pcap_export_error();
+        stats.record_pcapng_export_error();
+
+        stats.reset_counters();
+
+        assert_eq!(stats.pcap_export_errors.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.pcapng_export_errors.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.output_errors_total(), 2);
     }
 }

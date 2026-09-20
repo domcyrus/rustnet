@@ -47,24 +47,9 @@ fn fractional_spans(
     render(whole, tip_eighths, width, ramp, textured)
 }
 
-pub(in crate::ui) fn from_filled(
-    filled: usize,
-    width: usize,
-    ramp: impl Fn(f64) -> Color,
-) -> Vec<Span<'static>> {
-    render(
-        filled.min(width),
-        0,
-        width,
-        |t| ramp(0.05 + 0.40 * t),
-        false,
-    )
-}
-
 /// `whole` full cells, then an optional eighth-block tip (`tip_eighths` in
 /// 1..=7), then the track. The gradient walks every lit cell including the
-/// tip. Stay below the white crest: broad solid blocks need less glow
-/// than sparse braille dots to retain their semantic hue.
+/// tip, where it reaches the semantic colour token.
 fn render(
     whole: usize,
     tip_eighths: usize,
@@ -118,22 +103,8 @@ mod tests {
     use crate::ui::test_support::spans_text;
     use ratatui::style::Color;
 
-    fn flat_ramp(_t: f64) -> Color {
-        Color::Green
-    }
-
     fn rendered_width(spans: &[Span<'_>]) -> usize {
         spans.iter().map(|s| s.content.chars().count()).sum()
-    }
-
-    #[test]
-    fn solid_bars_keep_the_directional_hue_instead_of_a_white_tip() {
-        let s = from_filled(10, 10, theme::rx_wave);
-        assert!(
-            s.iter()
-                .all(|span| span.style.fg != Some(Color::Rgb(255, 255, 255)))
-        );
-        assert_eq!(s.last().unwrap().style, theme::fg(theme::rx_wave(0.45)));
     }
 
     #[test]
@@ -181,14 +152,6 @@ mod tests {
     fn tiny_fraction_shows_one_eighth() {
         let s = themed_spans(0.01, 10, Color::Rgb(0, 180, 90));
         assert_eq!(spans_text(&s), "▏·········");
-    }
-
-    #[test]
-    fn from_filled_stays_whole_cell() {
-        let s = from_filled(2, 5, flat_ramp);
-        assert_eq!(spans_text(&s), "██···");
-        let overshoot = from_filled(9, 5, flat_ramp);
-        assert_eq!(spans_text(&overshoot), "█████");
     }
 
     #[test]

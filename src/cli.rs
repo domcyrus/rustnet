@@ -52,12 +52,46 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("headless")
+                .long("headless")
+                .help("Run without the interactive terminal UI")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("duration")
+                .long("duration")
+                .value_name("SECONDS")
+                .help("Stop headless monitoring after this many seconds")
+                .value_parser(clap::value_parser!(u64).range(1..))
+                .requires("headless")
+                .required(false),
+        )
+        .arg(
+            Arg::new("output")
+                .long("output")
+                .value_name("FORMAT")
+                .help(
+                    "Headless output format: jsonl (stream snapshots) or json (final snapshot)",
+                )
+                .value_parser(["jsonl", "json"])
+                .requires("headless")
+                .required(false),
+        )
+        .arg(
+            Arg::new("filter")
+                .long("filter")
+                .value_name("QUERY")
+                .help("Filter headless output using the shared connection filter syntax")
+                .requires("headless")
+                .required(false),
+        )
+        .arg(
             Arg::new("refresh-interval")
                 .short('r')
                 .long("refresh-interval")
                 .value_name("MILLISECONDS")
-                .help("UI refresh interval in milliseconds")
-                .value_parser(clap::value_parser!(u64))
+                .help("Snapshot and UI refresh interval in milliseconds")
+                .value_parser(clap::value_parser!(u64).range(1..))
                 .default_value("500")
                 .required(false),
         )
@@ -226,6 +260,7 @@ pub fn build_cli() -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::error::ErrorKind;
 
     #[test]
     fn refresh_interval_defaults_to_500ms() {
@@ -234,6 +269,19 @@ mod tests {
             .expect("default CLI arguments should parse");
 
         assert_eq!(matches.get_one::<u64>("refresh-interval"), Some(&500));
+    }
+
+    #[test]
+    fn refresh_interval_rejects_busy_loop_values() {
+        let error = build_cli()
+            .try_get_matches_from(["rustnet", "--refresh-interval", "0"])
+            .expect_err("a zero refresh interval should be rejected");
+        assert_eq!(error.kind(), ErrorKind::ValueValidation);
+
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--refresh-interval", "1"])
+            .expect("1ms remains valid for interactive compatibility");
+        assert_eq!(matches.get_one::<u64>("refresh-interval"), Some(&1));
     }
 
     #[test]
@@ -259,5 +307,112 @@ mod tests {
                 .try_get_matches_from(["rustnet", "--theme", "bogus"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn headless_controls_are_absent_by_default() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet"])
+            .expect("default CLI arguments should parse");
+
+        assert!(!matches.get_flag("headless"));
+        assert_eq!(matches.get_one::<u64>("duration"), None);
+        assert_eq!(matches.get_one::<String>("output"), None);
+        assert_eq!(matches.get_one::<String>("filter"), None);
+    }
+
+    #[test]
+    fn headless_controls_parse_together() {
+        let matches = build_cli()
+            .try_get_matches_from([
+                "rustnet",
+                "--headless",
+                "--duration",
+                "30",
+                "--output",
+                "jsonl",
+                "--filter",
+                "proto:tcp process:curl",
+            ])
+            .expect("valid headless arguments should parse");
+
+        assert!(matches.get_flag("headless"));
+        assert_eq!(matches.get_one::<u64>("duration"), Some(&30));
+        assert_eq!(
+            matches.get_one::<String>("output").map(String::as_str),
+            Some("jsonl")
+        );
+        assert_eq!(
+            matches.get_one::<String>("filter").map(String::as_str),
+            Some("proto:tcp process:curl")
+        );
+    }
+
+    #[test]
+    fn headless_output_accepts_each_supported_format() {
+        for format in ["jsonl", "json"] {
+            let matches = build_cli()
+                .try_get_matches_from(["rustnet", "--headless", "--output", format])
+                .unwrap_or_else(|e| panic!("--output {format} should parse: {e}"));
+
+            assert_eq!(
+                matches.get_one::<String>("output").map(String::as_str),
+                Some(format)
+            );
+        }
+    }
+
+    #[test]
+    fn headless_only_controls_require_headless_mode() {
+        for args in [
+            ["rustnet", "--duration", "30"],
+            ["rustnet", "--output", "json"],
+            ["rustnet", "--filter", "port:443"],
+        ] {
+            let error = build_cli()
+                .try_get_matches_from(args)
+                .expect_err("headless-only control should require --headless");
+
+            assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        }
+    }
+
+    #[test]
+    fn duration_must_be_a_positive_integer() {
+        for value in ["0", "1.5", "forever"] {
+            let error = build_cli()
+                .try_get_matches_from(["rustnet", "--headless", "--duration", value])
+                .unwrap_err();
+
+            assert_eq!(error.kind(), ErrorKind::ValueValidation);
+        }
+
+        let error = build_cli()
+            .try_get_matches_from(["rustnet", "--headless", "--duration=-1"])
+            .expect_err("negative durations should be rejected");
+        assert_eq!(error.kind(), ErrorKind::ValueValidation);
+
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--headless", "--duration", "1"])
+            .expect("one second is the minimum valid duration");
+        assert_eq!(matches.get_one::<u64>("duration"), Some(&1));
+    }
+
+    #[test]
+    fn headless_output_rejects_unknown_formats() {
+        let error = build_cli()
+            .try_get_matches_from(["rustnet", "--headless", "--output", "yaml"])
+            .expect_err("unsupported output formats should be rejected");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn existing_sandbox_conflict_is_still_enforced_in_headless_mode() {
+        let error = build_cli()
+            .try_get_matches_from(["rustnet", "--headless", "--no-sandbox", "--sandbox-strict"])
+            .expect_err("strict and disabled sandboxing should conflict");
+
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
     }
 }

@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Headless Mode**: `--headless` runs without the TUI, with optional
+  `--duration` and shared `--filter` syntax. Versioned snapshots stream as
+  JSONL by default, while `--output json` emits one final snapshot. Stdout is
+  reserved for machine-readable output. A bounded asynchronous writer replaces
+  stale queued snapshots before JSON serialization and prevents blocked
+  consumers from delaying shutdown, while runtime capture and critical
+  worker failures emit terminal error state and return a nonzero status.
+  Connection IDs remain stable through archival and distinguish reused
+  endpoints, traffic rates have explicit bytes-per-second field names, and
+  timed-out workers retain a `stopping` terminal status. Documentation clarifies
+  snapshot-history limits, separate PCAP collection, and full-snapshot costs
+- **Reusable Connection Filters**: the complete filter language now lives in
+  `rustnet-core`, with the existing TUI path retained as a compatibility
+  re-export for future headless frontends
 - **Inline Connection Health**: connection rows now show compact TCP
   retransmit/out-of-order, QUIC Retry/version, and transactional UDP
   retry/timeout badges, with a severity-first Health sort. The Details
@@ -29,6 +43,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The default keeps TX blue / RX green; other themes retain their own traffic
   tokens. Shared section rules and table headings improve hierarchy throughout
   the TUI, with responsive navigation and NO_COLOR support.
+  Graph's health, TCP state, and application distribution bars share Activity's
+  shading, fractional tips, and dotted tracks while preserving semantic colours.
+- **Frontend Modules**: startup and the TUI loop now live in library modules;
+  headless orchestration, schema projection, and output handling are separate
+  modules. Overlapping JSON, PCAP, sidecar, PCAPNG, and regular-file stdout
+  destinations are rejected before RustNet truncates or writes output data
+- **Packet Processing**: consolidate tracker lookups, reuse parsed-packet buffers,
+  and group up to 16 already queued batches per ordered update without waiting
+  to fill the group. A sole processor parses and updates each packet immediately,
+  without staging DPI allocations. Parallel workers keep packet cleanup outside
+  the ordered commit and skip notifications without waiters.
+  The queue remains bounded at 10,000 packets,
+  plus up to 1,600 in-flight packets per worker (6,400 across at most four workers).
+  A full queue uses a 5 ms send timeout. Linux, macOS, FreeBSD, and Windows capture
+  share bounded idle-wait and fallback handling, using Unix descriptor readiness
+  or Npcap events where supported to wake promptly for new traffic.
+  Overload can still cause queue or capture-backend loss
+- **Runtime Lifecycle Foundation**: privileged capture and process attribution
+  are prepared synchronously before sandboxing, while all long-lived workers
+  start through a typed post-sandbox handoff and stop under one owned,
+  bounded supervisor
 - **Staleness Cue**: idle connection rows now show a stripe at their left
   edge and a removal countdown in the bandwidth column from halfway through
   their timeout (previously 75%), both running yellow to red as cleanup
@@ -64,6 +99,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Required UID Drop**: abort startup before packet-processing workers when a
+  requested root UID/GID drop fails, including in best-effort mode
+- **Windows Connection History**: connections that reuse a tuple with the
+  same capture timestamp keep distinct history entries
+- **Idle Capture Shutdown**: nonblocking capture reads and bounded idle
+  polling let worker shutdown finish even after packet traffic stops
+- **Windows Address Discovery**: collect IPv4, IPv6, and subnet broadcasts
+  through IP Helper without loading the Npcap capture driver
+- **Loss and Export Accounting**: queue backpressure drops are reported
+  separately from libpcap and interface drops, partial batches drain during
+  shutdown, and classic PCAP output remains bound to its securely pre-opened
+  file descriptor
+- **32-bit eBPF Map ABI**: explicitly align the shared C and Rust `ConnInfo`
+  structures to 8 bytes, fixing compilation on i586 (#611)
 - **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now
   show as SYN received instead of an unknown state
 

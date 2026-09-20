@@ -19,8 +19,8 @@ Waiting for traffic data...                                                     
                                                                                                                                             
                                                                                                                                             
 ▎ Observed Network Health ─────────────────────  ▎ TCP Counters ────────────────────────────────  ▎ Observed TCP States ────────────────────
-Waiting for health data...                         Retransmits         0                               ESTAB █████████████████████████    2 
-                                                   Out of Order        0                           TIME_WAIT ████████████    1              
+Waiting for health data...                         Retransmits         0                               ESTAB ░░░░░░░▒▒▒▒▒▒▓▓▓▓▓▓██████    2 
+                                                   Out of Order        0                           TIME_WAIT ░░░░▒▒▒▓▓▓██▌············    1 
                                                    Fast Retrans        0                                                                    
                                                                                                                                             
                                                                                                                                             
@@ -30,7 +30,7 @@ Waiting for health data...                         Retransmits         0        
                                                                                                                                             
                                                                                                                                             
 ▎ Application Distribution ──────────────────────────────────────────  ▎ Top Processes ─────────────────────────────────────────────────────
-Other  ██████████████████████████████████████████████████████ 100.0%   No active processes                                                  
+Other  ░░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓█████████████ 100.0%   No active processes                                                  
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

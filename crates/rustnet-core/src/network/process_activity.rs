@@ -14,6 +14,20 @@ use std::time::{Duration, SystemTime};
 
 const OTHER_NAME: &str = "Other";
 
+/// Group label used when a connection has no resolved process name.
+pub const UNKNOWN_PROCESS_GROUP: &str = "<unknown>";
+
+/// Return the stable process-group label for a connection.
+///
+/// Both a missing owner and the placeholder used when a PID's image cannot be
+/// resolved belong to the same group.
+pub fn process_group_label(conn: &Connection) -> &str {
+    match conn.process_name.as_deref() {
+        None | Some(UNKNOWN_PROCESS_NAME) => UNKNOWN_PROCESS_GROUP,
+        Some(name) => name,
+    }
+}
+
 /// Bounds for retained process accounting.
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessActivityConfig {
@@ -719,6 +733,17 @@ mod tests {
         conn.pid = pid;
         conn.process_name = name.map(str::to_string);
         conn
+    }
+
+    #[test]
+    fn process_group_label_folds_missing_and_placeholder_names() {
+        let missing = connection(None, None, 80);
+        let placeholder = connection(Some(7), Some(UNKNOWN_PROCESS_NAME), 443);
+        let named = connection(Some(8), Some("curl"), 8443);
+
+        assert_eq!(process_group_label(&missing), UNKNOWN_PROCESS_GROUP);
+        assert_eq!(process_group_label(&placeholder), UNKNOWN_PROCESS_GROUP);
+        assert_eq!(process_group_label(&named), "curl");
     }
 
     #[test]
