@@ -26,6 +26,10 @@
 //! When a platform can't use its optimal method, [`ProcessLookup::get_degradation_reason`]
 //! reports why via [`DegradationReason`] (e.g. missing `CAP_BPF`, no root for
 //! PKTAP), which front-ends can surface to the user.
+//! Construct lookups during privileged preparation, call
+//! [`ProcessLookup::start_runtime`] after sandboxing, and use
+//! [`ProcessLookup::refresh_interruptible`] in long-lived workers so shutdown
+//! can cancel host commands promptly.
 //!
 //! This crate depends only on `rustnet-core` (for [`Connection`]/[`Protocol`]).
 //! It does not depend on `rustnet-capture`; on macOS the application injects
@@ -43,6 +47,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 /// TCP state reported by the host operating system's socket table.
@@ -653,6 +658,8 @@ impl DegradationReason {
 
 pub mod procfs;
 
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+mod command;
 #[cfg(target_os = "freebsd")]
 mod freebsd;
 #[cfg(target_os = "linux")]
@@ -673,6 +680,13 @@ pub use windows::create_process_lookup;
 
 /// Platform-specific process lookup.
 pub trait ProcessLookup: Send + Sync {
+    /// Start long-lived background collection after the caller has applied its
+    /// runtime sandbox. Implementations without background work keep the
+    /// default no-op behavior.
+    fn start_runtime(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Rich attribution for a connection: identity, credentials, executable
     /// path, and the provenance of the match.
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution>;
@@ -680,6 +694,18 @@ pub trait ProcessLookup: Send + Sync {
     /// Refresh internal caches, if any (best effort).
     fn refresh(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Refresh internal caches, returning promptly when shutdown is requested.
+    ///
+    /// The default preserves compatibility for in-process implementations.
+    /// Backends that launch host commands override this to cancel the child.
+    fn refresh_interruptible(&self, cancelled: &AtomicBool) -> Result<()> {
+        if cancelled.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            self.refresh()
+        }
     }
 
     /// Latest operating-system socket table, independent from packet capture.

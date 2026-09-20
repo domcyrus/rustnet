@@ -175,7 +175,7 @@ fn main() -> Result<()> {
     // path under a directory such as /root, which the drop target cannot
     // traverse when trying to reopen the file.
     if let Some(ref json_log_path) = config.json_log_file {
-        let file = open_private_append_file(json_log_path).map_err(|e| {
+        let file = app::open_private_append_file(json_log_path).map_err(|e| {
             anyhow::anyhow!("Failed to open JSON log file '{}': {}", json_log_path, e)
         })?;
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
@@ -183,27 +183,21 @@ fn main() -> Result<()> {
         output_handles.json_log = Some(file);
     }
 
-    // Pre-create the PCAP export file and retain its sidecar JSONL descriptor.
-    // This must be done BEFORE the sandbox is applied so the files exist when
-    // adding rules: Landlock requires an open FD to scope a rule to a file, so
-    // a not-yet-existing path falls back to granting write on the whole parent
-    // directory. Pre-creating keeps the write rule file-scoped. The PCAP writer
-    // later reopens the path with truncation while it still has startup
-    // privileges, so a zero-byte file is fine.
+    // Securely open the PCAP export file and its sidecar before sandboxing.
+    // Both writers retain these descriptors across the uid drop, so no output
+    // pathname write grants or later file reopening are needed.
     //
     // Done before terminal setup: pre-creation can fail hard (see below), and we
     // want the error to print to a normal terminal rather than into the TUI
     // alt-screen (which would also leave the terminal in raw mode).
+    let mut pcap_export_file = None;
     if let Some(ref pcap_path) = config.pcap_export_file {
         let jsonl_path = format!("{}.connections.jsonl", pcap_path);
         for (label, path) in [("PCAP", pcap_path.as_str()), ("sidecar JSONL", &jsonl_path)] {
             // Fail hard rather than continue: if we can't safely create the file
             // (e.g. the path is a symlink, rejected by O_NOFOLLOW), aborting now
-            // is the only way the protection is meaningful. The PCAP itself is
-            // later written by libpcap's pcap_dump_open, which does NOT honor
-            // O_NOFOLLOW, so a warn-and-continue here would let libpcap follow an
-            // attacker-controlled symlink and write the capture there anyway.
-            let file = precreate_private_file(path).map_err(|e| {
+            // is the only way the protection is meaningful.
+            let file = app::precreate_private_file(path).map_err(|e| {
                 anyhow::anyhow!("Failed to pre-create {} file '{}': {}", label, path, e)
             })?;
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
@@ -211,14 +205,16 @@ fn main() -> Result<()> {
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
             let _ = &file;
 
-            if label == "sidecar JSONL" {
+            if label == "PCAP" {
+                pcap_export_file = Some(file);
+            } else {
                 output_handles.pcap_sidecar = Some(file);
             }
         }
     }
 
     if let Some(ref pcapng_path) = config.pcapng_export_file {
-        let file = precreate_private_file(pcapng_path).map_err(|e| {
+        let file = app::precreate_private_file(pcapng_path).map_err(|e| {
             anyhow::anyhow!("Failed to pre-create PCAPNG file '{}': {}", pcapng_path, e)
         })?;
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
@@ -226,26 +222,29 @@ fn main() -> Result<()> {
         output_handles.pcapng_export = Some(file);
     }
 
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = ui::setup_terminal(backend)?;
-    info!("Terminal UI initialized");
-
-    let mut app = app::App::new_with_output_handles(config.clone(), output_handles)?;
-    let (process_ready_rx, capture_ready_rx) = app.start()?;
+    let mut app =
+        app::App::new_with_preopened_pcap(config.clone(), output_handles, pcap_export_file)?;
+    let (process_status, capture_status) = app.start()?;
     info!("Application started");
 
-    // Wait for process detection (including eBPF loading) to complete before
-    // applying the sandbox, which drops CAP_BPF and CAP_PERFMON.
-    // Without this synchronization, the sandbox could drop these capabilities
-    // before the background thread has finished loading eBPF programs.
-    wait_for_init(&process_ready_rx, "process detection");
+    // Process attribution initialization, including eBPF loading, completed
+    // synchronously. The prepared lookup is moved into its worker only after
+    // the sandbox is applied.
+    match process_status {
+        app::InitStatus::Ready => info!("process detection initialized, safe to apply sandbox"),
+        app::InitStatus::Failed(message) => {
+            warn!("process detection initialization failed: {}", message)
+        }
+    }
 
-    // Also wait for the capture thread to finish opening the capture device.
-    // The open runs on a background thread and needs the startup privileges;
-    // without this synchronization the uid drop (Linux/FreeBSD) or sandbox
-    // could win the race and the open would fail with EPERM, leaving the UI
-    // running with no traffic.
-    wait_for_init(&capture_ready_rx, "packet capture");
+    // Capture initialization ran synchronously and returned a typed result.
+    // The TUI deliberately preserves its process-only fallback on failure.
+    match capture_status {
+        app::InitStatus::Ready => info!("packet capture initialized, safe to apply sandbox"),
+        app::InitStatus::Failed(message) => {
+            warn!("packet capture initialization failed: {}", message)
+        }
+    }
 
     // Apply the sandbox (rustnet-sandbox crate: Landlock + capability drops
     // on Linux, uid drop + Seatbelt on macOS, restricted token + job object
@@ -254,8 +253,8 @@ fn main() -> Result<()> {
     // - eBPF programs need to be loaded first (requires CAP_BPF + CAP_PERFMON)
     // - Packet capture handles need to be opened first (raw sockets, /dev/bpf*)
     // - Log files need to be created first
-    {
-        use rustnet_sandbox::{SandboxConfig, SandboxMode, SandboxReport, apply_sandbox};
+    let worker_startup_permit = {
+        use rustnet_sandbox::{SandboxConfig, SandboxMode};
         use std::path::PathBuf;
 
         let sandbox_mode = SandboxMode::from_flags(
@@ -325,29 +324,14 @@ fn main() -> Result<()> {
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let read_paths: Vec<PathBuf> = Vec::new();
 
-        // Collect write paths: the logs directory when logging is enabled, plus
-        // every configured output file (JSON log, PCAP export + its sidecar
-        // JSONL, PCAPNG export). Ignored by backends without filesystem rules.
-        let mut write_paths: Vec<PathBuf> = Vec::new();
-        if matches.get_one::<String>("log-level").is_some() {
-            write_paths.push(PathBuf::from("logs"));
-        }
-        if let Some(json_log_path) = &config.json_log_file {
-            write_paths.push(PathBuf::from(json_log_path));
-        }
-        if let Some(pcap_path) = &config.pcap_export_file {
-            write_paths.push(PathBuf::from(pcap_path));
-            write_paths.push(PathBuf::from(format!("{}.connections.jsonl", pcap_path)));
-        }
-        if let Some(pcapng_path) = &config.pcapng_export_file {
-            write_paths.push(PathBuf::from(pcapng_path));
-        }
-
         let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
             read_paths,
-            write_paths,
+            // Every runtime output is already open and retained. No pathname
+            // write grants are needed, which also avoids a rename/swap window
+            // between the secure open and sandbox rule construction.
+            write_paths: Vec::new(),
             ..SandboxConfig::default()
         };
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
@@ -356,29 +340,39 @@ fn main() -> Result<()> {
             ..sandbox_config
         };
 
-        match apply_sandbox(&sandbox_config) {
-            Ok(report) => app.set_sandbox_info(report),
-            Err(e) => {
-                if sandbox_mode == SandboxMode::Strict {
-                    return Err(e.context("Sandbox enforcement required but failed"));
-                }
-                warn!("Sandbox application error (non-strict mode): {}", e);
-                app.set_sandbox_info(SandboxReport::from_error(&e));
-            }
-        }
-    }
+        app.apply_sandbox(&sandbox_config)?
+    };
+
+    // Before this point the platform default remains in effect, so SIGTERM or
+    // SIGHUP can still terminate a slow synchronous capture/process setup.
+    install_signal_handlers();
 
     // Now that the sandbox has been applied on the main thread, start the worker
     // threads (DPI packet processors, enrichment, snapshot, cleanup, collectors).
     // On Linux these inherit the Landlock domain and the dropped capabilities, so
     // a compromise in a DPI parser is contained even when running as root.
-    app.start_workers()?;
+    app.start_workers(worker_startup_permit)?;
 
-    install_signal_handlers();
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = ui::setup_terminal(backend)?;
+    info!("Terminal UI initialized");
+
     let res = run_ui_loop(&mut terminal, &app);
 
-    app.stop();
+    let stop_report = app.stop();
     ui::restore_terminal(&mut terminal)?;
+
+    if stop_report.timed_out_workers > 0
+        || stop_report.panicked_workers > 0
+        || stop_report.output_errors > 0
+    {
+        anyhow::bail!(
+            "runtime shutdown failed: {} worker(s) timed out, {} worker(s) panicked, {} output operation(s) failed",
+            stop_report.timed_out_workers,
+            stop_report.panicked_workers,
+            stop_report.output_errors
+        );
+    }
 
     if let Err(err) = res {
         error!("Application error: {}", err);
@@ -423,7 +417,7 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
 
     // The path is predictable (timestamped), so it gets the same
     // symlink-refusing, private-mode open as the other output files.
-    let log_file = open_private(&log_file_path, false)?;
+    let log_file = app::precreate_private_file(&log_file_path)?;
 
     // `target` names the emitting subsystem (e.g. `network::dpi::dns`); the
     // banner below identifies the binary.
@@ -448,24 +442,6 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     Ok(())
 }
 
-/// Wait up to 10 s for a background subsystem to signal that its
-/// privileged setup is done, so the sandbox can be applied. A timeout or an
-/// early thread exit is logged but does not block startup.
-fn wait_for_init(ready_rx: &std::sync::mpsc::Receiver<()>, what: &str) {
-    match ready_rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(()) => info!("{} initialized, safe to apply sandbox", what),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            warn!(
-                "Timed out waiting for {} init, applying sandbox anyway",
-                what
-            );
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            warn!("{} thread exited early, applying sandbox anyway", what);
-        }
-    }
-}
-
 /// Hand an output file over to the uid-drop target.
 ///
 /// Retained descriptors remain usable regardless of path traversal, but the
@@ -485,112 +461,6 @@ fn chown_to_uid_drop_target(
             "Failed to chown {} file '{}' to uid {}: {} (the file may not be writable after the root uid drop)",
             label, path, target.uid, e
         );
-    }
-}
-
-/// Open a private output file, either truncating or appending.
-///
-/// On Unix, opens with O_NOFOLLOW so a symlink pre-planted at a predictable
-/// path cannot redirect the write, and sets the 0o600 mode at creation time
-/// to avoid a create-then-chmod window where the file is briefly
-/// world-readable.
-fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.create(true);
-    if append {
-        options.append(true);
-    } else {
-        options.write(true).truncate(true);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
-    }
-    options.open(path)
-}
-
-/// Create (or truncate) a private output file before privileges are reduced.
-fn precreate_private_file(path: &str) -> io::Result<fs::File> {
-    open_private(path, false)
-}
-
-/// Open an append-only private output before privileges are reduced.
-///
-/// Unlike [`precreate_private_file`], this preserves existing contents because
-/// `--json-log` has append semantics.
-fn open_private_append_file(path: &str) -> io::Result<fs::File> {
-    open_private(path, true)
-}
-
-#[cfg(test)]
-#[path = "test_support/scratch_dir.rs"]
-mod scratch_dir;
-
-#[cfg(all(test, unix))]
-mod output_file_tests {
-    use super::open_private_append_file;
-    use super::scratch_dir::ScratchDir;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
-    fn scratch(tag: &str) -> ScratchDir {
-        ScratchDir::new("output", tag)
-    }
-
-    #[test]
-    fn creates_file_with_0600_permissions() {
-        let dir = scratch("perms");
-        let path = dir.join("events.log");
-
-        let file =
-            open_private_append_file(path.to_str().unwrap()).expect("fresh open should succeed");
-        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "new output must be created mode 0o600");
-    }
-
-    #[test]
-    fn appends_rather_than_truncates() {
-        let dir = scratch("append");
-        let path = dir.join("events.log");
-        let path = path.to_str().unwrap();
-
-        writeln!(open_private_append_file(path).unwrap(), "line1").unwrap();
-        writeln!(open_private_append_file(path).unwrap(), "line2").unwrap();
-
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "line1\nline2\n");
-    }
-
-    #[test]
-    fn retained_descriptor_survives_inaccessible_parent() {
-        let dir = scratch("retained");
-        let path = dir.join("events.log");
-        let mut file = open_private_append_file(path.to_str().unwrap()).unwrap();
-
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
-        writeln!(file, "still writable").unwrap();
-        file.sync_all().unwrap();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "still writable\n");
-    }
-
-    #[test]
-    fn refuses_symlinked_path() {
-        let dir = scratch("symlink");
-        let target = dir.join("real_target.log");
-        let link = dir.join("evil.log");
-        std::fs::write(&target, b"").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        let err = open_private_append_file(link.to_str().unwrap())
-            .expect_err("O_NOFOLLOW must refuse a symlinked path");
-        assert_eq!(
-            err.raw_os_error(),
-            Some(libc::ELOOP),
-            "expected ELOOP from O_NOFOLLOW, got: {err}"
-        );
-        assert!(std::fs::read(&target).unwrap().is_empty());
     }
 }
 

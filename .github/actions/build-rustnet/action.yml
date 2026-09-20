@@ -62,10 +62,13 @@ runs:
         if ($LASTEXITCODE -ne 0) {
           throw "dumpbin failed while inspecting rustnet.exe"
         }
-        foreach ($dll in @("Packet.dll", "wpcap.dll")) {
-          if ($imports -notmatch "(?is)following delay load imports:.*?$([regex]::Escape($dll))") {
-            throw "$dll is not listed as a delay-loaded import"
-          }
+        python -B "${{ github.action_path }}/test_verify_windows_imports.py"
+        if ($LASTEXITCODE -ne 0) {
+          throw "Windows import validator regression tests failed"
+        }
+        $imports | python -B "${{ github.action_path }}/verify_windows_imports.py"
+        if ($LASTEXITCODE -ne 0) {
+          throw "Npcap imports are not safely delay-loaded"
         }
 
         & $executable --version

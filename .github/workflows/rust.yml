@@ -10,11 +10,11 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'benches/**'
+      - 'tests/**'
       - 'Dockerfile'
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
   pull_request:
-    branches: [ "main" ]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -22,6 +22,7 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'benches/**'
+      - 'tests/**'
       - 'Dockerfile'
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
@@ -43,17 +44,37 @@ jobs:
       uses: ./.github/actions/setup-linux-deps
     - name: Check formatting
       run: cargo fmt --check
+    - name: Validate dependency lockfile
+      run: cargo check --locked --workspace --all-targets --all-features
+    - name: Check without default features
+      run: cargo check --locked --workspace --all-targets --no-default-features
     # --workspace --all-targets so the library crates (rustnet-core/-capture/
     # -host) are linted, built, and tested too. The workspace root is a real
     # package (rustnet-monitor), so a bare `cargo {clippy,build,test}` only
     # selects the binary and silently skips the library crates' lints, tests,
     # and doctests.
     - name: Run clippy
-      run: cargo clippy --workspace --all-targets -- -D warnings
+      run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     - name: Build
-      run: cargo build --workspace --all-targets --verbose
+      run: cargo build --locked --workspace --all-targets --verbose
     - name: Run tests
-      run: cargo test --workspace --verbose
+      run: cargo test --locked --workspace --all-features --verbose
+    - name: Test capture shutdown and readiness with loopback traffic
+      run: |
+        test_executable=$(cargo test --locked -p rustnet-capture --test live_capture --no-run --message-format=json |
+          jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_capture") | .executable // empty')
+        test -n "$test_executable"
+        # Only these BPF-filtered loopback regressions need capture privileges.
+        # The process watchdog also bounds failures inside the native backend.
+        sudo timeout 10s "$test_executable" --ignored --exact idle_capture_returns_after_traffic_stops_without_busy_spinning
+        sudo timeout 10s "$test_executable" --ignored --exact packet_arriving_after_an_idle_read_is_not_consumed_by_the_readiness_wait
+    - name: Test capture capability cleanup before UID drop
+      run: |
+        test_executable=$(cargo test --locked -p rustnet-sandbox --lib --features landlock --no-run --message-format=json |
+          jq -r 'select(.reason == "compiler-artifact" and .target.name == "rustnet_sandbox") | .executable // empty')
+        test -n "$test_executable"
+        # Identity changes are isolated to this exact test process.
+        sudo timeout 10s "$test_executable" --ignored --exact linux::capabilities::tests::capture_capability_drops_preserve_uid_and_gid_changes
     - name: Install cargo-audit
       run: cargo install cargo-audit --locked
     - name: Run security audit

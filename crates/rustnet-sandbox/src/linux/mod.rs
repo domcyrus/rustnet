@@ -8,10 +8,12 @@
 //! # Security Model
 //!
 //! After sandboxing is applied:
-//! - Filesystem: Only `/proc`, public account databases, and specified read paths
-//!   (e.g., GeoIP databases) readable
+//! - Filesystem: Only `/proc`, public account databases, optionally the exact
+//!   DNS resolver files, and specified read paths (e.g., GeoIP databases)
+//!   readable
 //! - Filesystem: Only specified write paths writable (e.g., logs, exports)
-//! - Network: TCP bind/connect blocked (kernel 6.7+, ABI v4)
+//! - Network: TCP bind/connect blocked, optionally allowing DNS connects to
+//!   destination port 53 (kernel 6.7+, ABI v4)
 //! - Scope: abstract UNIX socket connects + signals to outside processes blocked
 //!   (kernel 6.12+, ABI v6)
 //! - Capabilities: CAP_NET_RAW, CAP_BPF, CAP_PERFMON dropped
@@ -64,7 +66,10 @@ fn set_no_new_privs() -> std::io::Result<()> {
 ///
 /// Without the `landlock` feature the capability drops and Landlock steps
 /// are compiled out; PR_SET_NO_NEW_PRIVS and the root uid drop still run.
-pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
+pub(crate) fn apply(
+    config: &SandboxConfig,
+    allow_dns_resolution: bool,
+) -> anyhow::Result<SandboxReport> {
     #[cfg(feature = "landlock")]
     use anyhow::Context;
 
@@ -127,27 +132,24 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         // Ambient caps survive execve(): clearing prevents child processes
         // from inheriting any capabilities if fork/exec somehow succeeds.
         if let Err(e) = capabilities::clear_ambient_caps() {
-            log::debug!("Could not clear ambient capabilities: {}", e);
+            if config.mode == SandboxMode::Strict {
+                return Err(e).context("Strict mode requires ambient capabilities to be cleared");
+            }
+            log::warn!("Could not clear ambient capabilities: {}", e);
+            messages.push(format!("Failed to clear ambient capabilities: {e}"));
+            result.status = SandboxStatus::PartiallyEnforced;
         }
 
         // Dropping CAP_NET_RAW prevents creating new raw sockets for exfiltration.
         match capabilities::drop_cap_net_raw() {
             Ok(dropped) => {
                 if dropped {
-                    if capabilities::has_cap_net_raw() {
-                        log::error!(
-                            "CAP_NET_RAW drop reported success but capability still present!"
-                        );
-                        result.cap_net_raw_dropped = false;
-                        messages.push("CAP_NET_RAW drop verification failed".to_string());
-                    } else {
-                        result.cap_net_raw_dropped = true;
-                        messages.push("CAP_NET_RAW dropped".to_string());
-                        log::info!("Dropped CAP_NET_RAW capability (verified)");
-                    }
+                    result.cap_net_raw_dropped = true;
+                    messages.push("CAP_NET_RAW dropped".to_string());
+                    log::info!("Dropped CAP_NET_RAW capability (verified)");
                 } else {
                     messages.push("CAP_NET_RAW was not held".to_string());
-                    log::debug!("CAP_NET_RAW was not in effective set");
+                    log::debug!("CAP_NET_RAW was not effective or permitted");
                 }
             }
             Err(e) => {
@@ -206,7 +208,7 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     }
 
     #[cfg(feature = "landlock")]
-    match landlock::apply_landlock(config) {
+    match landlock::apply_landlock(config, allow_dns_resolution) {
         Ok(ll_result) => {
             result.fs_restricted = ll_result.fs_applied;
             result.net_restricted = ll_result.net_applied;
@@ -222,21 +224,20 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
             if ll_result.scope_applied {
                 messages.push("Landlock scope restrictions applied".to_string());
             }
-            if !ll_result.fs_applied && !ll_result.net_applied {
-                messages.push(format!("Landlock not applied: {}", ll_result.message));
+            let missing_fs = !ll_result.fs_fully_enforced;
+            let missing_net = config.block_network && !ll_result.net_applied;
+            let missing_scope = config.block_network && !ll_result.scope_applied;
+            if missing_fs || missing_net || missing_scope {
+                messages.push(format!("Landlock incomplete: {}", ll_result.message));
                 if config.mode == SandboxMode::Strict {
                     return Err(anyhow::anyhow!(
-                        "Strict mode requires Landlock support: {}",
+                        "Strict mode requires all requested Landlock restrictions (filesystem={}, network={}, scope={}): {}",
+                        !missing_fs,
+                        !missing_net,
+                        !missing_scope,
                         ll_result.message
                     ));
                 }
-                if result.status == SandboxStatus::FullyEnforced {
-                    result.status = SandboxStatus::PartiallyEnforced;
-                }
-            } else if !ll_result.net_applied
-                && config.block_network
-                && result.status == SandboxStatus::FullyEnforced
-            {
                 result.status = SandboxStatus::PartiallyEnforced;
             }
         }
@@ -252,10 +253,11 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     }
 
     // Without the landlock feature there is nothing to enforce beyond the uid drop.
-    // Not a strict-mode error: builds without the feature (e.g. musl) are
-    // expected to run this way.
     #[cfg(not(feature = "landlock"))]
     {
+        if config.mode == SandboxMode::Strict {
+            anyhow::bail!("Strict mode requires a build with Landlock support");
+        }
         log::warn!("Landlock feature not compiled in");
         messages.push("Landlock feature not compiled in".to_string());
         result.status = SandboxStatus::PartiallyEnforced;

@@ -12,12 +12,13 @@ use crate::ConnectionKey;
 use anyhow::{Result, anyhow};
 use ferrisetw::parser::Parser;
 use ferrisetw::provider::Provider;
-use ferrisetw::trace::{UserTrace, stop_trace_by_name};
+use ferrisetw::trace::{TraceTrait, UserTrace, stop_trace_by_name};
 use ferrisetw::{EventRecord, SchemaLocator};
 use rustnet_core::network::types::{Protocol, UNKNOWN_PROCESS_NAME};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const NETWORK_PROVIDER: &str = "7dd42a49-5329-4832-8dfd-43d979153a88";
@@ -190,8 +191,9 @@ impl EtwProcessCache {
 }
 
 pub(super) struct EtwAttribution {
-    // Dropping the trace stops the real-time session.
-    _trace: UserTrace,
+    // Drop the trace before joining so ProcessTrace is told to return.
+    trace: Option<UserTrace>,
+    processor: Option<JoinHandle<()>>,
 }
 
 impl EtwAttribution {
@@ -216,14 +218,38 @@ impl EtwAttribution {
         // orphan exists.
         let _ = stop_trace_by_name(TRACE_NAME);
 
-        let trace = UserTrace::new()
+        let (trace, trace_handle) = UserTrace::new()
             .named(TRACE_NAME.to_string())
             .enable(network_provider)
             .enable(process_provider)
-            .start_and_process()
+            .start()
             .map_err(|error| anyhow!("failed to start Windows ETW attribution: {error:?}"))?;
 
-        Ok(Self { _trace: trace })
+        let processor = thread::Builder::new()
+            .name("windows-etw".to_string())
+            .spawn(move || {
+                if let Err(error) = UserTrace::process_from_handle(trace_handle) {
+                    log::debug!("Windows ETW processor stopped with an error: {error:?}");
+                }
+            })
+            .map_err(|error| anyhow!("failed to spawn Windows ETW processor: {error}"))?;
+
+        Ok(Self {
+            trace: Some(trace),
+            processor: Some(processor),
+        })
+    }
+}
+
+impl Drop for EtwAttribution {
+    fn drop(&mut self) {
+        // UserTrace::drop stops the real-time session, which wakes ProcessTrace.
+        drop(self.trace.take());
+        if let Some(processor) = self.processor.take()
+            && processor.join().is_err()
+        {
+            log::warn!("Windows ETW processor thread panicked");
+        }
     }
 }
 
@@ -377,13 +403,19 @@ mod tests {
             local_addr,
             remote_addr,
         };
-        let process = (0..50).find_map(|_| {
-            let process = cache.lookup(&key);
-            if process.is_none() {
-                thread::sleep(Duration::from_millis(20));
+        // The real-time trace flushes its buffers once per second. Allow
+        // several flush intervals plus consumer scheduling, rather than racing
+        // the first flush with a one-second timeout.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let process = loop {
+            if let Some(process) = cache.lookup(&key) {
+                break Some(process);
             }
-            process
-        });
+            if Instant::now() >= deadline {
+                break None;
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
 
         assert_eq!(process.map(|entry| entry.0), Some(std::process::id()));
     }
