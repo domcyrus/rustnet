@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::platform::create_process_lookup;
@@ -115,12 +114,12 @@ impl App {
                 ProcessDetectionStatus::with_method(method)
             };
         let shutdown = self.runtime.shutdown_signal();
+        let failure_shutdown = shutdown.clone();
         #[cfg(feature = "kubernetes")]
         let kubernetes_mode = self.config.kubernetes_mode;
 
-        let handle = thread::Builder::new()
-            .name("process-enrichment".to_string())
-            .spawn(move || {
+        self.runtime
+            .spawn_monitored("process-enrichment", move || {
                 let failure_status = Arc::clone(&process_detection_status);
                 if let Err(e) = Self::run_process_enrichment(
                     process_lookup,
@@ -138,12 +137,16 @@ impl App {
                         );
                     }
                     error!("Process enrichment thread failed: {}", e);
+                    // Process attribution is optional, so keep the degraded
+                    // runtime alive. Remaining registered until shutdown also
+                    // lets health monitoring distinguish this handled error
+                    // from an unexpected thread panic.
+                    while !failure_shutdown.wait_timeout(Duration::from_secs(60)) {}
                 }
             })
             .map_err(|error| {
                 anyhow::anyhow!("failed to spawn process-enrichment worker: {error}")
             })?;
-        self.runtime.register(handle);
 
         Ok(capture_not_before)
     }
@@ -391,12 +394,12 @@ impl App {
             None => return Ok(()), // No resolver available
         };
 
-        let handle = spawn_loop(
+        spawn_loop(
+            &mut self.runtime,
             "geoip-enrichment",
             "GeoIP enrichment thread started",
             "GeoIP enrichment thread stopping",
             Duration::from_millis(500),
-            self.runtime.shutdown_signal(),
             move || {
                 let mut enriched = 0;
                 for mut entry in tracker.connections().iter_mut() {
@@ -416,7 +419,6 @@ impl App {
             },
         )
         .map_err(|error| anyhow::anyhow!("failed to spawn GeoIP enrichment worker: {error}"))?;
-        self.runtime.register(handle);
 
         Ok(())
     }

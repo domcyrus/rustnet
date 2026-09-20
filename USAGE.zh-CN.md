@@ -8,6 +8,7 @@
 
 - [运行 RustNet](#running-rustnet)
 - [命令行选项](#command-line-options)
+- [无界面模式](#headless-mode)
 - [键盘控制](#keyboard-controls)
 - [鼠标控制](#mouse-controls)
 - [过滤](#filtering)
@@ -57,7 +58,7 @@ rustnet --no-localhost
 # 显示 localhost 连接（覆盖默认过滤）
 rustnet --show-localhost
 
-# 设置 UI 刷新间隔（毫秒）
+# 设置 UI 或无界面快照的刷新间隔（毫秒）
 rustnet -r 500
 rustnet --refresh-interval 2000
 
@@ -87,7 +88,13 @@ Options:
   -i, --interface <INTERFACE>            要监控的网络接口
       --no-localhost                     过滤掉 localhost 连接（默认：已过滤）
       --show-localhost                   显示 localhost 连接（覆盖默认过滤）
-  -r, --refresh-interval <MILLISECONDS>  UI 刷新间隔，单位为毫秒 [默认：500]
+      --headless                         不启动交互式终端 UI
+      --duration <SECONDS>               在指定秒数后停止无界面监控
+      --output <FORMAT>                  无界面输出格式：jsonl（流式快照）或
+                                         json（最终快照）
+      --filter <QUERY>                   使用共享的连接过滤语法筛选无界面输出
+  -r, --refresh-interval <MILLISECONDS>  UI 和无界面快照的刷新间隔，单位为毫秒
+                                         [默认：500]
       --no-dpi                           禁用深度包检测
       --no-resolve-dns                   禁用反向 DNS 查找（默认启用）
       --show-ptr-lookups                 显示 PTR 查找连接（默认隐藏）
@@ -113,6 +120,54 @@ Options:
 ```
 
 使用可选 `kubernetes` feature 编译的版本（包括官方 Docker 镜像）还会提供 `--kubernetes <MODE>`。详见下文的 [`--kubernetes`](#--kubernetes-mode-optional-feature)。
+
+### 无界面模式<a id="headless-mode"></a>
+
+RustNet 默认启动交互式 TUI。如果 stdin 或 stdout 不是终端，程序会在开始抓包前拒绝启动交互模式。脚本、管道、调度器和服务必须显式使用 `--headless`。
+
+```bash
+# 流式输出快照，直到收到中断
+rustnet --headless
+
+# 运行 60 秒后停止，并输出一份最终快照
+rustnet --headless --duration 60 --output json
+
+# 仅流式输出匹配的连接
+rustnet --headless --filter 'process:curl app:https'
+```
+
+无界面模式的参数如下：
+
+- **`--headless`**：不设置终端，并确保 stdout 仅包含机器可读记录。诊断信息会写入 stderr 或已配置的日志文件。
+- **`--duration <SECONDS>`**：在指定的正整数秒数后停止。如果省略，监控会持续到收到支持的关闭信号。JSONL 在发现输出管道已关闭时也会停止。无界面模式在 Unix 上支持 SIGINT、SIGTERM 和 SIGHUP，在 Windows 上支持 Ctrl+C 和 Ctrl+Break。
+- **`--output jsonl|json`**：选择输出形式。JSONL 是默认格式，以每行一个 JSON 对象的方式写出带版本号的最新值快照。当输出产生背压时，队列中的旧快照会被最新快照替换；使用方可通过不连续的 `runtime.snapshot_generation` 值检测到跳过的快照。由时长或信号触发关闭后，JSONL 还会写出一条最终终止记录，其中包含终止原因和关闭结果。JSON 会等待监控停止，然后仅写出一条带版本号的最终记录。
+- **`--filter <QUERY>`**：使用与 TUI 相同的连接过滤语法，包括 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:` 和 `proto:` 等字段，以及 `/pattern/` 正则表达式。
+
+#### Schema 约定
+
+当前输出格式版本为 `schema_version = 1`。每条记录都是快照对象，顶层字段为 `schema_version`、`type`、`timestamp`、`runtime`、`sandbox`、`stats`、`filter`、`connection_count` 和 `connections`。最终终止记录会将 `runtime.status` 设为 `stopping`、`stopped` 或 `stopped_with_errors`，并包含 `runtime.termination_reason` 和 `runtime.shutdown`。连接记录涵盖端点、进程归属、流量、各协议计时、GeoIP，以及可选的 Kubernetes 元数据。`rtt` 对象以毫秒为单位提供当前值、初始值、平滑 TCP 值，以及 DNS、LLMNR、NetBIOS、ICMP echo、STUN 和 NTP 计时。可选的增强与计时字段在被发现前保持为 null；关闭期间排空的连接可能在进程、GeoIP 或 Kubernetes 增强完成前就出现在最终记录中。使用方必须根据 `schema_version` 选择解析逻辑，并允许出现新增的未知字段。
+
+连接 `id` 是不透明标识符，连接转为历史记录后保持不变，并区分之后复用同一端点的连接。流量速率字段为 `traffic.outgoing_bytes_per_second` 和 `traffic.incoming_bytes_per_second`，单位均为字节每秒。如果工作线程超过关闭期限，终止状态保持为 `stopping`，`runtime.shutdown.timed_out_workers` 会报告其数量。此时记录可能仍是最后发布的快照，而非完全排空后的状态；进程以非零状态退出。
+
+如果 JSONL 管道的下游提前关闭，例如使用 `head`，会产生 broken pipe。RustNet 会将其视为成功的停止请求，关闭所有工作线程，并且不会尝试向已经关闭的管道写入最终终止记录。抓包初始化失败或之后发生抓包故障时，程序会以非零状态退出。`--duration`、`--output` 和 `--filter` 必须与 `--headless` 一起使用。
+
+#### 流量历史与抓包文件
+
+快照 JSONL 不是逐包日志，也不是完整的连接事件历史。短连接，尤其是在两次快照之间复用相同端点的新一代连接，可能不会出现在整个输出流中。即使没有丢包且 `runtime.snapshot_generation` 连续，也可能发生这种情况。因此，全局 `stats.packets_processed` 可以准确，而可见连接的计数之和仍然较小。不要跨快照累加累计计数，也不要将最终快照视为完整的会话历史。
+
+需要逐包分析时，请在快照之外保存独立的 PCAP：
+
+```bash
+umask 077
+rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
+  --pcap-export capture.pcap > snapshots.jsonl
+```
+
+导出成功时，PCAP 保存抓包后端收到的数据包，受抓包过滤器和捕获长度限制，无法恢复抓包前丢失的数据包。请检查 `stats.packets_dropped`（处理队列）、`stats.capture_packets_dropped`（抓包后端）和 `stats.interface_packets_dropped`（接口，若可用）。还需确认 `stats.pcap_export_errors` 为零、检查关闭结果，并将 `stats.pcap_records_written` 与实际保存的文件核对：即使没有丢包，写入或刷新失败也可能导致抓包文件不完整。这些计数对应不同阶段，不能无条件证明数据完整。验证覆盖率时，应使用相同接口和抓包过滤器进行独立抓包，检查参考抓包自身的丢包计数，并比较数据包标识和长度，而不只是总数。`--filter` 过滤快照中的连接行，`--bpf-filter` 则限制捕获的流量。`--json-log` 是独立的连接事件流，不是逐包捕获。
+
+stdout、JSON 日志、PCAP、自动生成的 `.connections.jsonl` 旁路文件和 PCAPNG 必须使用不同文件。RustNet 会在截断或写入配置的输出文件前拒绝指向同一普通文件的 stdout。然而，shell 的 `>` 重定向可能在 RustNet 启动前截断文件，因此务必为快照选择独立路径。
+
+每条输出记录都包含一份完整的选定快照。连接越多、元数据越丰富、刷新间隔越短，CPU、内存和磁盘开销通常越大。五秒间隔可降低输出频率，但不能保留快照之间错过的连接，也不会消除后台采集开销。无人值守运行前，请测量实际流量下的资源和存储需求。
 
 ### 选项详情<a id="option-details"></a>
 
@@ -184,7 +239,7 @@ RustNet 自动检测 TUN/TAP 接口并相应调整数据包解析。接口类型
 
 #### `-r, --refresh-interval <MILLISECONDS>`<a id="-r---refresh-interval-milliseconds"></a>
 
-以毫秒为单位设置 UI 刷新率。较低的值提供更灵敏的更新，但会增加 CPU 使用率。
+以毫秒为单位设置 UI 和无界面快照的刷新率，最小值为 1ms。较低的值会使更新更灵敏、JSONL 记录更频繁，但会增加 CPU 使用率。
 
 **建议：**
 - **默认（500ms）**：流畅的实时图表和灵敏的更新

@@ -1,4 +1,4 @@
-//! Minimal headless front-end proving the library-crate pairing the
+//! Low-level headless example proving the library-crate pairing the
 //! workspace split was made for: `rustnet-capture` (frames) ->
 //! `rustnet-core` (parsing + `ConnectionTracker`) -> `rustnet-host`
 //! (process attribution), sandboxed by `rustnet-sandbox`, with interface
@@ -11,7 +11,9 @@
 //! sudo ./target/debug/examples/headless
 //! ```
 //!
-//! Prints a connection summary every two seconds until interrupted.
+//! For stable machine-readable output and graceful signal handling, use
+//! `rustnet --headless`. This example prints a human-readable connection
+//! summary every two seconds until interrupted.
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -29,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     let mut parser = PacketParser::new().with_linktype(linktype);
     // On macOS the flag selects the PKTAP-metadata lookup over lsof; the
     // capture setup reports whether PKTAP is the active device.
-    let process_lookup = rustnet_host::create_process_lookup(device == "pktap")?;
+    let mut process_lookup = rustnet_host::create_process_lookup(device == "pktap")?;
 
     // 2. Apply the sandbox. The already-open capture and eBPF descriptors
     //    survive it; see the rustnet-sandbox crate docs for the ordering
@@ -47,6 +49,7 @@ fn main() -> anyhow::Result<()> {
     };
     let report = apply_sandbox(&sandbox_config)?;
     println!("sandbox: {} ({})", report.status.label(), report.message);
+    process_lookup.start_runtime()?;
 
     // 3. The same interface-stats provider the TUI uses, from rustnet-core.
     let stats_provider = rustnet_core::network::interface_stats::create_stats_provider();

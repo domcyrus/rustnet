@@ -16,11 +16,14 @@
 //! supported product is the `rustnet` binary.
 
 pub mod app;
+pub mod bootstrap;
 pub mod cli;
 pub mod config;
 pub(crate) mod export;
 pub(crate) mod filter;
+pub mod headless;
 pub mod network;
+mod tui;
 pub mod ui;
 
 /// Check if the current process is running with Administrator privileges (Windows only)

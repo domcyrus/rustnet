@@ -8,6 +8,7 @@ This guide covers detailed usage of RustNet, including command-line options, key
 
 - [Running RustNet](#running-rustnet)
 - [Command-line Options](#command-line-options)
+- [Headless Mode](#headless-mode)
 - [Keyboard Controls](#keyboard-controls)
 - [Mouse Controls](#mouse-controls)
 - [Filtering](#filtering)
@@ -57,7 +58,7 @@ rustnet --no-localhost
 # Show localhost connections (override default filtering)
 rustnet --show-localhost
 
-# Set UI refresh interval (in milliseconds)
+# Set the UI or headless snapshot refresh interval (in milliseconds)
 rustnet -r 500
 rustnet --refresh-interval 2000
 
@@ -87,7 +88,13 @@ Options:
   -i, --interface <INTERFACE>            Network interface to monitor
       --no-localhost                     Filter out localhost connections (default: filtered)
       --show-localhost                   Show localhost connections (overrides default filtering)
-  -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 500]
+      --headless                         Run without the interactive terminal UI
+      --duration <SECONDS>               Stop headless monitoring after this many seconds
+      --output <FORMAT>                  Headless output format: jsonl (stream snapshots) or
+                                         json (final snapshot)
+      --filter <QUERY>                   Filter headless output using the shared connection filter syntax
+  -r, --refresh-interval <MILLISECONDS>  UI and headless snapshot refresh interval in milliseconds
+                                         [default: 500]
       --no-dpi                           Disable deep packet inspection
       --no-resolve-dns                   Disable reverse DNS lookups (enabled by default)
       --show-ptr-lookups                 Show PTR lookup connections (hidden by default)
@@ -113,6 +120,54 @@ Options:
 ```
 
 Builds compiled with the optional `kubernetes` feature (including the official Docker image) additionally expose `--kubernetes <MODE>`. See [`--kubernetes`](#--kubernetes-mode-optional-feature) below.
+
+### Headless Mode
+
+RustNet starts its interactive TUI by default. If either stdin or stdout is not a terminal, interactive startup is refused before packet capture begins. Scripts, pipelines, schedulers, and services must opt in explicitly with `--headless`.
+
+```bash
+# Stream snapshots until interrupted
+rustnet --headless
+
+# Stop after 60 seconds and emit one final snapshot
+rustnet --headless --duration 60 --output json
+
+# Stream only matching connections
+rustnet --headless --filter 'process:curl app:https'
+```
+
+The headless controls are:
+
+- **`--headless`**: disables terminal setup and reserves stdout for machine-readable records only. Diagnostics go to stderr or configured log files.
+- **`--duration <SECONDS>`**: stops after a positive whole number of seconds. Without it, monitoring continues until a supported shutdown signal arrives. JSONL also stops when it discovers that its output pipe has closed. Headless shutdown signals are SIGINT, SIGTERM, and SIGHUP on Unix, and Ctrl+C and Ctrl+Break on Windows.
+- **`--output jsonl|json`**: selects the output shape. JSONL is the default and writes versioned latest-value snapshots, one JSON object per line. Under output backpressure, a stale queued snapshot is replaced by the newest one; consumers can detect skipped `runtime.snapshot_generation` values. After a duration or signal shutdown, JSONL also writes a final terminal record containing the termination reason and shutdown result. JSON waits for shutdown and writes exactly one final versioned record.
+- **`--filter <QUERY>`**: applies the same connection-filter syntax as the TUI, including fields such as `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, and `proto:`, plus `/pattern/` regular expressions.
+
+#### Schema contract
+
+The current wire schema is `schema_version = 1`. Every record is a snapshot object with these top-level fields: `schema_version`, `type`, `timestamp`, `runtime`, `sandbox`, `stats`, `filter`, `connection_count`, and `connections`. A terminal record sets `runtime.status` to `stopping`, `stopped`, or `stopped_with_errors`, and includes `runtime.termination_reason` and `runtime.shutdown`. Connection records cover endpoints, process attribution, traffic, protocol timing, GeoIP, and optional Kubernetes metadata. The `rtt` object includes current, initial, smoothed TCP, DNS, LLMNR, NetBIOS, ICMP echo, STUN, and NTP timings in milliseconds. Optional enrichment and timing fields remain null until discovered; connections drained during shutdown can appear before process, GeoIP, or Kubernetes enrichment completes. Consumers must branch on `schema_version` and tolerate unknown additive fields.
+
+Connection `id` values are opaque identifiers that remain stable when a connection becomes historic and distinguish later connections reusing the same endpoints. Traffic rates use `traffic.outgoing_bytes_per_second` and `traffic.incoming_bytes_per_second`, both in bytes per second. If workers exceed the shutdown deadline, the terminal status remains `stopping` and `runtime.shutdown.timed_out_workers` reports their count. That record can contain the last published snapshot rather than fully drained state; the process exits unsuccessfully.
+
+Closing a JSONL pipeline early, for example with `head`, produces a broken pipe. RustNet treats that as a successful request to stop, shuts down its workers, and does not attempt a terminal record on the closed pipe. A packet-capture initialization failure or a later capture failure exits with a nonzero status. `--duration`, `--output`, and `--filter` require `--headless`.
+
+#### Traffic history and capture files
+
+Snapshot JSONL is not a packet log or a complete connection-event history. Short-lived connections, especially generations that reuse the same endpoints between snapshots, can be absent from the entire stream. This can happen with zero packet drops and no gaps in `runtime.snapshot_generation`. Global `stats.packets_processed` can therefore be correct while the sum of the visible connection counters is smaller. Do not sum cumulative counters across snapshots or treat a terminal snapshot as a complete session history.
+
+For packet-level analysis, save a separate PCAP alongside the snapshots:
+
+```bash
+umask 077
+rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
+  --pcap-export capture.pcap > snapshots.jsonl
+```
+
+When export succeeds, PCAP preserves the packets received by the capture backend, subject to capture filters and captured packet length; it cannot recover packets dropped before capture. Inspect `stats.packets_dropped` (processing queue), `stats.capture_packets_dropped` (capture backend), and `stats.interface_packets_dropped` (interface, when available). Also require zero `stats.pcap_export_errors`, check the shutdown result, and compare `stats.pcap_records_written` with the actual saved file: write or flush failures can leave an incomplete capture even with zero packet drops. These counters measure different stages and are not an unconditional proof of completeness. When validating coverage, compare against an independent capture using the same interface and capture filter, check its own drop counters, and compare packet identities and lengths rather than only totals. `--filter` filters snapshot rows, whereas `--bpf-filter` limits captured traffic. `--json-log` is a separate connection-event stream, not a packet capture.
+
+Stdout, JSON logs, PCAP, its generated `.connections.jsonl` sidecar, and PCAPNG must use distinct files. RustNet rejects regular-file stdout aliases before it truncates or writes configured outputs. However, shell redirection with `>` can truncate a file before RustNet starts, so always choose a separate snapshot path.
+
+Every emitted record contains a full selected snapshot. More connections, richer metadata, and shorter refresh intervals increase CPU, memory, and disk usage. A five-second interval reduces output frequency but does not preserve connections missed between snapshots or remove background collection costs. Measure your own traffic and storage budget before unattended use.
 
 ### Option Details
 
@@ -184,7 +239,7 @@ This is useful for reducing noise in the connection list, as most users don't ne
 
 #### `-r, --refresh-interval <MILLISECONDS>`
 
-Set the UI refresh rate in milliseconds. Lower values provide more responsive updates but increase CPU usage.
+Set the UI and headless snapshot refresh rate in milliseconds. The minimum is 1ms. Lower values provide more responsive updates and more frequent JSONL records, but increase CPU usage.
 
 **Recommendations:**
 - **Default (500ms)**: Smooth live graphs and responsive updates

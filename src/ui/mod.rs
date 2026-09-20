@@ -314,7 +314,7 @@ pub fn draw(
 
     // A capture failure can need a second row, so the status bar is measured
     // before the layout is split.
-    let capture_error = app.get_capture_error();
+    let capture_error = app.capture_error();
     let status_height = status_bar_height(capture_error.as_deref(), f.area().width);
 
     let chunks = if ui_state.filter_row_visible() {

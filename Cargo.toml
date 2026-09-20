@@ -45,13 +45,13 @@ version = "1.6.0"
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "A cross-platform network monitoring terminal UI tool built with Rust"
+description = "A cross-platform per-process network monitor with TUI and headless JSON modes"
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/rustnet-monitor"
 readme = "README.md"
 license.workspace = true
-keywords = ["network", "monitoring", "tui", "ebpf", "packet-capture"]
+keywords = ["network", "monitoring", "tui", "headless", "packet-capture"]
 categories = ["command-line-utilities", "network-programming", "visualization"]
 # assets/ (README gif and screenshots, ~9 MB) pushed the crate past the
 # crates.io 10 MB upload limit at v1.5.0; crates.io rewrites the README's
@@ -109,6 +109,7 @@ windows = { workspace = true, features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",

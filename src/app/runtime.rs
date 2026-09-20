@@ -109,9 +109,39 @@ pub struct StopReport {
 pub(super) struct RuntimeSupervisor {
     shutdown: ShutdownSignal,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    unexpected_worker_exit: Arc<Mutex<Option<String>>>,
     shutdown_deadline: Duration,
     stop_state: Mutex<StopState>,
     stopped: Condvar,
+}
+
+struct MonitoredWorkerCompletion {
+    shutdown: ShutdownSignal,
+    unexpected_worker_exit: Arc<Mutex<Option<String>>>,
+    worker_name: String,
+}
+
+impl Drop for MonitoredWorkerCompletion {
+    fn drop(&mut self) {
+        // Serialize completion with shutdown requests. If completion gets this
+        // lock first, the worker exited before shutdown and must be latched.
+        // If shutdown gets it first, this was an expected shutdown exit.
+        let _shutdown_guard = self
+            .shutdown
+            .wake
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.shutdown.requested.load(Ordering::Acquire) {
+            return;
+        }
+
+        let mut unexpected = self
+            .unexpected_worker_exit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unexpected.get_or_insert_with(|| self.worker_name.clone());
+    }
 }
 
 #[derive(Default)]
@@ -132,6 +162,7 @@ impl RuntimeSupervisor {
         Self {
             shutdown: ShutdownSignal::new(Arc::new(AtomicBool::new(false))),
             workers: Mutex::new(Vec::new()),
+            unexpected_worker_exit: Arc::new(Mutex::new(None)),
             shutdown_deadline,
             stop_state: Mutex::new(StopState::default()),
             stopped: Condvar::new(),
@@ -154,10 +185,38 @@ impl RuntimeSupervisor {
             .is_empty()
     }
 
-    /// Register a worker during the exclusive application startup phase.
-    /// Requiring mutable access makes registration concurrent with shutdown
-    /// impossible in safe code.
-    pub(super) fn register(&mut self, handle: JoinHandle<()>) {
+    /// Spawn and register a critical worker during the exclusive application
+    /// startup phase. Normal returns and panics are both latched when they
+    /// happen before shutdown is requested.
+    pub(super) fn spawn_monitored(
+        &mut self,
+        worker_name: impl Into<String>,
+        worker: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<()> {
+        let worker_name = worker_name.into();
+        let shutdown = self.shutdown.clone();
+        let unexpected_worker_exit = Arc::clone(&self.unexpected_worker_exit);
+        let completion_name = worker_name.clone();
+        let handle = thread::Builder::new().name(worker_name).spawn(move || {
+            let _completion = MonitoredWorkerCompletion {
+                shutdown,
+                unexpected_worker_exit,
+                worker_name: completion_name,
+            };
+            worker();
+        })?;
+        self.register_handle(handle);
+        Ok(())
+    }
+
+    /// Register an auxiliary or intentionally finite worker that should still
+    /// be owned and joined, but whose completion does not make the core
+    /// monitoring runtime unhealthy.
+    pub(super) fn register_unmonitored(&mut self, handle: JoinHandle<()>) {
+        self.register_handle(handle);
+    }
+
+    fn register_handle(&mut self, handle: JoinHandle<()>) {
         let state = self
             .stop_state
             .lock()
@@ -169,6 +228,14 @@ impl RuntimeSupervisor {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(handle);
+    }
+
+    /// Name of a monitored worker that exited before shutdown was requested.
+    pub(super) fn unexpected_worker_exit(&self) -> Option<String> {
+        self.unexpected_worker_exit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn take_workers(&self) -> Vec<JoinHandle<()>> {
@@ -322,10 +389,12 @@ mod tests {
         let shutdown = runtime.shutdown_signal();
         let (waiting_tx, waiting_rx) = mpsc::sync_channel(1);
 
-        runtime.register(thread::spawn(move || {
-            waiting_tx.send(()).unwrap();
-            assert!(shutdown.wait_timeout(Duration::from_secs(30)));
-        }));
+        runtime
+            .spawn_monitored("waiting-worker", move || {
+                waiting_tx.send(()).unwrap();
+                assert!(shutdown.wait_timeout(Duration::from_secs(30)));
+            })
+            .unwrap();
 
         waiting_rx.recv().unwrap();
         let started = Instant::now();
@@ -346,10 +415,12 @@ mod tests {
     #[test]
     fn join_report_counts_worker_panics() {
         let mut runtime = RuntimeSupervisor::new();
-        runtime.register(thread::spawn(|| {
-            // Exercise unwinding without panic-hook backtrace latency.
-            std::panic::resume_unwind(Box::new("worker failed"));
-        }));
+        runtime
+            .spawn_monitored("panicking-worker", || {
+                // Exercise unwinding without panic-hook backtrace latency.
+                std::panic::resume_unwind(Box::new("worker failed"));
+            })
+            .unwrap();
 
         let report = runtime.stop_and_join(|_| {}, |_| {});
         assert_eq!(report.joined_workers, 1);
@@ -363,23 +434,25 @@ mod tests {
         let (started_tx, started_rx) = mpsc::sync_channel(3);
         let (exited_tx, exited_rx) = mpsc::sync_channel(3);
 
-        for _ in 0..3 {
+        for i in 0..3 {
             let release = Arc::clone(&release);
             let started_tx = started_tx.clone();
             let exited_tx = exited_tx.clone();
-            runtime.register(thread::spawn(move || {
-                started_tx.send(()).unwrap();
-                let (lock, wake) = &*release;
-                let mut released = lock
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                while !*released {
-                    released = wake
-                        .wait(released)
+            runtime
+                .spawn_monitored(format!("blocked-worker-{i}"), move || {
+                    started_tx.send(()).unwrap();
+                    let (lock, wake) = &*release;
+                    let mut released = lock
+                        .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                exited_tx.send(()).unwrap();
-            }));
+                    while !*released {
+                        released = wake
+                            .wait(released)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    }
+                    exited_tx.send(()).unwrap();
+                })
+                .unwrap();
         }
         drop(started_tx);
         drop(exited_tx);
@@ -445,30 +518,30 @@ mod tests {
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let worker_release = Arc::clone(&release);
 
-        let panicking_worker = thread::spawn(|| {
-            std::panic::resume_unwind(Box::new("worker failed"));
-        });
-        let panic_deadline = Instant::now() + Duration::from_secs(5);
-        while !panicking_worker.is_finished() {
-            assert!(
-                Instant::now() < panic_deadline,
-                "panicking test worker did not finish"
-            );
-            thread::yield_now();
-        }
-        runtime.register(panicking_worker);
-        runtime.register(thread::spawn(move || {
-            started_tx.send(()).unwrap();
-            let (lock, wake) = &*worker_release;
-            let mut released = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            while !*released {
-                released = wake
-                    .wait(released)
+        runtime
+            .spawn_monitored("panicking-worker", || {
+                // Exercise unwinding without panic-hook backtrace latency.
+                std::panic::resume_unwind(Box::new("worker failed"));
+            })
+            .unwrap();
+        assert_eq!(
+            wait_for_unexpected_exit(&runtime).as_deref(),
+            Some("panicking-worker")
+        );
+        runtime
+            .spawn_monitored("blocked-worker", move || {
+                started_tx.send(()).unwrap();
+                let (lock, wake) = &*worker_release;
+                let mut released = lock
+                    .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-        }));
+                while !*released {
+                    released = wake
+                        .wait(released)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            })
+            .unwrap();
         started_rx.recv().unwrap();
 
         let first = runtime.stop_and_join(|_| {}, |_| {});
@@ -492,13 +565,15 @@ mod tests {
     fn finalization_starts_only_after_every_registered_worker_exits() {
         let mut runtime = RuntimeSupervisor::new();
         let exited = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        for _ in 0..3 {
+        for i in 0..3 {
             let shutdown = runtime.shutdown_signal();
             let exited = Arc::clone(&exited);
-            runtime.register(thread::spawn(move || {
-                shutdown.wait_timeout(Duration::from_secs(30));
-                exited.fetch_add(1, Ordering::Release);
-            }));
+            runtime
+                .spawn_monitored(format!("finalization-worker-{i}"), move || {
+                    shutdown.wait_timeout(Duration::from_secs(30));
+                    exited.fetch_add(1, Ordering::Release);
+                })
+                .unwrap();
         }
 
         let report = runtime.stop_and_join(
@@ -510,6 +585,79 @@ mod tests {
             },
         );
         assert_eq!(report.joined_workers, 3);
+    }
+
+    fn wait_for_unexpected_exit(runtime: &RuntimeSupervisor) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Some(worker) = runtime.unexpected_worker_exit() {
+                return Some(worker);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn normal_early_exit_is_latched() {
+        let mut runtime = RuntimeSupervisor::new();
+        runtime.spawn_monitored("early-worker", || {}).unwrap();
+
+        assert_eq!(
+            wait_for_unexpected_exit(&runtime).as_deref(),
+            Some("early-worker")
+        );
+        let report = runtime.stop_and_join(|_| {}, |_| {});
+        assert_eq!(report.joined_workers, 1);
+        assert_eq!(report.panicked_workers, 0);
+        assert_eq!(
+            runtime.unexpected_worker_exit().as_deref(),
+            Some("early-worker")
+        );
+    }
+
+    #[test]
+    fn panic_before_shutdown_is_latched() {
+        let mut runtime = RuntimeSupervisor::new();
+        runtime
+            .spawn_monitored("panic-worker", || {
+                // Exercise unwinding without panic-hook backtrace latency.
+                std::panic::resume_unwind(Box::new("worker failed"));
+            })
+            .unwrap();
+
+        assert_eq!(
+            wait_for_unexpected_exit(&runtime).as_deref(),
+            Some("panic-worker")
+        );
+        let report = runtime.stop_and_join(|_| {}, |_| {});
+        assert_eq!(report.joined_workers, 1);
+        assert_eq!(report.panicked_workers, 1);
+        assert_eq!(
+            runtime.unexpected_worker_exit().as_deref(),
+            Some("panic-worker")
+        );
+    }
+
+    #[test]
+    fn shutdown_caused_exit_is_not_latched() {
+        let mut runtime = RuntimeSupervisor::new();
+        let shutdown = runtime.shutdown_signal();
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        runtime
+            .spawn_monitored("cooperative-worker", move || {
+                started_tx.send(()).unwrap();
+                assert!(shutdown.wait_timeout(Duration::from_secs(30)));
+            })
+            .unwrap();
+        started_rx.recv().unwrap();
+
+        let report = runtime.stop_and_join(|_| {}, |_| {});
+        assert_eq!(report.joined_workers, 1);
+        assert_eq!(report.panicked_workers, 0);
+        assert_eq!(runtime.unexpected_worker_exit(), None);
     }
 
     #[test]
