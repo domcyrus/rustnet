@@ -1,7 +1,7 @@
 name: 'Package Release Archive'
 description: >-
-  Stage a built rustnet binary with the services asset, README and LICENSE in
-  the release-archive layout and pack it as tar.gz or zip.
+  Stage a built rustnet binary with runtime assets, documentation and the
+  Linux service example, then pack it as tar.gz or zip.
 
 # The staging layout is a cross-job contract: package-installers, package-macos
 # and package-windows in release.yml (and the Homebrew formula) unpack
@@ -47,6 +47,17 @@ runs:
 
         cp README.md "$staging/"
         cp LICENSE "$staging/" 2>/dev/null || true
+
+        # This Linux example is documentation only. Archives for other
+        # platforms do not claim to provide a native service installer.
+        case "${{ inputs.target }}" in
+          *-unknown-linux-*)
+            cp SERVICE.md SERVICE.zh-CN.md SERVICE.ja.md "$staging/"
+            mkdir -p "$staging/resources/packaging/linux/systemd"
+            cp resources/packaging/linux/systemd/rustnet-headless.service \
+              "$staging/resources/packaging/linux/systemd/"
+            ;;
+        esac
 
         if [ "${{ inputs.format }}" = "zip" ]; then
           7z a "$staging.zip" "$staging"

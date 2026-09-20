@@ -18,6 +18,7 @@
 - [通过 Cargo 安装](#install-via-cargo)
 - [从源码构建](#building-from-source)
 - [使用 Docker](#using-docker)
+- [可选的 Linux systemd 服务](SERVICE.zh-CN.md)
 - [前置要求](#prerequisites)
 - [权限配置](#permissions-setup)
 - [GeoIP 数据库（可选）](#geoip-databases-optional)

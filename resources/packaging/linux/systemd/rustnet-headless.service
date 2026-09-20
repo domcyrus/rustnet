@@ -1,0 +1,48 @@
+# Documentation example only. Copy this unit to /etc/systemd/system/ after
+# reading SERVICE.md and adjusting ExecStart for the installed binary.
+[Unit]
+Description=RustNet headless network snapshots
+Documentation=https://github.com/domcyrus/rustnet/blob/main/SERVICE.md
+After=network.target
+
+[Service]
+Type=simple
+User=root
+# Never select an administrator's account from an inherited sudo environment.
+# RustNet opens capture and eBPF resources as root, then drops to nobody.
+UnsetEnvironment=SUDO_UID SUDO_GID SUDO_USER
+ExecStart=/usr/bin/rustnet --headless --interface any --refresh-interval 5000 --output jsonl
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+# PID 1 opens stdout before RustNet drops privileges. Keep snapshots separate
+# from journal diagnostics, which can split large JSON records across lines.
+# Create /var/lib/rustnet as root with mode 0700 before the first start, as
+# documented in SERVICE.md: stdout can open before StateDirectory is prepared.
+UMask=0077
+StateDirectory=rustnet
+StateDirectoryMode=0700
+StandardOutput=append:/var/lib/rustnet/headless.jsonl
+StandardError=journal
+
+# Capture and eBPF setup need NET_RAW, BPF and PERFMON. SETUID and SETGID
+# are used only for the startup privilege drop. No SYS_ADMIN is granted.
+CapabilityBoundingSet=CAP_NET_RAW CAP_BPF CAP_PERFMON CAP_SETUID CAP_SETGID
+# Preserve the UID-drop capability through systemd's seccomp setup, including
+# systemd 255. RustNet clears ambient capabilities before dropping to nobody.
+AmbientCapabilities=CAP_SETUID
+LimitMEMLOCK=infinity
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rustnet
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

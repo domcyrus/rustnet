@@ -131,6 +131,8 @@ rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
 
 リダイレクトした stdout、JSON ログ、PCAP とそのサイドカー、PCAPNG には異なるファイルを指定してください。RustNet は設定された出力を切り詰める前に重複を拒否しますが、シェルの `>` はプログラムの起動前にファイルを切り詰める場合があります。
 
+明示的に有効化する Linux systemd の設定例、プライベートな出力、端末なしの Docker 実行は [SERVICE.ja.md](SERVICE.ja.md) を参照してください。パッケージはユニットをドキュメントとしてのみ配布します。
+
 テーマと各色の上書きは `~/.config/rustnet/config.toml` でも設定できます（`--theme` が優先）。詳細は [USAGE.md](USAGE.md#--theme-preset) を参照してください。
 
 ## 基本操作

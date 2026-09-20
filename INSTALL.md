@@ -18,6 +18,7 @@ This guide covers all installation methods for RustNet across different platform
 - [Install via Cargo](#install-via-cargo)
 - [Building from Source](#building-from-source)
 - [Using Docker](#using-docker)
+- [Optional Linux systemd service](SERVICE.md)
 - [Prerequisites](#prerequisites)
 - [Permissions Setup](#permissions-setup)
 - [GeoIP Databases (Optional)](#geoip-databases-optional)

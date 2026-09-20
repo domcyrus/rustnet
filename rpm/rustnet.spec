@@ -62,6 +62,7 @@ Features:
   proto, plus regex
 - GeoIP country lookups via local MaxMind GeoLite2 (no network calls)
 - Cross-platform: Linux, macOS, Windows, FreeBSD
+- Headless JSONL snapshots and an optional systemd documentation example
 
 %prep
 %if 0%{?suse_version}
@@ -94,6 +95,8 @@ install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_da
 %files
 %license LICENSE
 %doc README.md
+%doc SERVICE.md SERVICE.zh-CN.md SERVICE.ja.md
+%doc resources/packaging/linux/systemd/rustnet-headless.service
 %{_bindir}/rustnet
 %dir %{_datadir}/%{name}
 %{_datadir}/%{name}/services
