@@ -10,7 +10,7 @@ expression: output
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-▎ proc → 203.0.113.7:4433 [DNS_RESPONSE] · click a field to copy                                                                            
+▎ proc → 203.0.113.7:4433 [DNS_RESPONSE] · click a field to copy ───────────────────────────────────────────────────────────────────────────
 Connection                                                            Application: DNS                                                     ▐
 Protocol              UDP                                             DNS Query             example.com                                    ▐
 Status                Active (last seen <T> ago)                       DNS Type              A                                              ▐
@@ -34,7 +34,7 @@ City                  -
 ASN                   -                                                                                                                     
                                                                                                                                             
                                                                                                                                             
-▎ Traffic Statistics                                                                                                                        
+▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  

@@ -211,7 +211,9 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         halves[0],
         &rx,
         "↓ RX",
-        braille_graph::WavePanelOptions::new(frac, window).with_max_val(history.rx_graph_ceiling()),
+        braille_graph::WavePanelOptions::new(frac, window)
+            .with_max_val(history.rx_graph_ceiling())
+            .with_header_color(theme::rx()),
         theme::rx_wave,
     );
     braille_graph::wave_panel(
@@ -219,7 +221,9 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         halves[2],
         &tx,
         "↑ TX",
-        braille_graph::WavePanelOptions::new(frac, window).with_max_val(history.tx_graph_ceiling()),
+        braille_graph::WavePanelOptions::new(frac, window)
+            .with_max_val(history.tx_graph_ceiling())
+            .with_header_color(theme::tx()),
         theme::tx_wave,
     );
 }
@@ -381,15 +385,13 @@ fn draw_app_distribution(f: &mut Frame, dist: &AppProtocolDistribution, area: Re
             continue;
         }
 
-        let filled = ((pct / 100.0) * bar_width as f64) as usize;
-
-        let (color, ramp): (Color, fn(f64) -> Color) = match label {
-            "HTTPS" => (theme::proto_https(), theme::ok_wave),
-            "QUIC" => (theme::proto_quic(), theme::accent_wave),
-            "HTTP" => (theme::proto_http(), theme::warn_wave),
-            "DNS" => (theme::proto_dns(), theme::special_wave),
-            "SSH" => (theme::proto_ssh(), theme::tx_wave),
-            _ => (theme::proto_other(), theme::muted_wave),
+        let color = match label {
+            "HTTPS" => theme::proto_https(),
+            "QUIC" => theme::proto_quic(),
+            "HTTP" => theme::proto_http(),
+            "DNS" => theme::proto_dns(),
+            "SSH" => theme::proto_ssh(),
+            _ => theme::proto_other(),
         };
 
         let mut spans = vec![
@@ -399,7 +401,7 @@ fn draw_app_distribution(f: &mut Frame, dist: &AppProtocolDistribution, area: Re
             ),
             Span::raw(" "),
         ];
-        spans.extend(glow_bar::from_filled(filled, bar_width, ramp));
+        spans.extend(glow_bar::themed_spans(pct / 100.0, bar_width, color));
         spans.push(Span::raw(format!(" {:>5.1}%", pct)));
         lines.push(Line::from(spans));
     }
@@ -506,39 +508,41 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
 
     let rtt_line = if let Some(rtt) = current_rtt {
         let rtt_pct = (rtt / RTT_MAX).min(1.0);
-        let filled = (rtt_pct * bar_width as f64) as usize;
-
-        let (color, ramp) = theme::rtt_tier(rtt);
+        let color = theme::rtt_color(rtt);
 
         let mut spans = vec![Span::styled(
             "  RTT  ",
             Style::default().add_modifier(Modifier::BOLD),
         )];
-        spans.extend(glow_bar::from_filled(filled, bar_width, ramp));
+        spans.extend(glow_bar::themed_spans(rtt_pct, bar_width, color));
         spans.push(Span::styled(format!(" {:>6.1}ms", rtt), theme::fg(color)));
         Line::from(spans)
     } else {
-        Line::from(vec![
-            Span::styled("  RTT  ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled("░".repeat(bar_width), theme::fg(theme::muted())),
-            Span::styled("    --  ", theme::fg(theme::muted())),
-        ])
+        let mut spans = vec![Span::styled(
+            "  RTT  ",
+            Style::default().add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(glow_bar::themed_spans(0.0, bar_width, theme::muted()));
+        spans.push(Span::styled(
+            format!(" {:>8}", "--"),
+            theme::fg(theme::muted()),
+        ));
+        Line::from(spans)
     };
 
-    let loss_pct = (current_loss / LOSS_MAX).min(1.0);
-    let filled = (loss_pct * bar_width as f64) as usize;
-
-    let (loss_color, loss_ramp) = theme::tier(current_loss, 1.0, 5.0);
+    // Keep a positive loss visible without rounding it up to a whole cell.
+    let loss_pct = if current_loss > 0.0 {
+        (current_loss / LOSS_MAX).clamp(0.125 / bar_width as f64, 1.0)
+    } else {
+        0.0
+    };
+    let loss_color = theme::tier_color(current_loss, 1.0, 5.0);
 
     let mut loss_spans = vec![Span::styled(
         "  Loss ",
         Style::default().add_modifier(Modifier::BOLD),
     )];
-    loss_spans.extend(glow_bar::from_filled(
-        filled.max(if current_loss > 0.0 { 1 } else { 0 }),
-        bar_width,
-        loss_ramp,
-    ));
+    loss_spans.extend(glow_bar::themed_spans(loss_pct, bar_width, loss_color));
     loss_spans.push(Span::styled(
         format!(" {:>6.2}%", current_loss),
         theme::fg(loss_color),
@@ -630,26 +634,20 @@ fn draw_tcp_states(f: &mut Frame, state_counts: &[usize; TCP_STATE_NAMES.len()],
         .iter()
         .take(max_rows)
         .map(|(name, count)| {
-            let bar_len = (*count * bar_width).checked_div(max_count).unwrap_or(0);
-
-            // Label color keeps the semantic state alias; the bar
-            // itself glows in the matching gradient family.
-            let (color, ramp): (Color, fn(f64) -> Color) = match *name {
-                "ESTAB" => (theme::tcp_established(), theme::ok_wave),
-                "SYN_SENT" | "SYN_RECV" => (theme::tcp_opening(), theme::warn_wave),
-                "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" => {
-                    (theme::tcp_closing(), theme::muted_wave)
-                }
-                "CLOSE_WAIT" | "LAST_ACK" | "CLOSING" => (theme::tcp_waiting(), theme::muted_wave),
-                "CLOSED" => (theme::tcp_closed(), theme::muted_wave),
-                _ => (Color::Reset, theme::muted_wave),
+            let color = match *name {
+                "ESTAB" => theme::tcp_established(),
+                "SYN_SENT" | "SYN_RECV" => theme::tcp_opening(),
+                "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" => theme::tcp_closing(),
+                "CLOSE_WAIT" | "LAST_ACK" | "CLOSING" => theme::tcp_waiting(),
+                "CLOSED" => theme::tcp_closed(),
+                _ => Color::Reset,
             };
 
             let mut spans = vec![Span::styled(format!("{:>10} ", name), theme::fg(color))];
-            // No empty track here: rows are scaled to the max count,
-            // so a full-width track would just add noise.
-            let filled = bar_len.max(1).min(bar_width);
-            spans.extend(glow_bar::from_filled(filled, filled, ramp));
+            // Keep rare states visible with at least an eighth-cell tip.
+            // A shared track width aligns counts across the state rows.
+            let fraction = (*count as f64 / max_count as f64).max(0.125 / bar_width as f64);
+            spans.extend(glow_bar::themed_spans(fraction, bar_width, color));
             spans.push(Span::raw(format!(" {:>4}", count)));
             Line::from(spans)
         })

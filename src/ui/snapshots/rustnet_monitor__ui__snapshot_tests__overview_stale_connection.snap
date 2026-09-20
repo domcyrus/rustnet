@@ -4,7 +4,7 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-▎ Live Connections                                                                                                                          
+▎ Live Connections ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   Process               Remote                Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑  
                                                                                                                                             
 ▌▎firefox (2001)        140.82.121.4:443      192.168.1.10:51234 https      TCP·HTTPS                ESTABLISHED    23ms R3/O1     2m left  

@@ -921,9 +921,11 @@ The table adapts to the available terminal width, so narrower terminals hide som
 | **Remote** | Number of unique remote socket endpoints across the retained connections. An endpoint is an IP address plus port, so one host contacted on two ports counts as two remotes. Repeated connections to the same endpoint count once. A `+` suffix means the count exceeded the 256-destination display cap. |
 | **Top remote peer** | Remote endpoint with the most retained traffic in the selected direction. |
 
-Traffic Pulse shows the current captured rate, but calculates coverage from captured bytes and interface-counter bytes over the same rolling 60-second window. This avoids the large fluctuations caused by comparing independently sampled instantaneous rates. Coverage divides the captured total by the interface total and caps the displayed percentage at 100%, because slightly different window endpoints or counter visibility can otherwise produce small overages. Both raw totals remain visible for diagnosis. When RustNet captures one named interface, it compares directly with that interface. With multi-interface capture, RustNet compares against a host-wide interface aggregate and prefixes the value with `~` because VPN and virtual interface counters can overlap.
+The paired RX/TX summaries show the current captured rate, but calculate coverage from captured bytes and interface-counter bytes over the same rolling 60-second window. This avoids the large fluctuations caused by comparing independently sampled instantaneous rates. Coverage divides the captured total by the interface total and caps the displayed percentage at 100%, because slightly different window endpoints or counter visibility can otherwise produce small overages. Wide terminals show the captured totals in the summaries and the interface totals in the coverage sidebar. When RustNet captures one named interface, it compares directly with that interface. With multi-interface capture, RustNet compares against a host-wide interface aggregate and prefixes the value with `~` because VPN and virtual interface counters can overlap.
 
-Press `d` to switch between Egress (TX, blue) and Ingress (RX, green), `s` to cycle the Activity sort metric, and `S` to reverse its order. The detailed interface table lives on the Host tab (press `5`, then `i`).
+Wide terminals place capture coverage, process attribution, and interface rates in a sidebar, leaving the process table as the main view. Narrower terminals fold coverage and attribution into the summaries and hide the interface panel. Share bars blend the selected theme's neutral and traffic colours, ending at its TX/RX token rather than white. ANSI themes use shaded block textures in the terminal's own palette.
+
+Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `5`, then `i`).
 
 For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
 
@@ -1195,6 +1197,8 @@ In process grouping mode (`a`), group headers show the historic connection count
 **Graph tab:**
 
 The graph tab always shows only active connections, even when historic mode is on.
+
+Observed Network Health, Observed TCP States, and Application Distribution use the same bar style as Activity: theme-derived shading, fractional tips, and dotted tracks, with textured blocks for ANSI themes. Health bars match their numeric value's healthy, warning, or error colour; missing RTT uses an empty dotted track and `--`. Distribution bars match their state or protocol label colour. TCP bars are scaled to the largest state count, with counts aligned on the right; application bars show each protocol's percentage of active connections.
 
 **Resetting:**
 

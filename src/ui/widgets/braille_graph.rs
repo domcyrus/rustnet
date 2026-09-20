@@ -26,6 +26,7 @@ pub(in crate::ui) struct WavePanelOptions {
     frac: f64,
     window: usize,
     max_val: Option<f64>,
+    header_color: Option<Color>,
 }
 
 impl WavePanelOptions {
@@ -35,11 +36,17 @@ impl WavePanelOptions {
             frac,
             window,
             max_val: None,
+            header_color: None,
         }
     }
 
     pub(in crate::ui) fn with_summary(mut self, summary: Line<'static>) -> Self {
         self.summary = Some(summary);
+        self
+    }
+
+    pub(in crate::ui) fn with_header_color(mut self, color: Color) -> Self {
+        self.header_color = Some(color);
         self
     }
 
@@ -246,9 +253,14 @@ pub(in crate::ui) fn wave_panel(
     let max_val = options.max_val.unwrap_or(peak).max(1024.0);
     let speed_ratio = (current / max_val).clamp(0.0, 1.0);
 
-    let value_color = wave(0.35 + 0.65 * speed_ratio);
+    let value_color = options
+        .header_color
+        .unwrap_or_else(|| wave(0.35 + 0.65 * speed_ratio));
     let left = vec![
-        Span::styled(format!("{label} "), theme::bold_fg(wave(0.4))),
+        Span::styled(
+            format!("{label} "),
+            theme::bold_fg(options.header_color.unwrap_or_else(|| wave(0.4))),
+        ),
         Span::styled(format_header_rate(current), theme::bold_fg(value_color)),
         Span::styled(
             format!(" {}", trend_glyph(samples)),

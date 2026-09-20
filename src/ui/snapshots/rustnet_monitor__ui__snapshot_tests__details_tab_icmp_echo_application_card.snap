@@ -10,7 +10,7 @@ expression: output
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-▎ ping → 8.8.8.8:0 [ECHO_REQ(4660)] [RTT 8.7ms] · click a field to copy                                                                     
+▎ ping → 8.8.8.8:0 [ECHO_REQ(4660)] [RTT 8.7ms] · click a field to copy ────────────────────────────────────────────────────────────────────
 Connection                                                            Application: ICMP                                                    ▐
 Protocol              ICMP                                            Message               Echo Request                                   ▐
 Status                Active (last seen <T> ago)                       Echo ID               4660                                           ▐
@@ -34,7 +34,7 @@ City                  -
 ASN                   -                                                                                                                     
                                                                                                                                             
                                                                                                                                             
-▎ Traffic Statistics                                                                                                                        
+▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  

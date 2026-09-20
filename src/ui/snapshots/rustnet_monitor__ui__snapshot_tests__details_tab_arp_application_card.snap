@@ -10,7 +10,7 @@ expression: output
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-▎ ? → 192.168.1.1:0 [ARP_WHO_HAS 192.168.1.1 (Apple, Inc.)] · click a field to copy                                                         
+▎ ? → 192.168.1.1:0 [ARP_WHO_HAS 192.168.1.1 (Apple, Inc.)] · click a field to copy ────────────────────────────────────────────────────────
 Connection                                                            Application: ARP                                                     ▐
 Protocol              ARP                                             Operation             Request                                        ▐
 Status                Active (last seen <T> ago)                       Sender MAC            68:5e:dd:09:15:5e                              ▐
@@ -34,7 +34,7 @@ City                  -
 ASN                   -                                                                                                                     
                                                                                                                                             
                                                                                                                                             
-▎ Traffic Statistics                                                                                                                        
+▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  

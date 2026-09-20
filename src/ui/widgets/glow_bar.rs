@@ -1,5 +1,5 @@
-//! Truecolor horizontal bars using the same dark-to-bright ramps as the
-//! braille traffic graphs. Bars have sub-cell precision: the tip renders
+//! Horizontal bars with theme-derived shading and an ANSI texture fallback.
+//! Bars have sub-cell precision: the tip renders
 //! the fractional cell with an eighth-block glyph, and the unfilled
 //! remainder is a quiet dotted track. Under NO_COLOR the block-vs-dot
 //! glyph contrast keeps the bar legible on its own.
@@ -16,10 +16,22 @@ const EIGHTHS: [&str; 7] = [
 /// Quiet track glyph (middle dot) for the unfilled remainder.
 const TRACK: &str = "\u{00B7}";
 
-pub(in crate::ui) fn spans(
+/// Theme-derived gradient, with a textured ANSI fallback. Geometry and
+/// fractional tips are shared with the other bars.
+pub(in crate::ui) fn themed_spans(fraction: f64, width: usize, color: Color) -> Vec<Span<'static>> {
+    fractional_spans(
+        fraction,
+        width,
+        |t| theme::bar_tint(color, t),
+        !matches!(color, Color::Rgb(..)),
+    )
+}
+
+fn fractional_spans(
     fraction: f64,
     width: usize,
-    ramp: fn(f64) -> Color,
+    ramp: impl Fn(f64) -> Color,
+    textured: bool,
 ) -> Vec<Span<'static>> {
     let cells = fraction.clamp(0.0, 1.0) * width as f64;
     let mut whole = cells.floor() as usize;
@@ -32,25 +44,18 @@ pub(in crate::ui) fn spans(
         whole = width;
         tip_eighths = 0;
     }
-    render(whole, tip_eighths, width, ramp)
-}
-
-pub(in crate::ui) fn from_filled(
-    filled: usize,
-    width: usize,
-    ramp: fn(f64) -> Color,
-) -> Vec<Span<'static>> {
-    render(filled.min(width), 0, width, ramp)
+    render(whole, tip_eighths, width, ramp, textured)
 }
 
 /// `whole` full cells, then an optional eighth-block tip (`tip_eighths` in
 /// 1..=7), then the track. The gradient walks every lit cell including the
-/// tip, so the crest always sits at the bar's leading edge.
+/// tip, where it reaches the semantic colour token.
 fn render(
     whole: usize,
     tip_eighths: usize,
     width: usize,
-    ramp: fn(f64) -> Color,
+    ramp: impl Fn(f64) -> Color,
+    textured: bool,
 ) -> Vec<Span<'static>> {
     let lit = whole + usize::from(tip_eighths > 0);
     let color_at = |i: usize| {
@@ -59,11 +64,21 @@ fn render(
         } else {
             1.0
         };
-        ramp(0.15 + 0.85 * t)
+        ramp(t)
     };
     let mut spans: Vec<Span> = Vec::with_capacity(lit + 1);
     for i in 0..whole {
-        spans.push(Span::styled("█", theme::fg(color_at(i))));
+        let glyph = if textured && lit >= 4 {
+            match i * 4 / lit {
+                0 => "░",
+                1 => "▒",
+                2 => "▓",
+                _ => "█",
+            }
+        } else {
+            "█"
+        };
+        spans.push(Span::styled(glyph, theme::fg(color_at(i))));
     }
     if tip_eighths > 0 {
         spans.push(Span::styled(
@@ -88,24 +103,32 @@ mod tests {
     use crate::ui::test_support::spans_text;
     use ratatui::style::Color;
 
-    fn flat_ramp(_t: f64) -> Color {
-        Color::Green
-    }
-
     fn rendered_width(spans: &[Span<'_>]) -> usize {
         spans.iter().map(|s| s.content.chars().count()).sum()
     }
 
     #[test]
+    fn themed_bars_shade_rgb_and_preserve_ansi_palette() {
+        let token = Color::Rgb(90, 140, 190);
+        let rgb = themed_spans(0.75, 8, token);
+        assert_ne!(rgb[0].style.fg, rgb[5].style.fg);
+        assert_eq!(rgb[5].style, theme::fg(token));
+        assert_eq!(rendered_width(&rgb), 8);
+        let ansi = themed_spans(1.0, 8, Color::Blue);
+        assert_eq!(spans_text(&ansi), "░░▒▒▓▓██");
+        assert!(ansi.iter().all(|span| span.style == theme::fg(Color::Blue)));
+    }
+
+    #[test]
     fn empty_bar_is_all_track() {
-        let s = spans(0.0, 4, flat_ramp);
+        let s = themed_spans(0.0, 4, Color::Rgb(0, 180, 90));
         assert_eq!(spans_text(&s), "····");
         assert_eq!(rendered_width(&s), 4);
     }
 
     #[test]
     fn full_bar_has_no_track() {
-        let s = spans(1.0, 4, flat_ramp);
+        let s = themed_spans(1.0, 4, Color::Rgb(0, 180, 90));
         assert_eq!(spans_text(&s), "████");
         assert_eq!(rendered_width(&s), 4);
     }
@@ -113,7 +136,7 @@ mod tests {
     #[test]
     fn fractional_tip_uses_eighth_blocks() {
         // 2.5 cells over width 4: two full blocks, a half-block tip, one track cell.
-        let s = spans(0.625, 4, flat_ramp);
+        let s = themed_spans(0.625, 4, Color::Rgb(0, 180, 90));
         assert_eq!(spans_text(&s), "██▌·");
         assert_eq!(rendered_width(&s), 4);
     }
@@ -121,28 +144,20 @@ mod tests {
     #[test]
     fn tip_rounds_up_to_full_cell() {
         // 1.99 cells rounds to 2 full blocks, never a stray tip glyph.
-        let s = spans(0.995, 2, flat_ramp);
+        let s = themed_spans(0.995, 2, Color::Rgb(0, 180, 90));
         assert_eq!(spans_text(&s), "██");
     }
 
     #[test]
     fn tiny_fraction_shows_one_eighth() {
-        let s = spans(0.01, 10, flat_ramp);
+        let s = themed_spans(0.01, 10, Color::Rgb(0, 180, 90));
         assert_eq!(spans_text(&s), "▏·········");
-    }
-
-    #[test]
-    fn from_filled_stays_whole_cell() {
-        let s = from_filled(2, 5, flat_ramp);
-        assert_eq!(spans_text(&s), "██···");
-        let overshoot = from_filled(9, 5, flat_ramp);
-        assert_eq!(spans_text(&overshoot), "█████");
     }
 
     #[test]
     fn width_is_preserved_across_fractions() {
         for i in 0..=100 {
-            let s = spans(i as f64 / 100.0, 7, flat_ramp);
+            let s = themed_spans(i as f64 / 100.0, 7, Color::Rgb(0, 180, 90));
             assert_eq!(rendered_width(&s), 7, "fraction {i}%");
         }
     }

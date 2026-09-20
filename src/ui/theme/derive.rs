@@ -31,6 +31,10 @@ pub struct Theme {
     pub(super) border: Color,
     pub(super) rx: Color,
     pub(super) tx: Color,
+    // On ANSI themes the terminal owns the actual RGB palette. Use its
+    // resolved token for waves too, unless the user explicitly overrides it.
+    pub(super) rx_wave_color: Option<Color>,
+    pub(super) tx_wave_color: Option<Color>,
 
     // Background tints; `None` unless the theme is truecolor or the user
     // explicitly overrode the slot.
@@ -162,6 +166,10 @@ impl Theme {
             border: color(spec.border),
             rx: color(spec.rx),
             tx: color(spec.tx),
+            rx_wave_color: (spec.rx_wave.is_none() && !matches!(color(spec.rx), Color::Rgb(..)))
+                .then(|| color(spec.rx)),
+            tx_wave_color: (spec.tx_wave.is_none() && !matches!(color(spec.tx), Color::Rgb(..)))
+                .then(|| color(spec.tx)),
             selection_bg: bg(spec.selection_bg),
             selection_fg: bg(spec.selection_fg),
             status_bg: bg(spec.status_bg),
@@ -575,6 +583,29 @@ mod tests {
         assert_eq!(theme.accent, Color::Cyan);
         assert_eq!(theme.selection_bg, None);
         assert_eq!(theme.key_chip_bg, Some(Color::Rgb(0x00, 0x36, 0x36)));
+    }
+
+    #[test]
+    fn traffic_waves_preserve_ansi_tokens_and_explicit_rgb_overrides() {
+        for preset in ThemePreset::ALL {
+            for truecolor in [false, true] {
+                let theme = Theme::resolve(&ThemeSpec::builtin(preset), truecolor);
+                assert_eq!(
+                    theme.rx_wave_color.is_some(),
+                    !matches!(theme.rx, Color::Rgb(..))
+                );
+                assert_eq!(
+                    theme.tx_wave_color.is_some(),
+                    !matches!(theme.tx, Color::Rgb(..))
+                );
+            }
+        }
+        let mut spec = ThemeSpec::builtin(ThemePreset::Muted);
+        spec.set_token("rx_wave", "#123456").unwrap();
+        let theme = Theme::resolve(&spec, true);
+        assert_eq!(theme.rx_wave_color, None);
+        assert_eq!(theme.rx_ramp[0], (0x12, 0x34, 0x56));
+        assert_eq!(theme.tx_wave_color, Some(theme.tx));
     }
 
     #[test]

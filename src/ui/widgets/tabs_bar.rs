@@ -100,11 +100,27 @@ pub(in crate::ui) fn draw_tabs(
         theme::fg(theme::border()),
     )];
 
-    let gap = " ".repeat(TAB_GAP as usize);
+    // Keep every view reachable when the terminal is narrow. Preserve the
+    // numbered shortcuts while reducing gaps, then labels to their shortcut numbers.
+    let tab_gap = if area.width < 72 { 1 } else { TAB_GAP };
+    let short_labels = area.width < 60;
+    let numbers_only = area.width < 46;
+    let gap = " ".repeat(tab_gap as usize);
     let mut x_offset = area.x + BRAND.chars().count() as u16;
     for (i, title) in TAB_TITLES.iter().enumerate() {
         // Numbered titles: the 1-5 jump shortcut becomes discoverable.
-        let label = format!("{} {}", i + 1, title);
+        let title = if numbers_only {
+            ""
+        } else if short_labels {
+            ["Ovr", "Dtl", "Act", "Graph", "Host"][i]
+        } else {
+            title
+        };
+        let label = if numbers_only {
+            format!("{}", i + 1)
+        } else {
+            format!("{} {title}", i + 1)
+        };
         let active = i == ui_state.selected_tab;
         let dotted = i == OVERVIEW_TAB_INDEX && ui_state.is_filtering();
         // The dot is part of the label: the underline and the click
@@ -119,10 +135,14 @@ pub(in crate::ui) fn draw_tabs(
         title_spans.push(Span::raw(gap.clone()));
         if active {
             title_spans.push(Span::styled(
-                format!("{} ", i + 1),
+                if numbers_only {
+                    format!("{}", i + 1)
+                } else {
+                    format!("{} ", i + 1)
+                },
                 theme::fg(theme::accent()),
             ));
-            title_spans.push(Span::styled((*title).to_string(), theme::primary()));
+            title_spans.push(Span::styled(title.to_string(), theme::primary()));
         } else {
             title_spans.push(Span::styled(label.clone(), theme::fg(theme::muted())));
         }
@@ -131,7 +151,7 @@ pub(in crate::ui) fn draw_tabs(
         }
 
         underline_spans.push(Span::styled(
-            "─".repeat(TAB_GAP as usize),
+            "─".repeat(tab_gap as usize),
             theme::fg(theme::border()),
         ));
         let rule_glyph = if active { "━" } else { "─" };
@@ -146,9 +166,12 @@ pub(in crate::ui) fn draw_tabs(
         ));
 
         // Click region spans both rows (title + underline).
-        let tab_rect = Rect::new(x_offset + TAB_GAP, area.y, label_width, TABS_BAR_HEIGHT);
-        click_regions.register(tab_rect, ClickAction::SwitchTab(i));
-        x_offset += TAB_GAP + label_width;
+        let tab_rect = Rect::new(x_offset + tab_gap, area.y, label_width, TABS_BAR_HEIGHT);
+        let tab_rect = tab_rect.intersection(area);
+        if tab_rect.width > 0 && tab_rect.height > 0 {
+            click_regions.register(tab_rect, ClickAction::SwitchTab(i));
+        }
+        x_offset += tab_gap + label_width;
     }
 
     let used = x_offset.saturating_sub(area.x) as usize;

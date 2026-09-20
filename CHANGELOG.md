@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
+  process ranking, and a separate capture-quality sidebar on wide terminals.
+  Share bars use theme-derived gradients with textured ANSI fallbacks.
+  The default keeps TX blue / RX green; other themes retain their own traffic
+  tokens. Shared section rules and table headings improve hierarchy throughout
+  the TUI, with responsive navigation and NO_COLOR support.
+  Graph's health, TCP state, and application distribution bars share Activity's
+  shading, fractional tips, and dotted tracks while preserving semantic colours.
 - **Frontend Modules**: startup and the TUI loop now live in library modules;
   headless orchestration, schema projection, and output handling are separate
   modules. Overlapping JSON, PCAP, sidecar, PCAPNG, and regular-file stdout
