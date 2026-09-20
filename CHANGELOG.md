@@ -88,6 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   separately from libpcap and interface drops, partial batches drain during
   shutdown, and classic PCAP output remains bound to its securely pre-opened
   file descriptor
+- **32-bit eBPF Map ABI**: explicitly align the shared C and Rust `ConnInfo`
+  structures to 8 bytes, fixing compilation on i586 (#611)
 - **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now
   show as SYN received instead of an unknown state
 
