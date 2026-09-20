@@ -8,6 +8,7 @@ mod capture;
 mod enrichment;
 mod logging;
 mod output;
+mod packet_queue;
 mod pcapng_export;
 mod runtime;
 mod sampling;

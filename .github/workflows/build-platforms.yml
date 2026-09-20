@@ -125,6 +125,17 @@ jobs:
         if: matrix.run-tests
         run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
 
+      - name: Test macOS capture idle waits and packet arrival
+        if: matrix.run-tests && runner.os == 'macOS'
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_executable=$(cargo test --locked -p rustnet-capture --test live_capture --target '${{ matrix.target }}' --no-run --message-format=json |
+            jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_capture" and .executable != null) | .executable')
+          test -n "$test_executable"
+          sudo /usr/bin/perl -e 'alarm 15; exec @ARGV or die "exec: $!"' "$test_executable" --ignored
+
       # For test builds: upload raw binary
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}

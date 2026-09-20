@@ -59,14 +59,15 @@ jobs:
       run: cargo build --locked --workspace --all-targets --verbose
     - name: Run tests
       run: cargo test --locked --workspace --all-features --verbose
-    - name: Test capture shutdown after loopback traffic stops
+    - name: Test capture shutdown and readiness with loopback traffic
       run: |
         test_executable=$(cargo test --locked -p rustnet-capture --test live_capture --no-run --message-format=json |
           jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_capture") | .executable // empty')
         test -n "$test_executable"
-        # Only this BPF-filtered loopback regression needs capture privileges.
+        # Only these BPF-filtered loopback regressions need capture privileges.
         # The process watchdog also bounds failures inside the native backend.
         sudo timeout 10s "$test_executable" --ignored --exact idle_capture_returns_after_traffic_stops_without_busy_spinning
+        sudo timeout 10s "$test_executable" --ignored --exact packet_arriving_after_an_idle_read_is_not_consumed_by_the_readiness_wait
     - name: Test capture capability cleanup before UID drop
       run: |
         test_executable=$(cargo test --locked -p rustnet-sandbox --lib --features landlock --no-run --message-format=json |
@@ -87,9 +88,9 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4
     - name: Build Docker image
-      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
       with:
         context: .
         push: false
