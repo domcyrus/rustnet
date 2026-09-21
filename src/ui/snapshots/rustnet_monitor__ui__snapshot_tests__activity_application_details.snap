@@ -6,9 +6,9 @@ expression: "render_app(&app, &mut state, &connections, None, 80, 24)"
 ─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
 Applications   Capture                                                          
 ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────
-▎ Process · firefox (2001) ─────────────────────────────────────────────────────
-Process: firefox                                                               ▐
-PID: 2001                                                                      ▐
+▎ Application · firefox ────────────────────────────────────────────────────────
+Application: firefox                                                           ▐
+Processes: 1                                                                   ▐
 Interface basis: eth0                                                          ▐
 Attribution: Mapped                                                            ▐
 Connections: 1 active / 1 retained                                             ▐
@@ -25,4 +25,4 @@ Share of interface 60s: 59.8%
 Top remote peer: 140.82.121.4:443                                               
 ──────────────────────────────────────────────────────────────────────────────  
 Ingress (RX)                                                                    
- v/V section  j/k scroll  o connections  esc processes           h help  q quit
+ v/V section  j/k scroll  enter processes  o connections         h help  q quit

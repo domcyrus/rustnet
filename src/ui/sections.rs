@@ -30,7 +30,7 @@ impl UiState {
                 ],
                 self.details_section.index(),
             ),
-            2 => (&["Processes", "Capture"], self.activity_section as usize),
+            2 => (&["Applications", "Capture"], self.activity_section as usize),
             3 => (
                 &["Traffic", "Health", "Distribution"],
                 self.graph_section as usize,
@@ -57,7 +57,7 @@ impl UiState {
             }
             2 => {
                 self.activity_section =
-                    [ActivitySection::Processes, ActivitySection::Capture][index]
+                    [ActivitySection::Applications, ActivitySection::Capture][index]
             }
             3 => {
                 self.graph_section = [

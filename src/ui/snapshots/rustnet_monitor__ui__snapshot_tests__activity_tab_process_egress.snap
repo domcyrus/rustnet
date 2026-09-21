@@ -5,12 +5,12 @@ expression: "render_activity(&app, ActivityDirection::Egress)"
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                              ● eth0
 ─────────────────────────────────────━━━━━━━━━━───────────────────────────────────────────────────────────────────────────────────────────────────────
 TX 2.88 MB/s   RX 1.70 MB/s                                                                                       ▎ Capture ──────────────────────────
-▎ Processes · TX · Retained TX ↓ ─────────────────────────────────────────────────────────────────────── 1-4/4    Coverage · last 60s                 
-  Process                                 TX/s   60s %   Retained   Conns Share · 60s  Top remote peer            Basis: eth0                         
-▌ firefox (2001)                          2.4M   81.7%    4.78 MB     1/1 ░░░▒▒▓▓▓█▊·· 140.82.121.4:443           TX 73.1%                            
-  sshd (1500)                             488K   17.7%    1.04 MB     1/1 ██▏········· 10.0.0.5:51022             Captured: 5.85 MB                   
-  systemd-resolved (820)                   16K    0.5%   32.42 KB     1/1 ▏··········· 1.1.1.1:53                 Interface: 8.00 MB                  
-  curl (9876)                                -    0.0%        0 B     1/1 ············ 151.101.1.195:443          RX 91.8%                            
+▎ Applications · TX · Retained TX ↓ ──────────────────────────────────────────────────────────────────── 1-4/4    Coverage · last 60s                 
+  Application                             TX/s   60s %   Retained   Conns Share · 60s  Top remote peer            Basis: eth0                         
+▌ firefox                                 2.4M   81.7%    4.78 MB     1/1 ░░░▒▒▓▓▓█▊·· 140.82.121.4:443           TX 73.1%                            
+  sshd                                    488K   17.7%    1.04 MB     1/1 ██▏········· 10.0.0.5:51022             Captured: 5.85 MB                   
+  systemd-resolved                         16K    0.5%   32.42 KB     1/1 ▏··········· 1.1.1.1:53                 Interface: 8.00 MB                  
+  curl                                       -    0.0%        0 B     1/1 ············ 151.101.1.195:443          RX 91.8%                            
                                                                                                                   Captured: 3.67 MB                   
                                                                                                                   Interface: 4.00 MB                  
                                                                                                                   ──────────────────────────────────  
@@ -41,4 +41,4 @@ TX 2.88 MB/s   RX 1.70 MB/s                                                     
                                                                                                                                                       
                                                                                                                                                       
                                                                                                                                                       
- j/k select  enter details  d tx/rx  s sort  S order  esc back                                                                         h help  q quit
+ j/k select  enter details  d tx/rx  s sort  S order  o connections  esc back                                                          h help  q quit

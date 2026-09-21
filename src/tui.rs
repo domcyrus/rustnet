@@ -211,11 +211,10 @@ where
                                         ui_state.select_section(index);
                                     }
                                     ui::ClickAction::SelectActivityProcess(identity) => {
-                                        ui_state.activity_table.borrow_mut().selected =
+                                        ui_state.activity_list().borrow_mut().selected =
                                             Some(identity);
                                         if is_double_click {
-                                            ui_state.activity_details = true;
-                                            ui_state.activity_details_scroll.reset();
+                                            ui_state.open_activity_details();
                                         }
                                     }
                                     ui::ClickAction::SwitchTab(tab_idx) => {

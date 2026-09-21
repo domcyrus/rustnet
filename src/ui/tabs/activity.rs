@@ -13,8 +13,8 @@ use ratatui::{
 use crate::app::App;
 use crate::network::process_activity::{ProcessActivity, ProcessActivitySnapshot};
 use crate::ui::{
-    ActivityDirection, ActivitySection, ActivitySort, ClickAction, ClickableRegions, Component,
-    ComponentContext, Effect, HandlerContext, UiState, draw_placeholder,
+    ActivityDirection, ActivitySection, ActivitySort, ActivityView, ClickAction, ClickableRegions,
+    Component, ComponentContext, Effect, HandlerContext, UiState, draw_placeholder,
     format::{format_bytes, format_rate, format_rate_compact, truncate_with_ellipsis},
     section_header, section_title,
     state::Motion,
@@ -29,6 +29,18 @@ pub(in crate::ui) struct ActivityTab;
 
 fn capture_only(state: &UiState) -> bool {
     state.section_navigation && state.activity_section == ActivitySection::Capture
+}
+
+pub(in crate::ui) fn overview_query(state: &UiState) -> Option<String> {
+    let selected = if matches!(
+        state.activity_view,
+        ActivityView::Processes | ActivityView::ProcessDetails
+    ) {
+        state.activity_members.borrow().selected.clone()
+    } else {
+        state.activity_table.borrow().selected.clone()
+    };
+    selected?.connection_filter_query()
 }
 
 impl Component for ActivityTab {
@@ -47,7 +59,7 @@ impl Component for ActivityTab {
         let state = &mut ctx.ui_state;
         if capture_only(state) {
             if key.code == KeyCode::Esc {
-                state.activity_section = ActivitySection::Processes;
+                state.activity_section = ActivitySection::Applications;
                 return Some(Vec::new());
             }
             return try_handle_pane_scroll(
@@ -56,16 +68,43 @@ impl Component for ActivityTab {
                 &mut state.activity_capture_scroll,
             );
         }
-        if state.activity_details {
+        if key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::NONE {
+            if let Some(query) = overview_query(state) {
+                state.filter_query = query;
+                state.filter_cursor_position = state.filter_query.len();
+                state.filter_mode = false;
+                state.show_historic = true;
+                ctx.app.set_show_historic(true);
+                state.overview_section = crate::ui::OverviewSection::Connections;
+                state.selected_tab = 0;
+                state.scroll_offset = 0;
+                state.grouped_scroll_offset = 0;
+                state.selected_group = None;
+                state.set_connection_key(None);
+                return Some(vec![Effect::RefreshData]);
+            }
+            return Some(Vec::new());
+        }
+        if state.activity_is_details() {
             if key.code == KeyCode::Esc {
-                state.activity_details = false;
+                state.activity_view = if state.activity_view == ActivityView::ProcessDetails {
+                    ActivityView::Processes
+                } else {
+                    ActivityView::Applications
+                };
                 return Some(Vec::new());
             }
-            return try_handle_pane_scroll(
-                key,
-                usize::from(state.activity_details_scroll.viewport_rows()),
-                &mut state.activity_details_scroll,
-            );
+            if key.code == KeyCode::Enter && state.activity_view == ActivityView::ApplicationDetails
+            {
+                state.activity_view = ActivityView::Processes;
+                return Some(Vec::new());
+            }
+            let scroll = if state.activity_view == ActivityView::ProcessDetails {
+                &mut state.activity_process_scroll
+            } else {
+                &mut state.activity_details_scroll
+            };
+            return try_handle_pane_scroll(key, usize::from(scroll.viewport_rows()), scroll);
         }
         match (key.code, key.modifiers) {
             (KeyCode::Char('d'), KeyModifiers::NONE) => {
@@ -78,14 +117,16 @@ impl Component for ActivityTab {
             (KeyCode::Char('S'), _) | (KeyCode::Char('s'), KeyModifiers::SHIFT) => {
                 state.activity_sort_ascending = !state.activity_sort_ascending
             }
-            (KeyCode::Enter, _) => {
-                if state.activity_table.borrow().selected.is_some() {
-                    state.activity_details = true;
-                    state.activity_details_scroll.reset();
+            (KeyCode::Esc, _) => {
+                if state.activity_view == ActivityView::Processes {
+                    state.activity_view = ActivityView::ApplicationDetails;
+                } else {
+                    state.selected_tab = 0;
                 }
             }
+            (KeyCode::Enter, _) => state.open_activity_details(),
             _ => {
-                let page = state.activity_table.borrow().viewport.max(1);
+                let page = state.activity_list().borrow().viewport.max(1);
                 let motion = match (key.code, key.modifiers) {
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => Motion::Up,
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => Motion::Down,
@@ -101,7 +142,7 @@ impl Component for ActivityTab {
                     | (KeyCode::Char('g'), KeyModifiers::SHIFT) => Motion::Last,
                     _ => return None,
                 };
-                state.activity_table.borrow_mut().move_selection(motion);
+                state.activity_list().borrow_mut().move_selection(motion);
             }
         }
         Some(Vec::new())
@@ -120,10 +161,15 @@ impl Component for ActivityTab {
         if capture_only(state) {
             return None;
         }
-        if state.activity_details {
-            return try_handle_pane_wheel(mouse, &mut state.activity_details_scroll);
+        if state.activity_is_details() {
+            let scroll = if state.activity_view == ActivityView::ProcessDetails {
+                &mut state.activity_process_scroll
+            } else {
+                &mut state.activity_details_scroll
+            };
+            return try_handle_pane_wheel(mouse, scroll);
         }
-        let mut table = state.activity_table.borrow_mut();
+        let mut table = state.activity_list().borrow_mut();
         if !table.area.contains(point) {
             return None;
         }
@@ -199,16 +245,22 @@ fn draw_activity(
     if !state.section_navigation {
         draw_capture(f, &snapshot, &basis, state, columns[1]);
     }
-    if state.activity_details {
+    if state.activity_is_details() {
         draw_process_details(f, &snapshot, &basis, state, columns[0]);
         return;
     }
     let main = Layout::vertical([
-        Constraint::Length(if state.section_navigation { 2 } else { 1 }),
+        Constraint::Length(if state.activity_view == ActivityView::Processes {
+            0
+        } else if state.section_navigation {
+            2
+        } else {
+            1
+        }),
         Constraint::Min(0),
     ])
     .split(columns[0]);
-    draw_summary(f, &snapshot, &basis, main[0]);
+    draw_summary(f, &snapshot, &basis, state, main[0]);
     draw_process_table(f, &snapshot, state, main[1], regions);
 }
 
@@ -223,9 +275,10 @@ fn draw_summary(
     f: &mut Frame,
     snapshot: &ProcessActivitySnapshot,
     basis: &InterfaceBasis,
+    state: &UiState,
     area: Rect,
 ) {
-    let rates = Line::from(vec![
+    let mut rates = Line::from(vec![
         Span::styled(
             format!("TX {}", format_rate(snapshot.current_tx_bps)),
             theme::bold_fg(theme::tx()),
@@ -236,6 +289,11 @@ fn draw_summary(
             theme::bold_fg(theme::rx()),
         ),
     ]);
+    if state.has_active_filter() {
+        rates
+            .spans
+            .push(Span::styled(" · all traffic", theme::fg(theme::muted())));
+    }
     let coverage = |direction| {
         coverage_text(
             coverage_fraction(
@@ -329,10 +387,31 @@ fn draw_process_details(
     state: &UiState,
     area: Rect,
 ) {
-    let selected = state.activity_table.borrow().selected.clone();
+    let individual = state.activity_view == ActivityView::ProcessDetails;
+    let selected = if individual {
+        state.activity_members.borrow().selected.clone()
+    } else {
+        state.activity_table.borrow().selected.clone()
+    };
+    let records = if individual {
+        &snapshot.processes
+    } else {
+        &snapshot.applications
+    };
+    let scroll = if individual {
+        &state.activity_process_scroll
+    } else {
+        &state.activity_details_scroll
+    };
     let title = selected.as_ref().map_or_else(
-        || " Process details".to_string(),
-        |id| format!(" Process · {}", id.display_name()),
+        || " Activity details".to_string(),
+        |id| {
+            format!(
+                " {} · {}",
+                if individual { "Process" } else { "Application" },
+                id.display_name()
+            )
+        },
     );
     let inner = section_header(
         f,
@@ -342,37 +421,45 @@ fn draw_process_details(
             usize::from(area.width.saturating_sub(1)),
         )),
     );
-    let Some(process) = snapshot
-        .processes
+    let Some(process) = records
         .iter()
         .find(|process| Some(&process.identity) == selected.as_ref())
     else {
-        state.activity_details_scroll.clamp_for_render(0);
-        draw_placeholder(
-            f,
-            inner,
-            "Process no longer retained. Esc returns to processes.",
-        );
+        scroll.clamp_for_render(0);
+        draw_placeholder(f, inner, "No longer retained. Esc returns to the list.");
         return;
     };
+    let members: Vec<_> = snapshot
+        .processes
+        .iter()
+        .filter(|member| member.identity.application_identity() == process.identity)
+        .collect();
+    let attribution = if individual {
+        if process.identity.attributed {
+            "Mapped"
+        } else {
+            "Unknown"
+        }
+    } else {
+        let mapped = members
+            .iter()
+            .filter(|member| member.identity.attributed)
+            .count();
+        if mapped == 0 {
+            "Unknown"
+        } else if mapped == members.len() {
+            "Mapped"
+        } else {
+            "Mixed"
+        }
+    };
     let mut lines = vec![
-        field("Process", &process.identity.name),
+        field(
+            if individual { "Process" } else { "Application" },
+            &process.identity.name,
+        ),
         field("Interface basis", &basis.label),
-        field(
-            "PID",
-            process
-                .identity
-                .pid
-                .map_or_else(|| "-".into(), |pid| pid.to_string()),
-        ),
-        field(
-            "Attribution",
-            if process.identity.attributed {
-                "Mapped"
-            } else {
-                "Unknown"
-            },
-        ),
+        field("Attribution", attribution),
         field(
             "Connections",
             format!(
@@ -393,6 +480,20 @@ fn draw_process_details(
             ),
         ),
     ];
+    if individual {
+        lines.insert(
+            1,
+            field(
+                "PID",
+                process
+                    .identity
+                    .pid
+                    .map_or_else(|| "-".into(), |pid| pid.to_string()),
+            ),
+        );
+    } else {
+        lines.insert(1, field("Processes", members.len()));
+    }
     for direction in [ActivityDirection::Egress, ActivityDirection::Ingress] {
         lines.push(rule(inner.width.saturating_sub(2)));
         lines.push(heading(direction.display_name_with_rate()));
@@ -435,7 +536,7 @@ fn draw_process_details(
         f,
         inner,
         Paragraph::new(lines).wrap(Wrap { trim: false }),
-        &state.activity_details_scroll,
+        scroll,
     );
 }
 
@@ -537,8 +638,20 @@ fn draw_process_table(
     regions: &mut ClickableRegions,
 ) {
     let direction = state.activity_direction;
+    let application = state.activity_table.borrow().selected.clone();
+    let members = state.activity_view == ActivityView::Processes;
+    let records = if members {
+        snapshot
+            .processes
+            .iter()
+            .filter(|process| Some(process.identity.application_identity()) == application)
+            .cloned()
+            .collect()
+    } else {
+        snapshot.applications.clone()
+    };
     let processes = sort_processes(
-        snapshot.processes.clone(),
+        records,
         state.activity_sort,
         state.activity_sort_ascending,
         direction,
@@ -550,7 +663,7 @@ fn draw_process_table(
         area.width,
         area.height.saturating_sub(2),
     );
-    let mut browser = state.activity_table.borrow_mut();
+    let mut browser = state.activity_list().borrow_mut();
     browser.prepare(
         processes.iter().map(|p| p.identity.clone()).collect(),
         rows_area,
@@ -562,8 +675,16 @@ fn draw_process_table(
     } else {
         format!(" 0/{} ", processes.len())
     };
+    let label = if members {
+        application.as_ref().map_or_else(
+            || "Processes".to_string(),
+            |id| format!("{} · Processes", id.name),
+        )
+    } else {
+        "Applications".to_string()
+    };
     let title = format!(
-        " Processes · {} · {} {}",
+        " {label} · {} · {} {}",
         direction.rate_label(),
         state.activity_sort.display_name(direction),
         if state.activity_sort_ascending {
@@ -586,7 +707,15 @@ fn draw_process_table(
         );
     }
     if processes.is_empty() {
-        draw_placeholder(f, inner, "Waiting for process traffic...");
+        draw_placeholder(
+            f,
+            inner,
+            if members {
+                "No retained processes for this application."
+            } else {
+                "Waiting for application traffic..."
+            },
+        );
         return;
     }
     let width = inner.width.saturating_sub(2);
@@ -594,7 +723,7 @@ fn draw_process_table(
     let wide = width >= 130;
     let normal = width >= 65;
     let mut headers = vec![
-        Cell::from("Process"),
+        Cell::from(if members { "Process" } else { "Application" }),
         right_cell(format!("{}/s", direction.rate_label())),
     ];
     let mut widths = vec![Constraint::Min(1), Constraint::Length(10)];

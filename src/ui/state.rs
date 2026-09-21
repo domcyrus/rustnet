@@ -108,8 +108,18 @@ pub enum OverviewSection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActivitySection {
     #[default]
-    Processes,
+    Applications,
     Capture,
+}
+
+/// Activity navigation drills into application traffic, then individual processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivityView {
+    #[default]
+    Applications,
+    ApplicationDetails,
+    Processes,
+    ProcessDetails,
 }
 
 /// The identities and viewport of the last rendered process table.
@@ -570,7 +580,9 @@ pub struct UiState {
     pub activity_direction: ActivityDirection,
     pub activity_section: ActivitySection,
     pub activity_table: RefCell<ActivityTableState>,
-    pub activity_details: bool,
+    pub activity_view: ActivityView,
+    pub activity_members: RefCell<ActivityTableState>,
+    pub activity_process_scroll: PaneScroll,
     pub activity_details_scroll: PaneScroll,
     pub activity_capture_scroll: PaneScroll,
     pub activity_capture_area: Cell<Rect>,
@@ -623,7 +635,9 @@ impl Default for UiState {
             activity_direction: ActivityDirection::default(),
             activity_section: ActivitySection::default(),
             activity_table: RefCell::default(),
-            activity_details: false,
+            activity_view: ActivityView::default(),
+            activity_members: RefCell::default(),
+            activity_process_scroll: PaneScroll::default(),
             activity_details_scroll: PaneScroll::default(),
             activity_capture_scroll: PaneScroll::default(),
             activity_capture_area: Cell::new(Rect::default()),
@@ -886,7 +900,41 @@ impl UiState {
         self.sort_ascending = !self.sort_ascending;
     }
 
-    /// Reset all view settings to defaults (grouping, sort, filter, historic)
+    /// The table currently accepting Activity selection and scrolling.
+    pub fn activity_list(&self) -> &RefCell<ActivityTableState> {
+        if self.activity_view == ActivityView::Processes {
+            &self.activity_members
+        } else {
+            &self.activity_table
+        }
+    }
+
+    pub fn activity_is_details(&self) -> bool {
+        matches!(
+            self.activity_view,
+            ActivityView::ApplicationDetails | ActivityView::ProcessDetails
+        )
+    }
+
+    pub fn open_activity_details(&mut self) {
+        if self.activity_list().borrow().selected.is_none() {
+            return;
+        }
+        match self.activity_view {
+            ActivityView::Applications => {
+                self.activity_view = ActivityView::ApplicationDetails;
+                self.activity_details_scroll.reset();
+                *self.activity_members.borrow_mut() = ActivityTableState::default();
+            }
+            ActivityView::Processes => {
+                self.activity_view = ActivityView::ProcessDetails;
+                self.activity_process_scroll.reset();
+            }
+            _ => {}
+        }
+    }
+
+    /// Reset all view settings to defaults (grouping, sort, filter, historic).
     pub fn reset_view(&mut self) {
         self.grouping_enabled = false;
         self.expanded_groups.clear();

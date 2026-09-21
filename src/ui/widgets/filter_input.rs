@@ -26,7 +26,14 @@ pub(in crate::ui) fn draw_filter_input(f: &mut Frame, ui_state: &UiState, area: 
     let hint = "↑↓ navigate · Enter confirm · Esc cancel ";
 
     let line = Line::from(vec![
-        Span::styled(" / ", theme::bold_fg(theme::accent())),
+        Span::styled(
+            if ui_state.selected_tab == 0 {
+                " / "
+            } else {
+                " Overview / "
+            },
+            theme::bold_fg(theme::accent()),
+        ),
         Span::raw(query),
     ]);
     let hint_line = Line::from(Span::styled(hint, theme::fg(theme::muted()))).right_aligned();

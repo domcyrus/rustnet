@@ -4,8 +4,8 @@ expression: "render_app(&app, &mut state, &connections, None, 80, 24)"
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
 ─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
-Processes   Capture                                                             
-────────────━━━━━━━─────────────────────────────────────────────────────────────
+Applications   Capture                                                          
+───────────────━━━━━━━──────────────────────────────────────────────────────────
 ▎ Capture ──────────────────────────────────────────────────────────────────────
 Coverage · last 60s                                                             
 Basis: eth0                                                                     
@@ -25,4 +25,4 @@ RX 100.0% mapped
 Mapped: 3.67 MB                                                                 
 Unknown: 0 B                                                                    
 Retained: 3.67 MB                                                               
- v/V section  esc details                                        h help  q quit
+ v/V section  esc back                                           h help  q quit

@@ -170,30 +170,26 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
         }
         // Activity
         2 => {
+            use crate::ui::{ActivitySection, ActivityView};
             let capture = ui_state.section_navigation
-                && ui_state.activity_section == crate::ui::ActivitySection::Capture;
-            if capture || ui_state.activity_details {
+                && ui_state.activity_section == ActivitySection::Capture;
+            let mut hints = Vec::new();
+            if capture || ui_state.activity_is_details() {
                 let scroll = if capture {
                     &ui_state.activity_capture_scroll
+                } else if ui_state.activity_view == ActivityView::ProcessDetails {
+                    &ui_state.activity_process_scroll
                 } else {
                     &ui_state.activity_details_scroll
                 };
-                let mut hints = Vec::new();
                 if scroll.can_scroll() {
                     hints.push(Hint::action("j/k", "scroll"));
                 }
-                hints.push(Hint::action(
-                    "esc",
-                    if capture && ui_state.activity_details {
-                        "details"
-                    } else {
-                        "processes"
-                    },
-                ));
-                hints
+                if !capture && ui_state.activity_view == ActivityView::ApplicationDetails {
+                    hints.push(Hint::action("enter", "processes"));
+                }
             } else {
-                let mut hints = Vec::new();
-                if !ui_state.activity_table.borrow().rows.is_empty() {
+                if !ui_state.activity_list().borrow().rows.is_empty() {
                     hints.extend([
                         Hint::action("j/k", "select"),
                         Hint::action("enter", "details"),
@@ -203,10 +199,25 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
                     Hint::action("d", "tx/rx"),
                     Hint::action("s", "sort"),
                     Hint::action("S", "order"),
-                    Hint::action("esc", "back"),
                 ]);
-                hints
             }
+            if !capture && crate::ui::tabs::activity::overview_query(ui_state).is_some() {
+                hints.push(Hint::action("o", "connections"));
+            }
+            hints.push(Hint::action(
+                "esc",
+                if capture {
+                    "back"
+                } else {
+                    match ui_state.activity_view {
+                        ActivityView::Applications => "back",
+                        ActivityView::ApplicationDetails => "applications",
+                        ActivityView::Processes => "summary",
+                        ActivityView::ProcessDetails => "processes",
+                    }
+                },
+            ));
+            hints
         }
         // Host
         4 => {

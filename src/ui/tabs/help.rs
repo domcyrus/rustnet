@@ -183,6 +183,7 @@ const FILTER_EXAMPLES: &[HelpRow] = &[
     ("/src:192.168", "Match a source address prefix"),
     ("/dst:github.com", "Match a destination"),
     ("/process:firefox", "Match a process name"),
+    ("/pid:1234", "Match an exact process ID"),
     ("/state:established", "Match connection state"),
     ("/port:/22/", "Regex port match (22, 220, 5522, ...)"),
     (
@@ -257,28 +258,40 @@ const DETAILS_MOUSE: &[HelpRow] = &[
 ];
 
 const ACTIVITY_KEYS: &[HelpRow] = &[
-    (
-        "↑/k, ↓/j",
-        "Select a process; scroll capture or process details",
-    ),
+    ("↑/k, ↓/j", "Select a row; scroll Capture or details"),
     ("Page Up/Down", "Move by one visible page (also Ctrl+B/F)"),
     ("Home/End, g/G", "Jump to the first or last row"),
-    ("Enter", "Inspect every field of the selected process"),
-    ("Click / double-click", "Select / inspect a process"),
+    (
+        "Enter",
+        "Application summary, then PID list, then process details",
+    ),
+    (
+        "Click / double-click",
+        "Select / inspect an application or process",
+    ),
     (
         "Scroll wheel",
         "Navigate the table or scroll the pane under the pointer",
     ),
+    ("o", "Open scoped Overview connections, including history"),
     ("d", "Toggle Egress (TX) and Ingress (RX)"),
-    ("s", "Cycle the process sort column"),
+    ("s", "Cycle the traffic sort column"),
     ("S", "Reverse the sort direction"),
     (
         "Esc",
-        "Return to processes; from the list return to Overview",
+        "Back one level; from applications return to Overview",
     ),
 ];
 
 const ACTIVITY_CONCEPTS: &[HelpRow] = &[
+    (
+        "Applications",
+        "Traffic grouped by process name; PIDs are inside details",
+    ),
+    (
+        "Scope",
+        "All captured traffic; Overview filters do not apply",
+    ),
     (
         "Attribution",
         "Mapped share of retained traffic, not the 60s window",

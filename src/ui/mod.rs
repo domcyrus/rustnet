@@ -105,7 +105,7 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub(crate) use crate::network::process_activity::process_group_label;
 pub use state::{
-    ActivityDirection, ActivitySection, ActivitySort, ClickAction, ClickableRegions,
+    ActivityDirection, ActivitySection, ActivitySort, ActivityView, ClickAction, ClickableRegions,
     DetailsSection, GraphSection, GroupedRow, HostView, OverviewSection, PaneScroll, SortColumn,
     UiState, compute_grouped_rows, compute_scroll_offset,
 };
@@ -2624,7 +2624,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         for (width, height) in [(50, 12), (80, 24)] {
-            state.activity_section = ActivitySection::Processes;
+            state.activity_section = ActivitySection::Applications;
             render_app(&app, &mut state, &connections, None, width, height);
             activity_key(&app, &mut state, KeyCode::Char('v'));
             let top = render_app(&app, &mut state, &connections, None, width, height);
@@ -2664,7 +2664,7 @@ mod snapshot_tests {
             assert_eq!(compact, before_resize);
             assert!(compact.contains("Retained: 3.67 MB"));
             activity_key(&app, &mut state, KeyCode::Esc);
-            assert_eq!(state.activity_section, ActivitySection::Processes);
+            assert_eq!(state.activity_section, ActivitySection::Applications);
             state.activity_capture_scroll.reset();
         }
     }
@@ -2681,9 +2681,14 @@ mod snapshot_tests {
         render_app(&app, &mut state, &connections, None, 50, 12);
         let selected = state.activity_table.borrow().selected.clone();
         activity_key(&app, &mut state, KeyCode::Enter);
-        assert!(state.activity_details);
+        assert_eq!(state.activity_view, ActivityView::ApplicationDetails);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        render_app(&app, &mut state, &connections, None, 50, 12);
+        assert_eq!(state.activity_view, ActivityView::Processes);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        assert_eq!(state.activity_view, ActivityView::ProcessDetails);
         let mut all = render_app(&app, &mut state, &connections, None, 50, 12);
-        assert!(state.activity_details_scroll.can_scroll());
+        assert!(state.activity_process_scroll.can_scroll());
         for _ in 0..45 {
             activity_key(&app, &mut state, KeyCode::Down);
             all.push_str(&render_app(&app, &mut state, &connections, None, 50, 12));
@@ -2704,7 +2709,11 @@ mod snapshot_tests {
         }
         activity_key(&app, &mut state, KeyCode::Esc);
         let output = render_app(&app, &mut state, &connections, None, 50, 12);
-        assert!(!state.activity_details);
+        assert_eq!(state.activity_view, ActivityView::Processes);
+        activity_key(&app, &mut state, KeyCode::Esc);
+        assert_eq!(state.activity_view, ActivityView::ApplicationDetails);
+        activity_key(&app, &mut state, KeyCode::Esc);
+        assert_eq!(state.activity_view, ActivityView::Applications);
         assert_eq!(state.activity_table.borrow().selected, selected);
         assert!(output.contains("firefox"));
     }
@@ -2724,7 +2733,7 @@ mod snapshot_tests {
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
         );
         let output = render_app(&app, &mut state, &connections[1..], None, 80, 24);
-        assert!(output.contains("Process no longer retained"));
+        assert!(output.contains("No longer retained"));
         activity_key(&app, &mut state, KeyCode::Esc);
         render_app(&app, &mut state, &connections[1..], None, 80, 24);
         assert_eq!(
@@ -2751,6 +2760,16 @@ mod snapshot_tests {
         render_app(&app, &mut state, &connections, None, 80, 24);
         activity_key(&app, &mut state, KeyCode::Enter);
         insta::assert_snapshot!(
+            "activity_application_details",
+            render_app(&app, &mut state, &connections, None, 80, 24)
+        );
+        activity_key(&app, &mut state, KeyCode::Enter);
+        insta::assert_snapshot!(
+            "activity_application_processes",
+            render_app(&app, &mut state, &connections, None, 80, 24)
+        );
+        activity_key(&app, &mut state, KeyCode::Enter);
+        insta::assert_snapshot!(
             "activity_process_details",
             render_app(&app, &mut state, &connections, None, 80, 24)
         );
@@ -2759,6 +2778,134 @@ mod snapshot_tests {
             "activity_capture_compact",
             render_app(&app, &mut state, &connections, None, 80, 24)
         );
+    }
+
+    #[test]
+    fn activity_groups_repeated_names_and_keeps_every_pid_reachable() {
+        use crossterm::event::KeyCode;
+        let (app, mut connections) = many_process_activity();
+        for connection in &mut connections {
+            connection.process_name = Some("gh".into());
+        }
+        app.observe_process_activity_for_test(
+            &connections,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        for (width, height) in [(50, 12), (80, 24), (150, 40)] {
+            let mut state = UiState {
+                selected_tab: 2,
+                ..Default::default()
+            };
+            let output = render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.activity_table.borrow().rows.len(), 1);
+            assert!(output.contains("1-1/1"));
+            assert!(!output.contains("gh ("));
+            activity_key(&app, &mut state, KeyCode::Enter);
+            let summary = render_app(&app, &mut state, &connections, None, width, height);
+            assert!(summary.contains("Processes: 64"));
+            activity_key(&app, &mut state, KeyCode::Enter);
+            render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.activity_members.borrow().rows.len(), 64);
+            activity_key(&app, &mut state, KeyCode::End);
+            let (list, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, height);
+            assert!(list.contains("gh (1063)"));
+            assert!(list.contains("64/64"));
+            let member = state.activity_members.borrow().selected.clone();
+            let table = state.activity_members.borrow();
+            let last_y = table.area.bottom() - 1;
+            assert!(
+                matches!(regions.hit_test(table.area.x, last_y), Some(ClickAction::SelectActivityProcess(id)) if Some(id) == member.as_ref())
+            );
+            drop(table);
+            activity_key(&app, &mut state, KeyCode::Enter);
+            let detail = render_app(&app, &mut state, &connections, None, width, height);
+            assert!(detail.contains("PID: 1063"));
+            activity_key(&app, &mut state, KeyCode::Esc);
+            let restored = render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(list, restored);
+            assert_eq!(state.activity_members.borrow().selected, member);
+        }
+    }
+
+    #[test]
+    fn activity_groups_unknown_names_without_losing_attribution() {
+        let (app, mut connections) = many_process_activity();
+        connections.truncate(2);
+        connections[0].process_name = None;
+        connections[0].pid = None;
+        connections[1].process_name = Some(crate::network::types::UNKNOWN_PROCESS_NAME.into());
+        app.observe_process_activity_for_test(
+            &connections,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_eq!(state.activity_table.borrow().rows.len(), 1);
+        activity_key(&app, &mut state, crossterm::event::KeyCode::Enter);
+        let output = render_app(&app, &mut state, &connections, None, 80, 24);
+        assert!(output.contains("Processes: 2"));
+        assert!(output.contains("Attribution: Mixed"));
+    }
+
+    #[test]
+    fn activity_scope_is_independent_and_overview_drilldown_is_exact() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (app, mut connections) = many_process_activity();
+        connections[0].process_name = Some("Code (Service)".into());
+        connections[1].process_name = Some("Code (Service)".into());
+        connections[2].process_name = Some("Code (Service)-extra".into());
+        app.observe_process_activity_for_test(
+            &connections,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        app.set_connections_snapshot_for_test(connections.clone());
+        let mut state = UiState {
+            selected_tab: 2,
+            filter_query: "port:22".into(),
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &[], None, 80, 24);
+        assert!(output.contains("all traffic"));
+        assert_eq!(state.activity_table.borrow().rows.len(), 63);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        let regions = ClickableRegions::default();
+        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+        let effects = dispatch_key(
+            2,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+            &mut ctx,
+        )
+        .unwrap();
+        assert!(matches!(effects.as_slice(), [Effect::RefreshData]));
+        assert_eq!(state.selected_tab, 0);
+        assert!(state.show_historic);
+        let filtered = app.get_filtered_connections(&state.filter_query);
+        assert_eq!(filtered.len(), 2);
+        state.selected_tab = 2;
+        activity_key(&app, &mut state, KeyCode::Enter);
+        render_app(&app, &mut state, &[], None, 80, 24);
+        activity_key(&app, &mut state, KeyCode::End);
+        let selected_pid = state
+            .activity_members
+            .borrow()
+            .selected
+            .as_ref()
+            .unwrap()
+            .pid;
+        activity_key(&app, &mut state, KeyCode::Char('o'));
+        let filtered = app.get_filtered_connections(&state.filter_query);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].pid, selected_pid);
+        state.selected_tab = 2;
+        state.activity_view = ActivityView::Applications;
+        let query = state.filter_query.clone();
+        activity_key(&app, &mut state, KeyCode::Esc);
+        assert_eq!(state.selected_tab, 0);
+        assert_eq!(state.filter_query, query);
     }
 
     #[test]
@@ -2781,7 +2928,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let output = render_app(&app, &mut ui_state, &app.get_connections(), None, 80, 24);
-        assert!(output.contains("firefox (2001)"));
+        assert!(output.contains("firefox"));
         assert!(output.contains("Coverage"));
         assert!(!output.contains("Share (60s)"));
         insta::assert_snapshot!(output);
@@ -2796,7 +2943,7 @@ mod snapshot_tests {
         };
         let output = render_app(&app, &mut ui_state, &app.get_connections(), None, 110, 32);
         assert!(output.contains("Top remote peer"));
-        assert!(output.contains("firefox (2001)"));
+        assert!(output.contains("firefox"));
         insta::assert_snapshot!(output);
     }
 
@@ -2809,7 +2956,7 @@ mod snapshot_tests {
         };
         let output = render_app(&app, &mut ui_state, &[], None, 80, 24);
         assert!(output.contains("n/a"));
-        assert!(output.contains("Waiting for process traffic"));
+        assert!(output.contains("Waiting for application traffic"));
         insta::assert_snapshot!(output);
     }
 
@@ -3163,7 +3310,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let output = render_app(&app, &mut state, &app.get_connections(), None, 80, 12);
-        assert!(output.contains("firefox (2001)"));
+        assert!(output.contains("firefox"));
         assert!(output.contains("Coverage 60s: TX 73.1%"));
         assert!(output.contains("enter details"));
         insta::assert_snapshot!(output);
@@ -3186,10 +3333,7 @@ mod snapshot_tests {
             (200, 50),
         ] {
             let output = render_app(&app, &mut state, &connections, None, width, height);
-            assert!(
-                output.contains("firefox (2001)"),
-                "{width}x{height}: {output}"
-            );
+            assert!(output.contains("firefox"), "{width}x{height}: {output}");
             assert!(
                 output.to_lowercase().contains("coverage"),
                 "{width}x{height}: {output}"

@@ -461,10 +461,10 @@ Larger terminals show all sections together. Wide dashboards have no added
 section selector or panel focus. Shrinking restores the last compact section.
 Help remains an overlay and consumes section controls while open.
 
-Activity shows Processes and Capture sections below 120 columns or 25 content
-rows (28 terminal rows without extra banners). Every retained process is reachable
+Activity shows Applications and Capture sections below 120 columns or 25 content
+rows (28 terminal rows without extra banners). Every retained application and its processes are reachable
 by scrolling, including at 50×12. Capture contains the full coverage and
-attribution summary. Wide terminals show Capture beside the process table.
+attribution summary. Wide terminals show Capture beside the application table.
 
 Connection paging, scrollbars, and mouse selection use the actual table height,
 including space taken by the filter editor or a two-row capture-error banner.
@@ -554,7 +554,8 @@ Use keyword filters for targeted searches:
 | `dport:` | `dstport:`, `dest-port:`, `destination-port:` | Destination port (exact or regex) | `dport:443` matches only destination port 443 |
 | `src:` | `source:` | Source IPs/hostnames | `src:192.168` matches 192.168.x.x |
 | `dst:` | `dest:`, `destination:` | Destinations | `dst:github.com` matches github.com |
-| `process:` | `proc:` | Process names | `process:ssh` matches ssh, sshd |
+| `process:` | `proc:` | Process names; `unknown` includes unresolved names | `process:ssh` matches ssh, sshd |
+| `pid:` | | Exact process ID | `pid:1234` matches PID 1234 |
 | `sni:` | `host:`, `hostname:` | SNI hostnames (HTTPS) and DNS-attributed hostnames | `sni:api` matches api.example.com |
 | `service:` | `svc:` | Service names | `service:https` matches HTTPS service |
 | `app:` | `application:` | Detected application protocol | `app:ssh` matches SSH connections |
@@ -929,8 +930,15 @@ Fast retransmit frequency indicates how well TCP is recovering from packet loss 
 
 The Activity tab derives bounded process traffic totals from active connections and RustNet's existing pool of up to 5,000 retained historic connections. A short-lived uploader remains visible after its socket closes, until its historic connection is evicted or the connections are cleared. Press `3` to open it.
 
-The process browser switches between Egress (TX) and Ingress (RX). Its table and
-inline process details expose:
+Activity groups traffic by exact process name, matching Overview's process-name
+groups. For example, all retained `gh` PIDs contribute to one application row.
+Overview browses connections; Activity compares application traffic over time.
+Activity includes all captured traffic in its retained pool, regardless of the
+Overview filter or history toggle. An active Overview filter adds an `all traffic`
+label to Activity's summary.
+
+The application browser switches between Egress (TX) and Ingress (RX). Its table
+and inline application or process details expose:
 
 - Current and peak rates, plus the process share of captured traffic in the selected direction over the rolling 60-second window
 - Retained bytes in the selected direction, including active and retained historic connections
@@ -939,20 +947,31 @@ inline process details expose:
 - Process attribution coverage, with unresolved traffic grouped as `Unknown`
 - Rolling 60-second process traffic as a percentage of interface traffic in the selected direction
 
-The table shows one row per retained process, with no ten-row display cap. Use
-arrows / `j` / `k`, Page Up/Down (or Ctrl+B/F), Home/End (or `g` / `G`), and the
-mouse wheel to navigate. A scrollbar and visible row range show your position.
-Selection follows the process identity across sorting, live updates, and resizing.
+The table shows one row per application, with no ten-row display cap. Use arrows
+/ `j` / `k`, Page Up/Down (or Ctrl+B/F), Home/End (or `g` / `G`), and the mouse
+wheel to navigate. A scrollbar and visible row range show your position.
+Selection follows the application or process across sorting, updates, and resizing.
 
-Press Enter or double-click a row to open its inline details. All fields remain
-available there when narrower tables omit columns. Scroll the details with the
-same keys or the mouse wheel, and press Esc to return to the selected process.
-If a process is no longer retained, its inspector says so instead of selecting
-another process. Table columns and inspector fields mean:
+Enter or a double-click opens the application summary. Enter again opens its
+PID list, where Enter or a double-click opens individual process details. Both
+lists share the same sorting, scrolling, and selection controls. Details retain
+all fields omitted by narrow tables and scroll with the same keys or mouse wheel.
+Esc returns one level. An expired selection is identified instead of silently
+replaced with another application or process.
+
+Press `o` from an application or PID to open its connections in Overview. This
+replaces the Overview filter with an exact process-name query, adds `pid:` for an
+individual PID, and enables historic connections. The accounting overflow bucket
+`Other` has no connection shortcut because it combines unrelated names.
+
+Metrics apply to the selected application or individual process. Application
+peers are deduplicated across PIDs; its top peer uses combined traffic. Its peak
+is the highest combined rate observed in one sample, rather than the sum of peaks
+that individual PIDs reached at different times. Table columns and fields mean:
 
 | Column | Meaning |
 |---|---|
-| **Process** | Process name and PID. Traffic without process attribution is grouped as `Unknown`. |
+| **Application / Process** | Process name, with PID in the application's process list. Unresolved names are grouped as `Unknown`. |
 | **Share · 60s** | Relative share of the selected direction's rolling 60-second captured traffic. |
 | **TX/s / RX/s** | Current traffic rate for the process in the selected direction. |
 | **Peak/s / Peak rate** | Highest observed current rate while the process remains in the retained Activity view. |
@@ -966,8 +985,8 @@ another process. Table columns and inspector fields mean:
 
 The compact TX/RX summary shows current captured rates. Capture calculates coverage from captured bytes and interface-counter bytes over the same rolling 60-second window. This avoids the large fluctuations caused by comparing independently sampled instantaneous rates. Coverage divides the captured total by the interface total and caps the displayed percentage at 100%, because slightly different window endpoints or counter visibility can otherwise produce small overages. Capture shows both raw totals and their interface basis. When RustNet captures one named interface, it compares directly with that interface. With multi-interface capture, RustNet compares against a host-wide interface aggregate and prefixes the value with `~` because VPN and virtual interface counters can overlap.
 
-Wide terminals place Capture beside the process table. When both do not fit,
-`v` / Shift+`v` or clicking Processes / Capture switches sections using the shared
+Wide terminals place Capture beside the application table. When both do not fit,
+`v` / Shift+`v` or clicking Applications / Capture switches sections using the shared
 tab strip. Capture scrolls and preserves its position across resizing. It separates
 coverage over the last 60 seconds from process attribution over retained traffic,
 including mapped, unknown, and total bytes. Interface inventory and rate tables

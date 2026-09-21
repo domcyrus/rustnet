@@ -4,13 +4,13 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
 ─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
-Processes   Capture                                                             
-━━━━━━━━━───────────────────────────────────────────────────────────────────────
+Applications   Capture                                                          
+━━━━━━━━━━━━────────────────────────────────────────────────────────────────────
 TX 2.88 MB/s   RX 1.70 MB/s                                                     
 Coverage 60s: TX 73.1%  RX 91.8%                                                
-▎ Processes · TX · Retained TX ↓ ──────────────────────────────────────── 1-3/4 
-  Process                                      TX/s   60s %   Retained   Conns  
-▌ firefox (2001)                               2.4M   81.7%    4.78 MB     1/1 ▐
-  sshd (1500)                                  488K   17.7%    1.04 MB     1/1 ▐
-  systemd-resolved (820)                        16K    0.5%   32.42 KB     1/1  
+▎ Applications · TX · Retained TX ↓ ───────────────────────────────────── 1-3/4 
+  Application                                  TX/s   60s %   Retained   Conns  
+▌ firefox                                      2.4M   81.7%    4.78 MB     1/1 ▐
+  sshd                                         488K   17.7%    1.04 MB     1/1 ▐
+  systemd-resolved                              16K    0.5%   32.42 KB     1/1  
  v/V section  j/k select  enter details  d tx/rx  s sort         h help  q quit

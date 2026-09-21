@@ -87,7 +87,7 @@ cargo build --release --no-default-features
 RustNet 将进程级流量计量与实时网络接口统计整合在一起：
 
 - **概览标签页**：展示当前活跃的接口，包含速率、错误数与丢包数
-- **活动标签页**(按 `3`)：按出站 (TX) 或入站 (RX) 查看进程排名，包括保留流量与滚动流量、速率、占比、连接数和目的地
+- **活动标签页**(按 `3`)：按出站 (TX) 或入站 (RX) 查看应用排名，并可查看各 PID 的详情，包括保留流量与滚动流量、速率、占比、连接数和目的地
 - **安全工作流**：按出站流量排序，找出异常上传进程，然后检查其流量最大的远端对端；即使连接关闭，仍可查看保留流量
 - **主机标签页**(按 `5`)：显示 TCP LISTEN 套接字、UDP BOUND 端点、TCP 状态汇总、观测 RTT 和所属进程
 - **接口详情**(在主机标签页选择 Interfaces)：显示各接口完整指标表格
@@ -256,7 +256,7 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 
 完整键位说明与导航技巧见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
 
-Activity 可滚动浏览所有保留的进程，并在更新和调整窗口大小时保持选择。Enter 打开页面内详情，紧凑布局使用 `v` / Shift+`v` 切换 Processes 与完整的 Capture 信息。接口清单统一放在 Host。
+Activity 将进程名完全相同的多个 PID 汇总为一行应用。依次按 Enter 打开应用概要、PID 列表和单个进程详情，Esc 返回上一级。两个列表均可滚动，并在更新和调整大小时保持选择。按 `o` 在 Overview 中查看对应连接，会替换其筛选条件并启用历史连接。Activity 总计不受 Overview 筛选条件影响。紧凑布局使用 `v` / Shift+`v` 切换 Applications 与 Capture，接口清单统一放在 Host。
 
 ## 过滤与排序
 
@@ -285,7 +285,8 @@ Activity 可滚动浏览所有保留的进程，并在更新和调整窗口大�
 - `dport:443` —— 目的端口包含 "443"
 - `src:192.168` —— 源 IP 包含 "192.168"
 - `dst:github.com` —— 目的地址包含 "github.com"
-- `process:ssh` —— 进程名包含 "ssh"
+- `process:ssh`：进程名包含 "ssh"（`process:unknown` 也匹配未解析的名称）
+- `pid:1234`：精确匹配进程 ID
 - `sni:api` —— SNI 主机名包含 "api"
 - `app:openssh` —— 使用 OpenSSH 的 SSH 连接
 - `state:established` —— 按协议状态过滤

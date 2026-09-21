@@ -97,7 +97,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
 RustNet combines process-level traffic accounting with real-time network interface statistics:
 
 - **Overview Tab**: Shows active interfaces with current rates, errors, and drops
-- **Activity Tab** (press `3`): Ranks processes by Egress (TX) or Ingress (RX), including retained and rolling traffic, rates, shares, connections, and destinations
+- **Activity Tab** (press `3`): Ranks applications by Egress (TX) or Ingress (RX), with per-PID details, including retained and rolling traffic, rates, shares, connections, and destinations
 - **Security Workflow**: Sort by Egress, identify an unexpected uploader, then inspect its top remote peer and retained traffic even after the connection closes
 - **Host Tab** (press `5`): Shows TCP LISTEN sockets, UDP BOUND endpoints, aggregated TCP states, observed RTT, and process ownership
 - **Interface Details** (select Interfaces on Host): Shows comprehensive metrics for every interface
@@ -266,9 +266,12 @@ On Overview, the bottom status bar highlights process grouping and historic
 connections while those modes are active. In grouped mode it also shows
 `space expand` or `space collapse` for the selected process group.
 
-Activity lists all retained processes with scrolling and stable selection. Enter
-opens inline process details. Compact layouts use `v` / Shift+`v` to switch
-between Processes and the full Capture summary; interface inventory stays in Host.
+Activity combines PIDs with the same process name into one application row.
+Enter opens its summary, then its PID list, then individual process details;
+Esc returns one level. Both lists scroll and preserve selection. Press `o` to
+open matching connections in Overview, replacing its filter and enabling history.
+Activity totals remain independent of Overview filters. Compact layouts use
+`v` / Shift+`v` for Applications and Capture; interface inventory stays in Host.
 
 See [USAGE.md](USAGE.md) for detailed keyboard controls and navigation tips.
 
@@ -299,7 +302,8 @@ See [USAGE.md](USAGE.md) for complete filtering syntax and sorting guide.
 - `dport:443` - Destination ports containing "443"
 - `src:192.168` - Source IPs containing "192.168"
 - `dst:github.com` - Destinations containing "github.com"
-- `process:ssh` - Process names containing "ssh"
+- `process:ssh` - Process names containing "ssh" (`process:unknown` includes unresolved names)
+- `pid:1234` - Exact process ID
 - `sni:api` - SNI hostnames containing "api"
 - `app:openssh` - SSH connections using OpenSSH
 - `state:established` - Filter by protocol state
