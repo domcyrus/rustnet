@@ -368,6 +368,13 @@ pub fn draw(
 
     draw_tabs(f, ui_state, &capture, chunks[0], click_regions);
 
+    ui_state.section_navigation = match ui_state.selected_tab {
+        0 => tabs::overview::compact_layout(chunks[1]),
+        1 => tabs::details::compact_layout(chunks[1]),
+        3 => tabs::graph::compact_layout(chunks[1]),
+        4 => true,
+        _ => false,
+    };
     let content_area = sections::draw_selector(f, chunks[1], ui_state, click_regions);
     let (filter_area, status_area) = if ui_state.filter_row_visible() {
         (Some(chunks[2]), chunks[3])
@@ -1321,6 +1328,7 @@ mod snapshot_tests {
         app.set_connections_snapshot_for_test(connections.clone());
         let mut ui_state = UiState {
             grouping_enabled: grouped,
+            show_system_panel: false,
             visible_rows: 18,
             ..Default::default()
         };
@@ -1362,6 +1370,7 @@ mod snapshot_tests {
         stale.last_activity = SystemTime::now() - Duration::from_secs(450);
         app.set_connections_snapshot_for_test(connections.clone());
         let mut ui_state = UiState {
+            show_system_panel: false,
             visible_rows: 18,
             ..Default::default()
         };
@@ -1488,20 +1497,14 @@ mod snapshot_tests {
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     #[test]
-    fn overview_system_panel_keeps_security_scrollable_on_short_terminals() {
+    fn overview_system_panel_compacts_security_on_short_terminals() {
         let app = test_app();
         let connections = overview_connections();
-        let mut state = UiState {
-            overview_section: OverviewSection::System,
-            ..Default::default()
-        };
-        render_app(&app, &mut state, &connections, None, 140, 24);
-        assert!(state.system_scroll.can_scroll());
-        state.system_scroll.scroll_to_bottom();
-        let output = render_app(&app, &mut state, &connections, None, 140, 24);
-        assert!(output.contains("Security"));
-        assert!(!output.contains("Security (compact)"));
-        assert!(output.contains("No restrictions active"));
+        let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 32);
+
+        assert!(output.contains("Traffic"));
+        assert!(output.contains("Security (compact)"));
+        assert!(!output.contains("No restrictions active"));
     }
 
     #[cfg(any(
@@ -1611,8 +1614,7 @@ mod snapshot_tests {
     fn heading_row(render: &str, heading: &str) -> usize {
         render
             .lines()
-            .enumerate()
-            .find_map(|(row, line)| (row != 2 && line.contains(heading)).then_some(row))
+            .position(|line| line.contains(heading))
             .unwrap_or_else(|| panic!("missing {heading}"))
     }
 
@@ -2143,9 +2145,7 @@ mod snapshot_tests {
         );
         let card_header = enriched_tcp
             .lines()
-            .find(|line| {
-                line.starts_with('▎') && line.contains("Connection") && line.contains("Application")
-            })
+            .find(|line| line.contains("Connection") && line.contains("Application"))
             .expect("missing dashboard card header");
         let traffic_header = enriched_tcp
             .lines()
@@ -2186,13 +2186,11 @@ mod snapshot_tests {
         ] {
             let enriched_row = enriched_tcp
                 .lines()
-                .enumerate()
-                .find_map(|(row, line)| (row != 2 && line.contains(heading)).then_some(row))
+                .position(|line| line.contains(heading))
                 .unwrap_or_else(|| panic!("missing {heading} in enriched render"));
             let plain_row = plain_udp
                 .lines()
-                .enumerate()
-                .find_map(|(row, line)| (row != 2 && line.contains(heading)).then_some(row))
+                .position(|line| line.contains(heading))
                 .unwrap_or_else(|| panic!("missing {heading} in plain render"));
             assert_eq!(
                 enriched_row, plain_row,
@@ -2772,7 +2770,7 @@ mod snapshot_tests {
             let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
             dispatch_key(
                 3,
-                KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
                 &mut ctx,
             )
             .expect("next section handled");
@@ -2783,7 +2781,7 @@ mod snapshot_tests {
         for (width, height, compact) in [
             (99, 40, true),
             (100, 34, true),
-            (100, 35, true),
+            (100, 35, false),
             (100, 36, false),
             (140, 40, false),
             (80, 24, true),
@@ -2796,19 +2794,15 @@ mod snapshot_tests {
             assert_eq!(state.graph_section, GraphSection::Distribution);
             if !compact {
                 let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-                dispatch_key(
-                    3,
-                    KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
-                    &mut ctx,
-                )
-                .unwrap();
-                assert_eq!(ctx.ui_state.graph_section, GraphSection::Health);
-                dispatch_key(
-                    3,
-                    KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
-                    &mut ctx,
-                )
-                .unwrap();
+                assert!(
+                    dispatch_key(
+                        3,
+                        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                        &mut ctx
+                    )
+                    .is_none()
+                );
+                assert_eq!(ctx.ui_state.graph_section, GraphSection::Distribution);
             }
         }
     }
@@ -2996,7 +2990,7 @@ mod snapshot_tests {
             };
             dispatch_key(
                 1,
-                KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
                 &mut ctx,
             )
             .expect("section switch handled");
@@ -3036,7 +3030,7 @@ mod snapshot_tests {
         for (width, height) in [(80, 24), (50, 12), (140, 24), (140, 40), (80, 24)] {
             let (_, regions) =
                 render_app_frame(&app, &mut state, &connections, None, width, height);
-            assert_eq!(state.details_compact.get(), width < 100 || height < 28);
+            assert_eq!(state.details_compact.get(), width < 100 || height < 27);
             if height == 12 {
                 assert!(state.details_scroll.can_scroll());
                 let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
@@ -3116,7 +3110,7 @@ mod snapshot_tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = overview_connections();
-        for width in [50, 80, 89, 140] {
+        for width in [50, 80, 89] {
             let mut state = UiState::default();
             state.set_selected_by_index(&connections, 2);
             let selected = state.selected_connection_key.clone();
@@ -3124,7 +3118,7 @@ mod snapshot_tests {
             let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
             dispatch_key(
                 0,
-                KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
                 &mut ctx,
             )
             .unwrap();
@@ -3152,7 +3146,7 @@ mod snapshot_tests {
             let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
             dispatch_key(
                 0,
-                KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE),
                 &mut ctx,
             )
             .unwrap();
@@ -3168,6 +3162,9 @@ mod snapshot_tests {
         let connections = overview_connections();
         for tab in [0, 1, 3, 4] {
             for (width, height) in [(50, 12), (80, 24), (140, 50)] {
+                if tab != 4 && width == 140 {
+                    continue;
+                }
                 let mut state = UiState {
                     selected_tab: tab,
                     ..Default::default()
@@ -3191,7 +3188,7 @@ mod snapshot_tests {
                     let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
                     dispatch_key(
                         tab,
-                        KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+                        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
                         &mut ctx,
                     )
                     .unwrap();
@@ -3202,7 +3199,7 @@ mod snapshot_tests {
                 let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
                 dispatch_key(
                     tab,
-                    KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE),
                     &mut ctx,
                 )
                 .unwrap();
@@ -3225,7 +3222,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-        for key in ['[', ']'] {
+        for key in ['v', 'V'] {
             dispatch_key(
                 0,
                 KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
@@ -3236,7 +3233,7 @@ mod snapshot_tests {
         }
         ctx.ui_state.show_help = false;
         ctx.ui_state.filter_mode = true;
-        for key in ['[', ']'] {
+        for key in ['v', 'V'] {
             dispatch_key(
                 0,
                 KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
@@ -3244,109 +3241,85 @@ mod snapshot_tests {
             )
             .unwrap();
         }
-        assert_eq!(ctx.ui_state.filter_query, "[]");
+        assert_eq!(ctx.ui_state.filter_query, "vV");
         assert_eq!(ctx.ui_state.overview_section, OverviewSection::Connections);
     }
 
     #[test]
-    fn wide_details_scrolls_only_the_selected_card_and_keeps_copy_targets() {
+    fn wide_dashboards_do_not_add_section_controls_or_depend_on_compact_selection() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = overview_connections();
-        let mut state = UiState {
-            selected_tab: 1,
-            ..Default::default()
-        };
-        for section in [
-            DetailsSection::Connection,
-            DetailsSection::Network,
-            DetailsSection::Process,
-            DetailsSection::Application,
-            DetailsSection::Health,
-        ] {
-            state.select_section(section.index());
-            let (before, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 40);
-            if !state.details_scroll.can_scroll() {
-                continue;
-            }
-            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-            dispatch_key(
-                1,
-                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-                &mut ctx,
-            )
-            .unwrap();
-            let (after, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 40);
-            let neighbor_x = if section.index() < 3 { 71 } else { 0 };
-            let neighbor = |text: &str| {
-                text.lines()
-                    .skip(10)
-                    .take(20)
-                    .map(|line| line.chars().skip(neighbor_x).take(69).collect::<String>())
-                    .collect::<Vec<_>>()
+        for tab in [0, 1, 3] {
+            let mut state = UiState {
+                selected_tab: tab,
+                ..Default::default()
             };
-            assert_eq!(
-                neighbor(&before),
-                neighbor(&after),
-                "neighbor moved while scrolling {section:?}"
-            );
-            for y in 10..30 {
-                for x in [0, 71] {
-                    if let Some(ClickAction::CopyField { label, .. }) = regions.hit_test(x, y) {
-                        assert!(
-                            after.lines().nth(y as usize).unwrap().contains(label),
-                            "misaligned {label}"
-                        );
+            let count = state.sections().0.len();
+            let baseline = render_app(&app, &mut state, &connections, None, 140, 50);
+            for index in 0..count {
+                state.select_section(index);
+                let (output, regions) =
+                    render_app_frame(&app, &mut state, &connections, None, 140, 50);
+                assert!(!state.section_navigation);
+                assert_eq!(
+                    output, baseline,
+                    "wide tab {tab} changed with compact section {index}"
+                );
+                for y in 0..50 {
+                    for x in 0..140 {
+                        assert!(!matches!(
+                            regions.hit_test(x, y),
+                            Some(ClickAction::SelectSection(_))
+                        ));
                     }
+                }
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                for key in ['v', 'V', '[', ']'] {
+                    assert!(
+                        dispatch_key(
+                            tab,
+                            KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                            &mut ctx
+                        )
+                        .is_none()
+                    );
                 }
             }
         }
     }
 
     #[test]
-    fn wide_layouts_mark_selected_panel_headings_without_relying_on_color() {
-        use ratatui::style::Modifier;
+    fn compact_sections_leave_brackets_for_main_tabs_and_accept_shift_v() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = overview_connections();
-        for (tab, section, title) in [
-            (0, 1, "System"),
-            (1, 2, "Attribution"),
-            (3, 1, "Observed Network Health"),
-        ] {
+        for tab in [0, 1, 3, 4] {
             let mut state = UiState {
                 selected_tab: tab,
                 ..Default::default()
             };
-            state.select_section(section);
-            let stats = app.get_stats();
-            let mut regions = ClickableRegions::default();
-            let buffer = test_support::render_buffer(140, 50, |frame| {
-                draw(
-                    frame,
-                    &app,
-                    &mut state,
-                    &connections,
-                    None,
-                    &stats,
-                    &mut regions,
-                )
-                .unwrap();
-            });
-            let output = test_support::buffer_to_string(&buffer);
-            let (y, line) = output
-                .lines()
-                .enumerate()
-                .skip(3)
-                .find(|(_, line)| line.contains(title))
-                .unwrap();
-            let byte = line.find(title).unwrap();
-            let x = line[..byte].chars().count();
-            assert!(
-                buffer[(x as u16, y as u16)]
-                    .modifier
-                    .contains(Modifier::UNDERLINED),
-                "{title} must show focus"
-            );
+            let count = state.sections().0.len();
+            let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            for key in ['[', ']'] {
+                assert!(
+                    dispatch_key(
+                        tab,
+                        KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                        &mut ctx
+                    )
+                    .is_none()
+                );
+            }
+            for key in [
+                KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT),
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SHIFT),
+            ] {
+                ctx.ui_state.select_section(0);
+                dispatch_key(tab, key, &mut ctx).unwrap();
+                assert_eq!(ctx.ui_state.sections().1, count - 1);
+            }
         }
     }
 
@@ -3691,7 +3664,7 @@ mod snapshot_tests {
         let header_row = heading_row(render, "Application");
         let header_line = render.lines().nth(header_row).expect("header line");
         let byte_index = header_line.find("Application").expect("Application x");
-        let x = header_line[..byte_index].chars().count().saturating_sub(1);
+        let x = header_line[..byte_index].chars().count();
         let end_row = heading_row(render, "Transport Health");
         render
             .lines()

@@ -4,7 +4,7 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
 ──────────────────────────────────────────────────━━━━━━━───────────────────────
- Traffic   [Health]   Distribution                                   [/] section
+ Traffic   [Health]   Distribution                                   v/V section
 ▎ Observed Network Health ─────────────  ▎ TCP Counters ────────────────────────
 Waiting for health data...                 Retransmits         0                
                                            Out of Order        0                

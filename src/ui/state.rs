@@ -480,6 +480,10 @@ pub struct UiState {
     /// Whether to show historic (closed) connections
     pub show_historic: bool,
     pub overview_section: OverviewSection,
+    /// Whether this frame needs inline section navigation.
+    pub section_navigation: bool,
+    /// Wide Overview sidebar visibility.
+    pub show_system_panel: bool,
     pub system_scroll: PaneScroll,
     /// Number of visible connection rows, measured before rendering each frame
     pub visible_rows: usize,
@@ -536,6 +540,8 @@ impl Default for UiState {
             last_click: None,
             show_historic: false,
             overview_section: OverviewSection::default(),
+            section_navigation: false,
+            show_system_panel: true,
             system_scroll: PaneScroll::default(),
             visible_rows: 10,
             scroll_offset: 0,

@@ -102,6 +102,7 @@ impl Component for HelpOverlay {
             | (KeyCode::Char('x'), _)
             | (KeyCode::Tab, _)
             | (KeyCode::BackTab, _)
+            | (KeyCode::Char('[' | ']'), KeyModifiers::NONE)
             | (KeyCode::Char('1'..='5'), KeyModifiers::NONE) => None,
             _ => {
                 let page = ctx.ui_state.help_scroll.viewport_rows() as usize;
@@ -140,8 +141,8 @@ type HelpRow = (&'static str, &'static str);
 // to the global fallback in main.rs, so everything this section
 // advertises works while the overlay is open.
 const GLOBAL_KEYS: &[HelpRow] = &[
-    ("Tab", "Next tab"),
-    ("Shift+Tab", "Previous tab"),
+    ("Tab, ]", "Next tab"),
+    ("Shift+Tab, [", "Previous tab"),
     ("1-5", "Jump to Overview, Details, Activity, Graph, or Host"),
     ("x", "Clear all connections (press twice)"),
     ("h, Esc", "Close this help overlay"),
@@ -157,6 +158,7 @@ const CONNECTION_NAV_KEYS: &[HelpRow] = &[
 ];
 
 const OVERVIEW_KEYS: &[HelpRow] = &[
+    ("i", "Show or hide System sidebar on wide terminals"),
     ("Enter", "Open the selected connection in Details"),
     ("/", "Enter filter mode"),
     ("Esc", "Clear the active filter"),
@@ -358,13 +360,13 @@ fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &'stati
     );
 }
 
-fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
+fn help_lines(context: HelpContext, sections: bool) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         context.summary(),
         theme::key_hint_label(),
     ))];
 
-    if context != HelpContext::Activity {
+    if sections {
         push_section(&mut lines, "Sections", &[crate::ui::sections::SECTION_HELP]);
     }
     match context {
@@ -430,7 +432,7 @@ pub(in crate::ui) fn draw_help_overlay(
         return Ok(());
     }
     let context = HelpContext::from_state(ui_state);
-    let mut lines = help_lines(context);
+    let mut lines = help_lines(context, ui_state.section_navigation);
     let total_lines = lines.len();
 
     let width = overlay_width(area);
@@ -494,12 +496,15 @@ mod tests {
     use crate::ui::test_support::{empty_ctx, render, test_app};
 
     fn plain_text(ui_state: &UiState) -> String {
-        help_lines(HelpContext::from_state(ui_state))
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n")
+        help_lines(
+            HelpContext::from_state(ui_state),
+            ui_state.section_navigation,
+        )
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     #[test]

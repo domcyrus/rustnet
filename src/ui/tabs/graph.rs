@@ -106,6 +106,10 @@ impl Component for GraphTab {
     }
 }
 
+pub(in crate::ui) fn compact_layout(area: Rect) -> bool {
+    area.width < 100 || area.height < 32
+}
+
 fn draw_graph_tab(
     f: &mut Frame,
     app: &App,
@@ -116,8 +120,7 @@ fn draw_graph_tab(
     const WAVE_MIN_ROWS: u16 = 8;
     const HEALTH_ROWS: u16 = 10;
     const DISTRIBUTION_ROWS: u16 = 12;
-    let compact =
-        area.height < WAVE_MIN_ROWS + HEALTH_ROWS + DISTRIBUTION_ROWS + 2 || area.width < 100;
+    let compact = compact_layout(area);
     ui_state.graph_compact.set(compact);
     let traffic_history = app.get_traffic_history();
     let analytics = GraphAnalytics::from_connections(connections);
@@ -142,9 +145,6 @@ fn draw_graph_tab(
     draw_traffic_panels(f, &traffic_history, sections[0]);
     draw_health_panels(f, app, &traffic_history, &analytics, sections[1]);
     draw_distribution_panels(f, &analytics, sections[2]);
-    for (index, area) in sections.iter().enumerate() {
-        crate::ui::sections::focus_panel(f, *area, index == ui_state.graph_section as usize);
-    }
 }
 
 fn draw_traffic_panels(f: &mut Frame, history: &TrafficHistory, area: Rect) {

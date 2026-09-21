@@ -423,8 +423,8 @@ rustnet --kubernetes on
 
 ### Views and Tabs
 
-- `Tab` - Next tab
-- `Shift+Tab` - Previous tab
+- `Tab` or `]` - Next tab
+- `Shift+Tab` or `[` - Previous tab
 - `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Host
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
@@ -437,28 +437,27 @@ click anywhere dismisses it.
 
 ### Compact terminals
 
-Overview, Details, Graph, and Host share a visible section selector. Use `[` / `]`
-for the previous / next section, or click its name. Tab / Shift+Tab and 1-5
-still switch main tabs. These controls replace `v`, Overview's `i`, and Host's
-`s` / `i` section shortcuts. Brackets no longer switch main tabs. Help remains
-an overlay and consumes section controls while open.
+Overview, Details, and Graph show a shared section selector only when the full
+layout does not fit. Press `v` for the next section or Shift+`v` for the previous
+one, or click a section name. Tab / Shift+Tab, `]` / `[`, and 1-5 keep switching
+main tabs. Host uses the same selector for Sockets and Interfaces at every size.
 
-Below 90 columns, Overview shows either Connections or System inline. Wider
-terminals show both panels and underline the selected panel's heading. System
+Below 90 columns, Overview shows either Connections or System inline. System
 information scrolls with `j` / `k`, Page Up/Down, or the mouse wheel. Escape
 returns to Connections without changing the selected connection or filter.
+Wider terminals retain the connection table and System sidebar, toggled with `i`.
 
-Details shows one section below 100 columns or 24 content rows (28 terminal
+Details shows one section below 100 columns or 24 content rows (27 terminal
 rows without an open filter or expanded error banner). Choose Connection,
 Network, Process, Application, Health, or Traffic. `j` / `k` switch connections;
-Ctrl+D/U or the mouse wheel scrolls the selected information section. Larger
-terminals show the dashboard with an underlined heading for the selected card.
+Ctrl+D/U or the mouse wheel scrolls the information. Larger terminals retain
+the full dashboard and scroll its information panes together.
 
 Graph shows Traffic, Health, or Distribution below 100 columns or 32 content
-rows (36 terminal rows without an open filter or expanded error banner).
-Larger terminals show all three sections and underline the selected section.
-Host offers Sockets and Interfaces at every size. Selection survives resizing
-and switching main tabs.
+rows (35 terminal rows without an open filter or expanded error banner).
+Larger terminals show all sections together. Wide dashboards have no added
+section selector or panel focus. Shrinking restores the last compact section.
+Help remains an overlay and consumes section controls while open.
 
 At 80×24, Activity keeps its process table and TX/RX summaries visible. Shorter
 terminals condense the summaries and process rows, keeping current rates,
@@ -956,7 +955,7 @@ The paired RX/TX summaries show the current captured rate, but calculate coverag
 
 Wide terminals place capture coverage, process attribution, and interface rates in a sidebar, leaving the process table as the main view. Narrower terminals fold coverage and attribution into the summaries and hide the interface panel. Share bars blend the selected theme's neutral and traffic colours, ending at its TX/RX token rather than white. ANSI themes use shaded block textures in the terminal's own palette.
 
-Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `5`, then select Interfaces with `[` / `]`).
+Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `5`, then select Interfaces with `v` / Shift+`v`).
 
 For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
 
@@ -982,7 +981,7 @@ The inventory refreshes every 5 seconds. Process ownership is best effort becaus
 | FreeBSD | `sockstat -s` for native TCP states plus UDP socket rows |
 | Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |
 
-Use `[` / `]` or click Sockets / Interfaces to select a section. The same controls select sections on Overview, Details, and Graph.
+Use `v` / Shift+`v` or click Sockets / Interfaces to select a section. The same controls select sections on compact Overview, Details, and Graph layouts.
 
 ## Interface Statistics
 
@@ -997,7 +996,7 @@ RustNet provides real-time network interface statistics across all supported pla
 - Shows cumulative totals: `Errors (Total): N  Drops (Total): M`
 
 **Host Tab (Detailed View):**
-- Press `5` for Host, then select Interfaces with `[` / `]` or click its name
+- Press `5` for Host, then select Interfaces with `v` / Shift+`v` or click its name
 - Shows a detailed table of all network interfaces
 - Displays comprehensive metrics for each interface
 

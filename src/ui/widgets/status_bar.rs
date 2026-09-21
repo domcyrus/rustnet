@@ -92,7 +92,10 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
     if ui_state.filter_mode {
         return vec![Hint::action("\u{2191}\u{2193}", "select")];
     }
-    if ui_state.selected_tab == 0 && ui_state.overview_section == OverviewSection::System {
+    if ui_state.selected_tab == 0
+        && ui_state.section_navigation
+        && ui_state.overview_section == OverviewSection::System
+    {
         let mut hints = Vec::new();
         if ui_state.system_scroll.can_scroll() {
             hints.push(Hint::action("j/k", "scroll"));
@@ -131,6 +134,9 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
                 ),
                 Hint::mode("t", "history", ui_state.show_historic),
             ]);
+            if !ui_state.section_navigation {
+                hints.push(Hint::action("i", "info"));
+            }
             if clipboard {
                 hints.push(Hint::action("c", "copy"));
             }

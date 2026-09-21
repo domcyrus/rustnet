@@ -8,10 +8,10 @@ use super::{
     UiState, section_body, theme,
 };
 
-pub(super) const SECTION_KEYS: &str = "[/]";
+pub(super) const SECTION_KEYS: &str = "v/V";
 pub(super) const SECTION_HELP: (&str, &str) = (
     SECTION_KEYS,
-    "Previous/next section; click a section name to select it",
+    "Next/previous section; click a section name to select it",
 );
 
 impl UiState {
@@ -67,12 +67,18 @@ impl UiState {
 }
 
 pub(super) fn handle_key(key: KeyEvent, state: &mut UiState) -> Option<Vec<Effect>> {
-    if key.modifiers != KeyModifiers::NONE || !matches!(key.code, KeyCode::Char('[' | ']')) {
+    if !state.section_navigation {
         return None;
     }
+    let forward = match (key.code, key.modifiers) {
+        (KeyCode::Char('v'), KeyModifiers::NONE) => true,
+        (KeyCode::Char('V'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+        | (KeyCode::Char('v'), KeyModifiers::SHIFT) => false,
+        _ => return None,
+    };
     let (labels, selected) = state.sections();
     if !labels.is_empty() {
-        let index = if key.code == KeyCode::Char(']') {
+        let index = if forward {
             (selected + 1) % labels.len()
         } else {
             (selected + labels.len() - 1) % labels.len()
@@ -82,7 +88,7 @@ pub(super) fn handle_key(key: KeyEvent, state: &mut UiState) -> Option<Vec<Effec
     Some(Vec::new())
 }
 
-/// One row at every size. If all labels do not fit, keep the selected label
+/// One row when sections are needed. If all labels do not fit, keep the selected label
 /// and its position visible with clickable previous/next controls.
 pub(super) fn draw_selector(
     f: &mut Frame,
@@ -91,7 +97,7 @@ pub(super) fn draw_selector(
     regions: &mut ClickableRegions,
 ) -> Rect {
     let (labels, selected) = state.sections();
-    if labels.is_empty() || area.height == 0 {
+    if !state.section_navigation || labels.is_empty() || area.height == 0 {
         return area;
     }
     let width: usize = labels.iter().map(|label| label.len() + 4).sum();
@@ -146,14 +152,4 @@ pub(super) fn draw_selector(
         );
     }
     section_body(area)
-}
-
-/// Mark a selected panel without consuming another row or relying on color.
-pub(super) fn focus_panel(f: &mut Frame, area: Rect, selected: bool) {
-    if selected && area.height > 0 {
-        f.buffer_mut().set_style(
-            Rect::new(area.x, area.y, area.width, 1),
-            theme::bold_fg(theme::accent()).add_modifier(Modifier::UNDERLINED),
-        );
-    }
 }

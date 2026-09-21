@@ -37,12 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
-- **Section navigation**: Overview, Details, Graph, and Host share clickable
-  section selectors and `[` / `]` navigation at every size. Compact Overview
-  shows System inline; wide dashboards highlight the selected panel. Details
-  scrolls each selected card independently. Tab / Shift+Tab still switch tabs;
-  the old `v` and `i` section shortcuts are removed. Short Activity views keep
-  process rows and coverage visible.
+- **Compact layouts**: Overview, Details, and Graph share clickable section
+  selectors with `v` / Shift+`v` when the full layout does not fit. Overview
+  shows System inline; Host reuses the selector for its two views. Wide
+  dashboards and existing tab shortcuts stay unchanged. Short Activity views
+  keep process rows and coverage visible.
 - **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
   process ranking, and a separate capture-quality sidebar on wide terminals.
   Share bars use theme-derived gradients with textured ANSI fallbacks.

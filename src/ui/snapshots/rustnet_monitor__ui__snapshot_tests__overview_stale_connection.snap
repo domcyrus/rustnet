@@ -4,27 +4,27 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-[Connections]   System                                                                                                           [/] section
-▎ Live Connections ───────────────────────────────────────────────────────────────────────────────────────▎ System ─────────────────────────
-  Process               Remote                   App                       State       Hlth      Rx↓/Tx↑  Statistics                       ▐
-                                                                                                          Interface: eth0                  ▐
-▌▎firefox (2001)        140.82.121.4:443         TCP·HTTPS                 ESTABLISHED R3/O1     2m left  Link Layer: Unknown              ▐
-  systemd-resolved (82… 1.1.1.1:53               UDP·DNS (example.com)     DNS_QUERY   R2/T1     47K/82K  Detection: initializing...       ▐
-  sshd (1500)           10.0.0.5:51022           TCP                       ESTABLISHED ok      410K/1.7M                                   ▐
-  curl (9876)           151.101.1.195:443        TCP                       TIME_WAIT   ok            -/-  TCP Connections: 3               ▐
-                                                                                                          UDP Connections: 1               ▐
-                                                                                                          Processes: 4                     ▐
-                                                                                                          Total Connections: 4             ▐
-                                                                                                                                           ▐
-                                                                                                          Packets Processed: 0             ▐
-                                                                                                          Packets/sec: 0                   ▐
-                                                                                                          Queue Drops: 0                   ▐
-                                                                                                            Capture Drops: 0               ▐
-                                                                                                                                           ▐
-                                                                                                          Network Stats (active / total)    
-                                                                                                          TCP Retransmits: 3 / 0            
-                                                                                                          Out-of-Order: 1 / 0               
-                                                                                                          Fast Retransmits: 0 / 0           
-                                                                                                          Active TCP Flows: 3               
+▎ Live Connections ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Process               Remote                Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑  
                                                                                                                                             
- ↑↓ select  / filter  a group  t history  c copy                                                                             h help  q quit
+▌▎firefox (2001)        140.82.121.4:443      192.168.1.10:51234 https      TCP·HTTPS                ESTABLISHED    23ms R3/O1     2m left  
+  systemd-resolved (82… 1.1.1.1:53            192.168.1.10:53    dns        UDP·DNS (example.com)    DNS_QUERY         - R2/T1     47K/82K  
+  sshd (1500)           10.0.0.5:51022        192.168.1.10:22    ssh        TCP                      ESTABLISHED   184ms ok      410K/1.7M  
+  curl (9876)           151.101.1.195:443     192.168.1.10:60123 https      TCP                      TIME_WAIT         - ok            -/-  
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ ↑↓ select  / filter  a group  t history  i info  c copy                                                                     h help  q quit

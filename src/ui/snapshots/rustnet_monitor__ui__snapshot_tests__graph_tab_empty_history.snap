@@ -4,9 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ──────────────────────────────────────────────────━━━━━━━───────────────────────────────────────────────────────────────────────────────────
-[Traffic]   Health    Distribution                                                                                               [/] section
 ▎ Traffic Over Time (60s) ──────────────────────────────────────────────────────────────────────  ▎ Connection Lifecycle ───────────────────
 Waiting for traffic data...                                                                       Waiting for connection data...            
+                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
