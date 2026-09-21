@@ -26,7 +26,11 @@
   <em>Real-time visibility into every connection your machine makes, who owns it, and what protocol it's speaking. No tcpdump, X11 forwarding, or root piping.</em>
 </p>
 
+> **Documentation version:** On `main`, this README describes development code and may include unreleased features. For v1.6.0, use the [v1.6.0 documentation](https://github.com/domcyrus/rustnet/blob/v1.6.0/README.md). Check `rustnet --version` for your installed version and `rustnet --help` for its supported options.
+
 ## Features
+
+> **Unreleased since v1.6.0:** WireGuard/OpenVPN detection, the Host tab, Health badges and sorting, the idle countdown, and improved Linux attribution of pre-existing sockets require development builds. The Activity browser, compact-layout controls, and `pid:` filter described below are also unreleased. See the [changelog](CHANGELOG.md#unreleased) for all pending changes.
 
 - **Per-process attribution**: Every TCP, UDP, and QUIC connection mapped to its owning process, via eBPF on Linux, PKTAP on macOS, ETW with an automatic IP Helper fallback on Windows, and native APIs on FreeBSD. Details include PID, executable, user/group names, match confidence, and a capped parent-process chain on every platform. Wireshark and tcpdump can't do this; `netstat` / `ss` can't show live state.
 - **Deep packet inspection**: Identify HTTP, HTTPS/TLS with SNI, DNS, SSH, FTP, QUIC, MQTT, BitTorrent, WireGuard, OpenVPN, STUN, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, and NetBIOS, without external dissectors.
@@ -35,7 +39,7 @@
 - **Network analytics**: Real-time round-trip times for TCP, QUIC handshakes, DNS responses, and ICMP echo, plus TCP retransmission, out-of-order, and fast-retransmit detection. Protocol-aware health badges surface TCP issues, explicit QUIC Retry/version events, and retries/timeouts for transaction-based UDP, with severity-first sorting in the Overview table.
 - **Smart connection lifecycle**: Protocol-aware timeouts; idle rows get a yellow-to-red stripe and removal countdown and soften toward gray. Toggle `t` to keep historic (closed) connections visible for forensics.
 - **Vim/fzf-style filtering**: `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, `proto:`, plus regex via `/(?i)pattern/`.
-- **Headless automation**: Run without the TUI and stream versioned JSONL snapshots, or emit one final JSON snapshot, with the same connection filters used by the interactive view.
+- **Headless automation (unreleased)**: Run without the TUI and stream versioned JSONL snapshots, or emit one final JSON snapshot, with the same connection filters used by the interactive view.
 - **GeoIP enrichment**: Country lookups via local MaxMind GeoLite2. No network calls.
 - **LAN device identification**: MAC address and vendor (from the embedded IEEE OUI database) for on-link peers and the gateway, learned passively from ARP traffic and shown in the details pane.
 - **Kubernetes attribution** (optional `kubernetes` feature): connections mapped to their pod, namespace, and container, shown in the details pane, JSON/PCAPNG exports, and the `pod:`, `ns:`, `container:` filters. Enabled in the official Docker image; on a cluster, use the [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) plugin to run it as an ephemeral debug pod. See [USAGE.md](USAGE.md#--kubernetes-mode-optional-feature).
@@ -177,7 +181,7 @@ cargo install rustnet-monitor
 **Windows (Chocolatey):**
 ```powershell
 # Run in Administrator PowerShell
-# Requires Npcap (https://npcap.com); default installer settings are supported
+# RustNet v1.6.0 requires Npcap with "WinPcap API compatible mode" enabled
 choco install rustnet
 ```
 
@@ -210,6 +214,8 @@ rustnet --pcapng-export capture.pcapng  # Annotated PCAPNG for Wireshark
 
 The TUI remains the default. For scripts and services, use headless mode:
 
+> **Unreleased:** `--headless`, `--duration`, `--output`, and `--filter` are unavailable in v1.6.0. To use the examples below, [build from current `main`](INSTALL.md#building-from-source) or wait for a release that includes headless mode.
+
 ```bash
 rustnet --headless                                      # Stream JSONL snapshots
 rustnet --headless --duration 30 --output json         # Emit one final snapshot
@@ -233,6 +239,8 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 > in the troubleshooting section.
 
 ## Keyboard Controls
+
+> **Unreleased navigation changes:** `5` opens Host, `h` opens contextual help, and `v` / `Shift+v` switch sections. In v1.6.0, `5` opens Help and `i` on Activity opens interface details.
 
 | Key | Action |
 |-----|--------|
@@ -303,7 +311,7 @@ See [USAGE.md](USAGE.md) for complete filtering syntax and sorting guide.
 - `src:192.168` - Source IPs containing "192.168"
 - `dst:github.com` - Destinations containing "github.com"
 - `process:ssh` - Process names containing "ssh" (`process:unknown` includes unresolved names)
-- `pid:1234` - Exact process ID
+- `pid:1234` - Exact process ID (unreleased)
 - `sni:api` - SNI hostnames containing "api"
 - `app:openssh` - SSH connections using OpenSSH
 - `state:established` - Filter by protocol state

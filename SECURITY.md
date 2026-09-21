@@ -2,7 +2,11 @@
 
 # Security
 
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased changes. For v1.6.0, use the [v1.6.0 security guide](https://github.com/domcyrus/rustnet/blob/v1.6.0/SECURITY.md). Check `rustnet --version` for your installed version.
+
 RustNet processes untrusted network data, making defense-in-depth security critical. This document describes the security measures implemented.
+
+> **Unreleased hardening:** Aborting on a failed requested UID/GID drop, retaining secure output descriptors without Seatbelt output-path exceptions, and checking for output-file collisions are changes after v1.6.0. The Linux startup socket inventory described below is also unreleased.
 
 On Linux, macOS, and FreeBSD, a requested root UID/GID drop must succeed before
 packet-processing workers start, even in best-effort mode. A failed transition

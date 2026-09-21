@@ -109,6 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- Clarify unreleased features and Windows setup in all three documentation
+  languages; link v1.6.0 docs and add release checks for availability notes (#620)
 - **Connection viewport**: paging, scrollbars, and mouse targets track the current
   layout immediately after resizing, including filters and two-row capture errors.
 - **Required UID Drop**: abort startup before packet-processing workers when a

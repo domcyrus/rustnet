@@ -2,6 +2,8 @@
 
 # Installation Guide
 
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased changes. For v1.6.0, use the [v1.6.0 installation guide](https://github.com/domcyrus/rustnet/blob/v1.6.0/INSTALL.md). Check `rustnet --version` for your installed version.
+
 This guide covers all installation methods for RustNet across different platforms.
 
 > **Tip:** For an at-a-glance view of which distributions package RustNet and which version each carries, see [RustNet on Repology](https://repology.org/project/rustnet/versions).
@@ -66,7 +68,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 
 1. **Install Npcap Runtime** (required for packet capture):
    - Download from https://npcap.com/dist/
-   - Run the installer. The default settings are supported; WinPcap API-compatible mode is not required
+   - For RustNet v1.6.0, enable **"WinPcap API compatible mode"**. Support for default Npcap settings is currently unreleased and available on `main`
 
 2. **Download and install** the appropriate MSI package:
    - `Rustnet_Windows_64-bit.msi` for 64-bit Windows
@@ -89,7 +91,7 @@ The easiest way to install RustNet on Windows is via [Chocolatey](https://commun
 choco install rustnet
 ```
 
-**Note:** You still need to install [Npcap](https://npcap.com) separately. The default installer settings are supported.
+**Note:** Install [Npcap](https://npcap.com) separately. For RustNet v1.6.0, enable **"WinPcap API compatible mode"**. Support for default Npcap settings is currently unreleased and available on `main`.
 
 ### Linux Package Installation
 
@@ -541,7 +543,7 @@ Building RustNet on Windows requires the Npcap SDK and proper environment config
 
 1. **Install Npcap Runtime**:
    - Download the Npcap installer from https://npcap.com/dist/
-   - Run the installer. The default settings are supported; WinPcap API-compatible mode is not required
+   - For RustNet v1.6.0, enable **"WinPcap API compatible mode"**. Support for default Npcap settings is currently unreleased and available on `main`
 
 2. **Run RustNet**:
    ```cmd
@@ -1110,7 +1112,7 @@ for memlock, etc.) that points at the root cause.
 #### Windows: Npcap Not Found
 
 - Ensure Npcap is installed from https://npcap.com/dist/
-- The default Npcap settings are supported; WinPcap API-compatible mode is not required
+- For RustNet v1.6.0, enable **"WinPcap API compatible mode"** when installing Npcap. Support for default settings is currently unreleased and available on `main`
 - Verify Npcap service is running: `sc query npcap`
 - Try reinstalling Npcap with administrator privileges
 
