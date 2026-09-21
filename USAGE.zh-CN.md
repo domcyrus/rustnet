@@ -415,8 +415,8 @@ rustnet --kubernetes on
 
 ### 视图与标签页<a id="views-and-tabs"></a>
 
-- `Tab` 或 `]`：下一个标签页
-- `Shift+Tab` 或 `[`：上一个标签页
+- `Tab`：下一个标签页
+- `Shift+Tab`：上一个标签页
 - `1` / `2` / `3` / `4` / `5`：直接跳转到 概览 / 详情 / 活动 / 图表 / 主机
 - `Enter` —— 查看所选连接的详细信息
 - `Esc` —— 返回上一个视图或清除活动过滤器
@@ -902,15 +902,15 @@ Window Size  ↓ 137.50 KB · ↑ 1.00 KB
 
 流量脉冲会显示当前捕获速率，但覆盖率使用同一滚动 60 秒窗口内的捕获字节数与接口计数字节数计算。这可以避免比较两个独立采样的瞬时速率所造成的大幅波动。覆盖率会用捕获总量除以接口总量，并将显示结果限制在 100%，因为两个采集器的窗口端点或计数器可见范围略有不同时可能产生小幅超出。两个原始总量仍会保留显示，便于诊断。当 RustNet 仅捕获一个具名接口时，会直接与该接口比较。使用多接口捕获时，RustNet 会与主机范围的接口汇总值比较，并在结果前加 `~`，因为 VPN 和虚拟接口的计数器可能重叠。
 
-按 `d` 在出站 (TX，蓝色) 和入站 (RX，绿色) 之间切换，按 `s` 轮换活动指标的排序方式，按 `S` 反转排序顺序。详细的接口表格位于主机标签页（按 `5`，再用 `v` / Shift+`v` 选择 Interfaces）。
+按 `d` 在出站 (TX，蓝色) 和入站 (RX，绿色) 之间切换，按 `s` 轮换活动指标的排序方式，按 `S` 反转排序顺序。详细的接口表格位于主机标签页（按 `5`，再用 `[` / `]` 选择 Interfaces）。
 
 进行快速安全检查时，可按滚动字节数或保留字节数对出站流量排序，找出异常的高流量进程，并检查其流量最大的远端对端。保留流量会让短寿命上传进程在套接字关闭后仍然可见。
 
 ### 紧凑终端布局
 
-Overview、Details 和 Graph 仅在完整布局放不下时显示共用的区块选择栏。按 `v` 选择下一个区块，Shift+`v` 选择上一个，也可点击名称。Tab / Shift+Tab、`]` / `[` 和 1-5 仍切换主标签页。Host 在所有尺寸下使用相同的选择栏切换 Sockets 和 Interfaces。
+Overview、Details 和 Graph 仅在完整布局放不下时显示共用的区块选择栏。按 `v` 选择下一个区块，Shift+`v` 选择上一个，也可点击名称。Host 在所有尺寸下使用 `[` / `]` 切换 Sockets 和 Interfaces。Tab / Shift+Tab 和 1-5 在所有页面切换主标签页，`[` / `]` 在 Host 以外的页面也切换主标签页。区块选择栏与主标签页共用标题和下划线样式，快捷键显示在底部。
 
-Overview 在不足 90 列时直接在页面内显示 Connections 或 System。System 可用 `j` / `k`、Page Up/Down 或鼠标滚轮滚动；Esc 返回 Connections，保留连接选择和筛选条件。更宽时保留原有的连接表和 System 侧栏，按 `i` 切换侧栏。
+Overview 在不足 90 列时直接在页面内显示 Connections 或 System。System 保留区块分隔线，可用 `j` / `k`、Page Up/Down 或鼠标滚轮滚动；Esc 返回 Connections，保留连接选择和筛选条件。更宽时保留原有的连接表和 System 侧栏，按 `i` 切换侧栏。
 
 Details 在不足 100 列或内容区域不足 24 行时显示一个区块（无筛选输入行或展开错误栏时对应终端高度 27 行）。可选择 Connection、Network、Process、Application、Health 或 Traffic。`j` / `k` 切换连接；Ctrl+D/U 或鼠标滚轮滚动信息。更大的终端保留完整仪表板，左右信息面板一起滚动。
 
@@ -942,7 +942,7 @@ UDP 没有 LISTEN 状态。UDP 表中的每一行都代表一个本地绑定端�
 | FreeBSD | 使用 `sockstat -s` 获取原生 TCP 状态及 UDP 套接字行 |
 | Windows | IP Helper 的 `GetExtendedTcpTable` 和 `GetExtendedUdpTable` owner 表 |
 
-使用 `v` / Shift+`v` 或点击 Sockets / Interfaces 选择区块。紧凑的 Overview、Details 和 Graph 布局使用相同的区块导航。
+使用 `[` / `]` 或点击 Sockets / Interfaces 选择区块。底部显示切换快捷键。Tab / Shift+Tab 和 1-5 切换主标签页。
 
 ## 接口统计<a id="interface-statistics"></a>
 
@@ -957,7 +957,7 @@ RustNet 在所有支持的平台上（Linux、macOS、FreeBSD、Windows）提供
 - 显示累计总数：`Errors (Total): N  Drops (Total): M`
 
 **主机标签页（详细视图）：**
-- 按 `5` 打开主机标签页，再用 `v` / Shift+`v` 或点击名称选择 Interfaces
+- 按 `5` 打开主机标签页，再用 `[` / `]` 或点击名称选择 Interfaces
 - 显示所有网络接口的详细表格
 - 显示每个接口的综合指标
 

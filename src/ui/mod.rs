@@ -2681,7 +2681,7 @@ mod snapshot_tests {
                     let (output, regions) =
                         render_app_frame(&app, &mut state, &connections, grouped, 80, height);
                     let expected =
-                        usize::from(height) - 7 - usize::from(filter) - usize::from(error);
+                        usize::from(height) - 8 - usize::from(filter) - usize::from(error);
                     assert_eq!(state.visible_rows, expected);
                     let offset = if grouping_enabled {
                         state.grouped_scroll_offset
@@ -2971,7 +2971,7 @@ mod snapshot_tests {
         for section in DetailsSection::ALL {
             let (output, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
             assert_eq!(state.details_section, section);
-            assert!(output.contains(&format!("[{}]", section.title())));
+            assert!(output.contains(section.title()));
             assert!(output.contains(sections::SECTION_KEYS));
             assert_eq!(state.selected_connection_key, selected);
             assert!(
@@ -3125,8 +3125,16 @@ mod snapshot_tests {
             assert_eq!(state.overview_section, OverviewSection::System);
             let (output, regions) =
                 render_app_frame(&app, &mut state, &connections, None, width, 24);
-            assert!(output.contains("[System]"));
+            assert!(output.contains("System"));
             assert!(output.contains("Interface: eth0"));
+            let divider = "─".repeat(usize::from(width - 2));
+            assert!(
+                output
+                    .lines()
+                    .skip(4)
+                    .any(|line| line.starts_with(&divider)),
+                "{output}"
+            );
             assert!(state.system_scroll.can_scroll());
             assert_eq!(state.selected_connection_key, selected);
             if width < 90 {
@@ -3139,6 +3147,13 @@ mod snapshot_tests {
             dispatch_key(0, KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &mut ctx).unwrap();
             let bottom = render_app(&app, &mut state, &connections, None, width, 24);
             assert!(bottom.contains("Security"), "{bottom}");
+            assert!(
+                bottom
+                    .lines()
+                    .skip(4)
+                    .any(|line| line.starts_with(&divider)),
+                "{bottom}"
+            );
             assert!(!bottom.contains("(compact)"));
             render_app(&app, &mut state, &connections, None, 140, 45);
             render_app(&app, &mut state, &connections, None, 80, 24);
@@ -3185,10 +3200,24 @@ mod snapshot_tests {
                         }
                     }
                     assert!(clicks > 0, "{output}");
+                    assert!(
+                        output.lines().last().unwrap().contains(sections::keys(tab)),
+                        "{output}"
+                    );
+                    for x in 0..width {
+                        if let Some(ClickAction::SelectSection(target)) = regions.hit_test(x, 2) {
+                            assert!(
+                                matches!(regions.hit_test(x, 3), Some(ClickAction::SelectSection(other)) if other == target)
+                            );
+                        }
+                    }
                     let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
                     dispatch_key(
                         tab,
-                        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                        KeyEvent::new(
+                            KeyCode::Char(if tab == 4 { ']' } else { 'v' }),
+                            KeyModifiers::NONE,
+                        ),
                         &mut ctx,
                     )
                     .unwrap();
@@ -3199,7 +3228,10 @@ mod snapshot_tests {
                 let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
                 dispatch_key(
                     tab,
-                    KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE),
+                    KeyEvent::new(
+                        KeyCode::Char(if tab == 4 { '[' } else { 'V' }),
+                        KeyModifiers::NONE,
+                    ),
                     &mut ctx,
                 )
                 .unwrap();
@@ -3268,7 +3300,35 @@ mod snapshot_tests {
         // Host still has two selectable views on a wide terminal.
         state.selected_tab = 4;
         let output = render_app(&app, &mut state, &connections, None, 140, 50);
-        assert!(output.contains(sections::SECTION_KEYS));
+        assert!(output.contains(sections::keys(4)));
+    }
+
+    #[test]
+    fn host_section_keys_are_consumed_while_help_is_open() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let regions = ClickableRegions::default();
+        let mut state = UiState {
+            selected_tab: 4,
+            show_help: true,
+            section_navigation: true,
+            ..Default::default()
+        };
+        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+        for key in ['[', ']'] {
+            assert!(
+                dispatch_key(
+                    4,
+                    KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                    &mut ctx
+                )
+                .is_some()
+            );
+            assert_eq!(ctx.ui_state.host_view, HostView::Sockets);
+        }
+        assert!(
+            dispatch_key(4, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut ctx).is_none()
+        );
     }
 
     #[test]
@@ -3320,7 +3380,7 @@ mod snapshot_tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = overview_connections();
-        for tab in [0, 1, 3, 4] {
+        for tab in [0, 1, 3] {
             let mut state = UiState {
                 selected_tab: tab,
                 ..Default::default()

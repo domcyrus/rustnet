@@ -227,8 +227,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 | `q` | 退出(连按两次确认) |
 | `Ctrl+C` | 立即退出 |
 | `x` | 清空所有连接(连按两次确认) |
-| `Tab` 或 `]` | 下一个标签页 |
-| `Shift+Tab` 或 `[` | 上一个标签页 |
+| `Tab` | 下一个标签页 |
+| `Shift+Tab` | 上一个标签页 |
 | `1`–`5` | 直接跳转到 Overview / Details / Activity / Graph / Host |
 | `↑/k` `↓/j` | 上下移动 |
 | `g` `G` | 跳到第一条 / 最后一条连接 |
@@ -243,7 +243,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 | `←` / `→` 或 `l` | 折叠 / 展开当前分组 |
 | `PageUp/PageDown` 或 `Ctrl+B/F` | 翻页 |
 | `t` | 切换是否显示历史（已关闭）连接 |
-| `v` / `Shift+v` | 紧凑布局或 Host 中的下一个 / 上一个区块 |
+| `v` / `Shift+v` | 紧凑 Overview、Details 或 Graph 中的下一个 / 上一个区块 |
+| `[` / `]` | Host 中的上一个 / 下一个区块；其他页面的上一个 / 下一个主标签页 |
 | `i` | 在宽屏 Overview 中切换 System 侧栏 |
 | `r` | 重置视图(分组、排序、过滤) |
 | `/` | 进入过滤模式 |

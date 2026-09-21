@@ -239,8 +239,8 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `q` | Quit (press twice to confirm) |
 | `Ctrl+C` | Quit immediately |
 | `x` | Clear all connections (press twice to confirm) |
-| `Tab` or `]` | Next tab |
-| `Shift+Tab` or `[` | Previous tab |
+| `Tab` | Next tab |
+| `Shift+Tab` | Previous tab |
 | `1`–`5` | Jump to Overview / Details / Activity / Graph / Host |
 | `↑/k` `↓/j` | Navigate up/down |
 | `g` `G` | Jump to first/last connection |
@@ -255,7 +255,8 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `←` / `→` or `l` | Collapse/expand group |
 | `PageUp/PageDown` or `Ctrl+B/F` | Page navigation |
 | `t` | Toggle historic (closed) connections |
-| `v` / `Shift+v` | Next / previous section on compact layouts or Host |
+| `v` / `Shift+v` | Next / previous section on compact Overview, Details, or Graph |
+| `[` / `]` | Previous / next Host section; previous / next main tab elsewhere |
 | `i` | Toggle System sidebar on wide Overview layouts |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |

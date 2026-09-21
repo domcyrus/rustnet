@@ -93,6 +93,9 @@ impl Component for HelpOverlay {
                 ctx.ui_state.help_scroll.reset();
                 Some(Vec::new())
             }
+            (KeyCode::Char('[' | ']'), KeyModifiers::NONE) if ctx.ui_state.selected_tab == 4 => {
+                Some(Vec::new())
+            }
             // Every key GLOBAL_KEYS advertises must stay live while the
             // overlay is open: quit, clear, and tab navigation fall through
             // to the global fallback in main.rs. Tab switches leave the
@@ -350,7 +353,7 @@ fn column_row(key: &str, description: &'static str, width: usize) -> Line<'stati
     ])
 }
 
-fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &'static [HelpRow]) {
+fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &[HelpRow]) {
     out.push(Line::from(""));
     out.push(tick_line(title));
     let width = key_column_width(rows);
@@ -367,7 +370,20 @@ fn help_lines(context: HelpContext, sections: bool) -> Vec<Line<'static>> {
     ))];
 
     if sections {
-        push_section(&mut lines, "Sections", &[crate::ui::sections::SECTION_HELP]);
+        push_section(
+            &mut lines,
+            "Sections",
+            &[crate::ui::sections::help(
+                if matches!(
+                    context,
+                    HelpContext::HostSockets | HelpContext::HostInterfaces
+                ) {
+                    4
+                } else {
+                    0
+                },
+            )],
+        );
     }
     match context {
         HelpContext::Overview => {
@@ -398,7 +414,15 @@ fn help_lines(context: HelpContext, sections: bool) -> Vec<Line<'static>> {
             push_section(&mut lines, "Interface Actions", INTERFACE_KEYS);
         }
     }
-    push_section(&mut lines, "Global", GLOBAL_KEYS);
+    let mut global_keys = GLOBAL_KEYS.to_vec();
+    if matches!(
+        context,
+        HelpContext::HostSockets | HelpContext::HostInterfaces
+    ) {
+        global_keys[0].0 = "Tab";
+        global_keys[1].0 = "Shift+Tab";
+    }
+    push_section(&mut lines, "Global", &global_keys);
     lines.push(Line::from(""));
     lines
 }

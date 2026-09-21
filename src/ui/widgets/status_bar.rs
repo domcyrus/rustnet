@@ -92,6 +92,17 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
     if ui_state.filter_mode {
         return vec![Hint::action("\u{2191}\u{2193}", "select")];
     }
+    let mut hints = view_hints(ui_state, clipboard);
+    if ui_state.section_navigation {
+        hints.insert(
+            0,
+            Hint::action(crate::ui::sections::keys(ui_state.selected_tab), "section"),
+        );
+    }
+    hints
+}
+
+fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
     if ui_state.selected_tab == 0
         && ui_state.section_navigation
         && ui_state.overview_section == OverviewSection::System

@@ -747,9 +747,11 @@ fn render_section_separator(f: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let rule: String = "─".repeat(area.width as usize);
-    let para = Paragraph::new(Line::from(rule)).style(theme::fg(theme::border()));
-    f.render_widget(para, area);
+    f.render_widget(Paragraph::new(section_separator(area.width)), area);
+}
+
+fn section_separator(width: u16) -> Line<'static> {
+    Line::styled("─".repeat(usize::from(width)), theme::fg(theme::border()))
 }
 
 /// Effective-UID privilege line shared by the Linux and macOS Security
@@ -1243,9 +1245,9 @@ fn draw_stats_panel(
     security_lines.extend(security_text);
     if let Some(scroll) = scroll {
         let mut lines = conn_stats_text;
-        lines.push(Line::default());
+        lines.push(section_separator(inner_area.width.saturating_sub(2)));
         lines.extend(network_stats_text);
-        lines.push(Line::default());
+        lines.push(section_separator(inner_area.width.saturating_sub(2)));
         lines.push(Line::styled("Traffic", theme::bold_fg(theme::heading())));
         let history = app.get_traffic_history();
         let rx = history
@@ -1264,7 +1266,7 @@ fn draw_stats_panel(
             Span::styled(format!("TX {}/s", format_bytes(tx)), theme::fg(theme::tx())),
         ]));
         lines.extend(interface_error_lines(app, usize::MAX));
-        lines.push(Line::default());
+        lines.push(section_separator(inner_area.width.saturating_sub(2)));
         lines.extend(security_lines);
         crate::ui::widgets::scrollbar::draw_scrolled_text(
             f,

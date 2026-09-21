@@ -1,11 +1,12 @@
 //! Shared section selection, keyboard controls, and responsive chrome.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{Frame, layout::Rect, style::Modifier, text::Span, widgets::Paragraph};
+use ratatui::{Frame, layout::Rect, text::Span};
 
 use super::{
     ClickAction, ClickableRegions, DetailsSection, Effect, GraphSection, HostView, OverviewSection,
-    UiState, section_body, theme,
+    UiState,
+    widgets::tab_strip::{self, TabStrip},
 };
 
 pub(super) const SECTION_KEYS: &str = "v/V";
@@ -13,6 +14,21 @@ pub(super) const SECTION_HELP: (&str, &str) = (
     SECTION_KEYS,
     "Next/previous section; click a section name to select it",
 );
+
+pub(super) fn keys(tab: usize) -> &'static str {
+    if tab == 4 { "[/]" } else { SECTION_KEYS }
+}
+
+pub(super) fn help(tab: usize) -> (&'static str, &'static str) {
+    if tab == 4 {
+        (
+            keys(tab),
+            "Previous/next section; click a section name to select it",
+        )
+    } else {
+        SECTION_HELP
+    }
+}
 
 impl UiState {
     pub(super) fn sections(&self) -> (&'static [&'static str], usize) {
@@ -70,11 +86,19 @@ pub(super) fn handle_key(key: KeyEvent, state: &mut UiState) -> Option<Vec<Effec
     if !state.section_navigation {
         return None;
     }
-    let forward = match (key.code, key.modifiers) {
-        (KeyCode::Char('v'), KeyModifiers::NONE) => true,
-        (KeyCode::Char('V'), KeyModifiers::NONE | KeyModifiers::SHIFT)
-        | (KeyCode::Char('v'), KeyModifiers::SHIFT) => false,
-        _ => return None,
+    let forward = if state.selected_tab == 4 {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char(']'), KeyModifiers::NONE) => true,
+            (KeyCode::Char('['), KeyModifiers::NONE) => false,
+            _ => return None,
+        }
+    } else {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('v'), KeyModifiers::NONE) => true,
+            (KeyCode::Char('V'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+            | (KeyCode::Char('v'), KeyModifiers::SHIFT) => false,
+            _ => return None,
+        }
     };
     let (labels, selected) = state.sections();
     if !labels.is_empty() {
@@ -88,8 +112,7 @@ pub(super) fn handle_key(key: KeyEvent, state: &mut UiState) -> Option<Vec<Effec
     Some(Vec::new())
 }
 
-/// One row when sections are needed. If all labels do not fit, keep the selected label
-/// and its position visible with clickable previous/next controls.
+/// Share the main tabs' title and underline treatment, including both-row hit targets.
 pub(super) fn draw_selector(
     f: &mut Frame,
     area: Rect,
@@ -100,56 +123,47 @@ pub(super) fn draw_selector(
     if !state.section_navigation || labels.is_empty() || area.height == 0 {
         return area;
     }
-    let width: usize = labels.iter().map(|label| label.len() + 4).sum();
-    let hint = format!(" {SECTION_KEYS} section");
-    let mut x = area.x;
-    let mut item = |text: String, index: usize, active: bool| {
-        let width = (text.len() as u16).min(area.right().saturating_sub(x));
-        let rect = Rect::new(x, area.y, width, 1);
-        let style = if active {
-            theme::bold_fg(theme::accent()).add_modifier(Modifier::UNDERLINED)
-        } else {
-            theme::fg(theme::muted())
-        };
-        f.render_widget(Paragraph::new(Span::styled(text, style)), rect);
-        regions.register(rect, ClickAction::SelectSection(index));
-        x += width;
-    };
+    let width =
+        labels.iter().map(|label| label.len()).sum::<usize>() + labels.len().saturating_sub(1) * 3;
+    let mut strip = TabStrip::new(Span::raw(""));
     if width <= usize::from(area.width) {
         for (index, label) in labels.iter().enumerate() {
-            item(
-                if index == selected {
-                    format!("[{label}]  ")
-                } else {
-                    format!(" {label}   ")
-                },
-                index,
+            strip.push(
+                vec![tab_strip::title(*label, index == selected)],
                 index == selected,
+                if index == 0 { 0 } else { 3 },
+                ClickAction::SelectSection(index),
             );
         }
     } else {
-        item(
-            "< ".into(),
-            (selected + labels.len() - 1) % labels.len(),
+        strip.push(
+            vec![tab_strip::title("<", false)],
             false,
+            0,
+            ClickAction::SelectSection((selected + labels.len() - 1) % labels.len()),
         );
-        item(
-            format!("{} {}/{} ", labels[selected], selected + 1, labels.len()),
-            selected,
+        strip.push(
+            vec![tab_strip::title(
+                format!("{} {}/{}", labels[selected], selected + 1, labels.len()),
+                true,
+            )],
             true,
+            2,
+            ClickAction::SelectSection(selected),
         );
-        item(">".into(), (selected + 1) % labels.len(), false);
-    }
-    let hint = if usize::from(area.right().saturating_sub(x)) >= hint.len() {
-        hint
-    } else {
-        format!(" {SECTION_KEYS}")
-    };
-    if usize::from(area.right().saturating_sub(x)) >= hint.len() {
-        f.render_widget(
-            Paragraph::new(Span::styled(hint, theme::fg(theme::muted()))).right_aligned(),
-            Rect::new(x, area.y, area.right().saturating_sub(x), 1),
+        strip.push(
+            vec![tab_strip::title(">", false)],
+            false,
+            2,
+            ClickAction::SelectSection((selected + 1) % labels.len()),
         );
     }
-    section_body(area)
+    strip.draw(f, area, regions);
+    let height = area.height.min(tab_strip::HEIGHT);
+    Rect::new(
+        area.x,
+        area.y + height,
+        area.width,
+        area.height.saturating_sub(height),
+    )
 }
