@@ -37,10 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
-- **Compact layouts**: Graph exposes Traffic, Health, and Distribution through
-  `v` on small terminals. Details offers six information pages with the same key,
-  and Overview's `i` opens a scrollable System info overlay below 90 columns.
-  Short Activity views preserve process rows and coverage.
+- **Section navigation**: Overview, Details, Graph, and Host share clickable
+  section selectors and `[` / `]` navigation at every size. Compact Overview
+  shows System inline; wide dashboards highlight the selected panel. Details
+  scrolls each selected card independently. Tab / Shift+Tab still switch tabs;
+  the old `v` and `i` section shortcuts are removed. Short Activity views keep
+  process rows and coverage visible.
 - **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
   process ranking, and a separate capture-quality sidebar on wide terminals.
   Share bars use theme-derived gradients with textured ANSI fallbacks.

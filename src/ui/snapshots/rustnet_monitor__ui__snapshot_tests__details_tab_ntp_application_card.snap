@@ -4,6 +4,7 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+[Connection]   Network    Process    Application    Health    Traffic                                                            [/] section
   Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
                                                                                                                                             
 ▌ proc (4242)           203.0.113.7:4433        192.168.1.10:50000 -          UDP·NTP (v4 Server)      NTP               - -             -/-
@@ -11,34 +12,33 @@ expression: output
                                                                                                                                             
                                                                                                                                             
 ▎ proc → 203.0.113.7:4433 [NTP] · click a field to copy ────────────────────────────────────────────────────────────────────────────────────
-Connection                                                            Application: NTP                                                     ▐
-Protocol              UDP                                             NTP Version           4                                              ▐
-Status                Active (last seen <T> ago)                       NTP Mode              Server                                         ▐
-Local Address         192.168.1.10:50000                              Stratum               2                                              ▐
-Remote Address        203.0.113.7:4433                                                                                                     ▐
-Scope                 DOCUMENTATION                                                                                                        ▐
-State                 NTP                                                                                                                  ▐
-Process               proc                                                                                                                 ▐
-PID                   4242                                                                                                                 ▐
-Service               -                                                                                                                    ▐
-                                                                                                                                           ▐
-Network Context                                                       Transport Health                                                     ▐
-Local Hostname        -                                               NTP RTT               -                                              ▐
-Local MAC             -                                               Request Retries (R)   -                                              ▐
-Remote Hostname       -                                               Request Timeouts (T)  -                                              ▐
-Attributed Name       -                                                                                                                    ▐
-Attributed Via        -                                               Paired by originate timestamp echo                                   ▐
-Remote MAC            -                                                                                                                     
-Country               -                                                                                                                     
-City                  -                                                                                                                     
-ASN                   -                                                                                                                     
+▎Connection ─────────────────────────────────────────────────────────  ▎Application: NTP ───────────────────────────────────────────────────
+Protocol              UDP                                           ▐  NTP Version           4                                              
+Status                Active (last seen <T> ago)                     ▐  NTP Mode              Server                                         
+Local Address         192.168.1.10:50000                            ▐  Stratum               2                                              
+Remote Address        203.0.113.7:4433                              ▐                                                                       
+Scope                 DOCUMENTATION                                 ▐                                                                       
+State                 NTP                                                                                                                   
+Process               proc                                                                                                                  
                                                                                                                                             
+▎Network Context ────────────────────────────────────────────────────  ▎Transport Health ───────────────────────────────────────────────────
+Local Hostname        -                                             ▐  NTP RTT               -                                              
+Local MAC             -                                             ▐  Request Retries (R)   -                                              
+Remote Hostname       -                                             ▐  Request Timeouts (T)  -                                              
+Attributed Name       -                                                                                                                     
+Attributed Via        -                                                Paired by originate timestamp echo                                   
+                                                                                                                                            
+▎Attribution ────────────────────────────────────────────────────────                                                                       
+PID                   4242                                          ▐                                                                       
+PPID                  -                                             ▐                                                                       
+Process Tree          -                                             ▐                                                                       
+Executable            -                                                                                                                     
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
-Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+ ↓ RX -           →                                 peak           -    ↑ TX -           →                                 peak           - 
+ Total 0 B  ·  0 packets                                                Total 0 B  ·  0 packets                                             
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
  j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back                                                                h help  q quit

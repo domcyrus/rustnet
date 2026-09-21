@@ -102,7 +102,6 @@ impl Component for HelpOverlay {
             | (KeyCode::Char('x'), _)
             | (KeyCode::Tab, _)
             | (KeyCode::BackTab, _)
-            | (KeyCode::Char('[' | ']'), KeyModifiers::NONE)
             | (KeyCode::Char('1'..='5'), KeyModifiers::NONE) => None,
             _ => {
                 let page = ctx.ui_state.help_scroll.viewport_rows() as usize;
@@ -141,8 +140,8 @@ type HelpRow = (&'static str, &'static str);
 // to the global fallback in main.rs, so everything this section
 // advertises works while the overlay is open.
 const GLOBAL_KEYS: &[HelpRow] = &[
-    ("Tab, ]", "Next tab"),
-    ("Shift+Tab, [", "Previous tab"),
+    ("Tab", "Next tab"),
+    ("Shift+Tab", "Previous tab"),
     ("1-5", "Jump to Overview, Details, Activity, Graph, or Host"),
     ("x", "Clear all connections (press twice)"),
     ("h, Esc", "Close this help overlay"),
@@ -170,8 +169,8 @@ const OVERVIEW_KEYS: &[HelpRow] = &[
     ("←/→, l", "Collapse or expand the selected group"),
     ("t", "Toggle historic connections"),
     (
-        "i",
-        "Toggle System info (scrollable overlay on narrow terminals)",
+        "System section",
+        "Scroll with j/k, Page Up/Down, or the mouse wheel",
     ),
     ("r", "Reset grouping, sorting, filter, and history"),
 ];
@@ -222,7 +221,6 @@ const CONNECTION_DISPLAY: &[HelpRow] = &[
 ];
 
 const DETAILS_KEYS: &[HelpRow] = &[
-    ("v", "Next information section on compact terminals"),
     ("↑/k, ↓/j", "Show the previous or next connection"),
     ("g, G", "Show the first or last connection"),
     ("Page Up/Down", "Move through connections by one page"),
@@ -287,7 +285,6 @@ const HOST_SOCKET_KEYS: &[HelpRow] = &[
     ("Page Up/Down", "Scroll one page"),
     ("Ctrl+B/F", "Scroll one page"),
     ("g, G", "Jump to the top or bottom"),
-    ("i, →", "Show interface details"),
     ("Esc", "Return to Overview"),
     ("Scroll wheel", "Scroll the endpoint table"),
 ];
@@ -310,16 +307,11 @@ const INTERFACE_KEYS: &[HelpRow] = &[
     ("Page Up/Down", "Scroll one page"),
     ("Ctrl+B/F", "Scroll one page"),
     ("g, G", "Jump to the top or bottom"),
-    ("s, ←", "Return to the socket inventory"),
     ("Esc", "Return to Overview"),
     ("Scroll wheel", "Scroll interface details"),
 ];
 
 const GRAPH_KEYS: &[HelpRow] = &[
-    (
-        "v",
-        "Next section on compact terminals: traffic, health, distribution",
-    ),
     ("Esc", "Return to Overview"),
     (
         "Live view",
@@ -372,6 +364,9 @@ fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
         theme::key_hint_label(),
     ))];
 
+    if context != HelpContext::Activity {
+        push_section(&mut lines, "Sections", &[crate::ui::sections::SECTION_HELP]);
+    }
     match context {
         HelpContext::Overview => {
             push_section(&mut lines, "Connection Navigation", CONNECTION_NAV_KEYS);
@@ -617,8 +612,6 @@ mod tests {
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
             KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
         ] {
             assert!(

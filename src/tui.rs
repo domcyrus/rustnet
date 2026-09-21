@@ -207,10 +207,16 @@ where
 
                             if let Some(action) = click_regions.hit_test(mouse.column, mouse.row) {
                                 match action.clone() {
+                                    ui::ClickAction::SelectSection(index) => {
+                                        ui_state.select_section(index);
+                                    }
                                     ui::ClickAction::SwitchTab(tab_idx) => {
                                         ui_state.selected_tab = tab_idx;
                                     }
                                     ui::ClickAction::SelectConnection(conn_idx) => {
+                                        if ui_state.selected_tab == 0 {
+                                            ui_state.select_section(0);
+                                        }
                                         if ui_state.grouping_enabled {
                                             ui_state.set_selected_grouped_by_index(
                                                 &grouped_rows,
@@ -351,14 +357,11 @@ where
                                 break 'main;
                             }
 
-                            (KeyCode::Tab, KeyModifiers::NONE)
-                            | (KeyCode::Char(']'), KeyModifiers::NONE) => {
+                            (KeyCode::Tab, KeyModifiers::NONE) => {
                                 ui_state.next_tab();
                             }
 
-                            (KeyCode::BackTab, _)
-                            | (KeyCode::Tab, KeyModifiers::SHIFT)
-                            | (KeyCode::Char('['), KeyModifiers::NONE) => {
+                            (KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => {
                                 ui_state.prev_tab();
                             }
 

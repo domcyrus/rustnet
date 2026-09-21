@@ -49,13 +49,12 @@ use crate::ui::{
         SELECTION_BAR, build_header, cleanup_remaining, column_constraints, connection_row,
         select_columns, stale_window,
     },
-    dpi_color, fade_scroll_edges,
+    dpi_color,
     format::{ellipsize_left, format_bytes, format_countdown, format_rate, format_rtt_compact},
     non_dpi_app_color, section_header, section_title, state_color, theme,
     try_handle_connection_nav, try_handle_pane_wheel,
     widgets::badge::{chip, pill},
     widgets::braille_graph,
-    widgets::scrollbar::draw_scrollbar,
 };
 
 /// Padded width for detail labels so values line up vertically.
@@ -115,11 +114,6 @@ impl Component for DetailsTab {
         // taller than the pane (j/k etc. stay reserved for flipping
         // between connections).
         match (key.code, key.modifiers) {
-            (KeyCode::Char('v'), KeyModifiers::NONE) if ctx.ui_state.details_compact.get() => {
-                ctx.ui_state.details_section = ctx.ui_state.details_section.next();
-                ctx.ui_state.details_scroll.reset();
-                return Some(Vec::new());
-            }
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                 ctx.ui_state.details_scroll.scroll_down(DETAILS_SCROLL_STEP);
                 return Some(Vec::new());
@@ -969,64 +963,49 @@ fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
     traffic
 }
 
-fn draw_compact_details(
+fn detail_section<'a>(
+    details: &DetailsBuilder<'a>,
+    range: std::ops::Range<usize>,
+) -> DetailsBuilder<'a> {
+    let mut section = DetailsBuilder {
+        lines: details.lines[range.clone()].to_vec(),
+        fields: details.fields[range].to_vec(),
+        label_style: details.label_style,
+    };
+    while section.lines.last().is_some_and(line_is_blank) {
+        section.lines.pop();
+        section.fields.pop();
+    }
+    while section.lines.first().is_some_and(line_is_blank) {
+        section.lines.remove(0);
+        section.fields.remove(0);
+    }
+    section
+}
+
+fn draw_detail_section(
     f: &mut Frame,
-    ctx: &ComponentContext<'_>,
-    conn: &Connection,
     area: Rect,
     mut details: DetailsBuilder<'_>,
-    ranges: [std::ops::Range<usize>; 5],
+    scroll: &crate::ui::PaneScroll,
+    skip_placeholder_values: bool,
     click_regions: &mut ClickableRegions,
 ) {
-    let section = ctx.ui_state.details_section;
-    if section == crate::ui::DetailsSection::Traffic {
-        details = traffic_details(conn);
-    } else {
-        let range = ranges[section.index()].clone();
-        details.lines = details.lines.drain(range.clone()).collect();
-        details.fields = details.fields.drain(range).collect();
-    }
-    // Card padding aligns the wide dashboard, but serves no purpose on a page.
-    while details.lines.last().is_some_and(line_is_blank) {
-        details.lines.pop();
-        details.fields.pop();
-    }
-    while details.lines.first().is_some_and(line_is_blank) {
-        details.lines.remove(0);
-        details.fields.remove(0);
-    }
-    let inner = section_header(
+    let heading = details.lines.remove(0);
+    details.fields.remove(0);
+    let inner = section_header(f, area, heading);
+    let (text_area, offset) = crate::ui::widgets::scrollbar::draw_scrolled_text(
         f,
-        area,
-        Line::from(vec![
-            section_title(format!(" {} ({}/6)", section.title(), section.index() + 1)),
-            Span::styled(" · v next section", theme::fg(theme::muted())),
-        ]),
+        inner,
+        Paragraph::new(details.lines),
+        scroll,
     );
-    let total = details.lines.len();
-    let scroll = ctx
-        .ui_state
-        .details_scroll
-        .clamp_for_render((total as u16).saturating_sub(inner.height));
-    ctx.ui_state.details_scroll.record_viewport(inner.height);
-    let text_area = Rect {
-        width: inner.width.saturating_sub(2),
-        ..inner
-    };
     register_detail_clicks(
         click_regions,
         text_area,
         &details.fields,
-        section != crate::ui::DetailsSection::Traffic,
-        scroll,
-    );
-    f.render_widget(Paragraph::new(details.lines).scroll((scroll, 0)), text_area);
-    draw_scrollbar(
-        f,
-        inner,
-        total,
-        usize::from(scroll),
-        usize::from(inner.height),
+        skip_placeholder_values,
+        offset,
     );
 }
 
@@ -1089,7 +1068,7 @@ pub(in crate::ui) fn draw_connection_details(
     // two-column split with its spacing.
     let info_width = body.width.min(DETAILS_MAX_CONTENT_WIDTH);
     let pane_width = if !compact && info_width >= DETAILS_SPLIT_MIN_WIDTH {
-        info_width.saturating_sub(4) / 2
+        (info_width.saturating_sub(2) / 2).saturating_sub(2)
     } else {
         info_width.saturating_sub(2)
     };
@@ -1099,15 +1078,9 @@ pub(in crate::ui) fn draw_connection_details(
     // from the bold section headings inserted by DetailsBuilder::section.
     let label_style = theme::fg(theme::label());
     let mut details = DetailsBuilder::new(label_style);
-    // Index ranges in the details builder that should move to the
-    // right pane when the layout splits horizontally (Application fields and
-    // Transport Health). Pushed in source order; drained in reverse later.
-    let mut right_ranges: Vec<std::ops::Range<usize>> = Vec::new();
 
     // Unlike regular sections, the first card starts without a blank separator.
-    // Together with the fixed nine-row Network Context card below this gives
-    // the left dashboard column a 21-row footprint for every protocol, ARP
-    // included, so the cards below never move.
+    // Card row sets stay stable across protocols; each renderer supplies its viewport.
     details.plain_line(Line::from(Span::styled(
         "Connection",
         theme::bold_fg(theme::heading()),
@@ -1707,7 +1680,6 @@ pub(in crate::ui) fn draw_connection_details(
         details.rows() - application_start,
     );
     details.pad_section(application_start, APPLICATION_CARD_ROWS);
-    right_ranges.push(application_start..details.rows());
 
     // Transport Health is also a fixed card, but its rows are protocol
     // specific. QUIC has no equivalent of the TCP loss counters: packet numbers
@@ -1863,7 +1835,6 @@ pub(in crate::ui) fn draw_connection_details(
         details.field("Window Size", format_window_sizes(counters));
     }
     details.pad_section(metrics_start, TRANSPORT_CARD_ROWS);
-    right_ranges.push(metrics_start..details.rows());
 
     // Continuity: the header band echoes the selected row so users feel
     // like they zoomed into the Overview entry rather than landed on a
@@ -1950,122 +1921,79 @@ pub(in crate::ui) fn draw_connection_details(
         ..info_area
     };
 
-    // Drain the Application and Transport Health cards out
-    // of the main buffers when we have enough horizontal room to show two
-    // columns side by side. The right pane always renders when split, even
-    // if the connection has no DPI / TCP analytics, so the layout stays
-    // consistent across connection types. Below the width threshold the
-    // panel collapses back to a single column so narrow terminals stay
-    // readable. The right pane needs no title of its own; its content
-    // starts with the bold Application and Transport Health headings.
+    let ranges = [
+        0..network_start,
+        network_start..attribution_start,
+        attribution_start..application_start,
+        application_start..metrics_start,
+        metrics_start..details.rows(),
+    ];
+    let selected = ui_state.details_section.index();
     if compact {
-        let end = details.rows();
-        draw_compact_details(
+        let section = if selected == 5 {
+            let mut traffic = traffic_details(conn);
+            traffic
+                .lines
+                .insert(0, Line::from(section_title("Traffic Statistics")));
+            traffic.fields.insert(0, None);
+            traffic
+        } else {
+            detail_section(&details, ranges[selected].clone())
+        };
+        draw_detail_section(
             f,
-            ctx,
-            conn,
             info_area,
-            details,
-            [
-                0..network_start,
-                network_start..attribution_start,
-                attribution_start..application_start,
-                application_start..metrics_start,
-                metrics_start..end,
-            ],
+            section,
+            &ui_state.details_scroll,
+            selected != 5,
             click_regions,
         );
         return Ok(());
     }
 
-    // The builder is done; the drain below reshuffles raw lines and fields.
-    let DetailsBuilder {
-        lines: mut details_text,
-        fields: mut detail_fields,
-        ..
-    } = details;
-    let mut right_text: Vec<Line> = Vec::new();
-    let mut right_fields: Vec<Option<(String, String)>> = Vec::new();
-    // Drain in reverse so earlier ranges aren't shifted by later drains.
-    for range in right_ranges.iter().rev() {
-        let mut sec_text: Vec<Line> = details_text.drain(range.clone()).collect();
-        let mut sec_fields: Vec<Option<(String, String)>> =
-            detail_fields.drain(range.clone()).collect();
-        sec_text.append(&mut right_text);
-        sec_fields.append(&mut right_fields);
-        right_text = sec_text;
-        right_fields = sec_fields;
-    }
-    // The first surviving entry in right_text is a leading blank from the
-    // first section's separator; trim it so the right pane starts clean.
-    if right_text.first().map(line_is_blank).unwrap_or(false) {
-        right_text.remove(0);
-        right_fields.remove(0);
-    }
-
-    // The normal wide layout resolves to fixed-height dashboard cards, while
-    // optional feature sections can still increase the content height. Clamp
-    // the result so the Traffic section below always fits.
-    // Section header + 6 content rows: direction header, totals summary,
-    // and four graph rows in each of the two aligned traffic cards.
     const TRAFFIC_HEIGHT: u16 = 7;
-    let content_rows = details_text.len().max(right_text.len());
-    let info_h = (content_rows as u16)
-        .min(info_area.height.saturating_sub(TRAFFIC_HEIGHT + 1))
-        .max(1);
-    // Reserve the two rightmost columns of the info area (blank gap +
-    // scrollbar) and split the panes inside the remainder.
-    let panes_area = Rect::new(
-        info_area.x,
-        info_area.y,
-        info_area.width.saturating_sub(2),
-        info_h,
-    );
-
-    let info_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+    let info_h = info_area.height.saturating_sub(TRAFFIC_HEIGHT + 1);
+    let panes_area = Rect::new(info_area.x, info_area.y, info_area.width, info_h);
+    let info_chunks = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
         .spacing(2)
         .split(panes_area);
-
-    // Both panes share one scroll offset (Ctrl+D/U, mouse wheel) so
-    // they stay row-aligned; the taller pane bounds it.
-    let max_scroll = (content_rows as u16).saturating_sub(info_h);
-    let scroll = ui_state.details_scroll.clamp_for_render(max_scroll);
-
-    // Fade the rows the scroll window cuts through, so a clipped card
-    // reads as "there is more" rather than as a hard edge. Styling only:
-    // the row count and every anchor below it stay put.
-    fade_scroll_edges(&mut details_text, scroll, info_h);
-    fade_scroll_edges(&mut right_text, scroll, info_h);
-
-    // Card rows must stay one terminal row tall. Long hostnames, SNI values,
-    // and identifiers are clipped at the pane edge instead of wrapping and
-    // displacing every anchor below them. The complete value remains available
-    // through click-to-copy.
-    let left_para = Paragraph::new(details_text)
-        .style(Style::default())
-        .scroll((scroll, 0));
-    f.render_widget(left_para, info_chunks[0]);
-    register_detail_clicks(click_regions, info_chunks[0], &detail_fields, true, scroll);
-
-    if info_chunks.len() == 2 && !right_text.is_empty() {
-        let right_para = Paragraph::new(right_text)
-            .style(Style::default())
-            .scroll((scroll, 0));
-        f.render_widget(right_para, info_chunks[1]);
-        register_detail_clicks(click_regions, info_chunks[1], &right_fields, true, scroll);
+    // Each card keeps its own viewport. Only the selected card borrows the
+    // active scroll state; neighboring cards remain at their first row.
+    let first_card_height = info_h.saturating_sub(2) * 12 / 27;
+    let left = Layout::vertical([
+        Constraint::Length(first_card_height),
+        Constraint::Fill(8),
+        Constraint::Fill(7),
+    ])
+    .spacing(1)
+    .split(info_chunks[0]);
+    let right = Layout::vertical([Constraint::Length(first_card_height), Constraint::Min(0)])
+        .spacing(1)
+        .split(info_chunks[1]);
+    for (index, area) in [left[0], left[1], left[2], right[0], right[1]]
+        .into_iter()
+        .enumerate()
+    {
+        let inactive_scroll = crate::ui::PaneScroll::default();
+        let scroll = if index == selected {
+            &ui_state.details_scroll
+        } else {
+            &inactive_scroll
+        };
+        draw_detail_section(
+            f,
+            area,
+            detail_section(&details, ranges[index].clone()),
+            scroll,
+            true,
+            click_regions,
+        );
+        crate::ui::sections::focus_panel(f, area, index == selected);
     }
-
-    // Scrollbar on the right edge of the info area, spanning the pane
-    // rows; hidden when the record fits.
-    draw_scrollbar(
-        f,
-        Rect::new(info_area.x, info_area.y, info_area.width, info_h),
-        content_rows,
-        scroll as usize,
-        info_h as usize,
-    );
+    if selected == 5 {
+        ui_state.details_scroll.clamp_for_render(0);
+        ui_state.details_scroll.record_viewport(TRAFFIC_HEIGHT);
+    }
 
     let rx_value_style = theme::fg(theme::rx());
     let tx_value_style = theme::fg(theme::tx());
@@ -2094,21 +2022,22 @@ pub(in crate::ui) fn draw_connection_details(
         (traffic_bottom - traffic_top).min(TRAFFIC_HEIGHT),
     );
     let traffic_area = section_header(f, traffic_full, section_title(" Traffic Statistics"));
+    crate::ui::sections::focus_panel(f, traffic_full, selected == 5);
 
     // Reuse the exact dashboard rectangles rather than recomputing a
     // percentage split. This guarantees that RX begins under Connection
     // and TX begins under Application and Transport Health.
     let cols = [
         Rect::new(
-            info_chunks[0].x,
+            info_chunks[0].x + 1,
             traffic_area.y,
-            info_chunks[0].width,
+            info_chunks[0].width.saturating_sub(1),
             traffic_area.height,
         ),
         Rect::new(
-            info_chunks[1].x,
+            info_chunks[1].x + 1,
             traffic_area.y,
-            info_chunks[1].width,
+            info_chunks[1].width.saturating_sub(1),
             traffic_area.height,
         ),
     ];

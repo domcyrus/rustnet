@@ -57,6 +57,9 @@ pub fn dispatch_key(
     if ctx.ui_state.filter_mode {
         return OverviewTab.handle_key(key, ctx);
     }
+    if let Some(effects) = sections::handle_key(key, ctx.ui_state) {
+        return Some(effects);
+    }
     match tab {
         0 => OverviewTab.handle_key(key, ctx),
         1 => DetailsTab.handle_key(key, ctx),
@@ -103,7 +106,7 @@ mod state;
 pub(crate) use crate::network::process_activity::process_group_label;
 pub use state::{
     ActivityDirection, ActivitySort, ClickAction, ClickableRegions, DetailsSection, GraphSection,
-    GroupedRow, HostView, PaneScroll, SortColumn, UiState, compute_grouped_rows,
+    GroupedRow, HostView, OverviewSection, PaneScroll, SortColumn, UiState, compute_grouped_rows,
     compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
@@ -115,6 +118,8 @@ pub use sorting::sort_connections;
 
 mod clipboard;
 pub use clipboard::{clipboard_available, copy_to_clipboard};
+
+mod sections;
 
 mod actions;
 pub use actions::clear_all_with_confirmation;
@@ -363,7 +368,7 @@ pub fn draw(
 
     draw_tabs(f, ui_state, &capture, chunks[0], click_regions);
 
-    let content_area = chunks[1];
+    let content_area = sections::draw_selector(f, chunks[1], ui_state, click_regions);
     let (filter_area, status_area) = if ui_state.filter_row_visible() {
         (Some(chunks[2]), chunks[3])
     } else {
@@ -378,12 +383,6 @@ pub fn draw(
         grouped_rows,
     );
 
-    ui_state
-        .system_compact
-        .set(tabs::overview::compact_layout(content_area));
-    if ui_state.selected_tab != 0 || !ui_state.system_compact.get() {
-        ui_state.show_system_overlay = false;
-    }
     let compact_details = tabs::details::compact_layout(content_area);
     if ui_state.details_compact.replace(compact_details) != compact_details {
         ui_state.details_scroll.reset();
@@ -1131,10 +1130,7 @@ mod snapshot_tests {
     fn full_page_shows_capture_error() {
         let app = test_app();
         app.set_capture_error_for_test(Some("Capture stopped: The interface disappeared."));
-        let mut ui_state = UiState {
-            show_system_panel: false,
-            ..Default::default()
-        };
+        let mut ui_state = UiState::default();
         let output = render_app(&app, &mut ui_state, &[], None, 100, 16);
 
         assert!(
@@ -1152,10 +1148,7 @@ mod snapshot_tests {
         app.set_capture_error_for_test(Some(
             "Capture failed to start: eth0: You don't have permission to capture on that device (socket: Operation not permitted).",
         ));
-        let mut ui_state = UiState {
-            show_system_panel: false,
-            ..Default::default()
-        };
+        let mut ui_state = UiState::default();
         let output = render_app(&app, &mut ui_state, &[], None, 80, 16);
 
         let rows: Vec<&str> = output.lines().collect();
@@ -1328,7 +1321,6 @@ mod snapshot_tests {
         app.set_connections_snapshot_for_test(connections.clone());
         let mut ui_state = UiState {
             grouping_enabled: grouped,
-            show_system_panel: false,
             visible_rows: 18,
             ..Default::default()
         };
@@ -1370,7 +1362,6 @@ mod snapshot_tests {
         stale.last_activity = SystemTime::now() - Duration::from_secs(450);
         app.set_connections_snapshot_for_test(connections.clone());
         let mut ui_state = UiState {
-            show_system_panel: false,
             visible_rows: 18,
             ..Default::default()
         };
@@ -1497,14 +1488,20 @@ mod snapshot_tests {
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     #[test]
-    fn overview_system_panel_compacts_security_on_short_terminals() {
+    fn overview_system_panel_keeps_security_scrollable_on_short_terminals() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 32);
-
-        assert!(output.contains("Traffic"));
-        assert!(output.contains("Security (compact)"));
-        assert!(!output.contains("No restrictions active"));
+        let mut state = UiState {
+            overview_section: OverviewSection::System,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 140, 24);
+        assert!(state.system_scroll.can_scroll());
+        state.system_scroll.scroll_to_bottom();
+        let output = render_app(&app, &mut state, &connections, None, 140, 24);
+        assert!(output.contains("Security"));
+        assert!(!output.contains("Security (compact)"));
+        assert!(output.contains("No restrictions active"));
     }
 
     #[cfg(any(
@@ -1614,7 +1611,8 @@ mod snapshot_tests {
     fn heading_row(render: &str, heading: &str) -> usize {
         render
             .lines()
-            .position(|line| line.contains(heading))
+            .enumerate()
+            .find_map(|(row, line)| (row != 2 && line.contains(heading)).then_some(row))
             .unwrap_or_else(|| panic!("missing {heading}"))
     }
 
@@ -2145,7 +2143,9 @@ mod snapshot_tests {
         );
         let card_header = enriched_tcp
             .lines()
-            .find(|line| line.contains("Connection") && line.contains("Application"))
+            .find(|line| {
+                line.starts_with('▎') && line.contains("Connection") && line.contains("Application")
+            })
             .expect("missing dashboard card header");
         let traffic_header = enriched_tcp
             .lines()
@@ -2186,11 +2186,13 @@ mod snapshot_tests {
         ] {
             let enriched_row = enriched_tcp
                 .lines()
-                .position(|line| line.contains(heading))
+                .enumerate()
+                .find_map(|(row, line)| (row != 2 && line.contains(heading)).then_some(row))
                 .unwrap_or_else(|| panic!("missing {heading} in enriched render"));
             let plain_row = plain_udp
                 .lines()
-                .position(|line| line.contains(heading))
+                .enumerate()
+                .find_map(|(row, line)| (row != 2 && line.contains(heading)).then_some(row))
                 .unwrap_or_else(|| panic!("missing {heading} in plain render"));
             assert_eq!(
                 enriched_row, plain_row,
@@ -2642,7 +2644,6 @@ mod snapshot_tests {
             for expanded in [false, true] {
                 let mut state = UiState {
                     grouping_enabled,
-                    show_system_panel: false,
                     ..Default::default()
                 };
                 if expanded {
@@ -2682,7 +2683,7 @@ mod snapshot_tests {
                     let (output, regions) =
                         render_app_frame(&app, &mut state, &connections, grouped, 80, height);
                     let expected =
-                        usize::from(height) - 6 - usize::from(filter) - usize::from(error);
+                        usize::from(height) - 7 - usize::from(filter) - usize::from(error);
                     assert_eq!(state.visible_rows, expected);
                     let offset = if grouping_enabled {
                         state.grouped_scroll_offset
@@ -2767,11 +2768,11 @@ mod snapshot_tests {
             let (output, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
             assert_eq!(state.graph_section, section);
             assert!(output.contains(heading));
-            assert!(output.contains("v next section"));
+            assert!(output.contains(sections::SECTION_KEYS));
             let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
             dispatch_key(
                 3,
-                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
                 &mut ctx,
             )
             .expect("next section handled");
@@ -2782,7 +2783,8 @@ mod snapshot_tests {
         for (width, height, compact) in [
             (99, 40, true),
             (100, 34, true),
-            (100, 35, false),
+            (100, 35, true),
+            (100, 36, false),
             (140, 40, false),
             (80, 24, true),
         ] {
@@ -2794,14 +2796,19 @@ mod snapshot_tests {
             assert_eq!(state.graph_section, GraphSection::Distribution);
             if !compact {
                 let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-                assert!(
-                    dispatch_key(
-                        3,
-                        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
-                        &mut ctx
-                    )
-                    .is_none()
-                );
+                dispatch_key(
+                    3,
+                    KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+                    &mut ctx,
+                )
+                .unwrap();
+                assert_eq!(ctx.ui_state.graph_section, GraphSection::Health);
+                dispatch_key(
+                    3,
+                    KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+                    &mut ctx,
+                )
+                .unwrap();
             }
         }
     }
@@ -2970,8 +2977,8 @@ mod snapshot_tests {
         for section in DetailsSection::ALL {
             let (output, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
             assert_eq!(state.details_section, section);
-            assert!(output.contains(&format!("{} ({}/6)", section.title(), section.index() + 1)));
-            assert!(output.contains("v next section"));
+            assert!(output.contains(&format!("[{}]", section.title())));
+            assert!(output.contains(sections::SECTION_KEYS));
             assert_eq!(state.selected_connection_key, selected);
             assert!(
                 !state.details_scroll.can_scroll(),
@@ -2989,7 +2996,7 @@ mod snapshot_tests {
             };
             dispatch_key(
                 1,
-                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
                 &mut ctx,
             )
             .expect("section switch handled");
@@ -3029,7 +3036,7 @@ mod snapshot_tests {
         for (width, height) in [(80, 24), (50, 12), (140, 24), (140, 40), (80, 24)] {
             let (_, regions) =
                 render_app_frame(&app, &mut state, &connections, None, width, height);
-            assert_eq!(state.details_compact.get(), width < 100 || height < 27);
+            assert_eq!(state.details_compact.get(), width < 100 || height < 28);
             if height == 12 {
                 assert!(state.details_scroll.can_scroll());
                 let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
@@ -3105,115 +3112,242 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn narrow_overview_info_opens_scrolls_and_preserves_the_connection() {
-        use crossterm::event::{
-            KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-        };
+    fn overview_system_is_inline_scrollable_and_survives_resize() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = overview_connections();
-        for width in [50, 80, 89] {
-            let mut state = UiState {
-                show_system_panel: false,
-                ..Default::default()
-            };
+        for width in [50, 80, 89, 140] {
+            let mut state = UiState::default();
             state.set_selected_by_index(&connections, 2);
             let selected = state.selected_connection_key.clone();
             let (_, regions) = render_app_frame(&app, &mut state, &connections, None, width, 24);
             let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
             dispatch_key(
                 0,
-                KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
                 &mut ctx,
             )
             .unwrap();
-            assert!(state.show_system_overlay);
+            assert_eq!(state.overview_section, OverviewSection::System);
             let (output, regions) =
                 render_app_frame(&app, &mut state, &connections, None, width, 24);
-            assert!(output.contains("System info"));
+            assert!(output.contains("[System]"));
             assert!(output.contains("Interface: eth0"));
-            assert!(output.contains("close info"));
             assert!(state.system_scroll.can_scroll());
             assert_eq!(state.selected_connection_key, selected);
+            if width < 90 {
+                assert!(
+                    regions.scroll_area.is_none(),
+                    "hidden table must have no mouse targets"
+                );
+            }
             let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-            // Selection/filter commands remain contained in the modal view.
-            dispatch_key(
-                0,
-                KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
-                &mut ctx,
-            )
-            .unwrap();
-            assert!(!ctx.ui_state.filter_mode);
-            assert!(
-                dispatch_key(
-                    0,
-                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-                    &mut ctx
-                )
-                .is_none()
-            );
             dispatch_key(0, KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &mut ctx).unwrap();
-            let (bottom, regions) =
-                render_app_frame(&app, &mut state, &connections, None, width, 24);
+            let bottom = render_app(&app, &mut state, &connections, None, width, 24);
             assert!(bottom.contains("Security"), "{bottom}");
             assert!(!bottom.contains("(compact)"));
-            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-            dispatch_mouse(
-                0,
-                MouseEvent {
-                    kind: MouseEventKind::ScrollUp,
-                    column: 0,
-                    row: 5,
-                    modifiers: KeyModifiers::NONE,
-                },
-                &mut ctx,
-            )
-            .unwrap();
-            dispatch_mouse(
-                0,
-                MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column: 0,
-                    row: 5,
-                    modifiers: KeyModifiers::NONE,
-                },
-                &mut ctx,
-            )
-            .unwrap();
-            assert!(!state.show_system_overlay);
-            assert_eq!(state.selected_connection_key, selected);
-            assert!(!state.show_system_panel);
-            // Reopen and close with Escape without clearing the current filter.
-            state.filter_query = "process:sshd".to_string();
+            render_app(&app, &mut state, &connections, None, 140, 45);
+            render_app(&app, &mut state, &connections, None, 80, 24);
+            assert_eq!(state.overview_section, OverviewSection::System);
             let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
             dispatch_key(
                 0,
-                KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
                 &mut ctx,
             )
             .unwrap();
-            dispatch_key(0, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut ctx).unwrap();
-            assert_eq!(state.filter_query, "process:sshd");
-            assert!(!state.show_system_overlay);
+            assert_eq!(state.overview_section, OverviewSection::Connections);
+            assert_eq!(state.selected_connection_key, selected);
         }
     }
 
     #[test]
-    fn info_overlay_yields_to_wide_layout_and_other_tabs() {
+    fn shared_section_navigation_and_click_targets_work_at_every_size() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let connections = overview_connections();
+        for tab in [0, 1, 3, 4] {
+            for (width, height) in [(50, 12), (80, 24), (140, 50)] {
+                let mut state = UiState {
+                    selected_tab: tab,
+                    ..Default::default()
+                };
+                let count = state.sections().0.len();
+                for index in 0..count {
+                    let (output, regions) =
+                        render_app_frame(&app, &mut state, &connections, None, width, height);
+                    assert_eq!(state.sections().1, index);
+                    let mut clicks = 0;
+                    for x in 0..width {
+                        for y in 0..height {
+                            if let Some(ClickAction::SelectSection(target)) = regions.hit_test(x, y)
+                            {
+                                assert!(*target < count);
+                                clicks += 1;
+                            }
+                        }
+                    }
+                    assert!(clicks > 0, "{output}");
+                    let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                    dispatch_key(
+                        tab,
+                        KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+                        &mut ctx,
+                    )
+                    .unwrap();
+                    assert_eq!(ctx.ui_state.selected_tab, tab);
+                }
+                assert_eq!(state.sections().1, 0);
+                let regions = ClickableRegions::default();
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                dispatch_key(
+                    tab,
+                    KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+                    &mut ctx,
+                )
+                .unwrap();
+                assert_eq!(ctx.ui_state.sections().1, count - 1);
+                ctx.ui_state.select_section(0);
+                assert_eq!(ctx.ui_state.sections().1, 0);
+                ctx.ui_state.select_section(count);
+                assert_eq!(ctx.ui_state.sections().1, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn section_controls_respect_help_and_filter_input() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let regions = ClickableRegions::default();
+        let mut state = UiState {
+            show_help: true,
+            ..Default::default()
+        };
+        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+        for key in ['[', ']'] {
+            dispatch_key(
+                0,
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+            assert_eq!(ctx.ui_state.overview_section, OverviewSection::Connections);
+        }
+        ctx.ui_state.show_help = false;
+        ctx.ui_state.filter_mode = true;
+        for key in ['[', ']'] {
+            dispatch_key(
+                0,
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+        }
+        assert_eq!(ctx.ui_state.filter_query, "[]");
+        assert_eq!(ctx.ui_state.overview_section, OverviewSection::Connections);
+    }
+
+    #[test]
+    fn wide_details_scrolls_only_the_selected_card_and_keeps_copy_targets() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = overview_connections();
         let mut state = UiState {
-            show_system_overlay: true,
+            selected_tab: 1,
             ..Default::default()
         };
-        render_app(&app, &mut state, &connections, None, 80, 24);
-        assert!(state.show_system_overlay);
-        let output = render_app(&app, &mut state, &connections, None, 90, 24);
-        assert!(!state.show_system_overlay);
-        assert!(output.contains("System"));
-        state.show_system_overlay = true;
-        state.selected_tab = 1;
-        render_app(&app, &mut state, &connections, None, 80, 24);
-        assert!(!state.show_system_overlay);
+        for section in [
+            DetailsSection::Connection,
+            DetailsSection::Network,
+            DetailsSection::Process,
+            DetailsSection::Application,
+            DetailsSection::Health,
+        ] {
+            state.select_section(section.index());
+            let (before, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 40);
+            if !state.details_scroll.can_scroll() {
+                continue;
+            }
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                1,
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                &mut ctx,
+            )
+            .unwrap();
+            let (after, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 40);
+            let neighbor_x = if section.index() < 3 { 71 } else { 0 };
+            let neighbor = |text: &str| {
+                text.lines()
+                    .skip(10)
+                    .take(20)
+                    .map(|line| line.chars().skip(neighbor_x).take(69).collect::<String>())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                neighbor(&before),
+                neighbor(&after),
+                "neighbor moved while scrolling {section:?}"
+            );
+            for y in 10..30 {
+                for x in [0, 71] {
+                    if let Some(ClickAction::CopyField { label, .. }) = regions.hit_test(x, y) {
+                        assert!(
+                            after.lines().nth(y as usize).unwrap().contains(label),
+                            "misaligned {label}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wide_layouts_mark_selected_panel_headings_without_relying_on_color() {
+        use ratatui::style::Modifier;
+        let app = test_app();
+        let connections = overview_connections();
+        for (tab, section, title) in [
+            (0, 1, "System"),
+            (1, 2, "Attribution"),
+            (3, 1, "Observed Network Health"),
+        ] {
+            let mut state = UiState {
+                selected_tab: tab,
+                ..Default::default()
+            };
+            state.select_section(section);
+            let stats = app.get_stats();
+            let mut regions = ClickableRegions::default();
+            let buffer = test_support::render_buffer(140, 50, |frame| {
+                draw(
+                    frame,
+                    &app,
+                    &mut state,
+                    &connections,
+                    None,
+                    &stats,
+                    &mut regions,
+                )
+                .unwrap();
+            });
+            let output = test_support::buffer_to_string(&buffer);
+            let (y, line) = output
+                .lines()
+                .enumerate()
+                .skip(3)
+                .find(|(_, line)| line.contains(title))
+                .unwrap();
+            let byte = line.find(title).unwrap();
+            let x = line[..byte].chars().count();
+            assert!(
+                buffer[(x as u16, y as u16)]
+                    .modifier
+                    .contains(Modifier::UNDERLINED),
+                "{title} must show focus"
+            );
+        }
     }
 
     // --- Application card: fixed per-protocol row sets ---
@@ -3557,7 +3691,7 @@ mod snapshot_tests {
         let header_row = heading_row(render, "Application");
         let header_line = render.lines().nth(header_row).expect("header line");
         let byte_index = header_line.find("Application").expect("Application x");
-        let x = header_line[..byte_index].chars().count();
+        let x = header_line[..byte_index].chars().count().saturating_sub(1);
         let end_row = heading_row(render, "Transport Health");
         render
             .lines()

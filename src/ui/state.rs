@@ -96,6 +96,14 @@ fn step_index(current: usize, len: usize, motion: Motion) -> usize {
     }
 }
 
+/// Selected Overview panel, preserved when the layout changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverviewSection {
+    #[default]
+    Connections,
+    System,
+}
+
 /// Subview shown on the Host tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HostView {
@@ -104,7 +112,7 @@ pub enum HostView {
     Interfaces,
 }
 
-/// Graph section shown when the complete dashboard does not fit.
+/// Selected Graph section, shown alone when the dashboard does not fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GraphSection {
     #[default]
@@ -113,25 +121,7 @@ pub enum GraphSection {
     Distribution,
 }
 
-impl GraphSection {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Traffic => Self::Health,
-            Self::Health => Self::Distribution,
-            Self::Distribution => Self::Traffic,
-        }
-    }
-
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Traffic => "Traffic (1/3)",
-            Self::Health => "Health (2/3)",
-            Self::Distribution => "Distribution (3/3)",
-        }
-    }
-}
-
-/// Information page selected in compact Details layouts.
+/// Selected Details card, shown alone in compact layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DetailsSection {
     #[default]
@@ -158,10 +148,6 @@ impl DetailsSection {
             .iter()
             .position(|section| *section == self)
             .unwrap_or(0)
-    }
-
-    pub fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
     }
 
     pub fn title(self) -> &'static str {
@@ -411,6 +397,8 @@ pub enum GroupedRow<'a> {
 pub enum ClickAction {
     /// Switch to a specific tab (index 0-4).
     SwitchTab(usize),
+    /// Select a section in the current tab.
+    SelectSection(usize),
     /// Select a connection by index in the current sorted/filtered list
     SelectConnection(usize),
     /// Select a connection by its stable key. Used where an index would
@@ -491,12 +479,7 @@ pub struct UiState {
     pub last_click: Option<(u16, u16, std::time::Instant)>,
     /// Whether to show historic (closed) connections
     pub show_historic: bool,
-    /// Whether the System stats sidebar is visible on the Overview tab.
-    /// A layout preference, so deliberately not reset by `reset_view()`.
-    pub show_system_panel: bool,
-    /// System information is modal when the sidebar cannot fit.
-    pub show_system_overlay: bool,
-    pub system_compact: Cell<bool>,
+    pub overview_section: OverviewSection,
     pub system_scroll: PaneScroll,
     /// Number of visible connection rows, measured before rendering each frame
     pub visible_rows: usize,
@@ -514,9 +497,9 @@ pub struct UiState {
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
-    /// Last compact Graph section, preserved across terminal resizes.
+    /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
-    /// Whether the last Graph frame used section navigation.
+    /// Whether the last Graph frame showed only the selected section.
     pub graph_compact: Cell<bool>,
     /// Active Host tab subview.
     pub host_view: HostView,
@@ -552,9 +535,7 @@ impl Default for UiState {
             has_geoip: false,
             last_click: None,
             show_historic: false,
-            show_system_panel: true,
-            show_system_overlay: false,
-            system_compact: Cell::new(false),
+            overview_section: OverviewSection::default(),
             system_scroll: PaneScroll::default(),
             visible_rows: 10,
             scroll_offset: 0,

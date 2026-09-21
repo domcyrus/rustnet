@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Wrap},
+    widgets::{Cell, Paragraph, Row, Wrap},
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -20,17 +20,17 @@ use crate::network::dns::DnsResolver;
 use crate::network::types::Connection;
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER, PaneScroll, SelectionMove, SortColumn, UiState, alert_style,
+    NONE_PLACEHOLDER, OverviewSection, PaneScroll, SelectionMove, SortColumn, UiState, alert_style,
     clear_all_with_confirmation,
     connection_table::{
         CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
         connection_row, render_row_table, select_columns, visible_window,
     },
     format::{format_bytes, truncate_with_ellipsis},
-    panel_block, section_header, section_title,
+    section_header, section_title,
     state::ProcessGroupStats,
     theme, try_handle_connection_nav, try_handle_pane_scroll, try_handle_pane_wheel,
-    widgets::{badge, braille_graph, scrollbar::draw_scrollbar},
+    widgets::{badge, braille_graph},
 };
 
 /// Overview tab: connection list + stats sidebar. Reads every
@@ -53,13 +53,7 @@ impl Component for OverviewTab {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
-        if ctx.ui_state.show_system_overlay {
-            if let MouseEventKind::Down(_) = mouse.kind {
-                ctx.ui_state.show_system_overlay = false;
-                ctx.ui_state.quit_confirmation = false;
-                ctx.ui_state.clear_confirmation = false;
-                return Some(Vec::new());
-            }
+        if ctx.ui_state.overview_section == OverviewSection::System {
             return try_handle_pane_wheel(mouse, &mut ctx.ui_state.system_scroll);
         }
         // Scroll wheel: navigate the connection list, but only when
@@ -87,34 +81,28 @@ impl Component for OverviewTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        if ctx.ui_state.show_system_overlay {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('i')) {
-                ctx.ui_state.show_system_overlay = false;
-                return Some(Vec::new());
-            }
+        if ctx.ui_state.filter_mode {
+            return handle_filter_mode_key(key, ctx);
+        }
+        if ctx.ui_state.overview_section == OverviewSection::System {
             let page = usize::from(ctx.ui_state.system_scroll.viewport_rows());
             if let handled @ Some(_) =
                 try_handle_pane_scroll(key, page, &mut ctx.ui_state.system_scroll)
             {
                 return handled;
             }
-            // Keep tab switching, help, and quit global. Other keys must not
-            // modify a connection obscured by the overlay.
-            return if (key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL)
-                || matches!(
-                    key.code,
-                    KeyCode::Tab
-                        | KeyCode::BackTab
-                        | KeyCode::Char('q' | 'h' | '1'..='5' | '[' | ']')
-                ) {
-                None
-            } else {
-                Some(Vec::new())
+            return match key.code {
+                KeyCode::Esc => {
+                    ctx.ui_state.select_section(0);
+                    Some(Vec::new())
+                }
+                // Only global controls can act while the connection list lacks focus.
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('q' | 'h' | 'x' | '1'..='5') => {
+                    None
+                }
+                KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => None,
+                _ => Some(Vec::new()),
             };
-        }
-        // Filter mode owns its own input mini-loop.
-        if ctx.ui_state.filter_mode {
-            return handle_filter_mode_key(key, ctx);
         }
 
         if let nav @ Some(_) = try_handle_connection_nav(key, ctx) {
@@ -201,24 +189,6 @@ impl Component for OverviewTab {
                     }
                 );
                 Some(vec![Effect::RefreshData])
-            }
-
-            (KeyCode::Char('i'), _) => {
-                if ctx.ui_state.system_compact.get() {
-                    ctx.ui_state.show_system_overlay = true;
-                    ctx.ui_state.system_scroll.reset();
-                    return Some(Vec::new());
-                }
-                ctx.ui_state.show_system_panel = !ctx.ui_state.show_system_panel;
-                info!(
-                    "System sidebar: {}",
-                    if ctx.ui_state.show_system_panel {
-                        "shown"
-                    } else {
-                        "hidden"
-                    }
-                );
-                Some(Vec::new())
             }
 
             (KeyCode::Char('a'), _) => {
@@ -367,8 +337,6 @@ const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
 /// Minimum rows reserved for the Traffic heading, its two waves, and the
 /// current-rate line. Security details yield this space on short terminals.
 const TRAFFIC_MIN_HEIGHT: u16 = 4;
-/// Compact Security keeps its heading and overall sandbox status visible.
-const COMPACT_SECURITY_HEIGHT: u16 = 2;
 const NETWORK_STATS_HEIGHT: u16 = 5;
 const SECTION_GAP_HEIGHT: u16 = 1;
 
@@ -413,19 +381,28 @@ fn draw_overview(
     area: Rect,
     click_regions: &mut ClickableRegions,
 ) -> Result<()> {
-    let show_system_panel =
-        ctx.ui_state.show_system_panel && area.width >= SYSTEM_PANEL_MIN_AREA_WIDTH;
-    let chunks = if show_system_panel {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(SYSTEM_PANEL_WIDTH)])
-            .split(area)
+    let compact = compact_layout(area);
+    let system_selected = ctx.ui_state.overview_section == OverviewSection::System;
+    let chunks = if compact {
+        Layout::horizontal([Constraint::Percentage(100)]).split(area)
     } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0)])
-            .split(area)
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(SYSTEM_PANEL_WIDTH)]).split(area)
     };
+    if compact && system_selected {
+        let counts = if ctx.ui_state.has_active_filter() {
+            ctx.app.get_connection_counts()
+        } else {
+            ConnectionCounts::from_connections(ctx.connections)
+        };
+        return draw_stats_panel(
+            f,
+            counts,
+            ctx.stats,
+            ctx.app,
+            area,
+            &ctx.ui_state.system_scroll,
+        );
+    }
 
     let dns_resolver = ctx.app.get_dns_resolver();
 
@@ -456,31 +433,22 @@ fn draw_overview(
         );
     }
 
-    if show_system_panel || ctx.ui_state.show_system_overlay {
+    crate::ui::sections::focus_panel(f, chunks[0], !system_selected);
+    if !compact {
         let connection_counts = if ctx.ui_state.has_active_filter() {
             ctx.app.get_connection_counts()
         } else {
             ConnectionCounts::from_connections(ctx.connections)
         };
-        if ctx.ui_state.show_system_overlay {
-            let width = area.width.saturating_sub(4).min(72);
-            let popup = Rect::new(
-                area.x + (area.width - width) / 2,
-                area.y,
-                width,
-                area.height,
-            );
-            draw_stats_panel(
-                f,
-                connection_counts,
-                ctx.stats,
-                ctx.app,
-                popup,
-                Some(&ctx.ui_state.system_scroll),
-            )?;
-        } else {
-            draw_stats_panel(f, connection_counts, ctx.stats, ctx.app, chunks[1], None)?;
-        }
+        draw_stats_panel(
+            f,
+            connection_counts,
+            ctx.stats,
+            ctx.app,
+            chunks[1],
+            &ctx.ui_state.system_scroll,
+        )?;
+        crate::ui::sections::focus_panel(f, chunks[1], system_selected);
     }
 
     Ok(())
@@ -869,32 +837,14 @@ fn draw_stats_panel(
     stats: &AppStats,
     app: &App,
     area: Rect,
-    scroll: Option<&PaneScroll>,
+    scroll: &PaneScroll,
 ) -> Result<()> {
-    // Borderless: a single quiet vertical rule separates the sidebar
-    // from the connections table, and the section header names it:
-    // deliberately *not* the same chrome as the table so the two read
-    // as different kinds of content.
-    let inner_area = if scroll.is_some() {
-        let panel = panel_block(" System info ").padding(Padding::horizontal(1));
-        let inner = panel.inner(area);
-        f.render_widget(Clear, area);
-        f.render_widget(panel, area);
-        inner
-    } else {
-        let panel = Block::default()
-            .borders(Borders::LEFT)
-            .border_style(theme::fg(theme::border()))
-            .padding(Padding::horizontal(1));
-        let inner = panel.inner(area);
-        f.render_widget(panel, area);
-        section_header(f, inner, section_title(" System"))
-    };
+    let inner_area = section_header(f, area, section_title(" System"));
 
     // Build the security/sandbox text up front so the chunk height can match
     // its content. Otherwise long feature lists get clipped on narrow columns.
     #[cfg(target_os = "linux")]
-    let mut security_text: Vec<Line> = {
+    let security_text: Vec<Line> = {
         let sandbox_info = app.sandbox_report();
 
         let mut features: Vec<&'static str> = Vec::new();
@@ -943,7 +893,7 @@ fn draw_stats_panel(
     };
 
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
-    let mut security_text: Vec<Line> = {
+    let security_text: Vec<Line> = {
         let sandbox_info = app.sandbox_report();
 
         let mut features: Vec<&'static str> = Vec::new();
@@ -972,7 +922,7 @@ fn draw_stats_panel(
         not(target_os = "linux"),
         not(all(target_os = "macos", feature = "macos-sandbox"))
     ))]
-    let mut security_text: Vec<Line> = {
+    let security_text: Vec<Line> = {
         let uid = crate::network::privileges::effective_uid();
         if uid == 0 {
             vec![Line::from(Span::styled(
@@ -988,7 +938,7 @@ fn draw_stats_panel(
     };
 
     #[cfg(target_os = "windows")]
-    let mut security_text: Vec<Line> = {
+    let security_text: Vec<Line> = {
         let sandbox_info = app.sandbox_report();
 
         let mut features: Vec<String> = Vec::new();
@@ -1038,34 +988,6 @@ fn draw_stats_panel(
         }
         + if pcap_export_enabled { 4 } else { 0 }
         + if pcapng_export_enabled { 7 } else { 0 };
-
-    // Keep Security after the live Traffic section. If both do not fit, retain
-    // the overall sandbox status and hide the static detail lines. They return
-    // automatically as soon as the terminal is tall enough.
-    let full_security_height = 1u16.saturating_add(security_text.len() as u16);
-    let compact_security = scroll.is_none()
-        && full_security_height > COMPACT_SECURITY_HEIGHT
-        && !security_details_fit(inner_area.height, stats_height, full_security_height);
-    if compact_security {
-        security_text.truncate(1);
-    }
-    let security_height = 1u16.saturating_add(security_text.len() as u16);
-
-    // Inside the frame, sections are separated by a 1-row gap (no inner
-    // borders) so the right column reads as one cohesive panel with
-    // headings rather than a stack of nested boxes.
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(stats_height), // Statistics (1 heading + content)
-            Constraint::Length(SECTION_GAP_HEIGHT),
-            Constraint::Length(NETWORK_STATS_HEIGHT),
-            Constraint::Length(SECTION_GAP_HEIGHT),
-            Constraint::Min(TRAFFIC_MIN_HEIGHT),
-            Constraint::Length(SECTION_GAP_HEIGHT),
-            Constraint::Length(security_height),
-        ])
-        .split(inner_area);
 
     let interface_name = app
         .get_current_interface()
@@ -1259,17 +1181,19 @@ fn draw_stats_panel(
         )),
     ];
 
-    let security_heading = if compact_security {
-        Line::from(vec![
-            Span::styled("Security ", theme::bold_fg(theme::heading())),
-            Span::styled("(compact)", theme::fg(theme::muted())),
-        ])
-    } else {
-        Line::from(Span::styled("Security", theme::bold_fg(theme::heading())))
-    };
-    let mut security_lines: Vec<Line> = vec![security_heading];
+    let mut security_lines = vec![Line::styled("Security", theme::bold_fg(theme::heading()))];
     security_lines.extend(security_text);
-    if let Some(scroll) = scroll {
+    let stats_height = stats_height.max(
+        Paragraph::new(conn_stats_text.clone())
+            .wrap(Wrap { trim: false })
+            .line_count(inner_area.width.max(1)) as u16,
+    );
+    let security_height = Paragraph::new(security_lines.clone())
+        .wrap(Wrap { trim: false })
+        .line_count(inner_area.width.max(1)) as u16;
+    // Keep the live mini-graphs when the full dashboard fits. Otherwise all
+    // information shares one scrollable text pane, with no hidden security rows.
+    if !security_details_fit(inner_area.height, stats_height, security_height) {
         let mut lines = conn_stats_text;
         lines.push(Line::default());
         lines.extend(network_stats_text);
@@ -1294,28 +1218,27 @@ fn draw_stats_panel(
         lines.extend(interface_error_lines(app, usize::MAX));
         lines.push(Line::default());
         lines.extend(security_lines);
-        let text_area = Rect {
-            width: inner_area.width.saturating_sub(2),
-            ..inner_area
-        };
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-        let rows = paragraph.line_count(text_area.width.max(1));
-        let offset = scroll.clamp_for_render(
-            u16::try_from(rows)
-                .unwrap_or(u16::MAX)
-                .saturating_sub(text_area.height),
-        );
-        scroll.record_viewport(text_area.height);
-        f.render_widget(paragraph.scroll((offset, 0)), text_area);
-        draw_scrollbar(
+        crate::ui::widgets::scrollbar::draw_scrolled_text(
             f,
             inner_area,
-            rows,
-            usize::from(offset),
-            usize::from(inner_area.height),
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            scroll,
         );
         return Ok(());
     }
+
+    scroll.clamp_for_render(0);
+    scroll.record_viewport(inner_area.height);
+    let chunks = Layout::vertical([
+        Constraint::Length(stats_height),
+        Constraint::Length(SECTION_GAP_HEIGHT),
+        Constraint::Length(NETWORK_STATS_HEIGHT),
+        Constraint::Length(SECTION_GAP_HEIGHT),
+        Constraint::Min(TRAFFIC_MIN_HEIGHT),
+        Constraint::Length(SECTION_GAP_HEIGHT),
+        Constraint::Length(security_height),
+    ])
+    .split(inner_area);
 
     // Wrap so the indented reason line for a degraded eBPF status (which can
     // be ~140 chars in the EbpfLoadFailed catch-all) flows to the next visual
@@ -1334,7 +1257,7 @@ fn draw_stats_panel(
     draw_interface_stats_with_graph(f, app, chunks[4])?;
     render_section_separator(f, chunks[5]);
 
-    let security_stats = Paragraph::new(security_lines).style(Style::default());
+    let security_stats = Paragraph::new(security_lines).wrap(Wrap { trim: false });
     f.render_widget(security_stats, chunks[6]);
 
     Ok(())

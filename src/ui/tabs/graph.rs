@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -19,8 +18,7 @@ use crate::network::types::{
     AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
 };
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UiState,
-    draw_placeholder,
+    ClickableRegions, Component, ComponentContext, UiState, draw_placeholder,
     format::format_rate,
     section_header, section_title,
     state::GraphSection,
@@ -106,18 +104,6 @@ impl Component for GraphTab {
         draw_graph_tab(f, ctx.app, ctx.connections, ctx.ui_state, area);
         Ok(())
     }
-
-    fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        if key.code == KeyCode::Char('v')
-            && key.modifiers == KeyModifiers::NONE
-            && ctx.ui_state.graph_compact.get()
-        {
-            ctx.ui_state.graph_section = ctx.ui_state.graph_section.next();
-            Some(Vec::new())
-        } else {
-            None
-        }
-    }
 }
 
 fn draw_graph_tab(
@@ -137,14 +123,7 @@ fn draw_graph_tab(
     let analytics = GraphAnalytics::from_connections(connections);
 
     if compact {
-        let inner = section_header(
-            f,
-            area,
-            Line::from(vec![
-                section_title(format!(" {}", ui_state.graph_section.title())),
-                Span::styled(" · v next section", theme::fg(theme::muted())),
-            ]),
-        );
+        let inner = area;
         match ui_state.graph_section {
             GraphSection::Traffic => draw_traffic_panels(f, &traffic_history, inner),
             GraphSection::Health => draw_health_panels(f, app, &traffic_history, &analytics, inner),
@@ -163,6 +142,9 @@ fn draw_graph_tab(
     draw_traffic_panels(f, &traffic_history, sections[0]);
     draw_health_panels(f, app, &traffic_history, &analytics, sections[1]);
     draw_distribution_panels(f, &analytics, sections[2]);
+    for (index, area) in sections.iter().enumerate() {
+        crate::ui::sections::focus_panel(f, *area, index == ui_state.graph_section as usize);
+    }
 }
 
 fn draw_traffic_panels(f: &mut Frame, history: &TrafficHistory, area: Rect) {

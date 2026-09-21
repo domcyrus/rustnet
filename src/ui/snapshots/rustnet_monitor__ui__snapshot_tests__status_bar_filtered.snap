@@ -1,5 +1,5 @@
 ---
 source: src/ui/mod.rs
-expression: output
+expression: status_bar_output(&ui_state)
 ---
- esc clear filter  ↑↓ select  / filter  a group  t history  i info  c copy                               h help  q quit
+ esc clear filter  ↑↓ select  / filter  a group  t history  c copy                                       h help  q quit

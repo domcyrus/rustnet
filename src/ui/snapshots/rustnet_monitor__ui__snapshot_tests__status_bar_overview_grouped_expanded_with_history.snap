@@ -1,5 +1,5 @@
 ---
 source: src/ui/mod.rs
-expression: output
+expression: status_bar_output(&ui_state)
 ---
- space collapse  ↑↓ select  / filter   a grouped    t history   i info  c copy                           h help  q quit
+ space collapse  ↑↓ select  / filter   a grouped    t history   c copy                                   h help  q quit

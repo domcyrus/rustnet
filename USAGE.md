@@ -423,8 +423,8 @@ rustnet --kubernetes on
 
 ### Views and Tabs
 
-- `Tab` or `]` - Next tab
-- `Shift+Tab` or `[` - Previous tab
+- `Tab` - Next tab
+- `Shift+Tab` - Previous tab
 - `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Host
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
@@ -437,25 +437,32 @@ click anywhere dismisses it.
 
 ### Compact terminals
 
+Overview, Details, Graph, and Host share a visible section selector. Use `[` / `]`
+for the previous / next section, or click its name. Tab / Shift+Tab and 1-5
+still switch main tabs. These controls replace `v`, Overview's `i`, and Host's
+`s` / `i` section shortcuts. Brackets no longer switch main tabs. Help remains
+an overlay and consumes section controls while open.
+
+Below 90 columns, Overview shows either Connections or System inline. Wider
+terminals show both panels and underline the selected panel's heading. System
+information scrolls with `j` / `k`, Page Up/Down, or the mouse wheel. Escape
+returns to Connections without changing the selected connection or filter.
+
+Details shows one section below 100 columns or 24 content rows (28 terminal
+rows without an open filter or expanded error banner). Choose Connection,
+Network, Process, Application, Health, or Traffic. `j` / `k` switch connections;
+Ctrl+D/U or the mouse wheel scrolls the selected information section. Larger
+terminals show the dashboard with an underlined heading for the selected card.
+
+Graph shows Traffic, Health, or Distribution below 100 columns or 32 content
+rows (36 terminal rows without an open filter or expanded error banner).
+Larger terminals show all three sections and underline the selected section.
+Host offers Sockets and Interfaces at every size. Selection survives resizing
+and switching main tabs.
+
 At 80×24, Activity keeps its process table and TX/RX summaries visible. Shorter
 terminals condense the summaries and process rows, keeping current rates,
-capture coverage, and attribution visible at 80×12. Overview's System sidebar
-needs at least 90 columns. Below that width, `i` opens a scrollable System info
-overlay. Use `j`/`k`, Page Up/Down, or the mouse wheel to scroll; `i` or `Esc`
-closes it without changing the selected connection or filter.
-
-Details uses section pages below 100 columns or 24 content rows (27 terminal
-rows without an open filter or expanded error banner). Press `v` to cycle
-through Connection, Network, Process, Application, Health, and Traffic. A
-one-line connection header leaves room for the selected section. `j`/`k` still
-switch connections, keeping the selected section; Ctrl+D/U or the mouse wheel
-scrolls a section if it does not fit. Larger terminals retain the full dashboard.
-
-Graph shows one section at a time below 100 columns or 32 content rows
-(35 terminal rows without an open filter or expanded error banner). Press `v`
-to cycle through Traffic, Health, and Distribution. The current section and
-shortcut appear above the charts. Larger terminals show all sections together;
-shrinking the terminal restores the last compact section.
+capture coverage, and attribution visible at 80×12.
 
 Connection paging, scrollbars, and mouse selection use the actual table height,
 including space taken by the filter editor or a two-row capture-error banner.
@@ -468,8 +475,6 @@ including space taken by the filter editor or a two-row capture-error banner.
 - `/` - Enter filter mode (vim-style search with real-time results)
 - `x` - Clear all connections and reset statistics (press twice to confirm)
 - `t` - Toggle display of historic (closed) connections
-- `i` - Toggle the System info sidebar on Overview or open interface details on Host
-- `v` - Cycle Details or Graph sections on compact terminals
 - `r` - Reset view to defaults (clears grouping, sort, filter, and historic)
 
 ### Process Grouping
@@ -951,7 +956,7 @@ The paired RX/TX summaries show the current captured rate, but calculate coverag
 
 Wide terminals place capture coverage, process attribution, and interface rates in a sidebar, leaving the process table as the main view. Narrower terminals fold coverage and attribution into the summaries and hide the interface panel. Share bars blend the selected theme's neutral and traffic colours, ending at its TX/RX token rather than white. ANSI themes use shaded block textures in the terminal's own palette.
 
-Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `5`, then `i`).
+Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `5`, then select Interfaces with `[` / `]`).
 
 For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
 
@@ -977,7 +982,7 @@ The inventory refreshes every 5 seconds. Process ownership is best effort becaus
 | FreeBSD | `sockstat -s` for native TCP states plus UDP socket rows |
 | Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |
 
-Press `i` for Interfaces and `s` to return to Sockets. Left and right arrow keys switch between the two views.
+Use `[` / `]` or click Sockets / Interfaces to select a section. The same controls select sections on Overview, Details, and Graph.
 
 ## Interface Statistics
 
@@ -992,7 +997,7 @@ RustNet provides real-time network interface statistics across all supported pla
 - Shows cumulative totals: `Errors (Total): N  Drops (Total): M`
 
 **Host Tab (Detailed View):**
-- Press `5` for Host, then `i` to open the Interface Statistics view
+- Press `5` for Host, then select Interfaces with `[` / `]` or click its name
 - Shows a detailed table of all network interfaces
 - Displays comprehensive metrics for each interface
 

@@ -100,7 +100,7 @@ RustNet combines process-level traffic accounting with real-time network interfa
 - **Activity Tab** (press `3`): Ranks processes by Egress (TX) or Ingress (RX), including retained and rolling traffic, rates, shares, connections, and destinations
 - **Security Workflow**: Sort by Egress, identify an unexpected uploader, then inspect its top remote peer and retained traffic even after the connection closes
 - **Host Tab** (press `5`): Shows TCP LISTEN sockets, UDP BOUND endpoints, aggregated TCP states, observed RTT, and process ownership
-- **Interface Details** (press `i` on Host): Shows comprehensive metrics for every interface
+- **Interface Details** (select Interfaces on Host): Shows comprehensive metrics for every interface
 - **Cross-Platform**: Linux (sysfs), macOS/FreeBSD (getifaddrs), Windows (GetIfTable2 API)
 - **Smart Filtering**: Windows automatically excludes virtual/filter adapters
 
@@ -239,8 +239,8 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `q` | Quit (press twice to confirm) |
 | `Ctrl+C` | Quit immediately |
 | `x` | Clear all connections (press twice to confirm) |
-| `Tab` or `]` | Next tab |
-| `Shift+Tab` or `[` | Previous tab |
+| `Tab` | Next tab |
+| `Shift+Tab` | Previous tab |
 | `1`–`5` | Jump to Overview / Details / Activity / Graph / Host |
 | `↑/k` `↓/j` | Navigate up/down |
 | `g` `G` | Jump to first/last connection |
@@ -255,7 +255,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `←` / `→` or `l` | Collapse/expand group |
 | `PageUp/PageDown` or `Ctrl+B/F` | Page navigation |
 | `t` | Toggle historic (closed) connections |
-| `i` | Toggle System info on Overview or interface details on Host |
+| `[` / `]` | Previous / next section within the current tab |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |
 | `h` | Toggle contextual help for the active tab |

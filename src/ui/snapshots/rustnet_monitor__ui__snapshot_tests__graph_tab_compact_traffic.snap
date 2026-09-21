@@ -4,7 +4,7 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
 ──────────────────────────────────────────────────━━━━━━━───────────────────────
-▎ Traffic (1/3) · v next section ───────────────────────────────────────────────
+[Traffic]   Health    Distribution                                   [/] section
 ▎ Traffic Over Time (60s) ──────────────────────────────────────────────────────
 Waiting for traffic data...                                                     
                                                                                 
@@ -25,4 +25,4 @@ Waiting for connection data...
                                                                                 
                                                                                 
                                                                                 
- v section  esc back                                             h help  q quit
+ esc back                                                        h help  q quit

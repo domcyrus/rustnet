@@ -4,6 +4,7 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+[Connection]   Network    Process    Application    Health    Traffic                                                            [/] section
   Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
                                                                                                                                             
 ▌ -                     192.168.1.1:0           192.168.1.10:0     -          ARP                      ARP_WHO_HA…       - -             -/-
@@ -11,34 +12,33 @@ expression: output
                                                                                                                                             
                                                                                                                                             
 ▎ ? → 192.168.1.1:0 [ARP_WHO_HAS 192.168.1.1 (Apple, Inc.)] · click a field to copy ────────────────────────────────────────────────────────
-Connection                                                            Application: ARP                                                     ▐
-Protocol              ARP                                             Operation             Request                                        ▐
-Status                Active (last seen <T> ago)                       Sender MAC            68:5e:dd:09:15:5e                              ▐
-Local Address         192.168.1.10:0                                  Sender Vendor         Apple, Inc.                                    ▐
-Remote Address        192.168.1.1:0                                   Sender IP             192.168.1.10                                   ▐
-Scope                 PRIVATE                                         Target MAC            00:00:00:00:00:00                              ▐
-State                 ARP_WHO_HAS 192.168.1.1 (Apple, Inc.)           Target Vendor         ASUSTek COMPUTER INC.                          ▐
-Process               -                                               Target IP             192.168.1.1                                    ▐
-PID                   -                                                                                                                    ▐
-Service               -                                                                                                                    ▐
-                                                                                                                                           ▐
-Network Context                                                       Transport Health                                                     ▐
-Local Hostname        -                                               No transport metrics for this protocol                               ▐
-Local MAC             -                                                                                                                    ▐
-Remote Hostname       -                                                                                                                    ▐
-Attributed Name       -                                                                                                                    ▐
-Attributed Via        -                                                                                                                    ▐
-Remote MAC            -                                                                                                                     
-Country               -                                                                                                                     
-City                  -                                                                                                                     
-ASN                   -                                                                                                                     
+▎Connection ─────────────────────────────────────────────────────────  ▎Application: ARP ───────────────────────────────────────────────────
+Protocol              ARP                                           ▐  Operation             Request                                        
+Status                Active (last seen <T> ago)                     ▐  Sender MAC            68:5e:dd:09:15:5e                              
+Local Address         192.168.1.10:0                                ▐  Sender Vendor         Apple, Inc.                                    
+Remote Address        192.168.1.1:0                                 ▐  Sender IP             192.168.1.10                                   
+Scope                 PRIVATE                                       ▐  Target MAC            00:00:00:00:00:00                              
+State                 ARP_WHO_HAS 192.168.1.1 (Apple, Inc.)            Target Vendor         ASUSTek COMPUTER INC.                          
+Process               -                                                Target IP             192.168.1.1                                    
                                                                                                                                             
+▎Network Context ────────────────────────────────────────────────────  ▎Transport Health ───────────────────────────────────────────────────
+Local Hostname        -                                             ▐  No transport metrics for this protocol                               
+Local MAC             -                                             ▐                                                                       
+Remote Hostname       -                                             ▐                                                                       
+Attributed Name       -                                                                                                                     
+Attributed Via        -                                                                                                                     
+                                                                                                                                            
+▎Attribution ────────────────────────────────────────────────────────                                                                       
+PID                   -                                             ▐                                                                       
+PPID                  -                                             ▐                                                                       
+Process Tree          -                                             ▐                                                                       
+Executable            -                                                                                                                     
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
-Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+ ↓ RX -           →                                 peak           -    ↑ TX -           →                                 peak           - 
+ Total 0 B  ·  0 packets                                                Total 0 B  ·  0 packets                                             
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
  j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back                                                                h help  q quit

@@ -22,7 +22,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{HostView, UiState, format::truncate_with_ellipsis, theme};
+use crate::ui::{HostView, OverviewSection, UiState, format::truncate_with_ellipsis, theme};
 
 /// One keycap hint: the key as typed and the action it triggers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,11 +92,13 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
     if ui_state.filter_mode {
         return vec![Hint::action("\u{2191}\u{2193}", "select")];
     }
-    if ui_state.selected_tab == 0 && ui_state.show_system_overlay {
-        return vec![
-            Hint::action("j/k", "scroll"),
-            Hint::action("i/esc", "close info"),
-        ];
+    if ui_state.selected_tab == 0 && ui_state.overview_section == OverviewSection::System {
+        let mut hints = Vec::new();
+        if ui_state.system_scroll.can_scroll() {
+            hints.push(Hint::action("j/k", "scroll"));
+        }
+        hints.push(Hint::action("esc", "connections"));
+        return hints;
     }
     match ui_state.selected_tab {
         // Overview
@@ -128,7 +130,6 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
                     ui_state.grouping_enabled,
                 ),
                 Hint::mode("t", "history", ui_state.show_historic),
-                Hint::action("i", "info"),
             ]);
             if clipboard {
                 hints.push(Hint::action("c", "copy"));
@@ -138,9 +139,6 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
         // Details
         1 => {
             let mut hints = Vec::new();
-            if ui_state.details_compact.get() {
-                hints.push(Hint::action("v", "section"));
-            }
             hints.push(Hint::action("j/k", "prev/next"));
             // Ctrl+D/U only moves when the record outgrows its pane, so on a
             // tall terminal the hint would advertise a no-op.
@@ -164,24 +162,16 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
         4 => {
             // Like ctrl-d/u on Details: only advertise scrolling when the
             // table actually outgrew its pane.
-            let (scroll, toggle) = match ui_state.host_view {
-                HostView::Sockets => (
-                    &ui_state.host_sockets_scroll,
-                    Hint::action("i", "interfaces"),
-                ),
-                HostView::Interfaces => (&ui_state.interfaces_scroll, Hint::action("s", "sockets")),
+            let scroll = match ui_state.host_view {
+                HostView::Sockets => &ui_state.host_sockets_scroll,
+                HostView::Interfaces => &ui_state.interfaces_scroll,
             };
             let mut hints = Vec::new();
             if scroll.can_scroll() {
                 hints.push(Hint::action("j/k", "scroll"));
             }
-            hints.push(toggle);
             hints.push(Hint::action("esc", "back"));
             hints
-        }
-        // Graph only needs navigation when the complete dashboard cannot fit.
-        3 if ui_state.graph_compact.get() => {
-            vec![Hint::action("v", "section"), Hint::action("esc", "back")]
         }
         _ => vec![Hint::action("esc", "back")],
     }
@@ -576,7 +566,7 @@ mod tests {
         // Everything else on the tab survives losing copy.
         let sandboxed = context_hints(&UiState::default(), false);
         assert!(advertises(&sandboxed, "/"));
-        assert!(advertises(&sandboxed, "i"));
+        assert!(advertises(&sandboxed, "a"));
     }
 
     #[test]

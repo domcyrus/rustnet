@@ -4,9 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────
+ Connection    Network    Process    Application   [Health]   Traffic        [/]
 ▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────
-▎ Health (5/6) · v next section ────────────────────────────────────────────────
-Transport Health                                                                
+▎Transport Health ──────────────────────────────────────────────────────────────
 Initial RTT           -                                                         
 Live RTT              23.4ms                                                    
 TCP Retransmits (R)   3                                                         
@@ -25,4 +25,4 @@ Window Size           -
                                                                                 
                                                                                 
                                                                                 
- v section  j/k prev/next  c copy remote addr  esc back          h help  q quit
+ j/k prev/next  c copy remote addr  esc back                     h help  q quit
