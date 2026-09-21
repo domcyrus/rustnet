@@ -1,0 +1,16 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
+─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
+▎ Egress (TX) ─────────────────────────   ▎ Ingress (RX) ───────────────────────
+2.88 MB/s now                             1.70 MB/s now                         
+Coverage 73.1% · Attr 100%                Coverage 91.8% · Attr 100%            
+                                                                                
+▎ Processes · Egress (TX)  Retained TX ↓ ───────────────────────────────────────
+Process                   TX now    60s %    Retained     Conns                 
+                                                                                
+firefox (2001)         2.38 MB/s    81.7%     4.78 MB       1/1                 
+sshd (1500)          488.28 KB/s    17.7%     1.04 MB       1/1                 
+ d tx/rx  s sort  S order  esc back                              h help  q quit

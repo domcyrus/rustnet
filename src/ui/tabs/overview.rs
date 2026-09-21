@@ -358,6 +358,11 @@ fn security_details_fit(area_height: u16, stats_height: u16, full_security_heigh
     area_height >= required_height
 }
 
+/// Actual row capacity after the section and column headings.
+pub(in crate::ui) fn visible_connection_rows(area: Rect) -> usize {
+    usize::from(crate::ui::connection_table::table_rows_area(crate::ui::section_body(area)).height)
+}
+
 fn draw_overview(
     f: &mut Frame,
     ctx: &ComponentContext,
@@ -453,7 +458,7 @@ fn draw_connection_grid<'a, T>(
     // Virtualization window first: the Remote column sizes itself to the
     // rows actually on screen, so the window must be known before the
     // column set is chosen.
-    let visible_rows = ui_state.visible_rows.max(1);
+    let visible_rows = usize::from(crate::ui::connection_table::table_rows_area(area).height);
     let visible_items = visible_window(items, scroll_offset, visible_rows);
 
     // Reserve the two rightmost columns: a blank gap, then the scrollbar.

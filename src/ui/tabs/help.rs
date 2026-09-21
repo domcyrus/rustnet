@@ -312,10 +312,14 @@ const INTERFACE_KEYS: &[HelpRow] = &[
 ];
 
 const GRAPH_KEYS: &[HelpRow] = &[
+    (
+        "v",
+        "Next section on compact terminals: traffic, health, distribution",
+    ),
     ("Esc", "Return to Overview"),
     (
         "Live view",
-        "Charts update automatically; no graph controls are required",
+        "Charts update automatically; larger terminals show all sections",
     ),
 ];
 

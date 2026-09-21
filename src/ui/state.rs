@@ -104,6 +104,33 @@ pub enum HostView {
     Interfaces,
 }
 
+/// Graph section shown when the complete dashboard does not fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GraphSection {
+    #[default]
+    Traffic,
+    Health,
+    Distribution,
+}
+
+impl GraphSection {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Traffic => Self::Health,
+            Self::Health => Self::Distribution,
+            Self::Distribution => Self::Traffic,
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Traffic => "Traffic (1/3)",
+            Self::Health => "Health (2/3)",
+            Self::Distribution => "Distribution (3/3)",
+        }
+    }
+}
+
 /// Sort modes for the process activity view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActivitySort {
@@ -422,7 +449,7 @@ pub struct UiState {
     /// Whether the System stats sidebar is visible on the Overview tab.
     /// A layout preference, so deliberately not reset by `reset_view()`.
     pub show_system_panel: bool,
-    /// Number of visible rows in the connections table (updated after rendering)
+    /// Number of visible connection rows, measured before rendering each frame
     pub visible_rows: usize,
     /// Scroll offset for flat connection list (persisted for stable scrolling)
     pub scroll_offset: usize,
@@ -436,6 +463,10 @@ pub struct UiState {
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
+    /// Last compact Graph section, preserved across terminal resizes.
+    pub graph_section: GraphSection,
+    /// Whether the last Graph frame used section navigation.
+    pub graph_compact: Cell<bool>,
     /// Active Host tab subview.
     pub host_view: HostView,
     /// Process traffic direction emphasized by Activity.
@@ -478,6 +509,8 @@ impl Default for UiState {
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
+            graph_section: GraphSection::default(),
+            graph_compact: Cell::new(false),
             host_view: HostView::default(),
             activity_direction: ActivityDirection::default(),
             activity_sort: ActivitySort::default(),
@@ -510,6 +543,35 @@ pub fn compute_scroll_offset(
 }
 
 impl UiState {
+    /// Keep virtualization, navigation, and hit testing on the current frame's
+    /// viewport. Run after layout, before any rows are drawn.
+    pub(super) fn prepare_connection_viewport(
+        &mut self,
+        visible_rows: usize,
+        connections: &[Connection],
+        grouped_rows: Option<&[GroupedRow<'_>]>,
+    ) {
+        self.visible_rows = visible_rows;
+        if self.grouping_enabled {
+            let rows = grouped_rows.unwrap_or_default();
+            let selected = self.ensure_valid_grouped_selection(rows).unwrap_or(0);
+            self.grouped_scroll_offset = compute_scroll_offset(
+                selected,
+                self.grouped_scroll_offset,
+                visible_rows,
+                rows.len(),
+            );
+        } else {
+            let selected = self.ensure_valid_selection(connections).unwrap_or(0);
+            self.scroll_offset = compute_scroll_offset(
+                selected,
+                self.scroll_offset,
+                visible_rows,
+                connections.len(),
+            );
+        }
+    }
+
     /// Whether the query changes the displayed connection set.
     pub fn has_active_filter(&self) -> bool {
         !self.filter_query.trim().is_empty()

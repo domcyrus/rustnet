@@ -435,6 +435,22 @@ controls and concepts that apply to that tab. Tab navigation (`Tab`,
 `Shift+Tab`, `1`-`5`) stays available while the overlay is open, and a mouse
 click anywhere dismisses it.
 
+### Compact terminals
+
+At 80×24, Activity keeps its process table and TX/RX summaries visible. Shorter
+terminals condense the summaries and process rows, keeping current rates,
+capture coverage, and attribution visible at 80×12. Overview's System sidebar
+needs at least 90 columns; widening the terminal restores it if enabled.
+
+Graph shows one section at a time below 100 columns or 32 content rows
+(35 terminal rows without an open filter or expanded error banner). Press `v`
+to cycle through Traffic, Health, and Distribution. The current section and
+shortcut appear above the charts. Larger terminals show all sections together;
+shrinking the terminal restores the last compact section.
+
+Connection paging, scrollbars, and mouse selection use the actual table height,
+including space taken by the filter editor or a two-row capture-error banner.
+
 ### Actions
 
 - `c` - Copy remote address to clipboard
@@ -444,6 +460,7 @@ click anywhere dismisses it.
 - `x` - Clear all connections and reset statistics (press twice to confirm)
 - `t` - Toggle display of historic (closed) connections
 - `i` - Toggle the System info sidebar on Overview or open interface details on Host
+- `v` - Cycle Graph sections on compact terminals
 - `r` - Reset view to defaults (clears grouping, sort, filter, and historic)
 
 ### Process Grouping

@@ -102,8 +102,8 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub(crate) use crate::network::process_activity::process_group_label;
 pub use state::{
-    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, HostView,
-    PaneScroll, SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,
+    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GraphSection, GroupedRow,
+    HostView, PaneScroll, SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
@@ -177,9 +177,13 @@ pub(crate) fn section_header<'a, T: Into<Line<'a>>>(
         Paragraph::new(line),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    Rect::new(
+    section_body(area)
+}
+
+fn section_body(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(
         area.x,
-        area.y + 1,
+        area.y + area.height.min(1),
         area.width,
         area.height.saturating_sub(1),
     )
@@ -292,7 +296,7 @@ pub(crate) fn non_dpi_app_color() -> Color {
 pub fn draw(
     f: &mut Frame,
     app: &App,
-    ui_state: &UiState,
+    ui_state: &mut UiState,
     connections: &[Connection],
     grouped_rows: Option<&[GroupedRow]>,
     stats: &AppStats,
@@ -364,6 +368,14 @@ pub fn draw(
     } else {
         (None, chunks[2])
     };
+
+    // Use this frame's actual content bounds, including an expanded error
+    // banner, before repairing selection and building the virtual row window.
+    ui_state.prepare_connection_viewport(
+        tabs::overview::visible_connection_rows(content_area),
+        connections,
+        grouped_rows,
+    );
 
     let comp_ctx = ComponentContext {
         app,
@@ -1068,7 +1080,7 @@ mod snapshot_tests {
     /// dump plus the click regions the frame registered.
     fn render_app_frame(
         app: &App,
-        ui_state: &UiState,
+        ui_state: &mut UiState,
         connections: &[Connection],
         grouped: Option<&[GroupedRow]>,
         width: u16,
@@ -1094,7 +1106,7 @@ mod snapshot_tests {
     /// [`render_app_frame`] for the tests that only need the text dump.
     fn render_app(
         app: &App,
-        ui_state: &UiState,
+        ui_state: &mut UiState,
         connections: &[Connection],
         grouped: Option<&[GroupedRow]>,
         width: u16,
@@ -1107,11 +1119,11 @@ mod snapshot_tests {
     fn full_page_shows_capture_error() {
         let app = test_app();
         app.set_capture_error_for_test(Some("Capture stopped: The interface disappeared."));
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             show_system_panel: false,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &[], None, 100, 16);
+        let output = render_app(&app, &mut ui_state, &[], None, 100, 16);
 
         assert!(
             output
@@ -1128,11 +1140,11 @@ mod snapshot_tests {
         app.set_capture_error_for_test(Some(
             "Capture failed to start: eth0: You don't have permission to capture on that device (socket: Operation not permitted).",
         ));
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             show_system_panel: false,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &[], None, 80, 16);
+        let output = render_app(&app, &mut ui_state, &[], None, 80, 16);
 
         let rows: Vec<&str> = output.lines().collect();
         let hint_row = rows
@@ -1310,16 +1322,9 @@ mod snapshot_tests {
         };
         let grouped_rows =
             grouped.then(|| compute_grouped_rows(&connections, &ui_state.expanded_groups));
-        // The app repairs the grouped selection before every draw (see the
-        // main loop), so the canonical snapshot must render it repaired too:
-        // otherwise the footer would omit the space hint no real user of the
-        // grouped view ever loses, and its fit would go untested.
-        if let Some(rows) = grouped_rows.as_deref() {
-            ui_state.ensure_valid_grouped_selection(rows);
-        }
         render_app(
             &app,
-            &ui_state,
+            &mut ui_state,
             &connections,
             grouped_rows.as_deref(),
             140,
@@ -1352,12 +1357,12 @@ mod snapshot_tests {
         stale.current_outgoing_rate_bps = 0.0;
         stale.last_activity = SystemTime::now() - Duration::from_secs(450);
         app.set_connections_snapshot_for_test(connections.clone());
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             show_system_panel: false,
             visible_rows: 18,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &connections, None, 140, 26);
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 26);
         assert!(
             output.contains("2m left"),
             "expected a countdown, got:\n{output}"
@@ -1376,8 +1381,8 @@ mod snapshot_tests {
         let mut connections = overview_connections();
         connections[3].process_name = Some("firefox".to_string());
         app.set_connections_snapshot_for_test(connections.clone());
-        let ui_state = UiState::default();
-        let output = render_app(&app, &ui_state, &connections, None, 140, 40);
+        let mut ui_state = UiState::default();
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 40);
 
         assert!(output.contains("Processes: 3"));
     }
@@ -1388,11 +1393,11 @@ mod snapshot_tests {
         let connections = overview_connections();
         app.set_connections_snapshot_for_test(connections.clone());
         let filtered = vec![connections[0].clone()];
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             filter_query: "process:firefox".to_string(),
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &filtered, None, 140, 40);
+        let output = render_app(&app, &mut ui_state, &filtered, None, 140, 40);
 
         assert!(output.contains("Live Connections · 1 shown"));
         assert!(output.contains("Processes: 4"));
@@ -1404,7 +1409,7 @@ mod snapshot_tests {
         let app = test_app();
         let connections = overview_connections();
         app.set_connections_snapshot_for_test(connections);
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             filter_query: "process:firefox port:443".to_string(),
             ..Default::default()
         };
@@ -1418,7 +1423,7 @@ mod snapshot_tests {
         assert_eq!(filtered.len(), 1);
         assert!(filter.matches(&filtered[0]));
 
-        let output = render_app(&app, &ui_state, &filtered, None, 140, 40);
+        let output = render_app(&app, &mut ui_state, &filtered, None, 140, 40);
         assert!(output.contains("Live Connections · 1 shown"));
         assert!(output.contains("firefox"));
         assert!(!output.contains("sshd (1500)"));
@@ -1440,7 +1445,7 @@ mod snapshot_tests {
             draw(
                 f,
                 &app,
-                &UiState::default(),
+                &mut UiState::default(),
                 &connections,
                 None,
                 &stats,
@@ -1464,7 +1469,7 @@ mod snapshot_tests {
     fn overview_system_panel_places_traffic_before_security() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UiState::default(), &connections, None, 140, 40);
+        let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 40);
 
         let traffic = output.find("Traffic").expect("Traffic section");
         let security = output.find("Security").expect("Security section");
@@ -1483,7 +1488,7 @@ mod snapshot_tests {
     fn overview_system_panel_compacts_security_on_short_terminals() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UiState::default(), &connections, None, 140, 32);
+        let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 32);
 
         assert!(output.contains("Traffic"));
         assert!(output.contains("Security (compact)"));
@@ -1499,7 +1504,7 @@ mod snapshot_tests {
     fn overview_system_panel_expands_security_when_space_returns() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UiState::default(), &connections, None, 140, 35);
+        let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 35);
 
         assert!(!output.contains("Security (compact)"));
         assert!(output.contains("No restrictions active"));
@@ -1580,12 +1585,12 @@ mod snapshot_tests {
         selected: usize,
         height: u16,
     ) -> (String, ClickableRegions) {
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 1, // Details
             selected_connection_key: Some(connections[selected].key()),
             ..Default::default()
         };
-        render_app_frame(app, &ui_state, connections, None, 140, height)
+        render_app_frame(app, &mut ui_state, connections, None, 140, height)
     }
 
     /// Standard Details render at the 140x40 reference size.
@@ -2399,12 +2404,12 @@ mod snapshot_tests {
             collected_at: Some(SystemTime::UNIX_EPOCH),
         });
 
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 4,
             ..Default::default()
         };
         let connections = app.get_connections();
-        let output = render_app(&app, &ui_state, &connections, None, 140, 30);
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 30);
 
         assert_app_snapshot!(output);
     }
@@ -2437,13 +2442,13 @@ mod snapshot_tests {
             },
         );
 
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 4, // Host
             host_view: HostView::Interfaces,
             ..Default::default()
         };
         let connections = app.get_connections();
-        let output = render_app(&app, &ui_state, &connections, None, 140, 30);
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 30);
 
         assert_app_snapshot!(output);
     }
@@ -2479,13 +2484,13 @@ mod snapshot_tests {
     }
 
     fn render_activity(app: &App, direction: ActivityDirection) -> String {
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 2,
             activity_direction: direction,
             ..Default::default()
         };
         let connections = app.get_connections();
-        render_app(app, &ui_state, &connections, None, 150, 40)
+        render_app(app, &mut ui_state, &connections, None, 150, 40)
     }
 
     #[test]
@@ -2503,11 +2508,11 @@ mod snapshot_tests {
     #[test]
     fn activity_tab_compact_terminal() {
         let app = seeded_activity_app();
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 2,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &app.get_connections(), None, 80, 24);
+        let output = render_app(&app, &mut ui_state, &app.get_connections(), None, 80, 24);
         assert!(output.contains("firefox (2001)"));
         assert!(output.contains("Coverage"));
         assert!(!output.contains("Share (60s)"));
@@ -2517,11 +2522,11 @@ mod snapshot_tests {
     #[test]
     fn activity_tab_medium_terminal() {
         let app = seeded_activity_app();
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 2,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &app.get_connections(), None, 110, 32);
+        let output = render_app(&app, &mut ui_state, &app.get_connections(), None, 110, 32);
         assert!(output.contains("Top remote peer"));
         assert!(output.contains("firefox (2001)"));
         insta::assert_snapshot!(output);
@@ -2530,11 +2535,11 @@ mod snapshot_tests {
     #[test]
     fn activity_tab_empty_terminal() {
         let app = test_app();
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 2,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &[], None, 80, 24);
+        let output = render_app(&app, &mut ui_state, &[], None, 80, 24);
         assert!(output.contains("n/a"));
         assert!(output.contains("Waiting for process traffic"));
         insta::assert_snapshot!(output);
@@ -2575,31 +2580,29 @@ mod snapshot_tests {
         app.set_connections_snapshot_for_test(sample_connections());
         app.set_traffic_history_for_test(TrafficHistory::new(60));
 
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 3, // Graph
             ..Default::default()
         };
         let connections = app.get_connections();
-        let output = render_app(&app, &ui_state, &connections, None, 140, 40);
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 40);
 
         assert_app_snapshot!(output);
     }
 
-    /// A stock 80x24 terminal cannot hold all three Graph sections; the
-    /// fixed-height rows drop from the bottom up so the waves and the
-    /// health row render at full height instead of all three squeezed.
+    /// A stock 80x24 terminal shows one section with an explicit switcher.
     #[test]
-    fn graph_tab_small_terminal_drops_bottom_sections() {
+    fn graph_tab_compact_traffic() {
         let app = test_app();
         app.set_connections_snapshot_for_test(sample_connections());
         app.set_traffic_history_for_test(TrafficHistory::new(60));
 
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 3, // Graph
             ..Default::default()
         };
         let connections = app.get_connections();
-        let output = render_app(&app, &ui_state, &connections, None, 80, 24);
+        let output = render_app(&app, &mut ui_state, &connections, None, 80, 24);
 
         assert_app_snapshot!(output);
     }
@@ -2608,10 +2611,337 @@ mod snapshot_tests {
     fn loading_screen_via_app() {
         let app = App::new(test_config()).expect("App::new");
         // Leave is_loading=true so draw() takes the loading branch.
-        let ui_state = UiState::default();
-        let output = render_app(&app, &ui_state, &[], None, 80, 20);
+        let mut ui_state = UiState::default();
+        let output = render_app(&app, &mut ui_state, &[], None, 80, 20);
 
         insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn overview_viewport_tracks_resize_filter_and_error_banner() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use test_support::local_tcp;
+
+        let app = test_app();
+        let connections: Vec<_> = (0..50)
+            .map(|i| local_tcp(1000 + i, &format!("proc{i:02}")))
+            .collect();
+        for grouping_enabled in [false, true] {
+            for expanded in [false, true] {
+                let mut state = UiState {
+                    grouping_enabled,
+                    show_system_panel: false,
+                    ..Default::default()
+                };
+                if expanded {
+                    state.expanded_groups = connections
+                        .iter()
+                        .filter_map(|c| c.process_name.clone())
+                        .collect();
+                }
+                let rows = compute_grouped_rows(&connections, &state.expanded_groups);
+                let grouped = grouping_enabled.then_some(rows.as_slice());
+                let total = if grouping_enabled {
+                    rows.len()
+                } else {
+                    connections.len()
+                };
+                if grouping_enabled {
+                    state.set_selected_grouped_by_index(&rows, total - 1);
+                } else {
+                    state.set_selected_by_index(&connections, total - 1);
+                }
+
+                // Reuse state across every resize, including shrinking from a tall
+                // frame with the last row selected and growing it again.
+                for (height, filter, error) in [
+                    (40, false, false),
+                    (24, false, false),
+                    (16, true, true),
+                    (12, false, true),
+                    (24, true, false),
+                    (40, false, false),
+                ] {
+                    state.filter_mode = filter;
+                    state.filter_query = "proc".to_string();
+                    app.set_capture_error_for_test(error.then_some(
+                        "Capture failed to start: interface unavailable. Check the interface and capture permissions.",
+                    ));
+                    let (output, regions) =
+                        render_app_frame(&app, &mut state, &connections, grouped, 80, height);
+                    let expected =
+                        usize::from(height) - 6 - usize::from(filter) - usize::from(error);
+                    assert_eq!(state.visible_rows, expected);
+                    let offset = if grouping_enabled {
+                        state.grouped_scroll_offset
+                    } else {
+                        state.scroll_offset
+                    };
+                    assert_eq!(offset, total - expected);
+                    let selected = if grouping_enabled {
+                        state.get_selected_grouped_index(&rows)
+                    } else {
+                        state.get_selected_index(&connections)
+                    };
+                    assert_eq!(selected, Some(total - 1));
+
+                    // Every painted row maps to that exact data row. Selection and
+                    // scrollbar both reach the last row above the filter/status area.
+                    let table = regions.scroll_area.expect("connection table");
+                    let row_area = connection_table::table_rows_area(table);
+                    assert_eq!(usize::from(row_area.height), expected);
+                    for row in 0..row_area.height {
+                        assert!(matches!(regions.hit_test(0, row_area.y + row),
+                            Some(ClickAction::SelectConnection(i)) if *i == offset + usize::from(row)));
+                    }
+                    let bottom = usize::from(row_area.bottom() - 1);
+                    let line = output.lines().nth(bottom).unwrap();
+                    assert!(line.starts_with('▌'), "selected row: {line}");
+                    assert_eq!(line.chars().last(), Some('▐'));
+                    assert!(!matches!(
+                        regions.hit_test(0, row_area.bottom()),
+                        Some(ClickAction::SelectConnection(_))
+                    ));
+
+                    // Apply the same key dispatch as the event loop, with filtering
+                    // exited so the connection navigation handler receives the key.
+                    state.filter_mode = false;
+                    let mut ctx = HandlerContext {
+                        app: &app,
+                        ui_state: &mut state,
+                        connections: &connections,
+                        grouped_rows: grouped,
+                        click_regions: &regions,
+                    };
+                    dispatch_key(
+                        0,
+                        KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+                        &mut ctx,
+                    )
+                    .expect("page up handled");
+                    let selected = if grouping_enabled {
+                        ctx.ui_state.get_selected_grouped_index(&rows)
+                    } else {
+                        ctx.ui_state.get_selected_index(&connections)
+                    };
+                    assert_eq!(selected, Some(total - 1 - expected));
+                    dispatch_key(
+                        0,
+                        KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                        &mut ctx,
+                    )
+                    .expect("page down handled");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_graph_sections_remain_reachable_and_survive_resize() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use state::GraphSection;
+
+        let app = test_app();
+        let connections = sample_connections();
+        let mut state = UiState {
+            selected_tab: 3,
+            ..Default::default()
+        };
+        for (section, heading) in [
+            (GraphSection::Traffic, "Traffic Over Time"),
+            (GraphSection::Health, "Observed Network Health"),
+            (GraphSection::Distribution, "Application Distribution"),
+        ] {
+            let (output, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+            assert_eq!(state.graph_section, section);
+            assert!(output.contains(heading));
+            assert!(output.contains("v next section"));
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                3,
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .expect("next section handled");
+        }
+        assert_eq!(state.graph_section, GraphSection::Traffic);
+        state.graph_section = GraphSection::Distribution;
+        // The width and height boundaries must independently select compact mode.
+        for (width, height, compact) in [
+            (99, 40, true),
+            (100, 34, true),
+            (100, 35, false),
+            (140, 40, false),
+            (80, 24, true),
+        ] {
+            let (output, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.graph_compact.get(), compact);
+            assert!(output.contains("Application Distribution"));
+            assert_eq!(output.contains("Traffic Over Time"), !compact);
+            assert_eq!(state.graph_section, GraphSection::Distribution);
+            if !compact {
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                assert!(
+                    dispatch_key(
+                        3,
+                        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                        &mut ctx
+                    )
+                    .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compact_graph_keeps_live_rates_and_all_tcp_states_visible() {
+        use crate::network::types::ConnectionLifecycleSample;
+        let app = test_app();
+        let mut history = TrafficHistory::new(60);
+        for _ in 0..60 {
+            history.add_sample_with_lifecycle(
+                8192,
+                4096,
+                ConnectionLifecycleSample::default(),
+                100,
+                1,
+                Some(25.0),
+            );
+        }
+        app.set_traffic_history_for_test(history);
+        let connections: Vec<_> = [
+            TcpState::Established,
+            TcpState::SynSent,
+            TcpState::SynReceived,
+            TcpState::FinWait1,
+            TcpState::FinWait2,
+            TcpState::TimeWait,
+            TcpState::CloseWait,
+            TcpState::LastAck,
+            TcpState::Closing,
+            TcpState::Closed,
+            TcpState::Unknown,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, tcp_state)| {
+            let mut conn = test_support::local_tcp(1000 + i as u16, "process");
+            conn.protocol_state = ProtocolState::Tcp(tcp_state);
+            conn
+        })
+        .collect();
+        let mut state = UiState {
+            selected_tab: 3,
+            ..Default::default()
+        };
+        let traffic = render_app(&app, &mut state, &connections, None, 80, 24);
+        for label in ["RX", "TX", "OPENED", "CLOSED", "8.00 KB/s", "4.00 KB/s"] {
+            assert!(traffic.contains(label), "{label}: {traffic}");
+        }
+        state.graph_section = GraphSection::Health;
+        let health = render_app(&app, &mut state, &connections, None, 80, 24);
+        for label in [
+            "25.0ms",
+            "1.00%",
+            "ESTAB",
+            "SYN_SENT",
+            "SYN_RECV",
+            "FIN_WAIT1",
+            "FIN_WAIT2",
+            "TIME_WAIT",
+            "CLOSE_WAIT",
+            "LAST_ACK",
+            "CLOSING",
+            "CLOSED",
+            "UNKNOWN",
+        ] {
+            assert!(health.contains(label), "{label}: {health}");
+        }
+    }
+
+    #[test]
+    fn compact_graph_health() {
+        let app = test_app();
+        let connections = sample_connections();
+        let mut state = UiState {
+            selected_tab: 3,
+            graph_section: state::GraphSection::Health,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_app_snapshot!(output);
+    }
+
+    #[test]
+    fn compact_graph_distribution() {
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            selected_tab: 3,
+            graph_section: state::GraphSection::Distribution,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_app_snapshot!(output);
+    }
+
+    #[test]
+    fn activity_short_terminal_keeps_processes_and_coverage() {
+        let app = seeded_activity_app();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &app.get_connections(), None, 80, 12);
+        assert!(output.contains("firefox (2001)"));
+        assert!(output.contains("Coverage 73.1%"));
+        assert!(output.contains("Attr 100%"));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn activity_layout_boundaries_keep_the_process_table() {
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        for (width, height) in [
+            (80, 18),
+            (80, 19),
+            (139, 25),
+            (140, 24),
+            (140, 25),
+            (200, 50),
+        ] {
+            let output = render_app(&app, &mut state, &connections, None, width, height);
+            assert!(
+                output.contains("firefox (2001)"),
+                "{width}x{height}: {output}"
+            );
+            assert!(
+                output.to_lowercase().contains("coverage"),
+                "{width}x{height}: {output}"
+            );
+            assert!(output.contains("Retained"));
+        }
+    }
+
+    #[test]
+    fn every_tab_handles_tiny_and_narrow_viewports() {
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        for selected_tab in 0..5 {
+            let mut state = UiState {
+                selected_tab,
+                ..Default::default()
+            };
+            for (width, height) in [(0, 0), (1, 1), (24, 8), (40, 12), (80, 24)] {
+                render_app(&app, &mut state, &connections, None, width, height);
+            }
+        }
     }
 
     // --- Application card: fixed per-protocol row sets ---

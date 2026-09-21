@@ -108,7 +108,13 @@ pub(in crate::ui) fn draw_activity(
     .spacing(if sidebar { 3 } else { 0 })
     .split(area);
     let main = Layout::vertical([
-        Constraint::Length(if sidebar { 6 } else { 7 }),
+        Constraint::Length(if area.height < 16 {
+            3
+        } else if sidebar {
+            6
+        } else {
+            7
+        }),
         Constraint::Min(5),
     ])
     .spacing(1)
@@ -174,6 +180,34 @@ fn draw_direction_pulse(
         section_title(format!(" {}", direction.display_name_with_rate())),
     );
     let color = direction_color(direction);
+    if area.height <= 3 {
+        let coverage = coverage_text(
+            coverage_fraction(
+                snapshot_window_bytes(snapshot, direction),
+                interface_window_bytes(basis, direction),
+            ),
+            basis.exact,
+        );
+        let attribution =
+            direction.pick(snapshot.tx_attribution_pct(), snapshot.rx_attribution_pct());
+        f.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    format!(
+                        "{} now",
+                        format_rate(snapshot_current_bps(snapshot, direction))
+                    ),
+                    theme::bold_fg(color),
+                ),
+                Line::styled(
+                    format!("Coverage {coverage} · Attr {attribution:.0}%"),
+                    theme::fg(theme::muted()),
+                ),
+            ]),
+            inner,
+        );
+        return;
+    }
     let captured = snapshot_window_bytes(snapshot, direction);
     let retained = direction.pick(snapshot.retained_tx_bytes, snapshot.retained_rx_bytes);
     let mut lines = vec![
@@ -453,10 +487,12 @@ fn draw_process_table(
         ui_state.activity_sort_ascending,
         traffic_direction,
     );
+    let dense = area.height < 10;
+    let row_height = if dense { 1 } else { 2 };
     let visible = inner
         .height
         .saturating_sub(2)
-        .div_euclid(2)
+        .div_euclid(row_height)
         .min(MAX_VISIBLE_PROCESSES as u16) as usize;
     let wide = inner.width >= 148;
     let medium = inner.width >= 105;
@@ -481,7 +517,7 @@ fn draw_process_table(
                 retained_share(&process, traffic_direction) / 100.0
             };
             let name = truncate_with_ellipsis(&process.identity.display_name(), name_width);
-            let name_cell = Cell::from(if medium {
+            let name_cell = Cell::from(if medium || dense {
                 vec![Line::from(name)]
             } else {
                 vec![
@@ -577,8 +613,8 @@ fn draw_process_table(
             };
             Row::new(cells)
                 .style(style)
-                .height(if medium { 1 } else { 2 })
-                .bottom_margin(u16::from(medium))
+                .height(if medium || dense { 1 } else { 2 })
+                .bottom_margin(u16::from(medium && !dense))
         })
         .collect();
 

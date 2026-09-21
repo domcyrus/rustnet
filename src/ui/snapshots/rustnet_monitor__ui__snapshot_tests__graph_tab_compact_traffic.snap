@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
+──────────────────────────────────────────────────━━━━━━━───────────────────────
+▎ Traffic (1/3) · v next section ───────────────────────────────────────────────
+▎ Traffic Over Time (60s) ──────────────────────────────────────────────────────
+Waiting for traffic data...                                                     
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+▎ Connection Lifecycle ─────────────────────────────────────────────────────────
+Waiting for connection data...                                                  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ v section  esc back                                             h help  q quit

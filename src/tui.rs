@@ -97,27 +97,6 @@ where
             needs_redraw = true;
         }
 
-        // Ensure we have a valid selection (handles connection removals)
-        if ui_state.grouping_enabled {
-            let selected_idx = ui_state
-                .ensure_valid_grouped_selection(&grouped_rows)
-                .unwrap_or(0);
-            ui_state.grouped_scroll_offset = ui::compute_scroll_offset(
-                selected_idx,
-                ui_state.grouped_scroll_offset,
-                ui_state.visible_rows,
-                grouped_rows.len(),
-            );
-        } else {
-            let selected_idx = ui_state.ensure_valid_selection(&connections).unwrap_or(0);
-            ui_state.scroll_offset = ui::compute_scroll_offset(
-                selected_idx,
-                ui_state.scroll_offset,
-                ui_state.visible_rows,
-                connections.len(),
-            );
-        }
-
         // Draw the UI, but only when something warrants it: immediately
         // after input or a data change, otherwise at the idle heartbeat.
         // The sidebar counters are live atomics read at render time, so
@@ -142,7 +121,7 @@ where
                 if let Err(err) = ui::draw(
                     f,
                     app,
-                    &ui_state,
+                    &mut ui_state,
                     &connections,
                     grouped,
                     &stats,
@@ -153,18 +132,6 @@ where
             })?;
             last_draw = std::time::Instant::now();
             needs_redraw = false;
-        }
-
-        // Update visible rows for page navigation based on terminal height.
-        // Chrome rows: tab bar (2) + section title (1) + table header incl.
-        // margin (2) + status bar (1) = 6, plus the filter line (1) while a
-        // filter is being typed. This must track the layout in `ui::draw`
-        // exactly: a confirmed filter keeps no row of its own, so counting
-        // one here would scroll the selection a row early and hand the
-        // scrollbar a viewport shorter than what is drawn.
-        if let Ok(size) = terminal.size() {
-            let chrome = if ui_state.filter_row_visible() { 7 } else { 6 };
-            ui_state.visible_rows = (size.height as usize).saturating_sub(chrome);
         }
 
         // Sleep until the next data tick or redraw heartbeat, whichever
@@ -438,6 +405,8 @@ where
                 } // end Event::Key
                 crossterm::event::Event::Resize(..) => {
                     needs_redraw = true;
+                    // Rebuild the viewport and hit regions before consuming more input.
+                    break 'events;
                 }
                 _ => {} // ignore focus, paste, etc.
             } // end match event

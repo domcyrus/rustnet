@@ -169,7 +169,10 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             hints.push(Hint::action("esc", "back"));
             hints
         }
-        // Graph
+        // Graph only needs navigation when the complete dashboard cannot fit.
+        3 if ui_state.graph_compact.get() => {
+            vec![Hint::action("v", "section"), Hint::action("esc", "back")]
+        }
         _ => vec![Hint::action("esc", "back")],
     }
 }

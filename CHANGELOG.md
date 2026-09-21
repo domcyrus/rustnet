@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Compact layouts**: Graph exposes Traffic, Health, and Distribution through
+  `v` on small terminals. Short Activity views preserve process rows and coverage.
 - **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
   process ranking, and a separate capture-quality sidebar on wide terminals.
   Share bars use theme-derived gradients with textured ANSI fallbacks.
@@ -99,6 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Connection viewport**: paging, scrollbars, and mouse targets track the current
+  layout immediately after resizing, including filters and two-row capture errors.
 - **Required UID Drop**: abort startup before packet-processing workers when a
   requested root UID/GID drop fails, including in best-effort mode
 - **Windows Connection History**: connections that reuse a tuple with the

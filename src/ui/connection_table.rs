@@ -886,6 +886,17 @@ pub(in crate::ui) struct RowWindow {
     pub visible_rows: usize,
 }
 
+/// Table content below the column heading and its bottom margin.
+pub(in crate::ui) fn table_rows_area(area: Rect) -> Rect {
+    let header_height = area.height.min(2);
+    Rect::new(
+        area.x,
+        area.y + header_height,
+        area.width,
+        area.height - header_height,
+    )
+}
+
 /// Render a windowed connection table plus its scrollbar and click
 /// regions: the shared back half of the flat and grouped Overview
 /// lists. `rows` holds only the visible window described by `window`.
@@ -919,18 +930,12 @@ pub(in crate::ui) fn render_row_table(
     f.render_stateful_widget(connections_table, table_area, &mut state);
 
     // Scrollbar tracks the row region (below header + margin).
-    let header_height = 2_u16; // header row (1) + bottom_margin (1)
-    let rows_area = Rect::new(
-        area.x,
-        area.y + header_height,
-        area.width,
-        area.height.saturating_sub(header_height),
-    );
+    let rows_area = table_rows_area(area);
     draw_scrollbar(f, rows_area, total_rows, scroll_offset, visible_rows);
 
     click_regions.scroll_area = Some(area);
-    let visible_start_y = area.y + header_height;
-    let max_visible_rows = area.height.saturating_sub(header_height) as usize;
+    let visible_start_y = rows_area.y;
+    let max_visible_rows = usize::from(rows_area.height);
 
     for i in 0..max_visible_rows {
         let row_idx = scroll_offset + i;

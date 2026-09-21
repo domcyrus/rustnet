@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
+──────────────────────────────────────────────────━━━━━━━───────────────────────
+▎ Distribution (3/3) · v next section ──────────────────────────────────────────
+▎ Application Distribution ────────────  ▎ Top Processes ───────────────────────
+DNS    ░░▒▓▓█··················  25.0%   Process                            Rate
+Other  ░░░░░▒▒▒▒▓▓▓▓▓████······  75.0%   firefox                       3.96 MB/s
+                                         sshd                          2.12 MB/s
+                                         systemd-resolved            128.91 KB/s
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ v section  esc back                                             h help  q quit

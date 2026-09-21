@@ -4,8 +4,15 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
 ──────────────────────────────────────────────────━━━━━━━───────────────────────
-▎ Traffic Over Time (60s) ────────────────────────────  ▎ Connection Lifecycle ─
-Waiting for traffic data...                             Waiting for connection d
+▎ Health (2/3) · v next section ────────────────────────────────────────────────
+▎ Observed Network Health ─────────────  ▎ TCP Counters ────────────────────────
+Waiting for health data...                 Retransmits         0                
+                                           Out of Order        0                
+                                           Fast Retrans        0                
+                                                                                
+▎ Observed TCP States ──────────────────────────────────────────────────────────
+     ESTAB ░░░░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓███████████████    2 
+ TIME_WAIT ░░░░░░░░▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓███████▌·······························    1 
                                                                                 
                                                                                 
                                                                                 
@@ -15,14 +22,7 @@ Waiting for traffic data...                             Waiting for connection d
                                                                                 
                                                                                 
                                                                                 
-▎ Observed Network Health   ▎ TCP Counters ───────────  ▎ Observed TCP States ──
-Waiting for health data...    Retransmits         0          ESTAB ░░▒▒▓▓█    2 
-                              Out of Order        0      TIME_WAIT ░▒▓▌···    1 
-                              Fast Retrans        0                             
                                                                                 
                                                                                 
                                                                                 
-                                                                                
-                                                                                
-                                                                                
- esc back                                                        h help  q quit
+ v section  esc back                                             h help  q quit
