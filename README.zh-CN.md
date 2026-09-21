@@ -26,7 +26,11 @@
   <em>实时洞察机器对外发起的每一条连接：谁在使用它、走的是什么协议。无需 tcpdump，无需 X11 转发，也不必把 root 权限传递下去。</em>
 </p>
 
+> **文档版本：** `main` 分支上的本 README 描述开发中的代码，可能包含尚未发布的功能。使用 v1.6.0 时，请参阅 [v1.6.0 文档](https://github.com/domcyrus/rustnet/blob/v1.6.0/README.zh-CN.md)。运行 `rustnet --version` 查看已安装的版本，运行 `rustnet --help` 查看该版本支持的选项。
+
 ## 功能特性
+
+> **v1.6.0 之后尚未发布的功能：** WireGuard/OpenVPN 识别、Host 标签页、Health 徽标与排序、空闲倒计时，以及 Linux 既有 socket 归属识别的改进均需要开发版。下文的 Activity 浏览器、紧凑布局操作和 `pid:` 过滤器也尚未发布。全部待发布变更见[更新日志](CHANGELOG.md#unreleased)。
 
 - **进程级归属识别**：每一条 TCP、UDP、QUIC 连接都能追溯到所属进程。Linux 使用 eBPF，macOS 使用 PKTAP，Windows 使用 ETW 并在不可用时自动回退到 IP Helper，FreeBSD 则走原生 API。详情会显示 PID、可执行文件、用户/组名称、匹配可信度，以及每个平台都提供的父进程链（有层级上限）。Wireshark 与 tcpdump 做不到这一点；`netstat` / `ss` 也无法展示实时状态。
 - **深度包检测**：无需外部解析器即可识别 HTTP、带 SNI 的 HTTPS/TLS、DNS、SSH、FTP、QUIC、MQTT、BitTorrent、WireGuard、OpenVPN、STUN、NTP、mDNS、LLMNR、DHCP、SNMP、SSDP 及 NetBIOS。
@@ -35,7 +39,7 @@
 - **网络分析**：实时统计 TCP、QUIC 握手、DNS 响应及 ICMP 回显的往返时延，并检测 TCP 重传、乱序包和快重传。概览表格通过按协议显示的健康徽标，呈现 TCP 问题、明确可见的 QUIC Retry/版本协商事件，以及事务型 UDP 的重试/超时，并按严重程度排序。
 - **智能连接生命周期**：按协议设置超时，空闲连接行会显示由黄变红的左侧条纹和移除倒计时，并逐渐柔化为灰色。按 `t` 可保留历史（已关闭）连接以便事后追溯。
 - **Vim / fzf 风格过滤**：支持 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:`、`proto:`，以及 `/(?i)pattern/` 形式的正则。
-- **无界面自动化**：无需 TUI 即可流式输出带版本号的 JSONL 快照，或在结束时输出一份最终 JSON 快照，并支持与交互界面相同的连接过滤语法。
+- **无界面自动化（尚未发布）**：无需 TUI 即可流式输出带版本号的 JSONL 快照，或在结束时输出一份最终 JSON 快照，并支持与交互界面相同的连接过滤语法。
 - **GeoIP 增强**：基于本地 MaxMind GeoLite2 数据库查询国家信息，不发起任何网络请求。
 - **局域网设备识别**：链路内设备和网关的 MAC 地址及厂商（来自内嵌的 IEEE OUI 数据库），从 ARP 流量中被动学习，并显示在详情页中。
 - **Kubernetes 归属识别**（可选 `kubernetes` feature）：将连接映射到所属 pod、namespace 和 container，并在详情面板、JSON/PCAPNG 导出以及 `pod:`、`ns:`、`container:` 过滤器中显示。官方 Docker 镜像已启用该功能；在集群上可使用 [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) 插件以临时调试 pod 运行。详见 [USAGE.zh-CN.md](USAGE.zh-CN.md#--kubernetes-mode-optional-feature)。
@@ -167,7 +171,7 @@ cargo install rustnet-monitor
 **Windows(Chocolatey):**
 ```powershell
 # 需在管理员权限的 PowerShell 中执行
-# 需要先安装 Npcap(https://npcap.com)；支持安装程序的默认设置
+# RustNet v1.6.0 需要安装 Npcap 并启用 "WinPcap API compatible mode"
 choco install rustnet
 ```
 
@@ -200,6 +204,8 @@ rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 
 默认仍会启动 TUI。脚本和服务可使用无界面模式：
 
+> **尚未发布：** v1.6.0 不支持 `--headless`、`--duration`、`--output` 和 `--filter`。要使用以下示例，请[从当前 `main` 分支构建](INSTALL.zh-CN.md#building-from-source)，或等待包含无界面模式的版本发布。
+
 ```bash
 rustnet --headless                                      # 流式输出 JSONL 快照
 rustnet --headless --duration 30 --output json         # 输出一份最终快照
@@ -221,6 +227,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 > 如果已经设置了 Linux capabilities，但 TUI 仍然提示 `eBPF unavailable`，请参阅 [INSTALL.zh-CN.md 的排障章节](INSTALL.zh-CN.md#ebpf-unavailable-despite-capabilities-being-set)。
 
 ## 键盘控制
+
+> **尚未发布的导航变更：** `5` 打开 Host，`h` 打开上下文帮助，`v` / `Shift+v` 切换区块。v1.6.0 中，`5` 打开帮助，Activity 中的 `i` 打开接口详情。
 
 | 按键 | 作用 |
 |-----|--------|
@@ -286,7 +294,7 @@ Activity 将进程名完全相同的多个 PID 汇总为一行应用。依次按
 - `src:192.168` —— 源 IP 包含 "192.168"
 - `dst:github.com` —— 目的地址包含 "github.com"
 - `process:ssh`：进程名包含 "ssh"（`process:unknown` 也匹配未解析的名称）
-- `pid:1234`：精确匹配进程 ID
+- `pid:1234`：精确匹配进程 ID（尚未发布）
 - `sni:api` —— SNI 主机名包含 "api"
 - `app:openssh` —— 使用 OpenSSH 的 SSH 连接
 - `state:established` —— 按协议状态过滤

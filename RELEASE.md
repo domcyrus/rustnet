@@ -72,11 +72,30 @@ cargo build --release
 cargo test
 ```
 
+Before committing, update documentation availability notes in all three languages:
+
+- Update the version labels and `/blob/vX.Y.Z/` links in the documentation-version
+  notices in `README*.md`, `USAGE*.md`, `INSTALL*.md`, and `SECURITY*.md` to the
+  release being prepared. Preserve each link's language and target file.
+- Replace "unreleased" labels for features included in this release with
+  "available since vX.Y.Z" (and the Chinese/Japanese equivalents). Review the
+  feature summaries, examples, keyboard controls, and Windows/Npcap instructions.
+  Keep historical notes about older versions accurate; do not globally replace
+  every old version number. Leave features outside this release marked unreleased.
+- Keep the notice that `main` may include unreleased changes for future development.
+
+Locate these notes before each release:
+
+```bash
+rg -n 'Documentation version|文档版本|ドキュメントのバージョン|[Uu]nreleased|尚未发布|未リリース|/blob/v[0-9]' README*.md USAGE*.md INSTALL*.md SECURITY*.md
+```
+
 ### 4. Commit Release Changes
 
 ```bash
-# Stage and commit the version and changelog changes
+# Stage the version, changelog, and documentation changes
 git add Cargo.toml Cargo.lock CHANGELOG.md rpm/rustnet.spec
+git add README*.md USAGE*.md INSTALL*.md SECURITY*.md
 git commit -m "Release v0.3.0
 
 - Feature or fix summary here
@@ -195,6 +214,8 @@ Before pushing the tag, ensure:
 - [ ] Version number updated in `rpm/rustnet.spec` (line 5: `Version: x.y.z`)
 - [ ] `Cargo.lock` updated (via `cargo build`)
 - [ ] `CHANGELOG.md`: `[Unreleased]` renamed to `## [x.y.z] - YYYY-MM-DD`, a fresh empty `[Unreleased]` added, comparison links updated
+- [ ] Documentation-version labels and release links updated in `README*.md`, `USAGE*.md`, `INSTALL*.md`, and `SECURITY*.md`, preserving language and target file
+- [ ] Shipped features' unreleased labels replaced with their first release version in English, Chinese, and Japanese; Windows/Npcap instructions and older-version notes reviewed
 - [ ] All tests pass (`cargo test`)
 - [ ] Changes committed to main branch
 - [ ] Git tag created and pushed
@@ -207,6 +228,7 @@ After GitHub Actions completes:
 - [ ] Verify Docker image pushed to ghcr.io
 - [ ] Verify all five crates published to crates.io (`rustnet-monitor`, `rustnet-core`, `rustnet-capture`, `rustnet-host`, `rustnet-sandbox`) and docs.rs built
 - [ ] Review automatically extracted release notes
+- [ ] Open the documentation-version links and confirm they resolve to the new tag and the correct language
 - [ ] Verify Homebrew formula updated at https://github.com/domcyrus/homebrew-rustnet
 - [ ] Verify Chocolatey package updated at https://github.com/domcyrus/rustnet-chocolatey
 - [ ] Verify FreeBSD build at https://github.com/domcyrus/rustnet-bsd

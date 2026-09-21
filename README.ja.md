@@ -15,7 +15,11 @@
 
 RustNet は、各接続を所有するプロセス、通信量、状態、アプリケーションプロトコルをリアルタイムで表示します。Linux、macOS、Windows、FreeBSD に対応しています。
 
+> **ドキュメントのバージョン：** `main` ブランチの README は開発中のコードを説明しており、未リリースの機能を含む場合があります。v1.6.0 を使用している場合は、[v1.6.0 のドキュメント](https://github.com/domcyrus/rustnet/blob/v1.6.0/README.ja.md)を参照してください。`rustnet --version` でインストール済みのバージョン、`rustnet --help` でそのバージョンが対応するオプションを確認できます。
+
 ## 主な機能
+
+> **v1.6.0 以降の未リリース機能：** WireGuard/OpenVPN の識別、Host タブ、Health バッジとソート、アイドル時のカウントダウン、Linux の既存 socket の所有者識別の改善には開発版が必要です。以下の Activity ブラウザー、コンパクト表示の操作、`pid:` フィルターも未リリースです。未リリースの変更一覧は[変更履歴](CHANGELOG.md#unreleased)を参照してください。
 
 - TCP、UDP、QUIC 接続とプロセスの対応付け。詳細には PID、実行ファイル、ユーザー/グループ名、照合の信頼度、全プラットフォーム共通の親プロセスチェーン（上限あり）を表示
 - Linux 5.11 以降では、起動時の BPF task-file イテレーターにより、ファイル capabilities で実行した場合でも root や他ユーザーが所有する既存 socket を識別
@@ -23,7 +27,7 @@ RustNet は、各接続を所有するプロセス、通信量、状態、アプ
 - TCP、QUIC ハンドシェイク、DNS 応答、ICMP エコーの往復時間（RTT）と、TCP の再送・順序入れ替わりをリアルタイム表示。Overview テーブルではプロトコル別のヘルスバッジにより、TCP の問題、明示的な QUIC Retry/バージョンネゴシエーション、トランザクション型 UDP の再試行/タイムアウトを表示し、重大度順に並べ替え可能
 - Host タブに TCP LISTEN ソケット、UDP BOUND エンドポイント、TCP 状態集計、観測 RTT、所有プロセス、インターフェース統計を表示
 - `port:`、`process:`、`sni:`、`state:` などのフィルター
-- TUI を使わず、バージョン付き JSONL スナップショットをストリーミング出力、または終了時に最終 JSON スナップショットを 1 件出力できるヘッドレスモード。対話表示と同じ接続フィルターを利用可能
+- TUI を使わず、バージョン付き JSONL スナップショットをストリーミング出力、または終了時に最終 JSON スナップショットを 1 件出力できるヘッドレスモード（未リリース）。対話表示と同じ接続フィルターを利用可能
 - 注釈付き PCAPNG、PCAP と JSONL sidecar、JSON ログの出力
 - ローカル GeoIP データベースによる国、ASN、都市情報
 - ARP トラフィックから受動的に学習した LAN 機器・ゲートウェイの MAC アドレスとベンダー表示（内蔵 IEEE OUI データベース）
@@ -68,7 +72,7 @@ Cargo:
 cargo install rustnet-monitor
 ```
 
-Windows では Npcap を標準設定でインストールできます。WinPcap API 互換モードは不要です。Npcap の設定によっては管理者 PowerShell が必要です。
+Windows で RustNet v1.6.0 を使う場合、Npcap のインストール時に「WinPcap API compatible mode」を有効にしてください。標準設定の Npcap への対応は未リリースで、現在は `main` で利用できます。Npcap の設定によっては管理者 PowerShell が必要です。
 
 ```powershell
 choco install rustnet
@@ -105,6 +109,8 @@ rustnet --pcapng-export capture.pcapng  # 注釈付き PCAPNG を出力
 
 既定では TUI が起動します。スクリプトやサービスではヘッドレスモードを使用できます。
 
+> **未リリース：** v1.6.0 は `--headless`、`--duration`、`--output`、`--filter` に対応していません。以下の例を使用するには、[現在の `main` からビルド](INSTALL.md#building-from-source)するか、ヘッドレスモードを含むリリースをお待ちください。
+
 ```bash
 rustnet --headless                                      # JSONL スナップショットをストリーミング出力
 rustnet --headless --duration 30 --output json         # 最終スナップショットを 1 件出力
@@ -134,6 +140,8 @@ rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
 テーマと各色の上書きは `~/.config/rustnet/config.toml` でも設定できます（`--theme` が優先）。詳細は [USAGE.md](USAGE.md#--theme-preset) を参照してください。
 
 ## 基本操作
+
+> **未リリースの操作変更：** `5` は Host、`h` はコンテキストヘルプを開き、`v` / `Shift+v` はセクションを切り替えます。v1.6.0 では `5` は Help を開き、Activity の `i` はインターフェース詳細を開きます。
 
 | キー | 操作 |
 |---|---|
@@ -193,7 +201,7 @@ Activity はプロセス名が完全に一致する複数の PID を、一つの
 
 RustNet は非プロミスキャスな読み取り専用キャプチャを行い、パケット、ルーティング、ファイアウォールを変更しません。初期化後に不要な権限を削除し、対応 OS ではサンドボックスを有効にします。詳細は [SECURITY.md](SECURITY.md) を参照してください。
 
-Linux、macOS、FreeBSD では、要求された UID/GID の権限削減に失敗すると、ベストエフォートモードでもパケット処理スレッドの起動前に終了します。未対応の任意サンドボックス機能は引き続き省略できます。`--no-uid-drop` または `--no-sandbox` で明示的に無効化した場合は UID/GID の変更を行いません。
+**未リリースの強化：** Linux、macOS、FreeBSD では、要求された UID/GID の権限削減に失敗すると、ベストエフォートモードでもパケット処理スレッドの起動前に終了します。未対応の任意サンドボックス機能は引き続き省略できます。`--no-uid-drop` または `--no-sandbox` で明示的に無効化した場合は UID/GID の変更を行いません。
 
 ## 関連ドキュメント
 

@@ -2,6 +2,8 @@
 
 # Usage Guide
 
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased features. For v1.6.0, use the [v1.6.0 usage guide](https://github.com/domcyrus/rustnet/blob/v1.6.0/USAGE.md). Check `rustnet --version` for your installed version and `rustnet --help` for its supported options.
+
 This guide covers detailed usage of RustNet, including command-line options, keyboard controls, filtering, sorting, and understanding connection lifecycle.
 
 ## Table of Contents
@@ -123,6 +125,8 @@ Builds compiled with the optional `kubernetes` feature (including the official D
 
 ### Headless Mode
 
+> **Unreleased:** `--headless`, `--duration`, `--output`, and `--filter` are unavailable in v1.6.0. To use this mode, [build from current `main`](INSTALL.md#building-from-source) or wait for a release that includes it.
+
 RustNet starts its interactive TUI by default. If either stdin or stdout is not a terminal, interactive startup is refused before packet capture begins. Scripts, pipelines, schedulers, and services must opt in explicitly with `--headless`.
 
 ```bash
@@ -192,7 +196,7 @@ rustnet -i eth0          # Monitor Ethernet interface
 rustnet -i wlan0         # Monitor WiFi interface
 rustnet -i en0           # Monitor macOS primary interface
 
-# Windows: use the adapter's friendly name; it is resolved to the
+# Windows (unreleased): use the adapter's friendly name; it is resolved to the
 # \Device\NPF_{GUID} device automatically
 rustnet -i Ethernet
 rustnet -i "Wi-Fi"
@@ -412,6 +416,8 @@ rustnet --kubernetes on
 
 ## Keyboard Controls
 
+> **Unreleased navigation changes:** The Host tab, contextual help overlay, and compact section controls below are unavailable in v1.6.0. In that release, `5` opens Help and `i` on Activity opens interface details.
+
 ### Navigation
 
 - `↑` or `k` - Navigate up in connection list
@@ -555,7 +561,7 @@ Use keyword filters for targeted searches:
 | `src:` | `source:` | Source IPs/hostnames | `src:192.168` matches 192.168.x.x |
 | `dst:` | `dest:`, `destination:` | Destinations | `dst:github.com` matches github.com |
 | `process:` | `proc:` | Process names; `unknown` includes unresolved names | `process:ssh` matches ssh, sshd |
-| `pid:` | | Exact process ID | `pid:1234` matches PID 1234 |
+| `pid:` | | Exact process ID (unreleased) | `pid:1234` matches PID 1234 |
 | `sni:` | `host:`, `hostname:` | SNI hostnames (HTTPS) and DNS-attributed hostnames | `sni:api` matches api.example.com |
 | `service:` | `svc:` | Service names | `service:https` matches HTTPS service |
 | `app:` | `application:` | Detected application protocol | `app:ssh` matches SSH connections |
@@ -657,7 +663,7 @@ Press `s` to cycle through columns in left-to-right order:
 | **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.), with TCP/UDP as tie-break |
 | **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
 | **RTT** | ↓ Descending | Sort by round-trip time (slowest connections first by default) |
-| **Health** | ↓ Descending | Sort protocol-aware health signals by severity, then event count |
+| **Health** (unreleased) | ↓ Descending | Sort protocol-aware health signals by severity, then event count |
 | **Bandwidth (Rx/Tx)** | ↓ Descending | Sort by **combined up+down** bandwidth (highest first by default) |
 
 Columns hidden at narrow terminal widths stay in the cycle — the active sort is always named in the table's section title.
@@ -859,6 +865,8 @@ Active TCP Flows: 18
 
 ### Per-Connection Statistics
 
+> **Unreleased:** The Health badges and severity sort, plus the per-direction TCP window display described below, were added after v1.6.0.
+
 The Overview table shows observable connection quality in the **Health**
 column. The badge adapts to the protocol:
 
@@ -927,6 +935,8 @@ Fast retransmit frequency indicates how well TCP is recovering from packet loss 
 - Only TCP connections show analytics; UDP, ICMP, and other protocols do not have these metrics
 
 ## Process Activity
+
+> **Unreleased:** The application browser, PID drill-down, and `o` shortcut below are unavailable in v1.6.0, which has a process-based Activity table.
 
 The Activity tab derives bounded process traffic totals from active connections and RustNet's existing pool of up to 5,000 retained historic connections. A short-lived uploader remains visible after its socket closes, until its historic connection is evicted or the connections are cleared. Press `3` to open it.
 
@@ -998,6 +1008,8 @@ Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the def
 For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
 
 ## Host Socket Inventory
+
+> **Unreleased:** The Host tab is unavailable in v1.6.0. For interface statistics in that release, press `3` for Activity, then `i`.
 
 Press `5` to open the Host tab. Unlike the Overview connection list, this view reads the operating system's socket table and does not require a packet to have been captured for a row to appear.
 
@@ -1163,6 +1175,8 @@ The leading `~` glyph signals that the hostname was *inferred* from a DNS respon
 - **VPN/WireGuard tunnels**: capture on the tunnel interface (e.g. `utun0`, `wg0`) rather than the underlay so you see plaintext DNS.
 
 ### Visual Staleness Indicators
+
+> **Unreleased:** The stripe and countdown below are unavailable in v1.6.0. That release uses row colors, with the first warning at 75% of the timeout.
 
 Idle rows announce their cleanup with a stripe and a countdown instead of recoloring the whole row:
 
