@@ -159,9 +159,8 @@ where
                 crossterm::event::Event::Mouse(mouse) => {
                     use crossterm::event::{MouseButton, MouseEventKind};
 
-                    // Active tab's Component gets first crack; currently
-                    // only OverviewTab claims (scroll wheel inside the
-                    // scroll area). Click events fall through to the
+                    // The active component handles wheel events.
+                    // Unclaimed click events fall through to the
                     // global ClickableRegions dispatch below.
                     let grouped_opt = if ui_state.grouping_enabled {
                         Some(grouped_rows.as_slice())
@@ -281,7 +280,7 @@ where
                             }
                         }
                     }
-                    // Scroll events are handled by OverviewTab::handle_mouse above.
+                    // Scroll events are handled by the active component above.
                 }
                 crossterm::event::Event::Key(key) => {
                     use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};

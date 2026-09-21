@@ -111,6 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Connection viewport**: paging, scrollbars, and mouse targets track the current
   layout immediately after resizing, including filters and two-row capture errors.
+- **Details Mouse Navigation**: the scroll wheel now selects the previous or
+  next connection, matching Overview. Use `Ctrl+D` / `Ctrl+U` to scroll long records
 - **Required UID Drop**: abort startup before packet-processing workers when a
   requested root UID/GID drop fails, including in best-effort mode
 - **Windows Connection History**: connections that reuse a tuple with the

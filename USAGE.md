@@ -523,7 +523,10 @@ RustNet has full mouse support. Mouse capture is enabled automatically — all i
 
 | Action | Effect |
 |--------|--------|
+| **Scroll wheel** | Show the previous/next connection, skipping group headers |
 | **Click** on any field line | Copy the field value to the system clipboard |
+
+Use `Ctrl+D` / `Ctrl+U` to scroll long connection information panes.
 
 Clicking a field copies just the value (not the label). For example, clicking the "Remote Address: 142.250.80.46:443" line copies `142.250.80.46:443` to your clipboard. A confirmation message appears in the status bar for 3 seconds.
 
