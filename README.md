@@ -266,6 +266,10 @@ On Overview, the bottom status bar highlights process grouping and historic
 connections while those modes are active. In grouped mode it also shows
 `space expand` or `space collapse` for the selected process group.
 
+Activity lists all retained processes with scrolling and stable selection. Enter
+opens inline process details. Compact layouts use `v` / Shift+`v` to switch
+between Processes and the full Capture summary; interface inventory stays in Host.
+
 See [USAGE.md](USAGE.md) for detailed keyboard controls and navigation tips.
 
 ## Filtering & Sorting

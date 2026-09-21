@@ -105,9 +105,9 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub(crate) use crate::network::process_activity::process_group_label;
 pub use state::{
-    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, DetailsSection, GraphSection,
-    GroupedRow, HostView, OverviewSection, PaneScroll, SortColumn, UiState, compute_grouped_rows,
-    compute_scroll_offset,
+    ActivityDirection, ActivitySection, ActivitySort, ClickAction, ClickableRegions,
+    DetailsSection, GraphSection, GroupedRow, HostView, OverviewSection, PaneScroll, SortColumn,
+    UiState, compute_grouped_rows, compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
@@ -371,6 +371,7 @@ pub fn draw(
     ui_state.section_navigation = match ui_state.selected_tab {
         0 => tabs::overview::compact_layout(chunks[1]),
         1 => tabs::details::compact_layout(chunks[1]),
+        2 => tabs::activity::compact_layout(chunks[1]),
         3 => tabs::graph::compact_layout(chunks[1]),
         4 => true,
         _ => false,
@@ -2505,6 +2506,261 @@ mod snapshot_tests {
         render_app(app, &mut ui_state, &connections, None, 150, 40)
     }
 
+    fn many_process_activity() -> (App, Vec<Connection>) {
+        let app = test_app();
+        let mut connections: Vec<_> = (0..64)
+            .map(|index| {
+                let mut connection =
+                    test_support::local_tcp(2000 + index, &format!("process-{index:02}"));
+                connection.pid = Some(1000 + u32::from(index));
+                connection.bytes_sent = u64::from(64 - index) * 1000;
+                connection.bytes_received = u64::from(index) * 2000;
+                connection
+            })
+            .collect();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        app.observe_process_activity_for_test(&connections, now);
+        for connection in &mut connections {
+            connection.bytes_sent *= 2;
+            connection.bytes_received *= 2;
+        }
+        app.observe_process_activity_for_test(&connections, now + Duration::from_secs(2));
+        (app, connections)
+    }
+
+    fn activity_key(app: &App, state: &mut UiState, key: crossterm::event::KeyCode) {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let regions = ClickableRegions::default();
+        let mut ctx = test_support::empty_ctx(app, state, &regions);
+        dispatch_key(2, KeyEvent::new(key, KeyModifiers::NONE), &mut ctx)
+            .expect("Activity key handled");
+    }
+
+    #[test]
+    fn activity_all_processes_are_reachable_at_every_size() {
+        use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
+        let (app, connections) = many_process_activity();
+        for (width, height) in [(50, 12), (80, 24), (110, 32), (150, 40), (200, 50)] {
+            let mut state = UiState {
+                selected_tab: 2,
+                ..Default::default()
+            };
+            let (output, _) = render_app_frame(&app, &mut state, &connections, None, width, height);
+            assert!(output.contains("process-00"), "{output}");
+            assert!(output.contains('▐'), "missing scrollbar: {output}");
+            let page = state.activity_table.borrow().viewport;
+            assert!(page > 0);
+            activity_key(&app, &mut state, KeyCode::PageDown);
+            assert_eq!(state.activity_table.borrow().selected_index(), page);
+            activity_key(&app, &mut state, KeyCode::End);
+            let (output, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, height);
+            let table = state.activity_table.borrow();
+            assert_eq!(table.selected_index(), 63);
+            assert!(output.contains("process-63"), "{output}");
+            assert!(output.contains("64/64"), "{output}");
+            assert_eq!(table.offset + table.viewport, 64);
+            for y in 0..table.area.height {
+                let Some(ClickAction::SelectActivityProcess(id)) =
+                    regions.hit_test(table.area.x, table.area.y + y)
+                else {
+                    panic!("missing process hit target")
+                };
+                assert_eq!(id, &table.rows[table.offset + usize::from(y)]);
+            }
+            let mouse = MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: table.area.x,
+                row: table.area.y,
+                modifiers: KeyModifiers::NONE,
+            };
+            drop(table);
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_mouse(2, mouse, &mut ctx).unwrap();
+            assert_eq!(state.activity_table.borrow().selected_index(), 62);
+            activity_key(&app, &mut state, KeyCode::Home);
+            assert_eq!(state.activity_table.borrow().selected_index(), 0);
+        }
+    }
+
+    #[test]
+    fn activity_selection_tracks_identity_through_sort_updates_and_resize() {
+        use crossterm::event::KeyCode;
+        let (app, mut connections) = many_process_activity();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        activity_key(&app, &mut state, KeyCode::End);
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        let selected = state.activity_table.borrow().selected.clone();
+        connections[63].bytes_sent = 100_000_000;
+        app.observe_process_activity_for_test(
+            &connections,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        for (width, height) in [(80, 24), (150, 40), (50, 12), (80, 24)] {
+            let output = render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.activity_table.borrow().selected, selected);
+            assert!(output.contains("process-63"));
+        }
+        activity_key(&app, &mut state, KeyCode::Char('S'));
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_eq!(state.activity_table.borrow().selected, selected);
+        assert_eq!(state.activity_table.borrow().selected_index(), 63);
+        activity_key(&app, &mut state, KeyCode::Char('d'));
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_eq!(state.activity_table.borrow().selected, selected);
+    }
+
+    #[test]
+    fn activity_capture_is_complete_scrollable_and_restored_after_resize() {
+        use crossterm::event::KeyCode;
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        for (width, height) in [(50, 12), (80, 24)] {
+            state.activity_section = ActivitySection::Processes;
+            render_app(&app, &mut state, &connections, None, width, height);
+            activity_key(&app, &mut state, KeyCode::Char('v'));
+            let top = render_app(&app, &mut state, &connections, None, width, height);
+            assert!(top.contains("Basis: eth0"));
+            assert!(top.contains("Captured: 5.85 MB"));
+            assert!(state.activity_capture_scroll.can_scroll());
+            let mut all = top;
+            for _ in 0..30 {
+                activity_key(&app, &mut state, KeyCode::Down);
+                all.push_str(&render_app(
+                    &app,
+                    &mut state,
+                    &connections,
+                    None,
+                    width,
+                    height,
+                ));
+            }
+            for metric in [
+                "Interface: 8.00 MB",
+                "Interface: 4.00 MB",
+                "Attribution · retained traffic",
+                "Mapped: 3.67 MB",
+                "Unknown: 0 B",
+                "Interface inventory: Host (5)",
+            ] {
+                assert!(all.contains(metric), "missing {metric}");
+            }
+            let before_resize = render_app(&app, &mut state, &connections, None, width, height);
+            let wide = render_app(&app, &mut state, &connections, None, 150, 40);
+            assert!(!state.section_navigation);
+            assert!(!wide.contains("v/V"));
+            assert!(wide.contains("Attribution · retained traffic"));
+            assert!(!state.activity_capture_scroll.can_scroll());
+            let compact = render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.activity_section, ActivitySection::Capture);
+            assert_eq!(compact, before_resize);
+            assert!(compact.contains("Interface inventory: Host (5)"));
+            activity_key(&app, &mut state, KeyCode::Esc);
+            assert_eq!(state.activity_section, ActivitySection::Processes);
+            state.activity_capture_scroll.reset();
+        }
+    }
+
+    #[test]
+    fn activity_process_inspection_exposes_hidden_fields_and_returns_to_selection() {
+        use crossterm::event::KeyCode;
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 50, 12);
+        let selected = state.activity_table.borrow().selected.clone();
+        activity_key(&app, &mut state, KeyCode::Enter);
+        assert!(state.activity_details);
+        let mut all = render_app(&app, &mut state, &connections, None, 50, 12);
+        assert!(state.activity_details_scroll.can_scroll());
+        for _ in 0..45 {
+            activity_key(&app, &mut state, KeyCode::Down);
+            all.push_str(&render_app(&app, &mut state, &connections, None, 50, 12));
+        }
+        for metric in [
+            "PID: 2001",
+            "Remote peers:",
+            "Egress (TX)",
+            "Ingress (RX)",
+            "Peak rate:",
+            "Last 60s:",
+            "Share of retained:",
+            "Share of interface 60s:",
+            "Top remote peer:",
+            "Interface basis:",
+        ] {
+            assert!(all.contains(metric), "missing {metric}");
+        }
+        activity_key(&app, &mut state, KeyCode::Esc);
+        let output = render_app(&app, &mut state, &connections, None, 50, 12);
+        assert!(!state.activity_details);
+        assert_eq!(state.activity_table.borrow().selected, selected);
+        assert!(output.contains("firefox"));
+    }
+
+    #[test]
+    fn activity_inspector_does_not_silently_switch_to_a_different_process() {
+        use crossterm::event::KeyCode;
+        let (app, connections) = many_process_activity();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        app.observe_process_activity_for_test(
+            &connections[1..],
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        let output = render_app(&app, &mut state, &connections[1..], None, 80, 24);
+        assert!(output.contains("Process no longer retained"));
+        activity_key(&app, &mut state, KeyCode::Esc);
+        render_app(&app, &mut state, &connections[1..], None, 80, 24);
+        assert_eq!(
+            state
+                .activity_table
+                .borrow()
+                .selected
+                .as_ref()
+                .unwrap()
+                .name,
+            "process-01"
+        );
+    }
+
+    #[test]
+    fn activity_capture_and_process_detail_snapshots() {
+        use crossterm::event::KeyCode;
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        insta::assert_snapshot!(
+            "activity_process_details",
+            render_app(&app, &mut state, &connections, None, 80, 24)
+        );
+        activity_key(&app, &mut state, KeyCode::Char('v'));
+        insta::assert_snapshot!(
+            "activity_capture_compact",
+            render_app(&app, &mut state, &connections, None, 80, 24)
+        );
+    }
+
     #[test]
     fn activity_tab_process_egress() {
         let app = seeded_activity_app();
@@ -2908,8 +3164,8 @@ mod snapshot_tests {
         };
         let output = render_app(&app, &mut state, &app.get_connections(), None, 80, 12);
         assert!(output.contains("firefox (2001)"));
-        assert!(output.contains("Coverage 73.1%"));
-        assert!(output.contains("Attr 100%"));
+        assert!(output.contains("Coverage 60s: TX 73.1%"));
+        assert!(output.contains("enter details"));
         insta::assert_snapshot!(output);
     }
 
@@ -3175,7 +3431,7 @@ mod snapshot_tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = overview_connections();
-        for tab in [0, 1, 3, 4] {
+        for tab in [0, 1, 2, 3, 4] {
             for (width, height) in [(50, 12), (80, 24), (140, 50)] {
                 if tab != 4 && width == 140 {
                     continue;
@@ -3283,7 +3539,7 @@ mod snapshot_tests {
             show_help: true,
             ..Default::default()
         };
-        for tab in [0, 1, 3] {
+        for tab in [0, 1, 2, 3] {
             state.selected_tab = tab;
             for (width, height, compact) in [(140, 50, false), (80, 24, true), (140, 50, false)] {
                 let output = render_app(&app, &mut state, &connections, None, width, height);
@@ -3378,7 +3634,7 @@ mod snapshot_tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = overview_connections();
-        for tab in [0, 1, 3, 4] {
+        for tab in [0, 1, 2, 3, 4] {
             let mut state = UiState {
                 selected_tab: tab,
                 ..Default::default()

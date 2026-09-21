@@ -4,8 +4,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Frame, layout::Rect, text::Span};
 
 use super::{
-    ClickAction, ClickableRegions, DetailsSection, Effect, GraphSection, HostView, OverviewSection,
-    UiState,
+    ActivitySection, ClickAction, ClickableRegions, DetailsSection, Effect, GraphSection, HostView,
+    OverviewSection, UiState,
     widgets::tab_strip::{self, TabStrip},
 };
 
@@ -30,6 +30,7 @@ impl UiState {
                 ],
                 self.details_section.index(),
             ),
+            2 => (&["Processes", "Capture"], self.activity_section as usize),
             3 => (
                 &["Traffic", "Health", "Distribution"],
                 self.graph_section as usize,
@@ -53,6 +54,10 @@ impl UiState {
             1 => {
                 self.details_section = DetailsSection::ALL[index];
                 self.details_scroll.reset();
+            }
+            2 => {
+                self.activity_section =
+                    [ActivitySection::Processes, ActivitySection::Capture][index]
             }
             3 => {
                 self.graph_section = [

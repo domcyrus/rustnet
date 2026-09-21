@@ -4,15 +4,11 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
 ─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
-▎ Egress (TX) ─────────────────────────   ▎ Ingress (RX) ───────────────────────
--  now                                    -  now                                
-                                                                                
-Captured · 60s                      0 B   Captured · 60s                     0 B
-Retained                            0 B   Retained                           0 B
-Coverage · 60s                      n/a   Coverage · 60s                     n/a
-Attributed                         0.0%   Attributed                        0.0%
-                                                                                
-▎ Processes · Egress (TX)  Retained TX ↓ ───────────────────────────────────────
+Processes   Capture                                                             
+━━━━━━━━━───────────────────────────────────────────────────────────────────────
+TX -   RX -                                                                     
+Coverage 60s: TX n/a  RX n/a                                                    
+▎ Processes · TX · Retained TX ↓ ────────────────────────────────────────── 0/0 
 Waiting for process traffic...                                                  
                                                                                 
                                                                                 
@@ -25,4 +21,8 @@ Waiting for process traffic...
                                                                                 
                                                                                 
                                                                                 
- d tx/rx  s sort  S order  esc back                              h help  q quit
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ v/V section  d tx/rx  s sort  S order  esc back                 h help  q quit

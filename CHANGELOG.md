@@ -37,12 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
-- **Compact layouts**: Overview, Details, and Graph share clickable section
+- **Compact layouts**: Overview, Details, Activity, and Graph share clickable section
   selectors with `v` / Shift+`v` when the full layout does not fit. Overview
   shows System inline with dividers; Host uses the same controls for its two views.
   Section tabs share the main tabs' styling and show shortcuts in the footer.
-  Wide dashboards stay unchanged. Short Activity views
-  keep process rows and coverage visible.
+  Activity uses a scrollable process table with stable selection, row ranges, and
+  inline inspection. Capture stays accessible at every size; interface inventory
+  lives in Host.
 - **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
   process ranking, and a separate capture-quality sidebar on wide terminals.
   Share bars use theme-derived gradients with textured ANSI fallbacks.

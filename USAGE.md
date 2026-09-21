@@ -437,7 +437,7 @@ click anywhere dismisses it.
 
 ### Compact terminals
 
-Overview, Details, and Graph show a shared section selector only when the full
+Overview, Details, Activity, and Graph show a shared section selector only when the full
 layout does not fit. Press `v` for the next section or Shift+`v` for the previous
 one, or click a section name. Host uses the same controls to select Sockets or
 Interfaces at every size. Tab / Shift+Tab, `[` / `]`, and 1-5 switch main tabs
@@ -461,9 +461,10 @@ Larger terminals show all sections together. Wide dashboards have no added
 section selector or panel focus. Shrinking restores the last compact section.
 Help remains an overlay and consumes section controls while open.
 
-At 80×24, Activity keeps its process table and TX/RX summaries visible. Shorter
-terminals condense the summaries and process rows, keeping current rates,
-capture coverage, and attribution visible at 80×12.
+Activity shows Processes and Capture sections below 120 columns or 25 content
+rows (28 terminal rows without extra banners). Every retained process is reachable
+by scrolling, including at 50×12. Capture contains the full coverage and
+attribution summary. Wide terminals show Capture beside the process table.
 
 Connection paging, scrollbars, and mouse selection use the actual table height,
 including space taken by the filter editor or a two-row capture-error banner.
@@ -928,7 +929,8 @@ Fast retransmit frequency indicates how well TCP is recovering from packet loss 
 
 The Activity tab derives bounded process traffic totals from active connections and RustNet's existing pool of up to 5,000 retained historic connections. A short-lived uploader remains visible after its socket closes, until its historic connection is evicted or the connections are cleared. Press `3` to open it.
 
-The main process table switches between Egress (TX) and Ingress (RX) and shows:
+The process browser switches between Egress (TX) and Ingress (RX). Its table and
+inline process details expose:
 
 - Current and peak rates, plus the process share of captured traffic in the selected direction over the rolling 60-second window
 - Retained bytes in the selected direction, including active and retained historic connections
@@ -937,25 +939,40 @@ The main process table switches between Egress (TX) and Ingress (RX) and shows:
 - Process attribution coverage, with unresolved traffic grouped as `Unknown`
 - Rolling 60-second process traffic as a percentage of interface traffic in the selected direction
 
-The table adapts to the available terminal width, so narrower terminals hide some columns. Its columns mean:
+The table shows one row per retained process, with no ten-row display cap. Use
+arrows / `j` / `k`, Page Up/Down (or Ctrl+B/F), Home/End (or `g` / `G`), and the
+mouse wheel to navigate. A scrollbar and visible row range show your position.
+Selection follows the process identity across sorting, live updates, and resizing.
+
+Press Enter or double-click a row to open its inline details. All fields remain
+available there when narrower tables omit columns. Scroll the details with the
+same keys or the mouse wheel, and press Esc to return to the selected process.
+If a process is no longer retained, its inspector says so instead of selecting
+another process. Table columns and inspector fields mean:
 
 | Column | Meaning |
 |---|---|
 | **Process** | Process name and PID. Traffic without process attribution is grouped as `Unknown`. |
-| **Pulse** | Relative share of the selected direction's rolling 60-second captured traffic. |
-| **TX now / RX now** | Current traffic rate for the process in the selected direction. |
-| **Peak TX / Peak RX** | Highest observed current rate while the process remains in the retained Activity view. |
+| **Share · 60s** | Relative share of the selected direction's rolling 60-second captured traffic. |
+| **TX/s / RX/s** | Current traffic rate for the process in the selected direction. |
+| **Peak/s / Peak rate** | Highest observed current rate while the process remains in the retained Activity view. |
 | **60s %** | Process share of all captured process traffic in the selected direction over the rolling 60-second window. |
-| **Iface 60s** | Process traffic over 60 seconds as a percentage of the matching interface traffic. A `~` prefix indicates an approximate host-wide comparison for multi-interface capture. |
-| **TX 60s / RX 60s** | Captured bytes attributed to the process in the selected direction over the rolling 60-second window. |
+| **Share of interface 60s** | Process traffic over 60 seconds as a percentage of the matching interface traffic. A `~` prefix indicates an approximate host-wide comparison for multi-interface capture. |
+| **Last 60s** | Captured bytes attributed to the process in the selected direction over the rolling 60-second window. |
 | **Retained** | Total bytes across the process's active and retained historic connections in the selected direction. This is bounded retained data, not a lifetime counter. |
 | **Conns** | `active/total`, for example `41/66` means 41 active connections and 66 retained connections in total. The total includes active plus recently completed historic connections. |
-| **Remote** | Number of unique remote socket endpoints across the retained connections. An endpoint is an IP address plus port, so one host contacted on two ports counts as two remotes. Repeated connections to the same endpoint count once. A `+` suffix means the count exceeded the 256-destination display cap. |
+| **Remote peers** | Number of unique remote socket endpoints across the retained connections. An endpoint is an IP address plus port, so one host contacted on two ports counts as two remotes. Repeated connections to the same endpoint count once. A `+` suffix means the count exceeded the 256-destination display cap. |
 | **Top remote peer** | Remote endpoint with the most retained traffic in the selected direction. |
 
-The paired RX/TX summaries show the current captured rate, but calculate coverage from captured bytes and interface-counter bytes over the same rolling 60-second window. This avoids the large fluctuations caused by comparing independently sampled instantaneous rates. Coverage divides the captured total by the interface total and caps the displayed percentage at 100%, because slightly different window endpoints or counter visibility can otherwise produce small overages. Wide terminals show the captured totals in the summaries and the interface totals in the coverage sidebar. When RustNet captures one named interface, it compares directly with that interface. With multi-interface capture, RustNet compares against a host-wide interface aggregate and prefixes the value with `~` because VPN and virtual interface counters can overlap.
+The compact TX/RX summary shows current captured rates. Capture calculates coverage from captured bytes and interface-counter bytes over the same rolling 60-second window. This avoids the large fluctuations caused by comparing independently sampled instantaneous rates. Coverage divides the captured total by the interface total and caps the displayed percentage at 100%, because slightly different window endpoints or counter visibility can otherwise produce small overages. Capture shows both raw totals and their interface basis. When RustNet captures one named interface, it compares directly with that interface. With multi-interface capture, RustNet compares against a host-wide interface aggregate and prefixes the value with `~` because VPN and virtual interface counters can overlap.
 
-Wide terminals place capture coverage, process attribution, and interface rates in a sidebar, leaving the process table as the main view. Narrower terminals fold coverage and attribution into the summaries and hide the interface panel. Share bars blend the selected theme's neutral and traffic colours, ending at its TX/RX token rather than white. ANSI themes use shaded block textures in the terminal's own palette.
+Wide terminals place Capture beside the process table. When both do not fit,
+`v` / Shift+`v` or clicking Processes / Capture switches sections using the shared
+tab strip. Capture scrolls and preserves its position across resizing. It separates
+coverage over the last 60 seconds from process attribution over retained traffic,
+including mapped, unknown, and total bytes. Interface inventory and rate tables
+live in Host. Activity only retains the interface basis needed to explain coverage.
+Share bars use the theme's traffic colours and appear inline when space permits.
 
 Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `5`, then select Interfaces with `v` / Shift+`v`).
 

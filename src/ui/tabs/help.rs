@@ -257,13 +257,34 @@ const DETAILS_MOUSE: &[HelpRow] = &[
 ];
 
 const ACTIVITY_KEYS: &[HelpRow] = &[
+    (
+        "↑/k, ↓/j",
+        "Select a process; scroll capture or process details",
+    ),
+    ("Page Up/Down", "Move by one visible page (also Ctrl+B/F)"),
+    ("Home/End, g/G", "Jump to the first or last row"),
+    ("Enter", "Inspect every field of the selected process"),
+    ("Click / double-click", "Select / inspect a process"),
+    (
+        "Scroll wheel",
+        "Navigate the table or scroll the pane under the pointer",
+    ),
     ("d", "Toggle Egress (TX) and Ingress (RX)"),
     ("s", "Cycle the process sort column"),
     ("S", "Reverse the sort direction"),
-    ("Esc", "Return to Overview"),
+    (
+        "Esc",
+        "Return to processes; from the list return to Overview",
+    ),
 ];
 
 const ACTIVITY_CONCEPTS: &[HelpRow] = &[
+    (
+        "Attribution",
+        "Mapped share of retained traffic, not the 60s window",
+    ),
+    ("Conns", "Active connections / retained connections"),
+    ("Interfaces", "Browse interface counters in Host (5)"),
     (
         "60s coverage",
         "Captured connection traffic divided by interface traffic",

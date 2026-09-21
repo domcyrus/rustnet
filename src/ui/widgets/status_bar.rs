@@ -169,12 +169,45 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             hints
         }
         // Activity
-        2 => vec![
-            Hint::action("d", "tx/rx"),
-            Hint::action("s", "sort"),
-            Hint::action("S", "order"),
-            Hint::action("esc", "back"),
-        ],
+        2 => {
+            let capture = ui_state.section_navigation
+                && ui_state.activity_section == crate::ui::ActivitySection::Capture;
+            if capture || ui_state.activity_details {
+                let scroll = if capture {
+                    &ui_state.activity_capture_scroll
+                } else {
+                    &ui_state.activity_details_scroll
+                };
+                let mut hints = Vec::new();
+                if scroll.can_scroll() {
+                    hints.push(Hint::action("j/k", "scroll"));
+                }
+                hints.push(Hint::action(
+                    "esc",
+                    if capture && ui_state.activity_details {
+                        "details"
+                    } else {
+                        "processes"
+                    },
+                ));
+                hints
+            } else {
+                let mut hints = Vec::new();
+                if !ui_state.activity_table.borrow().rows.is_empty() {
+                    hints.extend([
+                        Hint::action("j/k", "select"),
+                        Hint::action("enter", "details"),
+                    ]);
+                }
+                hints.extend([
+                    Hint::action("d", "tx/rx"),
+                    Hint::action("s", "sort"),
+                    Hint::action("S", "order"),
+                    Hint::action("esc", "back"),
+                ]);
+                hints
+            }
+        }
         // Host
         4 => {
             // Like ctrl-d/u on Details: only advertise scrolling when the

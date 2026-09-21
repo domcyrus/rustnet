@@ -3,14 +3,14 @@
 //! looking at and acting on. No rendering happens here; tabs and widgets
 //! read these to know what to draw.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 use ratatui::layout::Rect;
 
 #[cfg(test)]
 use crate::network::process_activity::UNKNOWN_PROCESS_GROUP;
-use crate::network::process_activity::process_group_label;
+use crate::network::process_activity::{ProcessIdentity, process_group_label};
 #[cfg(test)]
 use crate::network::types::UNKNOWN_PROCESS_NAME;
 use crate::network::types::{Connection, Protocol};
@@ -102,6 +102,63 @@ pub enum OverviewSection {
     #[default]
     Connections,
     System,
+}
+
+/// Compact Activity section, retained when the sidebar is visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivitySection {
+    #[default]
+    Processes,
+    Capture,
+}
+
+/// The identities and viewport of the last rendered process table.
+#[derive(Debug, Default)]
+pub struct ActivityTableState {
+    pub selected: Option<ProcessIdentity>,
+    pub rows: Vec<ProcessIdentity>,
+    pub offset: usize,
+    pub viewport: usize,
+    pub area: Rect,
+}
+
+impl ActivityTableState {
+    pub fn prepare(&mut self, rows: Vec<ProcessIdentity>, area: Rect) {
+        let previous = self.selected_index();
+        self.rows = rows;
+        if !self
+            .rows
+            .iter()
+            .any(|id| Some(id) == self.selected.as_ref())
+        {
+            self.selected = self
+                .rows
+                .get(previous.min(self.rows.len().saturating_sub(1)))
+                .cloned();
+        }
+        self.viewport = usize::from(area.height);
+        self.area = area;
+        self.offset = compute_scroll_offset(
+            self.selected_index(),
+            self.offset,
+            self.viewport,
+            self.rows.len(),
+        );
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.rows
+            .iter()
+            .position(|id| Some(id) == self.selected.as_ref())
+            .unwrap_or(0)
+    }
+
+    pub(in crate::ui) fn move_selection(&mut self, motion: Motion) {
+        if !self.rows.is_empty() {
+            self.selected =
+                Some(self.rows[step_index(self.selected_index(), self.rows.len(), motion)].clone());
+        }
+    }
 }
 
 /// Subview shown on the Host tab.
@@ -399,6 +456,8 @@ pub enum ClickAction {
     SwitchTab(usize),
     /// Select a section in the current tab.
     SelectSection(usize),
+    /// Select a process from the rendered Activity snapshot.
+    SelectActivityProcess(ProcessIdentity),
     /// Select a connection by index in the current sorted/filtered list
     SelectConnection(usize),
     /// Select a connection by its stable key. Used where an index would
@@ -509,6 +568,12 @@ pub struct UiState {
     pub host_view: HostView,
     /// Process traffic direction emphasized by Activity.
     pub activity_direction: ActivityDirection,
+    pub activity_section: ActivitySection,
+    pub activity_table: RefCell<ActivityTableState>,
+    pub activity_details: bool,
+    pub activity_details_scroll: PaneScroll,
+    pub activity_capture_scroll: PaneScroll,
+    pub activity_capture_area: Cell<Rect>,
     /// Active process-activity sort mode.
     pub activity_sort: ActivitySort,
     /// Sort direction for the process-activity table.
@@ -556,6 +621,12 @@ impl Default for UiState {
             graph_compact: Cell::new(false),
             host_view: HostView::default(),
             activity_direction: ActivityDirection::default(),
+            activity_section: ActivitySection::default(),
+            activity_table: RefCell::default(),
+            activity_details: false,
+            activity_details_scroll: PaneScroll::default(),
+            activity_capture_scroll: PaneScroll::default(),
+            activity_capture_area: Cell::new(Rect::default()),
             activity_sort: ActivitySort::default(),
             activity_sort_ascending: false,
         }

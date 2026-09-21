@@ -256,6 +256,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 
 完整键位说明与导航技巧见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
 
+Activity 可滚动浏览所有保留的进程，并在更新和调整窗口大小时保持选择。Enter 打开页面内详情，紧凑布局使用 `v` / Shift+`v` 切换 Processes 与完整的 Capture 信息。接口清单统一放在 Host。
+
 ## 过滤与排序
 
 **快速过滤示例：**
