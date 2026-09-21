@@ -96,8 +96,7 @@ pub fn try_handle_pane_scroll(
     Some(Vec::new())
 }
 
-/// Shared wheel handling for scrollable panes (Details info panes,
-/// Help overlay, and Host tables).
+/// Shared wheel handling for scrollable panes (Help overlay and Host tables).
 pub fn try_handle_pane_wheel(mouse: MouseEvent, scroll: &mut PaneScroll) -> Option<Vec<Effect>> {
     match mouse.kind {
         MouseEventKind::ScrollUp => scroll.scroll_up(1),

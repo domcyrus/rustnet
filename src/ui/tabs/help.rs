@@ -254,7 +254,7 @@ const DETAILS_MOUSE: &[HelpRow] = &[
         "Click connection",
         "Select a connection in the continuity strip",
     ),
-    ("Scroll wheel", "Scroll the connection information panes"),
+    ("Scroll wheel", "Previous / next connection"),
 ];
 
 const ACTIVITY_KEYS: &[HelpRow] = &[

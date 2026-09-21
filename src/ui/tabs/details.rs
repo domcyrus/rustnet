@@ -13,7 +13,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crossterm::event::{KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 #[cfg(unix)]
 use std::{
@@ -52,7 +52,7 @@ use crate::ui::{
     dpi_color, fade_scroll_edges,
     format::{ellipsize_left, format_bytes, format_countdown, format_rate, format_rtt_compact},
     non_dpi_app_color, section_header, section_title, state_color, theme,
-    try_handle_connection_nav, try_handle_pane_wheel,
+    try_handle_connection_nav,
     widgets::badge::{chip, pill},
     widgets::braille_graph,
     widgets::scrollbar::draw_scrollbar,
@@ -109,8 +109,6 @@ impl Component for DetailsTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        use crossterm::event::{KeyCode, KeyModifiers};
-
         // Ctrl+D / Ctrl+U scroll the info panes when the record is
         // taller than the pane (j/k etc. stay reserved for flipping
         // between connections).
@@ -143,10 +141,14 @@ impl Component for DetailsTab {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
-        // Scroll wheel scrolls the info panes. Click events are still
-        // dispatched by main.rs through ClickableRegions (the 'click a
-        // field to copy' CopyField regions registered during draw).
-        try_handle_pane_wheel(mouse, &mut ctx.ui_state.details_scroll)
+        // Reuse keyboard navigation so grouped mode skips group headers
+        // and changing connections resets the info panes' scroll position.
+        let code = match mouse.kind {
+            MouseEventKind::ScrollUp => KeyCode::Up,
+            MouseEventKind::ScrollDown => KeyCode::Down,
+            _ => return None,
+        };
+        self.handle_key(KeyEvent::new(code, KeyModifiers::NONE), ctx)
     }
 }
 
@@ -782,8 +784,6 @@ fn try_handle_grouped_details_nav(
     key: KeyEvent,
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
-    use crossterm::event::{KeyCode, KeyModifiers};
-
     if !ctx.ui_state.grouping_enabled {
         return None;
     }
@@ -2018,7 +2018,7 @@ pub(in crate::ui) fn draw_connection_details(
         .spacing(2)
         .split(panes_area);
 
-    // Both panes share one scroll offset (Ctrl+D/U, mouse wheel) so
+    // Both panes share one scroll offset (Ctrl+D/U) so
     // they stay row-aligned; the taller pane bounds it.
     let max_scroll = (content_rows as u16).saturating_sub(info_h);
     let scroll = ui_state.details_scroll.clamp_for_render(max_scroll);
