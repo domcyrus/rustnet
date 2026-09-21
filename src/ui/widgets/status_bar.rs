@@ -22,7 +22,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{HostView, UiState, format::truncate_with_ellipsis, theme};
+use crate::ui::{HostView, OverviewSection, UiState, format::truncate_with_ellipsis, theme};
 
 /// One keycap hint: the key as typed and the action it triggers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +92,28 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
     if ui_state.filter_mode {
         return vec![Hint::action("\u{2191}\u{2193}", "select")];
     }
+    let mut hints = view_hints(ui_state, clipboard);
+    if ui_state.section_navigation {
+        hints.insert(
+            0,
+            Hint::action(crate::ui::sections::SECTION_KEYS, "section"),
+        );
+    }
+    hints
+}
+
+fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
+    if ui_state.selected_tab == 0
+        && ui_state.section_navigation
+        && ui_state.overview_section == OverviewSection::System
+    {
+        let mut hints = Vec::new();
+        if ui_state.system_scroll.can_scroll() {
+            hints.push(Hint::action("j/k", "scroll"));
+        }
+        hints.push(Hint::action("esc", "connections"));
+        return hints;
+    }
     match ui_state.selected_tab {
         // Overview
         0 => {
@@ -122,8 +144,10 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
                     ui_state.grouping_enabled,
                 ),
                 Hint::mode("t", "history", ui_state.show_historic),
-                Hint::action("i", "info"),
             ]);
+            if !ui_state.section_navigation {
+                hints.push(Hint::action("i", "info"));
+            }
             if clipboard {
                 hints.push(Hint::action("c", "copy"));
             }
@@ -131,7 +155,8 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
         }
         // Details
         1 => {
-            let mut hints = vec![Hint::action("j/k", "prev/next")];
+            let mut hints = Vec::new();
+            hints.push(Hint::action("j/k", "prev/next"));
             // Ctrl+D/U only moves when the record outgrows its pane, so on a
             // tall terminal the hint would advertise a no-op.
             if ui_state.details_scroll.can_scroll() {
@@ -144,32 +169,71 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             hints
         }
         // Activity
-        2 => vec![
-            Hint::action("d", "tx/rx"),
-            Hint::action("s", "sort"),
-            Hint::action("S", "order"),
-            Hint::action("esc", "back"),
-        ],
+        2 => {
+            use crate::ui::{ActivitySection, ActivityView};
+            let capture = ui_state.section_navigation
+                && ui_state.activity_section == ActivitySection::Capture;
+            let mut hints = Vec::new();
+            if capture || ui_state.activity_is_details() {
+                let scroll = if capture {
+                    &ui_state.activity_capture_scroll
+                } else if ui_state.activity_view == ActivityView::ProcessDetails {
+                    &ui_state.activity_process_scroll
+                } else {
+                    &ui_state.activity_details_scroll
+                };
+                if scroll.can_scroll() {
+                    hints.push(Hint::action("j/k", "scroll"));
+                }
+                if !capture && ui_state.activity_view == ActivityView::ApplicationDetails {
+                    hints.push(Hint::action("enter", "processes"));
+                }
+            } else {
+                if !ui_state.activity_list().borrow().rows.is_empty() {
+                    hints.extend([
+                        Hint::action("j/k", "select"),
+                        Hint::action("enter", "details"),
+                    ]);
+                }
+                hints.extend([
+                    Hint::action("d", "tx/rx"),
+                    Hint::action("s", "sort"),
+                    Hint::action("S", "order"),
+                ]);
+            }
+            if !capture && crate::ui::tabs::activity::overview_query(ui_state).is_some() {
+                hints.push(Hint::action("o", "connections"));
+            }
+            hints.push(Hint::action(
+                "esc",
+                if capture {
+                    "back"
+                } else {
+                    match ui_state.activity_view {
+                        ActivityView::Applications => "back",
+                        ActivityView::ApplicationDetails => "applications",
+                        ActivityView::Processes => "summary",
+                        ActivityView::ProcessDetails => "processes",
+                    }
+                },
+            ));
+            hints
+        }
         // Host
         4 => {
             // Like ctrl-d/u on Details: only advertise scrolling when the
             // table actually outgrew its pane.
-            let (scroll, toggle) = match ui_state.host_view {
-                HostView::Sockets => (
-                    &ui_state.host_sockets_scroll,
-                    Hint::action("i", "interfaces"),
-                ),
-                HostView::Interfaces => (&ui_state.interfaces_scroll, Hint::action("s", "sockets")),
+            let scroll = match ui_state.host_view {
+                HostView::Sockets => &ui_state.host_sockets_scroll,
+                HostView::Interfaces => &ui_state.interfaces_scroll,
             };
             let mut hints = Vec::new();
             if scroll.can_scroll() {
                 hints.push(Hint::action("j/k", "scroll"));
             }
-            hints.push(toggle);
             hints.push(Hint::action("esc", "back"));
             hints
         }
-        // Graph
         _ => vec![Hint::action("esc", "back")],
     }
 }
@@ -563,7 +627,7 @@ mod tests {
         // Everything else on the tab survives losing copy.
         let sandboxed = context_hints(&UiState::default(), false);
         assert!(advertises(&sandboxed, "/"));
-        assert!(advertises(&sandboxed, "i"));
+        assert!(advertises(&sandboxed, "a"));
     }
 
     #[test]

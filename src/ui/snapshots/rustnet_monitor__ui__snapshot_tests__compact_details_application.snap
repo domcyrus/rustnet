@@ -3,9 +3,12 @@ source: src/ui/mod.rs
 expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
-──────────────────────────────────────────────────━━━━━━━───────────────────────
-▎ Traffic Over Time (60s) ────────────────────────────  ▎ Connection Lifecycle ─
-Waiting for traffic data...                             Waiting for connection d
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────
+Connection   Network   Process   Application   Health   Traffic                 
+─────────────────────────────────━━━━━━━━━━━────────────────────────────────────
+▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────
+▎Application ───────────────────────────────────────────────────────────────────
+Detected              -                                                         
                                                                                 
                                                                                 
                                                                                 
@@ -15,14 +18,11 @@ Waiting for traffic data...                             Waiting for connection d
                                                                                 
                                                                                 
                                                                                 
-▎ Observed Network Health   ▎ TCP Counters ───────────  ▎ Observed TCP States ──
-Waiting for health data...    Retransmits         0          ESTAB ░░▒▒▓▓█    2 
-                              Out of Order        0      TIME_WAIT ░▒▓▌···    1 
-                              Fast Retrans        0                             
                                                                                 
                                                                                 
                                                                                 
                                                                                 
                                                                                 
                                                                                 
- esc back                                                        h help  q quit
+                                                                                
+ v/V section  j/k prev/next  c copy remote addr  esc back        h help  q quit

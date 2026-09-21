@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Compact layouts**: Overview, Details, Activity, and Graph share clickable section
+  selectors with `v` / Shift+`v` when the full layout does not fit. Overview
+  shows System inline with dividers; Host uses the same controls for its two views.
+  Section tabs share the main tabs' styling and show shortcuts in the footer.
+  Activity groups traffic by application name, with scrollable PID lists, stable
+  selection, inline details, and exact connection jumps to Overview. Application
+  peers are deduplicated and peaks use simultaneous rates. Overview filters do
+  not affect Activity totals. The new `pid:` filter matches exact process IDs.
+  Capture stays accessible at every size; interface inventory lives in Host.
+  Capture panels omit explanatory footnotes.
 - **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
   process ranking, and a separate capture-quality sidebar on wide terminals.
   Share bars use theme-derived gradients with textured ANSI fallbacks.
@@ -99,6 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Connection viewport**: paging, scrollbars, and mouse targets track the current
+  layout immediately after resizing, including filters and two-row capture errors.
 - **Required UID Drop**: abort startup before packet-processing workers when a
   requested root UID/GID drop fails, including in best-effort mode
 - **Windows Connection History**: connections that reuse a tuple with the

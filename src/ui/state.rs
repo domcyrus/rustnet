@@ -3,14 +3,14 @@
 //! looking at and acting on. No rendering happens here; tabs and widgets
 //! read these to know what to draw.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 use ratatui::layout::Rect;
 
 #[cfg(test)]
 use crate::network::process_activity::UNKNOWN_PROCESS_GROUP;
-use crate::network::process_activity::process_group_label;
+use crate::network::process_activity::{ProcessIdentity, process_group_label};
 #[cfg(test)]
 use crate::network::types::UNKNOWN_PROCESS_NAME;
 use crate::network::types::{Connection, Protocol};
@@ -96,12 +96,137 @@ fn step_index(current: usize, len: usize, motion: Motion) -> usize {
     }
 }
 
+/// Selected Overview panel, preserved when the layout changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverviewSection {
+    #[default]
+    Connections,
+    System,
+}
+
+/// Compact Activity section, retained when the sidebar is visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivitySection {
+    #[default]
+    Applications,
+    Capture,
+}
+
+/// Activity navigation drills into application traffic, then individual processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivityView {
+    #[default]
+    Applications,
+    ApplicationDetails,
+    Processes,
+    ProcessDetails,
+}
+
+/// The identities and viewport of the last rendered process table.
+#[derive(Debug, Default)]
+pub struct ActivityTableState {
+    pub selected: Option<ProcessIdentity>,
+    pub rows: Vec<ProcessIdentity>,
+    pub offset: usize,
+    pub viewport: usize,
+    pub area: Rect,
+}
+
+impl ActivityTableState {
+    pub fn prepare(&mut self, rows: Vec<ProcessIdentity>, area: Rect) {
+        let previous = self.selected_index();
+        self.rows = rows;
+        if !self
+            .rows
+            .iter()
+            .any(|id| Some(id) == self.selected.as_ref())
+        {
+            self.selected = self
+                .rows
+                .get(previous.min(self.rows.len().saturating_sub(1)))
+                .cloned();
+        }
+        self.viewport = usize::from(area.height);
+        self.area = area;
+        self.offset = compute_scroll_offset(
+            self.selected_index(),
+            self.offset,
+            self.viewport,
+            self.rows.len(),
+        );
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.rows
+            .iter()
+            .position(|id| Some(id) == self.selected.as_ref())
+            .unwrap_or(0)
+    }
+
+    pub(in crate::ui) fn move_selection(&mut self, motion: Motion) {
+        if !self.rows.is_empty() {
+            self.selected =
+                Some(self.rows[step_index(self.selected_index(), self.rows.len(), motion)].clone());
+        }
+    }
+}
+
 /// Subview shown on the Host tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HostView {
     #[default]
     Sockets,
     Interfaces,
+}
+
+/// Selected Graph section, shown alone when the dashboard does not fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GraphSection {
+    #[default]
+    Traffic,
+    Health,
+    Distribution,
+}
+
+/// Selected Details card, shown alone in compact layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailsSection {
+    #[default]
+    Connection,
+    Network,
+    Process,
+    Application,
+    Health,
+    Traffic,
+}
+
+impl DetailsSection {
+    pub const ALL: [Self; 6] = [
+        Self::Connection,
+        Self::Network,
+        Self::Process,
+        Self::Application,
+        Self::Health,
+        Self::Traffic,
+    ];
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|section| *section == self)
+            .unwrap_or(0)
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Connection => "Connection",
+            Self::Network => "Network",
+            Self::Process => "Process",
+            Self::Application => "Application",
+            Self::Health => "Health",
+            Self::Traffic => "Traffic",
+        }
+    }
 }
 
 /// Sort modes for the process activity view.
@@ -339,6 +464,10 @@ pub enum GroupedRow<'a> {
 pub enum ClickAction {
     /// Switch to a specific tab (index 0-4).
     SwitchTab(usize),
+    /// Select a section in the current tab.
+    SelectSection(usize),
+    /// Select a process from the rendered Activity snapshot.
+    SelectActivityProcess(ProcessIdentity),
     /// Select a connection by index in the current sorted/filtered list
     SelectConnection(usize),
     /// Select a connection by its stable key. Used where an index would
@@ -419,10 +548,13 @@ pub struct UiState {
     pub last_click: Option<(u16, u16, std::time::Instant)>,
     /// Whether to show historic (closed) connections
     pub show_historic: bool,
-    /// Whether the System stats sidebar is visible on the Overview tab.
-    /// A layout preference, so deliberately not reset by `reset_view()`.
+    pub overview_section: OverviewSection,
+    /// Whether this frame needs inline section navigation.
+    pub section_navigation: bool,
+    /// Wide Overview sidebar visibility.
     pub show_system_panel: bool,
-    /// Number of visible rows in the connections table (updated after rendering)
+    pub system_scroll: PaneScroll,
+    /// Number of visible connection rows, measured before rendering each frame
     pub visible_rows: usize,
     /// Scroll offset for flat connection list (persisted for stable scrolling)
     pub scroll_offset: usize,
@@ -430,16 +562,30 @@ pub struct UiState {
     pub grouped_scroll_offset: usize,
     /// Scroll state for the Details info panes (reset when the selection changes)
     pub details_scroll: PaneScroll,
+    pub details_section: DetailsSection,
+    pub details_compact: Cell<bool>,
     /// Scroll state for the contextual help overlay.
     pub help_scroll: PaneScroll,
     /// Scroll state for the Host tab's interface table.
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
+    /// Selected Graph section, preserved across terminal resizes.
+    pub graph_section: GraphSection,
+    /// Whether the last Graph frame showed only the selected section.
+    pub graph_compact: Cell<bool>,
     /// Active Host tab subview.
     pub host_view: HostView,
     /// Process traffic direction emphasized by Activity.
     pub activity_direction: ActivityDirection,
+    pub activity_section: ActivitySection,
+    pub activity_table: RefCell<ActivityTableState>,
+    pub activity_view: ActivityView,
+    pub activity_members: RefCell<ActivityTableState>,
+    pub activity_process_scroll: PaneScroll,
+    pub activity_details_scroll: PaneScroll,
+    pub activity_capture_scroll: PaneScroll,
+    pub activity_capture_area: Cell<Rect>,
     /// Active process-activity sort mode.
     pub activity_sort: ActivitySort,
     /// Sort direction for the process-activity table.
@@ -470,16 +616,31 @@ impl Default for UiState {
             has_geoip: false,
             last_click: None,
             show_historic: false,
+            overview_section: OverviewSection::default(),
+            section_navigation: false,
             show_system_panel: true,
+            system_scroll: PaneScroll::default(),
             visible_rows: 10,
             scroll_offset: 0,
             grouped_scroll_offset: 0,
             details_scroll: PaneScroll::default(),
+            details_section: DetailsSection::default(),
+            details_compact: Cell::new(false),
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
+            graph_section: GraphSection::default(),
+            graph_compact: Cell::new(false),
             host_view: HostView::default(),
             activity_direction: ActivityDirection::default(),
+            activity_section: ActivitySection::default(),
+            activity_table: RefCell::default(),
+            activity_view: ActivityView::default(),
+            activity_members: RefCell::default(),
+            activity_process_scroll: PaneScroll::default(),
+            activity_details_scroll: PaneScroll::default(),
+            activity_capture_scroll: PaneScroll::default(),
+            activity_capture_area: Cell::new(Rect::default()),
             activity_sort: ActivitySort::default(),
             activity_sort_ascending: false,
         }
@@ -510,6 +671,35 @@ pub fn compute_scroll_offset(
 }
 
 impl UiState {
+    /// Keep virtualization, navigation, and hit testing on the current frame's
+    /// viewport. Run after layout, before any rows are drawn.
+    pub(super) fn prepare_connection_viewport(
+        &mut self,
+        visible_rows: usize,
+        connections: &[Connection],
+        grouped_rows: Option<&[GroupedRow<'_>]>,
+    ) {
+        self.visible_rows = visible_rows;
+        if self.grouping_enabled {
+            let rows = grouped_rows.unwrap_or_default();
+            let selected = self.ensure_valid_grouped_selection(rows).unwrap_or(0);
+            self.grouped_scroll_offset = compute_scroll_offset(
+                selected,
+                self.grouped_scroll_offset,
+                visible_rows,
+                rows.len(),
+            );
+        } else {
+            let selected = self.ensure_valid_selection(connections).unwrap_or(0);
+            self.scroll_offset = compute_scroll_offset(
+                selected,
+                self.scroll_offset,
+                visible_rows,
+                connections.len(),
+            );
+        }
+    }
+
     /// Whether the query changes the displayed connection set.
     pub fn has_active_filter(&self) -> bool {
         !self.filter_query.trim().is_empty()
@@ -710,7 +900,41 @@ impl UiState {
         self.sort_ascending = !self.sort_ascending;
     }
 
-    /// Reset all view settings to defaults (grouping, sort, filter, historic)
+    /// The table currently accepting Activity selection and scrolling.
+    pub fn activity_list(&self) -> &RefCell<ActivityTableState> {
+        if self.activity_view == ActivityView::Processes {
+            &self.activity_members
+        } else {
+            &self.activity_table
+        }
+    }
+
+    pub fn activity_is_details(&self) -> bool {
+        matches!(
+            self.activity_view,
+            ActivityView::ApplicationDetails | ActivityView::ProcessDetails
+        )
+    }
+
+    pub fn open_activity_details(&mut self) {
+        if self.activity_list().borrow().selected.is_none() {
+            return;
+        }
+        match self.activity_view {
+            ActivityView::Applications => {
+                self.activity_view = ActivityView::ApplicationDetails;
+                self.activity_details_scroll.reset();
+                *self.activity_members.borrow_mut() = ActivityTableState::default();
+            }
+            ActivityView::Processes => {
+                self.activity_view = ActivityView::ProcessDetails;
+                self.activity_process_scroll.reset();
+            }
+            _ => {}
+        }
+    }
+
+    /// Reset all view settings to defaults (grouping, sort, filter, historic).
     pub fn reset_view(&mut self) {
         self.grouping_enabled = false;
         self.expanded_groups.clear();

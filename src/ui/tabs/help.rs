@@ -158,6 +158,7 @@ const CONNECTION_NAV_KEYS: &[HelpRow] = &[
 ];
 
 const OVERVIEW_KEYS: &[HelpRow] = &[
+    ("i", "Show or hide System sidebar on wide terminals"),
     ("Enter", "Open the selected connection in Details"),
     ("/", "Enter filter mode"),
     ("Esc", "Clear the active filter"),
@@ -169,7 +170,10 @@ const OVERVIEW_KEYS: &[HelpRow] = &[
     ("Space", "Expand or collapse the selected group"),
     ("←/→, l", "Collapse or expand the selected group"),
     ("t", "Toggle historic connections"),
-    ("i", "Toggle the System info panel"),
+    (
+        "System section",
+        "Scroll with j/k, Page Up/Down, or the mouse wheel",
+    ),
     ("r", "Reset grouping, sorting, filter, and history"),
 ];
 
@@ -179,6 +183,7 @@ const FILTER_EXAMPLES: &[HelpRow] = &[
     ("/src:192.168", "Match a source address prefix"),
     ("/dst:github.com", "Match a destination"),
     ("/process:firefox", "Match a process name"),
+    ("/pid:1234", "Match an exact process ID"),
     ("/state:established", "Match connection state"),
     ("/port:/22/", "Regex port match (22, 220, 5522, ...)"),
     (
@@ -253,13 +258,46 @@ const DETAILS_MOUSE: &[HelpRow] = &[
 ];
 
 const ACTIVITY_KEYS: &[HelpRow] = &[
+    ("↑/k, ↓/j", "Select a row; scroll Capture or details"),
+    ("Page Up/Down", "Move by one visible page (also Ctrl+B/F)"),
+    ("Home/End, g/G", "Jump to the first or last row"),
+    (
+        "Enter",
+        "Application summary, then PID list, then process details",
+    ),
+    (
+        "Click / double-click",
+        "Select / inspect an application or process",
+    ),
+    (
+        "Scroll wheel",
+        "Navigate the table or scroll the pane under the pointer",
+    ),
+    ("o", "Open scoped Overview connections, including history"),
     ("d", "Toggle Egress (TX) and Ingress (RX)"),
-    ("s", "Cycle the process sort column"),
+    ("s", "Cycle the traffic sort column"),
     ("S", "Reverse the sort direction"),
-    ("Esc", "Return to Overview"),
+    (
+        "Esc",
+        "Back one level; from applications return to Overview",
+    ),
 ];
 
 const ACTIVITY_CONCEPTS: &[HelpRow] = &[
+    (
+        "Applications",
+        "Traffic grouped by process name; PIDs are inside details",
+    ),
+    (
+        "Scope",
+        "All captured traffic; Overview filters do not apply",
+    ),
+    (
+        "Attribution",
+        "Mapped share of retained traffic, not the 60s window",
+    ),
+    ("Conns", "Active connections / retained connections"),
+    ("Interfaces", "Browse interface counters in Host (5)"),
     (
         "60s coverage",
         "Captured connection traffic divided by interface traffic",
@@ -283,7 +321,6 @@ const HOST_SOCKET_KEYS: &[HelpRow] = &[
     ("Page Up/Down", "Scroll one page"),
     ("Ctrl+B/F", "Scroll one page"),
     ("g, G", "Jump to the top or bottom"),
-    ("i, →", "Show interface details"),
     ("Esc", "Return to Overview"),
     ("Scroll wheel", "Scroll the endpoint table"),
 ];
@@ -306,7 +343,6 @@ const INTERFACE_KEYS: &[HelpRow] = &[
     ("Page Up/Down", "Scroll one page"),
     ("Ctrl+B/F", "Scroll one page"),
     ("g, G", "Jump to the top or bottom"),
-    ("s, ←", "Return to the socket inventory"),
     ("Esc", "Return to Overview"),
     ("Scroll wheel", "Scroll interface details"),
 ];
@@ -315,7 +351,7 @@ const GRAPH_KEYS: &[HelpRow] = &[
     ("Esc", "Return to Overview"),
     (
         "Live view",
-        "Charts update automatically; no graph controls are required",
+        "Charts update automatically; larger terminals show all sections",
     ),
 ];
 
@@ -348,7 +384,7 @@ fn column_row(key: &str, description: &'static str, width: usize) -> Line<'stati
     ])
 }
 
-fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &'static [HelpRow]) {
+fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &[HelpRow]) {
     out.push(Line::from(""));
     out.push(tick_line(title));
     let width = key_column_width(rows);
@@ -358,12 +394,15 @@ fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &'stati
     );
 }
 
-fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
+fn help_lines(context: HelpContext, sections: bool) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         context.summary(),
         theme::key_hint_label(),
     ))];
 
+    if sections {
+        push_section(&mut lines, "Sections", &[crate::ui::sections::SECTION_HELP]);
+    }
     match context {
         HelpContext::Overview => {
             push_section(&mut lines, "Connection Navigation", CONNECTION_NAV_KEYS);
@@ -427,7 +466,7 @@ pub(in crate::ui) fn draw_help_overlay(
         return Ok(());
     }
     let context = HelpContext::from_state(ui_state);
-    let mut lines = help_lines(context);
+    let mut lines = help_lines(context, ui_state.section_navigation);
     let total_lines = lines.len();
 
     let width = overlay_width(area);
@@ -491,12 +530,15 @@ mod tests {
     use crate::ui::test_support::{empty_ctx, render, test_app};
 
     fn plain_text(ui_state: &UiState) -> String {
-        help_lines(HelpContext::from_state(ui_state))
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<Vec<_>>()
-            .join("\n")
+        help_lines(
+            HelpContext::from_state(ui_state),
+            ui_state.section_navigation,
+        )
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     #[test]
@@ -609,8 +651,6 @@ mod tests {
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
             KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
         ] {
             assert!(

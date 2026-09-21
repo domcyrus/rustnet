@@ -18,9 +18,11 @@ use crate::network::types::{
     AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
 };
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, draw_placeholder,
+    ClickableRegions, Component, ComponentContext, UiState, draw_placeholder,
     format::format_rate,
-    section_header, section_title, theme,
+    section_header, section_title,
+    state::GraphSection,
+    theme,
     widgets::{braille_graph, glow_bar},
 };
 
@@ -88,8 +90,7 @@ fn tcp_state_index(state: &TcpState) -> usize {
     }
 }
 
-/// Read-only graph tab. Aggregates traffic history, protocol mix,
-/// and TCP analytics every render; no per-tab state today.
+/// Graph dashboard with section navigation when the full layout cannot fit.
 pub(in crate::ui) struct GraphTab;
 
 impl Component for GraphTab {
@@ -100,84 +101,107 @@ impl Component for GraphTab {
         ctx: &ComponentContext<'_>,
         _click_regions: &mut ClickableRegions,
     ) -> Result<()> {
-        draw_graph_tab(f, ctx.app, ctx.connections, area)
+        draw_graph_tab(f, ctx.app, ctx.connections, ctx.ui_state, area);
+        Ok(())
     }
 }
 
-pub(in crate::ui) fn draw_graph_tab(
+pub(in crate::ui) fn compact_layout(area: Rect) -> bool {
+    area.width < 100 || area.height < 32
+}
+
+fn draw_graph_tab(
     f: &mut Frame,
     app: &App,
     connections: &[Connection],
+    ui_state: &UiState,
     area: Rect,
-) -> Result<()> {
-    let analytics = GraphAnalytics::from_connections(connections);
-    let traffic_history = app.get_traffic_history();
-
-    // Each panel is a borderless section_header region; layout spacing
-    // provides the breathing room between them. The health
-    // and distribution rows hold a handful of lines each, so they get
-    // fixed heights and the wave panels absorb the rest; percentage
-    // sizing left a large hole between sections on tall terminals.
-    //
-    // The three sections plus spacing need 32 rows. Smaller terminals
-    // (a stock 80x24 leaves ~20 content rows) drop the fixed-height rows
-    // from the bottom up instead of rendering all three squeezed beyond
-    // recognition: first the distribution row, then the health row, so
-    // the waves always keep their minimum height.
+) {
     const WAVE_MIN_ROWS: u16 = 8;
     const HEALTH_ROWS: u16 = 10;
     const DISTRIBUTION_ROWS: u16 = 12;
-    let show_distribution = area.height >= WAVE_MIN_ROWS + 1 + HEALTH_ROWS + 1 + DISTRIBUTION_ROWS;
-    let show_health = area.height >= WAVE_MIN_ROWS + 1 + HEALTH_ROWS;
+    let compact = compact_layout(area);
+    ui_state.graph_compact.set(compact);
+    let traffic_history = app.get_traffic_history();
+    let analytics = GraphAnalytics::from_connections(connections);
 
-    let mut constraints = vec![Constraint::Min(WAVE_MIN_ROWS)]; // Traffic + connections waves
-    if show_health {
-        constraints.push(Constraint::Length(HEALTH_ROWS)); // Network health + TCP counters/states
+    if compact {
+        let inner = area;
+        match ui_state.graph_section {
+            GraphSection::Traffic => draw_traffic_panels(f, &traffic_history, inner),
+            GraphSection::Health => draw_health_panels(f, app, &traffic_history, &analytics, inner),
+            GraphSection::Distribution => draw_distribution_panels(f, &analytics, inner),
+        }
+        return;
     }
-    if show_distribution {
-        constraints.push(Constraint::Length(DISTRIBUTION_ROWS)); // App distribution + top processes
-    }
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .spacing(1)
-        .constraints(constraints)
+
+    let sections = Layout::vertical([
+        Constraint::Min(WAVE_MIN_ROWS),
+        Constraint::Length(HEALTH_ROWS),
+        Constraint::Length(DISTRIBUTION_ROWS),
+    ])
+    .spacing(1)
+    .split(area);
+    draw_traffic_panels(f, &traffic_history, sections[0]);
+    draw_health_panels(f, app, &traffic_history, &analytics, sections[1]);
+    draw_distribution_panels(f, &analytics, sections[2]);
+}
+
+fn draw_traffic_panels(f: &mut Frame, history: &TrafficHistory, area: Rect) {
+    let narrow = area.width < 100;
+    let panels = Layout::default()
+        .direction(if narrow {
+            Direction::Vertical
+        } else {
+            Direction::Horizontal
+        })
+        .spacing(if narrow { 1 } else { 2 })
+        .constraints(if narrow {
+            [Constraint::Percentage(60), Constraint::Percentage(40)]
+        } else {
+            [Constraint::Percentage(70), Constraint::Percentage(30)]
+        })
         .split(area);
+    draw_traffic_chart(f, history, panels[0]);
+    draw_connection_lifecycle(f, history, panels[1]);
+}
 
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
+fn draw_health_panels(
+    f: &mut Frame,
+    app: &App,
+    history: &TrafficHistory,
+    analytics: &GraphAnalytics<'_>,
+    area: Rect,
+) {
+    let (health, counters, states) = if area.width < 100 {
+        let rows = Layout::vertical([Constraint::Length(4), Constraint::Min(0)])
+            .spacing(1)
+            .split(area);
+        let top = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .spacing(2)
+            .split(rows[0]);
+        (top[0], top[1], rows[1])
+    } else {
+        let columns = Layout::horizontal([
+            Constraint::Percentage(35),
+            Constraint::Percentage(35),
+            Constraint::Percentage(30),
+        ])
         .spacing(2)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(main_chunks[0]);
+        .split(area);
+        (columns[0], columns[1], columns[2])
+    };
+    draw_health_chart(f, history, health);
+    draw_tcp_counters(f, app, counters);
+    draw_tcp_states(f, &analytics.tcp_state_counts, states);
+}
 
-    draw_traffic_chart(f, &traffic_history, top_chunks[0]);
-    draw_connection_lifecycle(f, &traffic_history, top_chunks[1]);
-
-    if show_health {
-        let health_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .spacing(2)
-            .constraints([
-                Constraint::Percentage(35),
-                Constraint::Percentage(35),
-                Constraint::Percentage(30),
-            ])
-            .split(main_chunks[1]);
-        draw_health_chart(f, &traffic_history, health_chunks[0]);
-        draw_tcp_counters(f, app, health_chunks[1]);
-        draw_tcp_states(f, &analytics.tcp_state_counts, health_chunks[2]);
-    }
-
-    if show_distribution {
-        let bottom_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .spacing(2)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(main_chunks[2]);
-        draw_app_distribution(f, &analytics.app_distribution, bottom_chunks[0]);
-        draw_top_processes(f, &analytics.process_traffic, bottom_chunks[1]);
-    }
-
-    Ok(())
+fn draw_distribution_panels(f: &mut Frame, analytics: &GraphAnalytics<'_>, area: Rect) {
+    let panels = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .spacing(2)
+        .split(area);
+    draw_app_distribution(f, &analytics.app_distribution, panels[0]);
+    draw_top_processes(f, &analytics.process_traffic, panels[1]);
 }
 
 /// Draw the RX/TX traffic waves: two stacked braille area graphs with

@@ -4,8 +4,8 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────────────────────────────────────────────
-Host   Sockets  ·  Interfaces                                                                                                               
-                                                                                                                                            
+Sockets   Interfaces                                                                                                                        
+━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Host Socket States ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 TCP 2   LISTEN 1   ESTAB 1   OPENING 0   CLOSING 0   TIME_WAIT 0   OTHER 0   UDP BOUND 1                                                    
 Observed RTT  1 samples   average 24ms   max 24ms                                                                                           
@@ -31,4 +31,4 @@ UDP     BOUND      127.0.0.1:53                          -                      
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- i interfaces  esc back                                                                                                      h help  q quit
+ v/V section  esc back                                                                                                       h help  q quit

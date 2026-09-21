@@ -87,10 +87,10 @@ cargo build --release --no-default-features
 RustNet 将进程级流量计量与实时网络接口统计整合在一起：
 
 - **概览标签页**：展示当前活跃的接口，包含速率、错误数与丢包数
-- **活动标签页**(按 `3`)：按出站 (TX) 或入站 (RX) 查看进程排名，包括保留流量与滚动流量、速率、占比、连接数和目的地
+- **活动标签页**(按 `3`)：按出站 (TX) 或入站 (RX) 查看应用排名，并可查看各 PID 的详情，包括保留流量与滚动流量、速率、占比、连接数和目的地
 - **安全工作流**：按出站流量排序，找出异常上传进程，然后检查其流量最大的远端对端；即使连接关闭，仍可查看保留流量
 - **主机标签页**(按 `5`)：显示 TCP LISTEN 套接字、UDP BOUND 端点、TCP 状态汇总、观测 RTT 和所属进程
-- **接口详情**(在主机标签页按 `i`)：显示各接口完整指标表格
+- **接口详情**(在主机标签页选择 Interfaces)：显示各接口完整指标表格
 - **跨平台**：Linux(sysfs)、macOS / FreeBSD(getifaddrs)、Windows(GetIfTable2 API)
 - **智能过滤**：Windows 上自动剔除虚拟 / 过滤类适配器
 
@@ -227,8 +227,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 | `q` | 退出(连按两次确认) |
 | `Ctrl+C` | 立即退出 |
 | `x` | 清空所有连接(连按两次确认) |
-| `Tab` 或 `]` | 下一个标签页 |
-| `Shift+Tab` 或 `[` | 上一个标签页 |
+| `Tab` | 下一个标签页 |
+| `Shift+Tab` | 上一个标签页 |
 | `1`–`5` | 直接跳转到 Overview / Details / Activity / Graph / Host |
 | `↑/k` `↓/j` | 上下移动 |
 | `g` `G` | 跳到第一条 / 最后一条连接 |
@@ -243,7 +243,9 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 | `←` / `→` 或 `l` | 折叠 / 展开当前分组 |
 | `PageUp/PageDown` 或 `Ctrl+B/F` | 翻页 |
 | `t` | 切换是否显示历史（已关闭）连接 |
-| `i` | 在概览中切换 System 信息，或在主机标签页打开接口详情 |
+| `v` / `Shift+v` | 紧凑布局或 Host 中的下一个 / 上一个区块 |
+| `[` / `]` | 上一个 / 下一个主标签页 |
+| `i` | 在宽屏 Overview 中切换 System 侧栏 |
 | `r` | 重置视图(分组、排序、过滤) |
 | `/` | 进入过滤模式 |
 | `h` | 切换当前标签页的上下文帮助浮层 |
@@ -253,6 +255,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 `space collapse`。
 
 完整键位说明与导航技巧见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
+
+Activity 将进程名完全相同的多个 PID 汇总为一行应用。依次按 Enter 打开应用概要、PID 列表和单个进程详情，Esc 返回上一级。两个列表均可滚动，并在更新和调整大小时保持选择。按 `o` 在 Overview 中查看对应连接，会替换其筛选条件并启用历史连接。Activity 总计不受 Overview 筛选条件影响。紧凑布局使用 `v` / Shift+`v` 切换 Applications 与 Capture，接口清单统一放在 Host。
 
 ## 过滤与排序
 
@@ -281,7 +285,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 - `dport:443` —— 目的端口包含 "443"
 - `src:192.168` —— 源 IP 包含 "192.168"
 - `dst:github.com` —— 目的地址包含 "github.com"
-- `process:ssh` —— 进程名包含 "ssh"
+- `process:ssh`：进程名包含 "ssh"（`process:unknown` 也匹配未解析的名称）
+- `pid:1234`：精确匹配进程 ID
 - `sni:api` —— SNI 主机名包含 "api"
 - `app:openssh` —— 使用 OpenSSH 的 SSH 连接
 - `state:established` —— 按协议状态过滤

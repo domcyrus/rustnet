@@ -3,11 +3,10 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Modifier,
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row},
 };
@@ -31,13 +30,7 @@ impl Component for HostTab {
         ctx: &ComponentContext<'_>,
         _click_regions: &mut ClickableRegions,
     ) -> Result<()> {
-        draw_selector(f, area, ctx.ui_state.host_view);
-        let content = Rect::new(
-            area.x,
-            area.y + 2,
-            area.width,
-            area.height.saturating_sub(2),
-        );
+        let content = area;
         match ctx.ui_state.host_view {
             HostView::Sockets => draw_sockets(f, content, ctx),
             HostView::Interfaces => draw_interface_stats(f, ctx.app, ctx.ui_state, content),
@@ -45,27 +38,17 @@ impl Component for HostTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('s'), KeyModifiers::NONE) | (KeyCode::Left, _) => {
-                ctx.ui_state.host_view = HostView::Sockets;
-                Some(Vec::new())
-            }
-            (KeyCode::Char('i'), KeyModifiers::NONE) | (KeyCode::Right, _) => {
-                ctx.ui_state.host_view = HostView::Interfaces;
-                Some(Vec::new())
-            }
-            _ => match ctx.ui_state.host_view {
-                HostView::Sockets => try_handle_pane_scroll(
-                    key,
-                    ctx.ui_state.visible_rows,
-                    &mut ctx.ui_state.host_sockets_scroll,
-                ),
-                HostView::Interfaces => try_handle_pane_scroll(
-                    key,
-                    ctx.ui_state.visible_rows,
-                    &mut ctx.ui_state.interfaces_scroll,
-                ),
-            },
+        match ctx.ui_state.host_view {
+            HostView::Sockets => try_handle_pane_scroll(
+                key,
+                usize::from(ctx.ui_state.host_sockets_scroll.viewport_rows()),
+                &mut ctx.ui_state.host_sockets_scroll,
+            ),
+            HostView::Interfaces => try_handle_pane_scroll(
+                key,
+                usize::from(ctx.ui_state.interfaces_scroll.viewport_rows()),
+                &mut ctx.ui_state.interfaces_scroll,
+            ),
         }
     }
 
@@ -83,28 +66,6 @@ impl Component for HostTab {
             }
         }
     }
-}
-
-fn draw_selector(f: &mut Frame, area: Rect, view: HostView) {
-    let item = |label: &'static str, active| {
-        if active {
-            Span::styled(
-                format!(" {label} "),
-                theme::fg(theme::accent()).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled(format!(" {label} "), theme::fg(theme::muted()))
-        }
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Host  ", theme::bold_fg(theme::heading())),
-            item("Sockets", view == HostView::Sockets),
-            Span::styled(" · ", theme::fg(theme::border())),
-            item("Interfaces", view == HostView::Interfaces),
-        ])),
-        Rect::new(area.x, area.y, area.width, area.height.min(1)),
-    );
 }
 
 fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result<()> {

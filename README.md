@@ -97,10 +97,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
 RustNet combines process-level traffic accounting with real-time network interface statistics:
 
 - **Overview Tab**: Shows active interfaces with current rates, errors, and drops
-- **Activity Tab** (press `3`): Ranks processes by Egress (TX) or Ingress (RX), including retained and rolling traffic, rates, shares, connections, and destinations
+- **Activity Tab** (press `3`): Ranks applications by Egress (TX) or Ingress (RX), with per-PID details, including retained and rolling traffic, rates, shares, connections, and destinations
 - **Security Workflow**: Sort by Egress, identify an unexpected uploader, then inspect its top remote peer and retained traffic even after the connection closes
 - **Host Tab** (press `5`): Shows TCP LISTEN sockets, UDP BOUND endpoints, aggregated TCP states, observed RTT, and process ownership
-- **Interface Details** (press `i` on Host): Shows comprehensive metrics for every interface
+- **Interface Details** (select Interfaces on Host): Shows comprehensive metrics for every interface
 - **Cross-Platform**: Linux (sysfs), macOS/FreeBSD (getifaddrs), Windows (GetIfTable2 API)
 - **Smart Filtering**: Windows automatically excludes virtual/filter adapters
 
@@ -239,8 +239,8 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `q` | Quit (press twice to confirm) |
 | `Ctrl+C` | Quit immediately |
 | `x` | Clear all connections (press twice to confirm) |
-| `Tab` or `]` | Next tab |
-| `Shift+Tab` or `[` | Previous tab |
+| `Tab` | Next tab |
+| `Shift+Tab` | Previous tab |
 | `1`–`5` | Jump to Overview / Details / Activity / Graph / Host |
 | `↑/k` `↓/j` | Navigate up/down |
 | `g` `G` | Jump to first/last connection |
@@ -255,7 +255,9 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `←` / `→` or `l` | Collapse/expand group |
 | `PageUp/PageDown` or `Ctrl+B/F` | Page navigation |
 | `t` | Toggle historic (closed) connections |
-| `i` | Toggle System info on Overview or interface details on Host |
+| `v` / `Shift+v` | Next / previous section on compact layouts or Host |
+| `[` / `]` | Previous / next main tab |
+| `i` | Toggle System sidebar on wide Overview layouts |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |
 | `h` | Toggle contextual help for the active tab |
@@ -263,6 +265,13 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 On Overview, the bottom status bar highlights process grouping and historic
 connections while those modes are active. In grouped mode it also shows
 `space expand` or `space collapse` for the selected process group.
+
+Activity combines PIDs with the same process name into one application row.
+Enter opens its summary, then its PID list, then individual process details;
+Esc returns one level. Both lists scroll and preserve selection. Press `o` to
+open matching connections in Overview, replacing its filter and enabling history.
+Activity totals remain independent of Overview filters. Compact layouts use
+`v` / Shift+`v` for Applications and Capture; interface inventory stays in Host.
 
 See [USAGE.md](USAGE.md) for detailed keyboard controls and navigation tips.
 
@@ -293,7 +302,8 @@ See [USAGE.md](USAGE.md) for complete filtering syntax and sorting guide.
 - `dport:443` - Destination ports containing "443"
 - `src:192.168` - Source IPs containing "192.168"
 - `dst:github.com` - Destinations containing "github.com"
-- `process:ssh` - Process names containing "ssh"
+- `process:ssh` - Process names containing "ssh" (`process:unknown` includes unresolved names)
+- `pid:1234` - Exact process ID
 - `sni:api` - SNI hostnames containing "api"
 - `app:openssh` - SSH connections using OpenSSH
 - `state:established` - Filter by protocol state

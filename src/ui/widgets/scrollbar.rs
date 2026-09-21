@@ -5,7 +5,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    widgets::{Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
+    widgets::{Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
 };
 
 use crate::ui::{PaneScroll, theme};
@@ -13,6 +13,30 @@ use crate::ui::{PaneScroll, theme};
 /// Scrollbar thumb: a right half block, so the bar reads as a thin rule on
 /// the outer edge of its column instead of a full-width slab.
 const THUMB: &str = "\u{2590}";
+
+/// Measure, clamp, and paint a text pane using the same viewport and gutter.
+/// Return the text bounds and offset for consumers with click-to-copy rows.
+pub(in crate::ui) fn draw_scrolled_text(
+    f: &mut Frame,
+    area: Rect,
+    paragraph: Paragraph<'_>,
+    scroll: &PaneScroll,
+) -> (Rect, u16) {
+    let text_area = Rect {
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    let rows = paragraph.line_count(text_area.width.max(1));
+    let offset = scroll.clamp_for_render(
+        u16::try_from(rows)
+            .unwrap_or(u16::MAX)
+            .saturating_sub(area.height),
+    );
+    scroll.record_viewport(area.height);
+    f.render_widget(paragraph.scroll((offset, 0)), text_area);
+    draw_scrollbar(f, area, rows, usize::from(offset), usize::from(area.height));
+    (text_area, offset)
+}
 
 /// Render a vertical scrollbar on the right edge of `area` when the
 /// content overflows the viewport. `position` is the scroll offset of

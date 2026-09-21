@@ -86,6 +86,40 @@ impl ProcessIdentity {
         }
     }
 
+    /// Applications use the same name grouping as Overview, independent of PID.
+    pub fn application_identity(&self) -> Self {
+        let unknown = self.name == UNKNOWN_PROCESS_NAME;
+        Self {
+            pid: None,
+            name: self.name.clone(),
+            attributed: !unknown && self.attributed,
+        }
+    }
+
+    /// An exact Overview query. Hex escapes survive its whitespace tokenizer and
+    /// case-normalization, including names with spaces, uppercase, or regex syntax.
+    pub fn connection_filter_query(&self) -> Option<String> {
+        if self.name == OTHER_NAME && self.pid.is_none() {
+            return None;
+        }
+        let name: String = self
+            .name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-') {
+                    ch.to_string()
+                } else {
+                    format!("\\x{{{:x}}}", u32::from(ch))
+                }
+            })
+            .collect();
+        let mut query = format!("process:/^(?-i:{name})$/");
+        if let Some(pid) = self.pid {
+            query.push_str(&format!(" pid:{pid}"));
+        }
+        Some(query)
+    }
+
     pub fn display_name(&self) -> String {
         match self.pid {
             Some(pid) => format!("{} ({pid})", self.name),
@@ -141,6 +175,8 @@ pub struct ProcessActivity {
 #[derive(Debug, Clone)]
 pub struct ProcessActivitySnapshot {
     pub processes: Vec<ProcessActivity>,
+    /// Application-name totals with deduplicated peers and concurrent peaks.
+    pub applications: Vec<ProcessActivity>,
     pub current_tx_bps: f64,
     pub current_rx_bps: f64,
     pub window_tx_bytes: u64,
@@ -155,6 +191,7 @@ impl Default for ProcessActivitySnapshot {
     fn default() -> Self {
         Self {
             processes: Vec::new(),
+            applications: Vec::new(),
             current_tx_bps: 0.0,
             current_rx_bps: 0.0,
             window_tx_bytes: 0,
@@ -250,6 +287,53 @@ impl ProcessAccumulator {
             completed_connections: 0,
             destinations: HashMap::new(),
         }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.tx_bytes = self.tx_bytes.saturating_add(other.tx_bytes);
+        self.rx_bytes = self.rx_bytes.saturating_add(other.rx_bytes);
+        self.active_connections = self
+            .active_connections
+            .saturating_add(other.active_connections);
+        self.completed_connections = self
+            .completed_connections
+            .saturating_add(other.completed_connections);
+        for (address, peer) in &other.destinations {
+            let combined =
+                self.destinations
+                    .entry(*address)
+                    .or_insert_with(|| DestinationActivity {
+                        remote_addr: *address,
+                        label: peer.label.clone(),
+                        tx_bytes: 0,
+                        rx_bytes: 0,
+                        connections: 0,
+                    });
+            combined.tx_bytes = combined.tx_bytes.saturating_add(peer.tx_bytes);
+            combined.rx_bytes = combined.rx_bytes.saturating_add(peer.rx_bytes);
+            combined.connections = combined.connections.saturating_add(peer.connections);
+            if combined.label.is_none() {
+                combined.label.clone_from(&peer.label);
+            }
+        }
+    }
+
+    fn top_peer(&self, transmit: bool) -> Option<DestinationActivity> {
+        self.destinations
+            .values()
+            .max_by(|a, b| {
+                let bytes = |peer: &DestinationActivity| {
+                    if transmit {
+                        peer.tx_bytes
+                    } else {
+                        peer.rx_bytes
+                    }
+                };
+                bytes(a)
+                    .cmp(&bytes(b))
+                    .then_with(|| a.remote_addr.cmp(&b.remote_addr))
+            })
+            .cloned()
     }
 
     fn add_flow(&mut self, flow: &FlowActivity, completed: bool) {
@@ -438,6 +522,7 @@ pub struct ProcessActivityTracker {
     flow_counters: HashMap<HistoricKey, FlowCounters>,
     sample_generation: u64,
     histories: HashMap<ProcessIdentity, ProcessHistory>,
+    application_peaks: HashMap<ProcessIdentity, (f64, f64)>,
     snapshot: ProcessActivitySnapshot,
 }
 
@@ -453,6 +538,7 @@ impl ProcessActivityTracker {
             flow_counters: HashMap::new(),
             sample_generation: 0,
             histories: HashMap::new(),
+            application_peaks: HashMap::new(),
             snapshot: ProcessActivitySnapshot::default(),
         }
     }
@@ -552,6 +638,7 @@ impl ProcessActivityTracker {
         self.flow_counters.clear();
         self.sample_generation = 0;
         self.histories.clear();
+        self.application_peaks.clear();
         self.snapshot = ProcessActivitySnapshot::default();
     }
 
@@ -585,24 +672,8 @@ impl ProcessActivityTracker {
             let history = self.histories.entry(identity.clone()).or_default();
             let (window_tx_bytes, window_rx_bytes) = history.window_bytes(now, self.config.window);
             let destination_count = aggregate.destinations.len();
-            let top_tx_destination = aggregate
-                .destinations
-                .values()
-                .max_by(|a, b| {
-                    a.tx_bytes
-                        .cmp(&b.tx_bytes)
-                        .then_with(|| a.remote_addr.cmp(&b.remote_addr))
-                })
-                .cloned();
-            let top_rx_destination = aggregate
-                .destinations
-                .values()
-                .max_by(|a, b| {
-                    a.rx_bytes
-                        .cmp(&b.rx_bytes)
-                        .then_with(|| a.remote_addr.cmp(&b.remote_addr))
-                })
-                .cloned();
+            let top_tx_destination = aggregate.top_peer(true);
+            let top_rx_destination = aggregate.top_peer(false);
             processes.push(ProcessActivity {
                 identity: identity.clone(),
                 current_tx_bps: history.current_tx_bps,
@@ -664,8 +735,11 @@ impl ProcessActivityTracker {
                 .then_with(|| a.identity.pid.cmp(&b.identity.pid))
         });
 
+        let applications = self.application_totals(&processes);
+
         self.snapshot = ProcessActivitySnapshot {
             processes,
+            applications,
             current_tx_bps,
             current_rx_bps,
             window_tx_bytes,
@@ -675,6 +749,69 @@ impl ProcessActivityTracker {
             attributed_tx_bytes,
             attributed_rx_bytes,
         };
+    }
+
+    fn application_totals(&mut self, processes: &[ProcessActivity]) -> Vec<ProcessActivity> {
+        let mut groups: HashMap<ProcessIdentity, (ProcessActivity, ProcessAccumulator)> =
+            HashMap::new();
+        for process in processes {
+            let identity = process.identity.application_identity();
+            let aggregate = &self.sample[&process.identity];
+            match groups.entry(identity.clone()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let mut summary = process.clone();
+                    summary.identity = identity;
+                    entry.insert((summary, aggregate.clone()));
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let (summary, combined) = entry.get_mut();
+                    summary.current_tx_bps += process.current_tx_bps;
+                    summary.current_rx_bps += process.current_rx_bps;
+                    summary.window_tx_bytes = summary
+                        .window_tx_bytes
+                        .saturating_add(process.window_tx_bytes);
+                    summary.window_rx_bytes = summary
+                        .window_rx_bytes
+                        .saturating_add(process.window_rx_bytes);
+                    summary.window_tx_share += process.window_tx_share;
+                    summary.window_rx_share += process.window_rx_share;
+                    summary.retained_tx_share += process.retained_tx_share;
+                    summary.retained_rx_share += process.retained_rx_share;
+                    combined.merge(aggregate);
+                }
+            }
+        }
+        self.application_peaks
+            .retain(|identity, _| groups.contains_key(identity));
+        let mut applications = Vec::with_capacity(groups.len());
+        for (identity, (mut summary, aggregate)) in groups {
+            let peak = self.application_peaks.entry(identity).or_default();
+            peak.0 = peak.0.max(summary.current_tx_bps);
+            peak.1 = peak.1.max(summary.current_rx_bps);
+            summary.peak_tx_bps = peak.0;
+            summary.peak_rx_bps = peak.1;
+            summary.retained_tx_bytes = aggregate.tx_bytes;
+            summary.retained_rx_bytes = aggregate.rx_bytes;
+            summary.active_connections = aggregate.active_connections;
+            summary.total_connections = aggregate
+                .completed_connections
+                .saturating_add(aggregate.active_connections as u64);
+            summary.unique_destinations = aggregate
+                .destinations
+                .len()
+                .min(self.config.max_destinations_per_process);
+            summary.destinations_truncated =
+                aggregate.destinations.len() > self.config.max_destinations_per_process;
+            summary.top_tx_destination = aggregate.top_peer(true);
+            summary.top_rx_destination = aggregate.top_peer(false);
+            applications.push(summary);
+        }
+        applications.sort_by(|a, b| {
+            b.retained_tx_bytes
+                .cmp(&a.retained_tx_bytes)
+                .then_with(|| a.identity.cmp(&b.identity))
+        });
+        applications
     }
 }
 
@@ -733,6 +870,115 @@ mod tests {
         conn.pid = pid;
         conn.process_name = name.map(str::to_string);
         conn
+    }
+
+    #[test]
+    fn application_totals_merge_pids_and_deduplicate_peers_before_truncation() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let mut flows: Vec<_> = [(1, 443, 100), (1, 8443, 90), (2, 9443, 100), (2, 8443, 90)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (pid, port, bytes))| {
+                let mut flow = connection(Some(pid), Some("gh"), port);
+                flow.local_addr.set_port(1000 + index as u16);
+                flow.bytes_sent = bytes;
+                flow.bytes_received = bytes * 2;
+                flow
+            })
+            .collect();
+        flows[0].is_historic = true;
+        let mut tracker = ProcessActivityTracker::with_config(ProcessActivityConfig {
+            max_destinations_per_process: 2,
+            ..Default::default()
+        });
+        tracker.observe_connections(&flows, now);
+        let snapshot = tracker.snapshot();
+        assert_eq!(snapshot.processes.len(), 2);
+        assert_eq!(snapshot.applications.len(), 1);
+        let app = &snapshot.applications[0];
+        assert_eq!(app.identity.name, "gh");
+        assert_eq!(app.identity.pid, None);
+        assert_eq!(app.retained_tx_bytes, 380);
+        assert_eq!(app.retained_rx_bytes, 760);
+        assert_eq!(app.active_connections, 3);
+        assert_eq!(app.total_connections, 4);
+        assert_eq!(app.unique_destinations, 2);
+        assert!(app.destinations_truncated);
+        assert_eq!(
+            app.top_tx_destination.as_ref().unwrap().remote_addr.port(),
+            8443
+        );
+        assert_eq!(app.top_tx_destination.as_ref().unwrap().tx_bytes, 180);
+        assert_eq!(app.top_rx_destination.as_ref().unwrap().rx_bytes, 360);
+        assert_eq!(app.window_tx_share, 100.0);
+    }
+
+    #[test]
+    fn application_peak_tracks_simultaneous_rates_and_survives_pid_turnover() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let mut a = connection(Some(1), Some("gh"), 443);
+        let mut b = connection(Some(2), Some("gh"), 8443);
+        let mut tracker = ProcessActivityTracker::new();
+        tracker.observe_connections(&[a.clone(), b.clone()], now);
+        a.bytes_sent = 100;
+        tracker.observe_connections(&[a.clone(), b.clone()], now + Duration::from_secs(1));
+        b.bytes_sent = 100;
+        tracker.observe_connections(&[a.clone(), b.clone()], now + Duration::from_secs(2));
+        let snapshot = tracker.snapshot();
+        assert_eq!(
+            snapshot
+                .processes
+                .iter()
+                .map(|p| p.peak_tx_bps)
+                .sum::<f64>(),
+            200.0
+        );
+        assert_eq!(snapshot.applications[0].peak_tx_bps, 100.0);
+        a.bytes_sent += 100;
+        b.bytes_sent += 100;
+        tracker.observe_connections(&[a, b.clone()], now + Duration::from_secs(3));
+        assert_eq!(tracker.snapshot().applications[0].peak_tx_bps, 200.0);
+        tracker.observe_connections(&[b.clone()], now + Duration::from_secs(4));
+        assert_eq!(tracker.snapshot().applications[0].peak_tx_bps, 200.0);
+        tracker.clear();
+        tracker.observe_connections(&[b], now + Duration::from_secs(5));
+        assert_eq!(tracker.snapshot().applications[0].peak_tx_bps, 0.0);
+    }
+
+    #[test]
+    fn application_query_matches_exact_names_and_optional_pids() {
+        use crate::network::filter::ConnectionFilter;
+        for name in ["gh", "GH", "Code (Service)", "a/b.*[x]", "工具 App"] {
+            let identity = ProcessIdentity {
+                name: name.into(),
+                pid: None,
+                attributed: true,
+            };
+            let query = identity.connection_filter_query().unwrap();
+            let filter = ConnectionFilter::parse(&query);
+            assert!(
+                filter.matches(&connection(Some(1), Some(name), 443)),
+                "{query}"
+            );
+            assert!(!filter.matches(&connection(Some(1), Some(&format!("{name}-extra")), 443)));
+            if name.to_lowercase() != name {
+                assert!(!filter.matches(&connection(Some(1), Some(&name.to_lowercase()), 443)));
+            }
+            let mut identity = identity;
+            identity.pid = Some(1);
+            let filter = ConnectionFilter::parse(&identity.connection_filter_query().unwrap());
+            assert!(filter.matches(&connection(Some(1), Some(name), 443)));
+            assert!(!filter.matches(&connection(Some(10), Some(name), 443)));
+        }
+        let unknown = ProcessIdentity {
+            name: UNKNOWN_PROCESS_NAME.into(),
+            pid: None,
+            attributed: false,
+        };
+        let filter = ConnectionFilter::parse(&unknown.connection_filter_query().unwrap());
+        assert!(filter.matches(&connection(None, None, 443)));
+        assert!(filter.matches(&connection(Some(1), Some(UNKNOWN_PROCESS_NAME), 443)));
+        assert!(!ConnectionFilter::parse("pid:invalid").matches(&connection(None, None, 443)));
     }
 
     #[test]

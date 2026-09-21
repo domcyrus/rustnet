@@ -9,12 +9,7 @@
 //! list), and a right-aligned capture cluster (`● <iface> · <link>`)
 //! whose dot turns red when packet capture has failed.
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-    text::{Line, Span},
-    widgets::Paragraph,
-};
+use ratatui::{Frame, layout::Rect, text::Span};
 
 use crate::ui::{ClickAction, ClickableRegions, UiState, theme};
 
@@ -25,7 +20,7 @@ pub(crate) const TAB_COUNT: usize = TAB_TITLES.len();
 const OVERVIEW_TAB_INDEX: usize = 0;
 
 /// Height of the tab bar in rows (titles + underline).
-pub(crate) const TABS_BAR_HEIGHT: u16 = 2;
+pub(crate) const TABS_BAR_HEIGHT: u16 = super::tab_strip::HEIGHT;
 
 const BRAND: &str = " rustnet ";
 /// Gap between tab titles, in cells.
@@ -94,19 +89,13 @@ pub(in crate::ui) fn draw_tabs(
     area: Rect,
     click_regions: &mut ClickableRegions,
 ) {
-    let mut title_spans: Vec<Span> = vec![Span::styled(BRAND, theme::primary())];
-    let mut underline_spans: Vec<Span> = vec![Span::styled(
-        "─".repeat(BRAND.chars().count()),
-        theme::fg(theme::border()),
-    )];
+    let mut strip = super::tab_strip::TabStrip::new(Span::styled(BRAND, theme::primary()));
 
     // Keep every view reachable when the terminal is narrow. Preserve the
     // numbered shortcuts while reducing gaps, then labels to their shortcut numbers.
     let tab_gap = if area.width < 72 { 1 } else { TAB_GAP };
     let short_labels = area.width < 60;
     let numbers_only = area.width < 46;
-    let gap = " ".repeat(tab_gap as usize);
-    let mut x_offset = area.x + BRAND.chars().count() as u16;
     for (i, title) in TAB_TITLES.iter().enumerate() {
         // Numbered titles: the 1-5 jump shortcut becomes discoverable.
         let title = if numbers_only {
@@ -123,16 +112,7 @@ pub(in crate::ui) fn draw_tabs(
         };
         let active = i == ui_state.selected_tab;
         let dotted = i == OVERVIEW_TAB_INDEX && ui_state.is_filtering();
-        // The dot is part of the label: the underline and the click
-        // region have to grow with it.
-        let dot_width = if dotted {
-            ACTIVITY_DOT.chars().count()
-        } else {
-            0
-        };
-        let label_width = (label.chars().count() + dot_width) as u16;
-
-        title_spans.push(Span::raw(gap.clone()));
+        let mut title_spans = Vec::new();
         if active {
             title_spans.push(Span::styled(
                 if numbers_only {
@@ -142,64 +122,28 @@ pub(in crate::ui) fn draw_tabs(
                 },
                 theme::fg(theme::accent()),
             ));
-            title_spans.push(Span::styled(title.to_string(), theme::primary()));
+            title_spans.push(super::tab_strip::title(title, true));
         } else {
-            title_spans.push(Span::styled(label.clone(), theme::fg(theme::muted())));
+            title_spans.push(super::tab_strip::title(label, false));
         }
         if dotted {
             title_spans.push(Span::styled(ACTIVITY_DOT, theme::fg(theme::accent())));
         }
 
-        underline_spans.push(Span::styled(
-            "─".repeat(tab_gap as usize),
-            theme::fg(theme::border()),
-        ));
-        let rule_glyph = if active { "━" } else { "─" };
-        let rule_style = if active {
-            theme::fg(theme::accent())
-        } else {
-            theme::fg(theme::border())
-        };
-        underline_spans.push(Span::styled(
-            rule_glyph.repeat(label_width as usize),
-            rule_style,
-        ));
-
-        // Click region spans both rows (title + underline).
-        let tab_rect = Rect::new(x_offset + tab_gap, area.y, label_width, TABS_BAR_HEIGHT);
-        let tab_rect = tab_rect.intersection(area);
-        if tab_rect.width > 0 && tab_rect.height > 0 {
-            click_regions.register(tab_rect, ClickAction::SwitchTab(i));
-        }
-        x_offset += tab_gap + label_width;
+        strip.push(title_spans, active, tab_gap, ClickAction::SwitchTab(i));
     }
-
-    let used = x_offset.saturating_sub(area.x) as usize;
+    let used = usize::from(strip.width());
 
     // Right-align the capture cluster on the title row, keeping at least
     // CLUSTER_GAP cells clear of the last title.
     let room = (area.width as usize).saturating_sub(used + CLUSTER_GAP);
     if let Some(cluster) = capture_cluster_spans(capture, room) {
         let pad = (area.width as usize).saturating_sub(used + cluster_width(&cluster));
-        title_spans.push(Span::raw(" ".repeat(pad)));
-        title_spans.extend(cluster);
+        strip.titles.push(Span::raw(" ".repeat(pad)));
+        strip.titles.extend(cluster);
     }
 
-    // Extend the rule to the right edge of the bar.
-    if area.width as usize > used {
-        underline_spans.push(Span::styled(
-            "─".repeat(area.width as usize - used),
-            theme::fg(theme::border()),
-        ));
-    }
-
-    let titles = Paragraph::new(Line::from(title_spans));
-    let underline = Paragraph::new(Line::from(underline_spans));
-
-    f.render_widget(titles, Rect::new(area.x, area.y, area.width, 1));
-    if area.height >= TABS_BAR_HEIGHT {
-        f.render_widget(underline, Rect::new(area.x, area.y + 1, area.width, 1));
-    }
+    strip.draw(f, area, click_regions);
 }
 
 #[cfg(test)]

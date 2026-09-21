@@ -3,13 +3,14 @@ source: src/ui/mod.rs
 expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
-─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
-Applications   Capture                                                          
-━━━━━━━━━━━━────────────────────────────────────────────────────────────────────
-TX -   RX -                                                                     
-Coverage 60s: TX n/a  RX n/a                                                    
-▎ Applications · TX · Retained TX ↓ ─────────────────────────────────────── 0/0 
-Waiting for application traffic...                                              
+──────────────────────────────────────────────────━━━━━━━───────────────────────
+Traffic   Health   Distribution                                                 
+───────────────────━━━━━━━━━━━━─────────────────────────────────────────────────
+▎ Application Distribution ────────────  ▎ Top Processes ───────────────────────
+DNS    ░░▒▓▓█··················  25.0%   Process                            Rate
+Other  ░░░░░▒▒▒▒▓▓▓▓▓████······  75.0%   firefox                       3.96 MB/s
+                                         sshd                          2.12 MB/s
+                                         systemd-resolved            128.91 KB/s
                                                                                 
                                                                                 
                                                                                 
@@ -24,5 +25,4 @@ Waiting for application traffic...
                                                                                 
                                                                                 
                                                                                 
-                                                                                
- v/V section  d tx/rx  s sort  S order  esc back                 h help  q quit
+ v/V section  esc back                                           h help  q quit

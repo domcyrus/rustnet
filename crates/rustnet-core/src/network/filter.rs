@@ -46,6 +46,8 @@ enum FilterCriteria {
     Protocol(FilterValue),
     /// Match process name
     Process(FilterValue),
+    /// Exact owning process ID; invalid numbers never match.
+    Pid(Option<u32>),
     /// Match service name
     Service(FilterValue),
     /// Match SNI hostname from TLS/QUIC
@@ -163,6 +165,7 @@ impl ConnectionFilter {
                     "proto" | "protocol" => {
                         criteria.push(FilterCriteria::Protocol(parse_filter_value(&value)));
                     }
+                    "pid" => criteria.push(FilterCriteria::Pid(value.parse().ok())),
                     "process" | "proc" => {
                         criteria.push(FilterCriteria::Process(parse_filter_value(&value)));
                     }
@@ -225,13 +228,14 @@ impl ConnectionFilter {
                 match_text(&connection.remote_addr.ip().to_string(), fv)
             }
             FilterCriteria::Protocol(fv) => match_text(connection.protocol.as_str(), fv),
-            FilterCriteria::Process(fv) => {
-                if let Some(ref process_name) = connection.process_name {
-                    match_text(process_name, fv)
-                } else {
-                    false
-                }
-            }
+            FilterCriteria::Process(fv) => match_text(
+                connection
+                    .process_name
+                    .as_deref()
+                    .unwrap_or(crate::network::types::UNKNOWN_PROCESS_NAME),
+                fv,
+            ),
+            FilterCriteria::Pid(pid) => pid.is_some() && connection.pid == *pid,
             FilterCriteria::Service(fv) => {
                 if let Some(ref service_name) = connection.service_name {
                     match_text(service_name, fv)

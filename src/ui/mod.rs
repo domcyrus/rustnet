@@ -57,6 +57,9 @@ pub fn dispatch_key(
     if ctx.ui_state.filter_mode {
         return OverviewTab.handle_key(key, ctx);
     }
+    if let Some(effects) = sections::handle_key(key, ctx.ui_state) {
+        return Some(effects);
+    }
     match tab {
         0 => OverviewTab.handle_key(key, ctx),
         1 => DetailsTab.handle_key(key, ctx),
@@ -102,8 +105,9 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub(crate) use crate::network::process_activity::process_group_label;
 pub use state::{
-    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, HostView,
-    PaneScroll, SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,
+    ActivityDirection, ActivitySection, ActivitySort, ActivityView, ClickAction, ClickableRegions,
+    DetailsSection, GraphSection, GroupedRow, HostView, OverviewSection, PaneScroll, SortColumn,
+    UiState, compute_grouped_rows, compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
@@ -114,6 +118,8 @@ pub use sorting::sort_connections;
 
 mod clipboard;
 pub use clipboard::{clipboard_available, copy_to_clipboard};
+
+mod sections;
 
 mod actions;
 pub use actions::clear_all_with_confirmation;
@@ -177,9 +183,13 @@ pub(crate) fn section_header<'a, T: Into<Line<'a>>>(
         Paragraph::new(line),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    Rect::new(
+    section_body(area)
+}
+
+fn section_body(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(
         area.x,
-        area.y + 1,
+        area.y + area.height.min(1),
         area.width,
         area.height.saturating_sub(1),
     )
@@ -292,7 +302,7 @@ pub(crate) fn non_dpi_app_color() -> Color {
 pub fn draw(
     f: &mut Frame,
     app: &App,
-    ui_state: &UiState,
+    ui_state: &mut UiState,
     connections: &[Connection],
     grouped_rows: Option<&[GroupedRow]>,
     stats: &AppStats,
@@ -358,12 +368,33 @@ pub fn draw(
 
     draw_tabs(f, ui_state, &capture, chunks[0], click_regions);
 
-    let content_area = chunks[1];
+    ui_state.section_navigation = match ui_state.selected_tab {
+        0 => tabs::overview::compact_layout(chunks[1]),
+        1 => tabs::details::compact_layout(chunks[1]),
+        2 => tabs::activity::compact_layout(chunks[1]),
+        3 => tabs::graph::compact_layout(chunks[1]),
+        4 => true,
+        _ => false,
+    };
+    let content_area = sections::draw_selector(f, chunks[1], ui_state, click_regions);
     let (filter_area, status_area) = if ui_state.filter_row_visible() {
         (Some(chunks[2]), chunks[3])
     } else {
         (None, chunks[2])
     };
+
+    // Use this frame's actual content bounds, including an expanded error
+    // banner, before repairing selection and building the virtual row window.
+    ui_state.prepare_connection_viewport(
+        tabs::overview::visible_connection_rows(content_area),
+        connections,
+        grouped_rows,
+    );
+
+    let compact_details = tabs::details::compact_layout(content_area);
+    if ui_state.details_compact.replace(compact_details) != compact_details {
+        ui_state.details_scroll.reset();
+    }
 
     let comp_ctx = ComponentContext {
         app,
@@ -1068,7 +1099,7 @@ mod snapshot_tests {
     /// dump plus the click regions the frame registered.
     fn render_app_frame(
         app: &App,
-        ui_state: &UiState,
+        ui_state: &mut UiState,
         connections: &[Connection],
         grouped: Option<&[GroupedRow]>,
         width: u16,
@@ -1094,7 +1125,7 @@ mod snapshot_tests {
     /// [`render_app_frame`] for the tests that only need the text dump.
     fn render_app(
         app: &App,
-        ui_state: &UiState,
+        ui_state: &mut UiState,
         connections: &[Connection],
         grouped: Option<&[GroupedRow]>,
         width: u16,
@@ -1107,11 +1138,8 @@ mod snapshot_tests {
     fn full_page_shows_capture_error() {
         let app = test_app();
         app.set_capture_error_for_test(Some("Capture stopped: The interface disappeared."));
-        let ui_state = UiState {
-            show_system_panel: false,
-            ..Default::default()
-        };
-        let output = render_app(&app, &ui_state, &[], None, 100, 16);
+        let mut ui_state = UiState::default();
+        let output = render_app(&app, &mut ui_state, &[], None, 100, 16);
 
         assert!(
             output
@@ -1128,11 +1156,8 @@ mod snapshot_tests {
         app.set_capture_error_for_test(Some(
             "Capture failed to start: eth0: You don't have permission to capture on that device (socket: Operation not permitted).",
         ));
-        let ui_state = UiState {
-            show_system_panel: false,
-            ..Default::default()
-        };
-        let output = render_app(&app, &ui_state, &[], None, 80, 16);
+        let mut ui_state = UiState::default();
+        let output = render_app(&app, &mut ui_state, &[], None, 80, 16);
 
         let rows: Vec<&str> = output.lines().collect();
         let hint_row = rows
@@ -1310,16 +1335,9 @@ mod snapshot_tests {
         };
         let grouped_rows =
             grouped.then(|| compute_grouped_rows(&connections, &ui_state.expanded_groups));
-        // The app repairs the grouped selection before every draw (see the
-        // main loop), so the canonical snapshot must render it repaired too:
-        // otherwise the footer would omit the space hint no real user of the
-        // grouped view ever loses, and its fit would go untested.
-        if let Some(rows) = grouped_rows.as_deref() {
-            ui_state.ensure_valid_grouped_selection(rows);
-        }
         render_app(
             &app,
-            &ui_state,
+            &mut ui_state,
             &connections,
             grouped_rows.as_deref(),
             140,
@@ -1352,12 +1370,12 @@ mod snapshot_tests {
         stale.current_outgoing_rate_bps = 0.0;
         stale.last_activity = SystemTime::now() - Duration::from_secs(450);
         app.set_connections_snapshot_for_test(connections.clone());
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             show_system_panel: false,
             visible_rows: 18,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &connections, None, 140, 26);
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 26);
         assert!(
             output.contains("2m left"),
             "expected a countdown, got:\n{output}"
@@ -1376,8 +1394,8 @@ mod snapshot_tests {
         let mut connections = overview_connections();
         connections[3].process_name = Some("firefox".to_string());
         app.set_connections_snapshot_for_test(connections.clone());
-        let ui_state = UiState::default();
-        let output = render_app(&app, &ui_state, &connections, None, 140, 40);
+        let mut ui_state = UiState::default();
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 40);
 
         assert!(output.contains("Processes: 3"));
     }
@@ -1388,11 +1406,11 @@ mod snapshot_tests {
         let connections = overview_connections();
         app.set_connections_snapshot_for_test(connections.clone());
         let filtered = vec![connections[0].clone()];
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             filter_query: "process:firefox".to_string(),
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &filtered, None, 140, 40);
+        let output = render_app(&app, &mut ui_state, &filtered, None, 140, 40);
 
         assert!(output.contains("Live Connections · 1 shown"));
         assert!(output.contains("Processes: 4"));
@@ -1404,7 +1422,7 @@ mod snapshot_tests {
         let app = test_app();
         let connections = overview_connections();
         app.set_connections_snapshot_for_test(connections);
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             filter_query: "process:firefox port:443".to_string(),
             ..Default::default()
         };
@@ -1418,7 +1436,7 @@ mod snapshot_tests {
         assert_eq!(filtered.len(), 1);
         assert!(filter.matches(&filtered[0]));
 
-        let output = render_app(&app, &ui_state, &filtered, None, 140, 40);
+        let output = render_app(&app, &mut ui_state, &filtered, None, 140, 40);
         assert!(output.contains("Live Connections · 1 shown"));
         assert!(output.contains("firefox"));
         assert!(!output.contains("sshd (1500)"));
@@ -1440,7 +1458,7 @@ mod snapshot_tests {
             draw(
                 f,
                 &app,
-                &UiState::default(),
+                &mut UiState::default(),
                 &connections,
                 None,
                 &stats,
@@ -1464,7 +1482,7 @@ mod snapshot_tests {
     fn overview_system_panel_places_traffic_before_security() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UiState::default(), &connections, None, 140, 40);
+        let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 40);
 
         let traffic = output.find("Traffic").expect("Traffic section");
         let security = output.find("Security").expect("Security section");
@@ -1483,7 +1501,7 @@ mod snapshot_tests {
     fn overview_system_panel_compacts_security_on_short_terminals() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UiState::default(), &connections, None, 140, 32);
+        let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 32);
 
         assert!(output.contains("Traffic"));
         assert!(output.contains("Security (compact)"));
@@ -1499,7 +1517,7 @@ mod snapshot_tests {
     fn overview_system_panel_expands_security_when_space_returns() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UiState::default(), &connections, None, 140, 35);
+        let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 35);
 
         assert!(!output.contains("Security (compact)"));
         assert!(output.contains("No restrictions active"));
@@ -1580,12 +1598,12 @@ mod snapshot_tests {
         selected: usize,
         height: u16,
     ) -> (String, ClickableRegions) {
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 1, // Details
             selected_connection_key: Some(connections[selected].key()),
             ..Default::default()
         };
-        render_app_frame(app, &ui_state, connections, None, 140, height)
+        render_app_frame(app, &mut ui_state, connections, None, 140, height)
     }
 
     /// Standard Details render at the 140x40 reference size.
@@ -2399,12 +2417,12 @@ mod snapshot_tests {
             collected_at: Some(SystemTime::UNIX_EPOCH),
         });
 
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 4,
             ..Default::default()
         };
         let connections = app.get_connections();
-        let output = render_app(&app, &ui_state, &connections, None, 140, 30);
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 30);
 
         assert_app_snapshot!(output);
     }
@@ -2437,13 +2455,13 @@ mod snapshot_tests {
             },
         );
 
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 4, // Host
             host_view: HostView::Interfaces,
             ..Default::default()
         };
         let connections = app.get_connections();
-        let output = render_app(&app, &ui_state, &connections, None, 140, 30);
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 30);
 
         assert_app_snapshot!(output);
     }
@@ -2479,13 +2497,415 @@ mod snapshot_tests {
     }
 
     fn render_activity(app: &App, direction: ActivityDirection) -> String {
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 2,
             activity_direction: direction,
             ..Default::default()
         };
         let connections = app.get_connections();
-        render_app(app, &ui_state, &connections, None, 150, 40)
+        render_app(app, &mut ui_state, &connections, None, 150, 40)
+    }
+
+    fn many_process_activity() -> (App, Vec<Connection>) {
+        let app = test_app();
+        let mut connections: Vec<_> = (0..64)
+            .map(|index| {
+                let mut connection =
+                    test_support::local_tcp(2000 + index, &format!("process-{index:02}"));
+                connection.pid = Some(1000 + u32::from(index));
+                connection.bytes_sent = u64::from(64 - index) * 1000;
+                connection.bytes_received = u64::from(index) * 2000;
+                connection
+            })
+            .collect();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        app.observe_process_activity_for_test(&connections, now);
+        for connection in &mut connections {
+            connection.bytes_sent *= 2;
+            connection.bytes_received *= 2;
+        }
+        app.observe_process_activity_for_test(&connections, now + Duration::from_secs(2));
+        (app, connections)
+    }
+
+    fn activity_key(app: &App, state: &mut UiState, key: crossterm::event::KeyCode) {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let regions = ClickableRegions::default();
+        let mut ctx = test_support::empty_ctx(app, state, &regions);
+        dispatch_key(2, KeyEvent::new(key, KeyModifiers::NONE), &mut ctx)
+            .expect("Activity key handled");
+    }
+
+    #[test]
+    fn activity_all_processes_are_reachable_at_every_size() {
+        use crossterm::event::{KeyCode, KeyModifiers, MouseEvent, MouseEventKind};
+        let (app, connections) = many_process_activity();
+        for (width, height) in [(50, 12), (80, 24), (110, 32), (150, 40), (200, 50)] {
+            let mut state = UiState {
+                selected_tab: 2,
+                ..Default::default()
+            };
+            let (output, _) = render_app_frame(&app, &mut state, &connections, None, width, height);
+            assert!(output.contains("process-00"), "{output}");
+            assert!(output.contains('▐'), "missing scrollbar: {output}");
+            let page = state.activity_table.borrow().viewport;
+            assert!(page > 0);
+            activity_key(&app, &mut state, KeyCode::PageDown);
+            assert_eq!(state.activity_table.borrow().selected_index(), page);
+            activity_key(&app, &mut state, KeyCode::End);
+            let (output, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, height);
+            let table = state.activity_table.borrow();
+            assert_eq!(table.selected_index(), 63);
+            assert!(output.contains("process-63"), "{output}");
+            assert!(output.contains("64/64"), "{output}");
+            assert_eq!(table.offset + table.viewport, 64);
+            for y in 0..table.area.height {
+                let Some(ClickAction::SelectActivityProcess(id)) =
+                    regions.hit_test(table.area.x, table.area.y + y)
+                else {
+                    panic!("missing process hit target")
+                };
+                assert_eq!(id, &table.rows[table.offset + usize::from(y)]);
+            }
+            let mouse = MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: table.area.x,
+                row: table.area.y,
+                modifiers: KeyModifiers::NONE,
+            };
+            drop(table);
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_mouse(2, mouse, &mut ctx).unwrap();
+            assert_eq!(state.activity_table.borrow().selected_index(), 62);
+            activity_key(&app, &mut state, KeyCode::Home);
+            assert_eq!(state.activity_table.borrow().selected_index(), 0);
+        }
+    }
+
+    #[test]
+    fn activity_selection_tracks_identity_through_sort_updates_and_resize() {
+        use crossterm::event::KeyCode;
+        let (app, mut connections) = many_process_activity();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        activity_key(&app, &mut state, KeyCode::End);
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        let selected = state.activity_table.borrow().selected.clone();
+        connections[63].bytes_sent = 100_000_000;
+        app.observe_process_activity_for_test(
+            &connections,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        for (width, height) in [(80, 24), (150, 40), (50, 12), (80, 24)] {
+            let output = render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.activity_table.borrow().selected, selected);
+            assert!(output.contains("process-63"));
+        }
+        activity_key(&app, &mut state, KeyCode::Char('S'));
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_eq!(state.activity_table.borrow().selected, selected);
+        assert_eq!(state.activity_table.borrow().selected_index(), 63);
+        activity_key(&app, &mut state, KeyCode::Char('d'));
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_eq!(state.activity_table.borrow().selected, selected);
+    }
+
+    #[test]
+    fn activity_capture_is_complete_scrollable_and_restored_after_resize() {
+        use crossterm::event::KeyCode;
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        for (width, height) in [(50, 12), (80, 24)] {
+            state.activity_section = ActivitySection::Applications;
+            render_app(&app, &mut state, &connections, None, width, height);
+            activity_key(&app, &mut state, KeyCode::Char('v'));
+            let top = render_app(&app, &mut state, &connections, None, width, height);
+            assert!(top.contains("Basis: eth0"));
+            assert!(top.contains("Captured: 5.85 MB"));
+            assert_eq!(state.activity_capture_scroll.can_scroll(), height < 24);
+            let mut all = top;
+            for _ in 0..30 {
+                activity_key(&app, &mut state, KeyCode::Down);
+                all.push_str(&render_app(
+                    &app,
+                    &mut state,
+                    &connections,
+                    None,
+                    width,
+                    height,
+                ));
+            }
+            for metric in [
+                "Interface: 8.00 MB",
+                "Interface: 4.00 MB",
+                "Attribution · retained traffic",
+                "Mapped: 3.67 MB",
+                "Unknown: 0 B",
+                "Retained: 3.67 MB",
+            ] {
+                assert!(all.contains(metric), "missing {metric}");
+            }
+            let before_resize = render_app(&app, &mut state, &connections, None, width, height);
+            let wide = render_app(&app, &mut state, &connections, None, 150, 40);
+            assert!(!state.section_navigation);
+            assert!(!wide.contains("v/V"));
+            assert!(wide.contains("Attribution · retained traffic"));
+            assert!(!state.activity_capture_scroll.can_scroll());
+            let compact = render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.activity_section, ActivitySection::Capture);
+            assert_eq!(compact, before_resize);
+            assert!(compact.contains("Retained: 3.67 MB"));
+            activity_key(&app, &mut state, KeyCode::Esc);
+            assert_eq!(state.activity_section, ActivitySection::Applications);
+            state.activity_capture_scroll.reset();
+        }
+    }
+
+    #[test]
+    fn activity_process_inspection_exposes_hidden_fields_and_returns_to_selection() {
+        use crossterm::event::KeyCode;
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 50, 12);
+        let selected = state.activity_table.borrow().selected.clone();
+        activity_key(&app, &mut state, KeyCode::Enter);
+        assert_eq!(state.activity_view, ActivityView::ApplicationDetails);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        render_app(&app, &mut state, &connections, None, 50, 12);
+        assert_eq!(state.activity_view, ActivityView::Processes);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        assert_eq!(state.activity_view, ActivityView::ProcessDetails);
+        let mut all = render_app(&app, &mut state, &connections, None, 50, 12);
+        assert!(state.activity_process_scroll.can_scroll());
+        for _ in 0..45 {
+            activity_key(&app, &mut state, KeyCode::Down);
+            all.push_str(&render_app(&app, &mut state, &connections, None, 50, 12));
+        }
+        for metric in [
+            "PID: 2001",
+            "Remote peers:",
+            "Egress (TX)",
+            "Ingress (RX)",
+            "Peak rate:",
+            "Last 60s:",
+            "Share of retained:",
+            "Share of interface 60s:",
+            "Top remote peer:",
+            "Interface basis:",
+        ] {
+            assert!(all.contains(metric), "missing {metric}");
+        }
+        activity_key(&app, &mut state, KeyCode::Esc);
+        let output = render_app(&app, &mut state, &connections, None, 50, 12);
+        assert_eq!(state.activity_view, ActivityView::Processes);
+        activity_key(&app, &mut state, KeyCode::Esc);
+        assert_eq!(state.activity_view, ActivityView::ApplicationDetails);
+        activity_key(&app, &mut state, KeyCode::Esc);
+        assert_eq!(state.activity_view, ActivityView::Applications);
+        assert_eq!(state.activity_table.borrow().selected, selected);
+        assert!(output.contains("firefox"));
+    }
+
+    #[test]
+    fn activity_inspector_does_not_silently_switch_to_a_different_process() {
+        use crossterm::event::KeyCode;
+        let (app, connections) = many_process_activity();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        app.observe_process_activity_for_test(
+            &connections[1..],
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        let output = render_app(&app, &mut state, &connections[1..], None, 80, 24);
+        assert!(output.contains("No longer retained"));
+        activity_key(&app, &mut state, KeyCode::Esc);
+        render_app(&app, &mut state, &connections[1..], None, 80, 24);
+        assert_eq!(
+            state
+                .activity_table
+                .borrow()
+                .selected
+                .as_ref()
+                .unwrap()
+                .name,
+            "process-01"
+        );
+    }
+
+    #[test]
+    fn activity_capture_and_process_detail_snapshots() {
+        use crossterm::event::KeyCode;
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        insta::assert_snapshot!(
+            "activity_application_details",
+            render_app(&app, &mut state, &connections, None, 80, 24)
+        );
+        activity_key(&app, &mut state, KeyCode::Enter);
+        insta::assert_snapshot!(
+            "activity_application_processes",
+            render_app(&app, &mut state, &connections, None, 80, 24)
+        );
+        activity_key(&app, &mut state, KeyCode::Enter);
+        insta::assert_snapshot!(
+            "activity_process_details",
+            render_app(&app, &mut state, &connections, None, 80, 24)
+        );
+        activity_key(&app, &mut state, KeyCode::Char('v'));
+        insta::assert_snapshot!(
+            "activity_capture_compact",
+            render_app(&app, &mut state, &connections, None, 80, 24)
+        );
+    }
+
+    #[test]
+    fn activity_groups_repeated_names_and_keeps_every_pid_reachable() {
+        use crossterm::event::KeyCode;
+        let (app, mut connections) = many_process_activity();
+        for connection in &mut connections {
+            connection.process_name = Some("gh".into());
+        }
+        app.observe_process_activity_for_test(
+            &connections,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        for (width, height) in [(50, 12), (80, 24), (150, 40)] {
+            let mut state = UiState {
+                selected_tab: 2,
+                ..Default::default()
+            };
+            let output = render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.activity_table.borrow().rows.len(), 1);
+            assert!(output.contains("1-1/1"));
+            assert!(!output.contains("gh ("));
+            activity_key(&app, &mut state, KeyCode::Enter);
+            let summary = render_app(&app, &mut state, &connections, None, width, height);
+            assert!(summary.contains("Processes: 64"));
+            activity_key(&app, &mut state, KeyCode::Enter);
+            render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.activity_members.borrow().rows.len(), 64);
+            activity_key(&app, &mut state, KeyCode::End);
+            let (list, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, height);
+            assert!(list.contains("gh (1063)"));
+            assert!(list.contains("64/64"));
+            let member = state.activity_members.borrow().selected.clone();
+            let table = state.activity_members.borrow();
+            let last_y = table.area.bottom() - 1;
+            assert!(
+                matches!(regions.hit_test(table.area.x, last_y), Some(ClickAction::SelectActivityProcess(id)) if Some(id) == member.as_ref())
+            );
+            drop(table);
+            activity_key(&app, &mut state, KeyCode::Enter);
+            let detail = render_app(&app, &mut state, &connections, None, width, height);
+            assert!(detail.contains("PID: 1063"));
+            activity_key(&app, &mut state, KeyCode::Esc);
+            let restored = render_app(&app, &mut state, &connections, None, width, height);
+            assert_eq!(list, restored);
+            assert_eq!(state.activity_members.borrow().selected, member);
+        }
+    }
+
+    #[test]
+    fn activity_groups_unknown_names_without_losing_attribution() {
+        let (app, mut connections) = many_process_activity();
+        connections.truncate(2);
+        connections[0].process_name = None;
+        connections[0].pid = None;
+        connections[1].process_name = Some(crate::network::types::UNKNOWN_PROCESS_NAME.into());
+        app.observe_process_activity_for_test(
+            &connections,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_eq!(state.activity_table.borrow().rows.len(), 1);
+        activity_key(&app, &mut state, crossterm::event::KeyCode::Enter);
+        let output = render_app(&app, &mut state, &connections, None, 80, 24);
+        assert!(output.contains("Processes: 2"));
+        assert!(output.contains("Attribution: Mixed"));
+    }
+
+    #[test]
+    fn activity_scope_is_independent_and_overview_drilldown_is_exact() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (app, mut connections) = many_process_activity();
+        connections[0].process_name = Some("Code (Service)".into());
+        connections[1].process_name = Some("Code (Service)".into());
+        connections[2].process_name = Some("Code (Service)-extra".into());
+        app.observe_process_activity_for_test(
+            &connections,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_004),
+        );
+        app.set_connections_snapshot_for_test(connections.clone());
+        let mut state = UiState {
+            selected_tab: 2,
+            filter_query: "port:22".into(),
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &[], None, 80, 24);
+        assert!(output.contains("all traffic"));
+        assert_eq!(state.activity_table.borrow().rows.len(), 63);
+        activity_key(&app, &mut state, KeyCode::Enter);
+        let regions = ClickableRegions::default();
+        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+        let effects = dispatch_key(
+            2,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+            &mut ctx,
+        )
+        .unwrap();
+        assert!(matches!(effects.as_slice(), [Effect::RefreshData]));
+        assert_eq!(state.selected_tab, 0);
+        assert!(state.show_historic);
+        let filtered = app.get_filtered_connections(&state.filter_query);
+        assert_eq!(filtered.len(), 2);
+        state.selected_tab = 2;
+        activity_key(&app, &mut state, KeyCode::Enter);
+        render_app(&app, &mut state, &[], None, 80, 24);
+        activity_key(&app, &mut state, KeyCode::End);
+        let selected_pid = state
+            .activity_members
+            .borrow()
+            .selected
+            .as_ref()
+            .unwrap()
+            .pid;
+        activity_key(&app, &mut state, KeyCode::Char('o'));
+        let filtered = app.get_filtered_connections(&state.filter_query);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].pid, selected_pid);
+        state.selected_tab = 2;
+        state.activity_view = ActivityView::Applications;
+        let query = state.filter_query.clone();
+        activity_key(&app, &mut state, KeyCode::Esc);
+        assert_eq!(state.selected_tab, 0);
+        assert_eq!(state.filter_query, query);
     }
 
     #[test]
@@ -2503,12 +2923,12 @@ mod snapshot_tests {
     #[test]
     fn activity_tab_compact_terminal() {
         let app = seeded_activity_app();
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 2,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &app.get_connections(), None, 80, 24);
-        assert!(output.contains("firefox (2001)"));
+        let output = render_app(&app, &mut ui_state, &app.get_connections(), None, 80, 24);
+        assert!(output.contains("firefox"));
         assert!(output.contains("Coverage"));
         assert!(!output.contains("Share (60s)"));
         insta::assert_snapshot!(output);
@@ -2517,26 +2937,26 @@ mod snapshot_tests {
     #[test]
     fn activity_tab_medium_terminal() {
         let app = seeded_activity_app();
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 2,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &app.get_connections(), None, 110, 32);
+        let output = render_app(&app, &mut ui_state, &app.get_connections(), None, 110, 32);
         assert!(output.contains("Top remote peer"));
-        assert!(output.contains("firefox (2001)"));
+        assert!(output.contains("firefox"));
         insta::assert_snapshot!(output);
     }
 
     #[test]
     fn activity_tab_empty_terminal() {
         let app = test_app();
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 2,
             ..Default::default()
         };
-        let output = render_app(&app, &ui_state, &[], None, 80, 24);
+        let output = render_app(&app, &mut ui_state, &[], None, 80, 24);
         assert!(output.contains("n/a"));
-        assert!(output.contains("Waiting for process traffic"));
+        assert!(output.contains("Waiting for application traffic"));
         insta::assert_snapshot!(output);
     }
 
@@ -2575,31 +2995,29 @@ mod snapshot_tests {
         app.set_connections_snapshot_for_test(sample_connections());
         app.set_traffic_history_for_test(TrafficHistory::new(60));
 
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 3, // Graph
             ..Default::default()
         };
         let connections = app.get_connections();
-        let output = render_app(&app, &ui_state, &connections, None, 140, 40);
+        let output = render_app(&app, &mut ui_state, &connections, None, 140, 40);
 
         assert_app_snapshot!(output);
     }
 
-    /// A stock 80x24 terminal cannot hold all three Graph sections; the
-    /// fixed-height rows drop from the bottom up so the waves and the
-    /// health row render at full height instead of all three squeezed.
+    /// A stock 80x24 terminal shows one section with an explicit switcher.
     #[test]
-    fn graph_tab_small_terminal_drops_bottom_sections() {
+    fn graph_tab_compact_traffic() {
         let app = test_app();
         app.set_connections_snapshot_for_test(sample_connections());
         app.set_traffic_history_for_test(TrafficHistory::new(60));
 
-        let ui_state = UiState {
+        let mut ui_state = UiState {
             selected_tab: 3, // Graph
             ..Default::default()
         };
         let connections = app.get_connections();
-        let output = render_app(&app, &ui_state, &connections, None, 80, 24);
+        let output = render_app(&app, &mut ui_state, &connections, None, 80, 24);
 
         assert_app_snapshot!(output);
     }
@@ -2608,10 +3026,785 @@ mod snapshot_tests {
     fn loading_screen_via_app() {
         let app = App::new(test_config()).expect("App::new");
         // Leave is_loading=true so draw() takes the loading branch.
-        let ui_state = UiState::default();
-        let output = render_app(&app, &ui_state, &[], None, 80, 20);
+        let mut ui_state = UiState::default();
+        let output = render_app(&app, &mut ui_state, &[], None, 80, 20);
 
         insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn overview_viewport_tracks_resize_filter_and_error_banner() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use test_support::local_tcp;
+
+        let app = test_app();
+        let connections: Vec<_> = (0..50)
+            .map(|i| local_tcp(1000 + i, &format!("proc{i:02}")))
+            .collect();
+        for grouping_enabled in [false, true] {
+            for expanded in [false, true] {
+                let mut state = UiState {
+                    grouping_enabled,
+                    ..Default::default()
+                };
+                if expanded {
+                    state.expanded_groups = connections
+                        .iter()
+                        .filter_map(|c| c.process_name.clone())
+                        .collect();
+                }
+                let rows = compute_grouped_rows(&connections, &state.expanded_groups);
+                let grouped = grouping_enabled.then_some(rows.as_slice());
+                let total = if grouping_enabled {
+                    rows.len()
+                } else {
+                    connections.len()
+                };
+                if grouping_enabled {
+                    state.set_selected_grouped_by_index(&rows, total - 1);
+                } else {
+                    state.set_selected_by_index(&connections, total - 1);
+                }
+
+                // Reuse state across every resize, including shrinking from a tall
+                // frame with the last row selected and growing it again.
+                for (height, filter, error) in [
+                    (40, false, false),
+                    (24, false, false),
+                    (16, true, true),
+                    (12, false, true),
+                    (24, true, false),
+                    (40, false, false),
+                ] {
+                    state.filter_mode = filter;
+                    state.filter_query = "proc".to_string();
+                    app.set_capture_error_for_test(error.then_some(
+                        "Capture failed to start: interface unavailable. Check the interface and capture permissions.",
+                    ));
+                    let (output, regions) =
+                        render_app_frame(&app, &mut state, &connections, grouped, 80, height);
+                    let expected =
+                        usize::from(height) - 8 - usize::from(filter) - usize::from(error);
+                    assert_eq!(state.visible_rows, expected);
+                    let offset = if grouping_enabled {
+                        state.grouped_scroll_offset
+                    } else {
+                        state.scroll_offset
+                    };
+                    assert_eq!(offset, total - expected);
+                    let selected = if grouping_enabled {
+                        state.get_selected_grouped_index(&rows)
+                    } else {
+                        state.get_selected_index(&connections)
+                    };
+                    assert_eq!(selected, Some(total - 1));
+
+                    // Every painted row maps to that exact data row. Selection and
+                    // scrollbar both reach the last row above the filter/status area.
+                    let table = regions.scroll_area.expect("connection table");
+                    let row_area = connection_table::table_rows_area(table);
+                    assert_eq!(usize::from(row_area.height), expected);
+                    for row in 0..row_area.height {
+                        assert!(matches!(regions.hit_test(0, row_area.y + row),
+                            Some(ClickAction::SelectConnection(i)) if *i == offset + usize::from(row)));
+                    }
+                    let bottom = usize::from(row_area.bottom() - 1);
+                    let line = output.lines().nth(bottom).unwrap();
+                    assert!(line.starts_with('▌'), "selected row: {line}");
+                    assert_eq!(line.chars().last(), Some('▐'));
+                    assert!(!matches!(
+                        regions.hit_test(0, row_area.bottom()),
+                        Some(ClickAction::SelectConnection(_))
+                    ));
+
+                    // Apply the same key dispatch as the event loop, with filtering
+                    // exited so the connection navigation handler receives the key.
+                    state.filter_mode = false;
+                    let mut ctx = HandlerContext {
+                        app: &app,
+                        ui_state: &mut state,
+                        connections: &connections,
+                        grouped_rows: grouped,
+                        click_regions: &regions,
+                    };
+                    dispatch_key(
+                        0,
+                        KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+                        &mut ctx,
+                    )
+                    .expect("page up handled");
+                    let selected = if grouping_enabled {
+                        ctx.ui_state.get_selected_grouped_index(&rows)
+                    } else {
+                        ctx.ui_state.get_selected_index(&connections)
+                    };
+                    assert_eq!(selected, Some(total - 1 - expected));
+                    dispatch_key(
+                        0,
+                        KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                        &mut ctx,
+                    )
+                    .expect("page down handled");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_graph_sections_remain_reachable_and_survive_resize() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use state::GraphSection;
+
+        let app = test_app();
+        let connections = sample_connections();
+        let mut state = UiState {
+            selected_tab: 3,
+            ..Default::default()
+        };
+        for (section, heading) in [
+            (GraphSection::Traffic, "Traffic Over Time"),
+            (GraphSection::Health, "Observed Network Health"),
+            (GraphSection::Distribution, "Application Distribution"),
+        ] {
+            let (output, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+            assert_eq!(state.graph_section, section);
+            assert!(output.contains(heading));
+            assert!(output.contains(sections::SECTION_KEYS));
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                3,
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .expect("next section handled");
+        }
+        assert_eq!(state.graph_section, GraphSection::Traffic);
+        state.graph_section = GraphSection::Distribution;
+        // The width and height boundaries must independently select compact mode.
+        for (width, height, compact) in [
+            (99, 40, true),
+            (100, 34, true),
+            (100, 35, false),
+            (100, 36, false),
+            (140, 40, false),
+            (80, 24, true),
+        ] {
+            let (output, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.graph_compact.get(), compact);
+            assert!(output.contains("Application Distribution"));
+            assert_eq!(output.contains("Traffic Over Time"), !compact);
+            assert_eq!(state.graph_section, GraphSection::Distribution);
+            if !compact {
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                assert!(
+                    dispatch_key(
+                        3,
+                        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                        &mut ctx
+                    )
+                    .is_none()
+                );
+                assert_eq!(ctx.ui_state.graph_section, GraphSection::Distribution);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_graph_keeps_live_rates_and_all_tcp_states_visible() {
+        use crate::network::types::ConnectionLifecycleSample;
+        let app = test_app();
+        let mut history = TrafficHistory::new(60);
+        for _ in 0..60 {
+            history.add_sample_with_lifecycle(
+                8192,
+                4096,
+                ConnectionLifecycleSample::default(),
+                100,
+                1,
+                Some(25.0),
+            );
+        }
+        app.set_traffic_history_for_test(history);
+        let connections: Vec<_> = [
+            TcpState::Established,
+            TcpState::SynSent,
+            TcpState::SynReceived,
+            TcpState::FinWait1,
+            TcpState::FinWait2,
+            TcpState::TimeWait,
+            TcpState::CloseWait,
+            TcpState::LastAck,
+            TcpState::Closing,
+            TcpState::Closed,
+            TcpState::Unknown,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, tcp_state)| {
+            let mut conn = test_support::local_tcp(1000 + i as u16, "process");
+            conn.protocol_state = ProtocolState::Tcp(tcp_state);
+            conn
+        })
+        .collect();
+        let mut state = UiState {
+            selected_tab: 3,
+            ..Default::default()
+        };
+        let traffic = render_app(&app, &mut state, &connections, None, 80, 24);
+        for label in ["RX", "TX", "OPENED", "CLOSED", "8.00 KB/s", "4.00 KB/s"] {
+            assert!(traffic.contains(label), "{label}: {traffic}");
+        }
+        state.graph_section = GraphSection::Health;
+        let health = render_app(&app, &mut state, &connections, None, 80, 24);
+        for label in [
+            "25.0ms",
+            "1.00%",
+            "ESTAB",
+            "SYN_SENT",
+            "SYN_RECV",
+            "FIN_WAIT1",
+            "FIN_WAIT2",
+            "TIME_WAIT",
+            "CLOSE_WAIT",
+            "LAST_ACK",
+            "CLOSING",
+            "CLOSED",
+            "UNKNOWN",
+        ] {
+            assert!(health.contains(label), "{label}: {health}");
+        }
+    }
+
+    #[test]
+    fn compact_graph_health() {
+        let app = test_app();
+        let connections = sample_connections();
+        let mut state = UiState {
+            selected_tab: 3,
+            graph_section: state::GraphSection::Health,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_app_snapshot!(output);
+    }
+
+    #[test]
+    fn compact_graph_distribution() {
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            selected_tab: 3,
+            graph_section: state::GraphSection::Distribution,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &connections, None, 80, 24);
+        assert_app_snapshot!(output);
+    }
+
+    #[test]
+    fn activity_short_terminal_keeps_processes_and_coverage() {
+        let app = seeded_activity_app();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &app.get_connections(), None, 80, 12);
+        assert!(output.contains("firefox"));
+        assert!(output.contains("Coverage 60s: TX 73.1%"));
+        assert!(output.contains("enter details"));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn activity_layout_boundaries_keep_the_process_table() {
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        let mut state = UiState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        for (width, height) in [
+            (80, 18),
+            (80, 19),
+            (139, 25),
+            (140, 24),
+            (140, 25),
+            (200, 50),
+        ] {
+            let output = render_app(&app, &mut state, &connections, None, width, height);
+            assert!(output.contains("firefox"), "{width}x{height}: {output}");
+            assert!(
+                output.to_lowercase().contains("coverage"),
+                "{width}x{height}: {output}"
+            );
+            assert!(output.contains("Retained"));
+        }
+    }
+
+    #[test]
+    fn every_tab_handles_tiny_and_narrow_viewports() {
+        let app = seeded_activity_app();
+        let connections = app.get_connections();
+        for selected_tab in 0..5 {
+            let mut state = UiState {
+                selected_tab,
+                ..Default::default()
+            };
+            for (width, height) in [(0, 0), (1, 1), (24, 8), (40, 12), (80, 24)] {
+                render_app(&app, &mut state, &connections, None, width, height);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_details_pages_preserve_selection_and_expose_every_section() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            selected_tab: 1,
+            ..Default::default()
+        };
+        state.set_selected_by_index(&connections, 0);
+        let selected = state.selected_connection_key.clone();
+        for section in DetailsSection::ALL {
+            let (output, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+            assert_eq!(state.details_section, section);
+            assert!(output.contains(section.title()));
+            assert!(output.contains(sections::SECTION_KEYS));
+            assert_eq!(state.selected_connection_key, selected);
+            assert!(
+                !state.details_scroll.can_scroll(),
+                "section should fit: {output}"
+            );
+            insta::with_settings!({filters => time_filters()}, {
+                insta::assert_snapshot!(format!("compact_details_{}", section.title().to_lowercase()), output);
+            });
+            let mut ctx = HandlerContext {
+                app: &app,
+                ui_state: &mut state,
+                connections: &connections,
+                grouped_rows: None,
+                click_regions: &regions,
+            };
+            dispatch_key(
+                1,
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .expect("section switch handled");
+        }
+        assert_eq!(state.details_section, DetailsSection::Connection);
+        let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+        state.details_section = DetailsSection::Application;
+        let mut ctx = HandlerContext {
+            app: &app,
+            ui_state: &mut state,
+            connections: &connections,
+            grouped_rows: None,
+            click_regions: &regions,
+        };
+        dispatch_key(
+            1,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &mut ctx,
+        )
+        .expect("connection navigation handled");
+        assert_eq!(state.get_selected_index(&connections), Some(1));
+        assert_eq!(state.details_section, DetailsSection::Application);
+        let application = render_app(&app, &mut state, &connections, None, 80, 24);
+        assert!(application.contains("DNS Query"));
+        assert!(application.contains("example.com"));
+    }
+
+    #[test]
+    fn compact_details_keep_copy_targets_aligned_after_scrolling_and_resizing() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            selected_tab: 1,
+            ..Default::default()
+        };
+        for (width, height) in [(80, 24), (50, 12), (140, 24), (140, 40), (80, 24)] {
+            let (_, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.details_compact.get(), width < 100 || height < 27);
+            if height == 12 {
+                assert!(state.details_scroll.can_scroll());
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                dispatch_key(
+                    1,
+                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                    &mut ctx,
+                )
+                .expect("scroll handled");
+                let (output, regions) =
+                    render_app_frame(&app, &mut state, &connections, None, width, height);
+                let mut targets = 0;
+                for y in 0..height {
+                    if let Some(ClickAction::CopyField { label, value }) = regions.hit_test(0, y) {
+                        let line = output.lines().nth(usize::from(y)).unwrap();
+                        assert!(line.contains(label), "misaligned target {label}: {line}");
+                        assert!(!value.is_empty());
+                        targets += 1;
+                    }
+                }
+                assert!(targets >= 3);
+                state.details_section = DetailsSection::Traffic;
+            }
+        }
+        assert_eq!(state.details_section, DetailsSection::Traffic);
+    }
+
+    #[test]
+    fn compact_details_preserve_protocol_fields_from_the_full_layout() {
+        use std::collections::BTreeSet;
+        let app = test_app();
+        let mut connections: Vec<_> = dpi_variants_full()
+            .into_iter()
+            .map(dpi_details_connection)
+            .collect();
+        connections.extend([
+            arp_details_connection(true),
+            icmp_echo_details_connection(),
+            icmpv6_ndp_details_connection(),
+            igmp_details_connection(),
+        ]);
+        let labels = |regions: &ClickableRegions, width: u16, height: u16| -> BTreeSet<String> {
+            (0..height)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .filter_map(|(x, y)| match regions.hit_test(x, y) {
+                    Some(ClickAction::CopyField { label, .. }) if label != "Traffic Total" => {
+                        Some(label.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        for conn in connections {
+            let connections = [conn];
+            let mut state = UiState {
+                selected_tab: 1,
+                ..Default::default()
+            };
+            let (_, wide) = render_app_frame(&app, &mut state, &connections, None, 140, 100);
+            let wide_labels = labels(&wide, 140, 100);
+            let mut compact_labels = BTreeSet::new();
+            for section in DetailsSection::ALL {
+                state.details_section = section;
+                let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+                compact_labels.extend(labels(&regions, 80, 24));
+            }
+            assert!(
+                wide_labels.is_subset(&compact_labels),
+                "missing fields: {:?}",
+                wide_labels.difference(&compact_labels).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn overview_system_is_inline_scrollable_and_survives_resize() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let connections = overview_connections();
+        for width in [50, 80, 89] {
+            let mut state = UiState::default();
+            state.set_selected_by_index(&connections, 2);
+            let selected = state.selected_connection_key.clone();
+            let (_, regions) = render_app_frame(&app, &mut state, &connections, None, width, 24);
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                0,
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+            assert_eq!(state.overview_section, OverviewSection::System);
+            let (output, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, 24);
+            assert!(output.contains("System"));
+            assert!(output.contains("Interface: eth0"));
+            let divider = "─".repeat(usize::from(width - 2));
+            assert!(
+                output
+                    .lines()
+                    .skip(4)
+                    .any(|line| line.starts_with(&divider)),
+                "{output}"
+            );
+            assert!(state.system_scroll.can_scroll());
+            assert_eq!(state.selected_connection_key, selected);
+            if width < 90 {
+                assert!(
+                    regions.scroll_area.is_none(),
+                    "hidden table must have no mouse targets"
+                );
+            }
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(0, KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &mut ctx).unwrap();
+            let bottom = render_app(&app, &mut state, &connections, None, width, 24);
+            assert!(bottom.contains("Security"), "{bottom}");
+            assert!(
+                bottom
+                    .lines()
+                    .skip(4)
+                    .any(|line| line.starts_with(&divider)),
+                "{bottom}"
+            );
+            assert!(!bottom.contains("(compact)"));
+            render_app(&app, &mut state, &connections, None, 140, 45);
+            render_app(&app, &mut state, &connections, None, 80, 24);
+            assert_eq!(state.overview_section, OverviewSection::System);
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                0,
+                KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+            assert_eq!(state.overview_section, OverviewSection::Connections);
+            assert_eq!(state.selected_connection_key, selected);
+        }
+    }
+
+    #[test]
+    fn shared_section_navigation_and_click_targets_work_at_every_size() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let connections = overview_connections();
+        for tab in [0, 1, 2, 3, 4] {
+            for (width, height) in [(50, 12), (80, 24), (140, 50)] {
+                if tab != 4 && width == 140 {
+                    continue;
+                }
+                let mut state = UiState {
+                    selected_tab: tab,
+                    ..Default::default()
+                };
+                let count = state.sections().0.len();
+                for index in 0..count {
+                    let (output, regions) =
+                        render_app_frame(&app, &mut state, &connections, None, width, height);
+                    assert_eq!(state.sections().1, index);
+                    let mut clicks = 0;
+                    for x in 0..width {
+                        for y in 0..height {
+                            if let Some(ClickAction::SelectSection(target)) = regions.hit_test(x, y)
+                            {
+                                assert!(*target < count);
+                                clicks += 1;
+                            }
+                        }
+                    }
+                    assert!(clicks > 0, "{output}");
+                    assert!(
+                        output
+                            .lines()
+                            .last()
+                            .unwrap()
+                            .contains(sections::SECTION_KEYS),
+                        "{output}"
+                    );
+                    for x in 0..width {
+                        if let Some(ClickAction::SelectSection(target)) = regions.hit_test(x, 2) {
+                            assert!(
+                                matches!(regions.hit_test(x, 3), Some(ClickAction::SelectSection(other)) if other == target)
+                            );
+                        }
+                    }
+                    let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                    dispatch_key(
+                        tab,
+                        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                        &mut ctx,
+                    )
+                    .unwrap();
+                    assert_eq!(ctx.ui_state.selected_tab, tab);
+                }
+                assert_eq!(state.sections().1, 0);
+                let regions = ClickableRegions::default();
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                dispatch_key(
+                    tab,
+                    KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE),
+                    &mut ctx,
+                )
+                .unwrap();
+                assert_eq!(ctx.ui_state.sections().1, count - 1);
+                ctx.ui_state.select_section(0);
+                assert_eq!(ctx.ui_state.sections().1, 0);
+                ctx.ui_state.select_section(count);
+                assert_eq!(ctx.ui_state.sections().1, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn section_controls_respect_help_and_filter_input() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let regions = ClickableRegions::default();
+        let mut state = UiState {
+            show_help: true,
+            ..Default::default()
+        };
+        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+        for key in ['v', 'V'] {
+            dispatch_key(
+                0,
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+            assert_eq!(ctx.ui_state.overview_section, OverviewSection::Connections);
+        }
+        ctx.ui_state.show_help = false;
+        ctx.ui_state.filter_mode = true;
+        for key in ['v', 'V'] {
+            dispatch_key(
+                0,
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+        }
+        assert_eq!(ctx.ui_state.filter_query, "vV");
+        assert_eq!(ctx.ui_state.overview_section, OverviewSection::Connections);
+    }
+
+    #[test]
+    fn section_hints_follow_the_layout_while_help_stays_open() {
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            show_help: true,
+            ..Default::default()
+        };
+        for tab in [0, 1, 2, 3] {
+            state.selected_tab = tab;
+            for (width, height, compact) in [(140, 50, false), (80, 24, true), (140, 50, false)] {
+                let output = render_app(&app, &mut state, &connections, None, width, height);
+                assert_eq!(
+                    output.contains(sections::SECTION_KEYS),
+                    compact,
+                    "unexpected section hint for tab {tab} at {width}x{height}:\n{output}"
+                );
+                assert!(state.show_help);
+            }
+        }
+        // Host still has two selectable views on a wide terminal.
+        state.selected_tab = 4;
+        let output = render_app(&app, &mut state, &connections, None, 140, 50);
+        assert!(output.contains(sections::SECTION_KEYS));
+    }
+
+    #[test]
+    fn host_section_keys_are_consumed_while_help_is_open() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let regions = ClickableRegions::default();
+        let mut state = UiState {
+            selected_tab: 4,
+            show_help: true,
+            section_navigation: true,
+            ..Default::default()
+        };
+        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+        for key in ['v', 'V'] {
+            assert!(
+                dispatch_key(
+                    4,
+                    KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                    &mut ctx
+                )
+                .is_some()
+            );
+            assert_eq!(ctx.ui_state.host_view, HostView::Sockets);
+        }
+        for code in [KeyCode::Tab, KeyCode::Char('['), KeyCode::Char(']')] {
+            assert!(dispatch_key(4, KeyEvent::new(code, KeyModifiers::NONE), &mut ctx).is_none());
+        }
+    }
+
+    #[test]
+    fn wide_dashboards_do_not_add_section_controls_or_depend_on_compact_selection() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let connections = overview_connections();
+        for tab in [0, 1, 3] {
+            let mut state = UiState {
+                selected_tab: tab,
+                ..Default::default()
+            };
+            let count = state.sections().0.len();
+            let baseline = render_app(&app, &mut state, &connections, None, 140, 50);
+            for index in 0..count {
+                state.select_section(index);
+                let (output, regions) =
+                    render_app_frame(&app, &mut state, &connections, None, 140, 50);
+                assert!(!state.section_navigation);
+                assert_eq!(
+                    output, baseline,
+                    "wide tab {tab} changed with compact section {index}"
+                );
+                for y in 0..50 {
+                    for x in 0..140 {
+                        assert!(!matches!(
+                            regions.hit_test(x, y),
+                            Some(ClickAction::SelectSection(_))
+                        ));
+                    }
+                }
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                for key in ['v', 'V', '[', ']'] {
+                    assert!(
+                        dispatch_key(
+                            tab,
+                            KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                            &mut ctx
+                        )
+                        .is_none()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_sections_leave_brackets_for_main_tabs_and_accept_shift_v() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let connections = overview_connections();
+        for tab in [0, 1, 2, 3, 4] {
+            let mut state = UiState {
+                selected_tab: tab,
+                ..Default::default()
+            };
+            let count = state.sections().0.len();
+            let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            for key in ['[', ']'] {
+                assert!(
+                    dispatch_key(
+                        tab,
+                        KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                        &mut ctx
+                    )
+                    .is_none()
+                );
+            }
+            for key in [
+                KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT),
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SHIFT),
+            ] {
+                ctx.ui_state.select_section(0);
+                dispatch_key(tab, key, &mut ctx).unwrap();
+                assert_eq!(ctx.ui_state.sections().1, count - 1);
+            }
+        }
     }
 
     // --- Application card: fixed per-protocol row sets ---

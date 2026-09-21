@@ -1,15 +1,14 @@
 ---
 source: src/ui/mod.rs
-expression: output
+expression: "render_app(&app, &mut state, &connections, None, 80, 24)"
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
 ─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
 Applications   Capture                                                          
 ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────
-TX -   RX -                                                                     
-Coverage 60s: TX n/a  RX n/a                                                    
-▎ Applications · TX · Retained TX ↓ ─────────────────────────────────────── 0/0 
-Waiting for application traffic...                                              
+▎ firefox · Processes · TX · Retained TX ↓ ────────────────────────────── 1-1/1 
+  Process                                      TX/s   60s %   Retained   Conns  
+▌ firefox (2001)                               2.4M   81.7%    4.78 MB     1/1  
                                                                                 
                                                                                 
                                                                                 
@@ -25,4 +24,5 @@ Waiting for application traffic...
                                                                                 
                                                                                 
                                                                                 
- v/V section  d tx/rx  s sort  S order  esc back                 h help  q quit
+                                                                                
+ v/V section  j/k select  enter details  d tx/rx  s sort         h help  q quit

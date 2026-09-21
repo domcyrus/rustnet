@@ -10,4 +10,5 @@ pub(super) mod glow_bar;
 pub(super) mod loading;
 pub(super) mod scrollbar;
 pub(super) mod status_bar;
+pub(super) mod tab_strip;
 pub(super) mod tabs_bar;

@@ -3,13 +3,11 @@ source: src/ui/mod.rs
 expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
-─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
-Applications   Capture                                                          
-━━━━━━━━━━━━────────────────────────────────────────────────────────────────────
-TX -   RX -                                                                     
-Coverage 60s: TX n/a  RX n/a                                                    
-▎ Applications · TX · Retained TX ↓ ─────────────────────────────────────── 0/0 
-Waiting for application traffic...                                              
+──────────────────────────────────────────────────━━━━━━━───────────────────────
+Traffic   Health   Distribution                                                 
+━━━━━━━─────────────────────────────────────────────────────────────────────────
+▎ Traffic Over Time (60s) ──────────────────────────────────────────────────────
+Waiting for traffic data...                                                     
                                                                                 
                                                                                 
                                                                                 
@@ -19,10 +17,12 @@ Waiting for application traffic...
                                                                                 
                                                                                 
                                                                                 
+▎ Connection Lifecycle ─────────────────────────────────────────────────────────
+Waiting for connection data...                                                  
                                                                                 
                                                                                 
                                                                                 
                                                                                 
                                                                                 
                                                                                 
- v/V section  d tx/rx  s sort  S order  esc back                 h help  q quit
+ v/V section  esc back                                           h help  q quit

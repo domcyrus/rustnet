@@ -16,19 +16,20 @@ expression: output
     │   Ctrl+B/F      Move by one page                                                       ▐ │    
     │                                                                                        ▐ │    
     │ ▎ Overview Actions                                                                     ▐ │    
-    │   Enter   Open the selected connection in Details                                      ▐ │    
-    │   /       Enter filter mode                                                            ▐ │    
-    │   Esc     Clear the active filter                                                      ▐ │    
-    │   c       Copy the selected remote address                                             ▐ │    
-    │   p       Toggle service names and port numbers                                        ▐ │    
-    │   d       Toggle hostnames and IP addresses                                            ▐ │    
-    │   s, S    Change sort column or direction                                                │    
-    │   a       Toggle process grouping                                                        │    
-    │   Space   Expand or collapse the selected group                                          │    
-    │   ←/→, l  Collapse or expand the selected group                                          │    
-    │   t       Toggle historic connections                                                    │    
-    │   i       Toggle the System info panel                                                   │    
-    │   r       Reset grouping, sorting, filter, and history                                   │    
+    │   i               Show or hide System sidebar on wide terminals                        ▐ │    
+    │   Enter           Open the selected connection in Details                              ▐ │    
+    │   /               Enter filter mode                                                    ▐ │    
+    │   Esc             Clear the active filter                                              ▐ │    
+    │   c               Copy the selected remote address                                     ▐ │    
+    │   p               Toggle service names and port numbers                                ▐ │    
+    │   d               Toggle hostnames and IP addresses                                      │    
+    │   s, S            Change sort column or direction                                        │    
+    │   a               Toggle process grouping                                                │    
+    │   Space           Expand or collapse the selected group                                  │    
+    │   ←/→, l          Collapse or expand the selected group                                  │    
+    │   t               Toggle historic connections                                            │    
+    │   System section  Scroll with j/k, Page Up/Down, or the mouse wheel                      │    
+    │   r               Reset grouping, sorting, filter, and history                           │    
     │                                                                                          │    
     │ ▎ Connection Display                                                                     │    
     │   Full color  Active connection                                                          │    
@@ -36,5 +37,4 @@ expression: output
     │   Gray        Historic closed connection                                                 │    
     │   ~name       Hostname inferred from an observed DNS response                            │    
     │   App column  Application protocol, SNI, or HTTP Host                                    │    
-    │   R3/O1       Health for TCP: retransmits and out-of-order packets                       │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯
