@@ -243,8 +243,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 | `←` / `→` 或 `l` | 折叠 / 展开当前分组 |
 | `PageUp/PageDown` 或 `Ctrl+B/F` | 翻页 |
 | `t` | 切换是否显示历史（已关闭）连接 |
-| `v` / `Shift+v` | 紧凑 Overview、Details 或 Graph 中的下一个 / 上一个区块 |
-| `[` / `]` | Host 中的上一个 / 下一个区块；其他页面的上一个 / 下一个主标签页 |
+| `v` / `Shift+v` | 紧凑布局或 Host 中的下一个 / 上一个区块 |
+| `[` / `]` | 上一个 / 下一个主标签页 |
 | `i` | 在宽屏 Overview 中切换 System 侧栏 |
 | `r` | 重置视图(分组、排序、过滤) |
 | `/` | 进入过滤模式 |

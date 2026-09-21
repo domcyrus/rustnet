@@ -3201,7 +3201,11 @@ mod snapshot_tests {
                     }
                     assert!(clicks > 0, "{output}");
                     assert!(
-                        output.lines().last().unwrap().contains(sections::keys(tab)),
+                        output
+                            .lines()
+                            .last()
+                            .unwrap()
+                            .contains(sections::SECTION_KEYS),
                         "{output}"
                     );
                     for x in 0..width {
@@ -3214,10 +3218,7 @@ mod snapshot_tests {
                     let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
                     dispatch_key(
                         tab,
-                        KeyEvent::new(
-                            KeyCode::Char(if tab == 4 { ']' } else { 'v' }),
-                            KeyModifiers::NONE,
-                        ),
+                        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
                         &mut ctx,
                     )
                     .unwrap();
@@ -3228,10 +3229,7 @@ mod snapshot_tests {
                 let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
                 dispatch_key(
                     tab,
-                    KeyEvent::new(
-                        KeyCode::Char(if tab == 4 { '[' } else { 'V' }),
-                        KeyModifiers::NONE,
-                    ),
+                    KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE),
                     &mut ctx,
                 )
                 .unwrap();
@@ -3300,7 +3298,7 @@ mod snapshot_tests {
         // Host still has two selectable views on a wide terminal.
         state.selected_tab = 4;
         let output = render_app(&app, &mut state, &connections, None, 140, 50);
-        assert!(output.contains(sections::keys(4)));
+        assert!(output.contains(sections::SECTION_KEYS));
     }
 
     #[test]
@@ -3315,7 +3313,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-        for key in ['[', ']'] {
+        for key in ['v', 'V'] {
             assert!(
                 dispatch_key(
                     4,
@@ -3326,9 +3324,9 @@ mod snapshot_tests {
             );
             assert_eq!(ctx.ui_state.host_view, HostView::Sockets);
         }
-        assert!(
-            dispatch_key(4, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut ctx).is_none()
-        );
+        for code in [KeyCode::Tab, KeyCode::Char('['), KeyCode::Char(']')] {
+            assert!(dispatch_key(4, KeyEvent::new(code, KeyModifiers::NONE), &mut ctx).is_none());
+        }
     }
 
     #[test]
@@ -3380,7 +3378,7 @@ mod snapshot_tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = overview_connections();
-        for tab in [0, 1, 3] {
+        for tab in [0, 1, 3, 4] {
             let mut state = UiState {
                 selected_tab: tab,
                 ..Default::default()

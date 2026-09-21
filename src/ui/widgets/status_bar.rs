@@ -96,7 +96,7 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
     if ui_state.section_navigation {
         hints.insert(
             0,
-            Hint::action(crate::ui::sections::keys(ui_state.selected_tab), "section"),
+            Hint::action(crate::ui::sections::SECTION_KEYS, "section"),
         );
     }
     hints

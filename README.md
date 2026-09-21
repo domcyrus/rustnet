@@ -255,8 +255,8 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `←` / `→` or `l` | Collapse/expand group |
 | `PageUp/PageDown` or `Ctrl+B/F` | Page navigation |
 | `t` | Toggle historic (closed) connections |
-| `v` / `Shift+v` | Next / previous section on compact Overview, Details, or Graph |
-| `[` / `]` | Previous / next Host section; previous / next main tab elsewhere |
+| `v` / `Shift+v` | Next / previous section on compact layouts or Host |
+| `[` / `]` | Previous / next main tab |
 | `i` | Toggle System sidebar on wide Overview layouts |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |

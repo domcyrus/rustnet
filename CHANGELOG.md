@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Compact layouts**: Overview, Details, and Graph share clickable section
   selectors with `v` / Shift+`v` when the full layout does not fit. Overview
-  shows System inline with dividers; Host uses `[` / `]` for its two views.
+  shows System inline with dividers; Host uses the same controls for its two views.
   Section tabs share the main tabs' styling and show shortcuts in the footer.
   Wide dashboards stay unchanged. Short Activity views
   keep process rows and coverage visible.

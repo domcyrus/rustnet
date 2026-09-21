@@ -15,21 +15,6 @@ pub(super) const SECTION_HELP: (&str, &str) = (
     "Next/previous section; click a section name to select it",
 );
 
-pub(super) fn keys(tab: usize) -> &'static str {
-    if tab == 4 { "[/]" } else { SECTION_KEYS }
-}
-
-pub(super) fn help(tab: usize) -> (&'static str, &'static str) {
-    if tab == 4 {
-        (
-            keys(tab),
-            "Previous/next section; click a section name to select it",
-        )
-    } else {
-        SECTION_HELP
-    }
-}
-
 impl UiState {
     pub(super) fn sections(&self) -> (&'static [&'static str], usize) {
         match self.selected_tab {
@@ -86,19 +71,11 @@ pub(super) fn handle_key(key: KeyEvent, state: &mut UiState) -> Option<Vec<Effec
     if !state.section_navigation {
         return None;
     }
-    let forward = if state.selected_tab == 4 {
-        match (key.code, key.modifiers) {
-            (KeyCode::Char(']'), KeyModifiers::NONE) => true,
-            (KeyCode::Char('['), KeyModifiers::NONE) => false,
-            _ => return None,
-        }
-    } else {
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('v'), KeyModifiers::NONE) => true,
-            (KeyCode::Char('V'), KeyModifiers::NONE | KeyModifiers::SHIFT)
-            | (KeyCode::Char('v'), KeyModifiers::SHIFT) => false,
-            _ => return None,
-        }
+    let forward = match (key.code, key.modifiers) {
+        (KeyCode::Char('v'), KeyModifiers::NONE) => true,
+        (KeyCode::Char('V'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+        | (KeyCode::Char('v'), KeyModifiers::SHIFT) => false,
+        _ => return None,
     };
     let (labels, selected) = state.sections();
     if !labels.is_empty() {

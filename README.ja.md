@@ -147,8 +147,8 @@ rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
 | `a` | プロセス単位のグループ表示 |
 | `Space` | 選択したプロセスグループを展開または折りたたむ |
 | `t` | 終了済み接続の表示を切り替え |
-| `v` / `Shift+v` | コンパクトな Overview、Details、Graph の次 / 前のセクション |
-| `[` / `]` | Host では前 / 次のセクション、他の画面では前 / 次のメインタブ |
+| `v` / `Shift+v` | コンパクト表示または Host の次 / 前のセクション |
+| `[` / `]` | 前 / 次のメインタブ |
 | `i` | 幅の広い Overview で System サイドバーを表示または非表示 |
 | `r` | 表示、並び替え、フィルターをリセット |
 | `h` | 現在のタブに対応したヘルプオーバーレイを表示または閉じる |
@@ -171,7 +171,7 @@ Graph の Observed Network Health、Observed TCP States、Application Distributi
 
 ### 小さいターミナルでの表示
 
-Overview、Details、Graph は、全体を表示できない場合に共通のセクション選択行を表示します。`v` で次、Shift+`v` で前のセクションへ移動し、名前のクリックでも選択できます。Host では `[` / `]` で Sockets と Interfaces を切り替えます。Tab / Shift+Tab と 1-5 は全画面でメインタブを切り替え、Host 以外では `[` / `]` も使えます。セクション選択行はメインタブと同じタイトルと下線の描画を共有し、ショートカットは画面下部に表示します。System 情報には区切り線を表示します。
+Overview、Details、Graph は、全体を表示できない場合に共通のセクション選択行を表示します。`v` で次、Shift+`v` で前のセクションへ移動し、名前のクリックでも選択できます。Host では `v` / Shift+`v` で Sockets と Interfaces を切り替えます。Tab / Shift+Tab、`[` / `]`、1-5 は全画面でメインタブを切り替えます。セクション選択行はメインタブと同じタイトルと下線の描画を共有し、ショートカットは画面下部に表示します。System 情報には区切り線を表示します。
 
 Overview は 90 列未満では Connections または System をページ内に表示します。System は `j` / `k`、Page Up/Down、マウスホイールでスクロールし、Esc で Connections に戻ります。幅が広い場合は従来の接続一覧と System サイドバーを表示し、`i` でサイドバーを切り替えます。
 
