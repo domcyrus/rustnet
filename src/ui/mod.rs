@@ -3246,6 +3246,32 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn section_hints_follow_the_layout_while_help_stays_open() {
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            show_help: true,
+            ..Default::default()
+        };
+        for tab in [0, 1, 3] {
+            state.selected_tab = tab;
+            for (width, height, compact) in [(140, 50, false), (80, 24, true), (140, 50, false)] {
+                let output = render_app(&app, &mut state, &connections, None, width, height);
+                assert_eq!(
+                    output.contains(sections::SECTION_KEYS),
+                    compact,
+                    "unexpected section hint for tab {tab} at {width}x{height}:\n{output}"
+                );
+                assert!(state.show_help);
+            }
+        }
+        // Host still has two selectable views on a wide terminal.
+        state.selected_tab = 4;
+        let output = render_app(&app, &mut state, &connections, None, 140, 50);
+        assert!(output.contains(sections::SECTION_KEYS));
+    }
+
+    #[test]
     fn wide_dashboards_do_not_add_section_controls_or_depend_on_compact_selection() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
