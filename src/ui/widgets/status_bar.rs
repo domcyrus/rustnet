@@ -92,6 +92,12 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
     if ui_state.filter_mode {
         return vec![Hint::action("\u{2191}\u{2193}", "select")];
     }
+    if ui_state.selected_tab == 0 && ui_state.show_system_overlay {
+        return vec![
+            Hint::action("j/k", "scroll"),
+            Hint::action("i/esc", "close info"),
+        ];
+    }
     match ui_state.selected_tab {
         // Overview
         0 => {
@@ -131,7 +137,11 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
         }
         // Details
         1 => {
-            let mut hints = vec![Hint::action("j/k", "prev/next")];
+            let mut hints = Vec::new();
+            if ui_state.details_compact.get() {
+                hints.push(Hint::action("v", "section"));
+            }
+            hints.push(Hint::action("j/k", "prev/next"));
             // Ctrl+D/U only moves when the record outgrows its pane, so on a
             // tall terminal the hint would advertise a no-op.
             if ui_state.details_scroll.can_scroll() {

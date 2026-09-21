@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Wrap},
+    widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Wrap},
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -20,16 +20,17 @@ use crate::network::dns::DnsResolver;
 use crate::network::types::Connection;
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER, SelectionMove, SortColumn, UiState, alert_style, clear_all_with_confirmation,
+    NONE_PLACEHOLDER, PaneScroll, SelectionMove, SortColumn, UiState, alert_style,
+    clear_all_with_confirmation,
     connection_table::{
         CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
         connection_row, render_row_table, select_columns, visible_window,
     },
     format::{format_bytes, truncate_with_ellipsis},
-    section_header, section_title,
+    panel_block, section_header, section_title,
     state::ProcessGroupStats,
-    theme, try_handle_connection_nav,
-    widgets::{badge, braille_graph},
+    theme, try_handle_connection_nav, try_handle_pane_scroll, try_handle_pane_wheel,
+    widgets::{badge, braille_graph, scrollbar::draw_scrollbar},
 };
 
 /// Overview tab: connection list + stats sidebar. Reads every
@@ -52,6 +53,15 @@ impl Component for OverviewTab {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
+        if ctx.ui_state.show_system_overlay {
+            if let MouseEventKind::Down(_) = mouse.kind {
+                ctx.ui_state.show_system_overlay = false;
+                ctx.ui_state.quit_confirmation = false;
+                ctx.ui_state.clear_confirmation = false;
+                return Some(Vec::new());
+            }
+            return try_handle_pane_wheel(mouse, &mut ctx.ui_state.system_scroll);
+        }
         // Scroll wheel: navigate the connection list, but only when
         // the cursor is over the registered scroll area. Click events
         // are dispatched by main.rs through ClickableRegions.
@@ -77,6 +87,31 @@ impl Component for OverviewTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        if ctx.ui_state.show_system_overlay {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('i')) {
+                ctx.ui_state.show_system_overlay = false;
+                return Some(Vec::new());
+            }
+            let page = usize::from(ctx.ui_state.system_scroll.viewport_rows());
+            if let handled @ Some(_) =
+                try_handle_pane_scroll(key, page, &mut ctx.ui_state.system_scroll)
+            {
+                return handled;
+            }
+            // Keep tab switching, help, and quit global. Other keys must not
+            // modify a connection obscured by the overlay.
+            return if (key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL)
+                || matches!(
+                    key.code,
+                    KeyCode::Tab
+                        | KeyCode::BackTab
+                        | KeyCode::Char('q' | 'h' | '1'..='5' | '[' | ']')
+                ) {
+                None
+            } else {
+                Some(Vec::new())
+            };
+        }
         // Filter mode owns its own input mini-loop.
         if ctx.ui_state.filter_mode {
             return handle_filter_mode_key(key, ctx);
@@ -169,6 +204,11 @@ impl Component for OverviewTab {
             }
 
             (KeyCode::Char('i'), _) => {
+                if ctx.ui_state.system_compact.get() {
+                    ctx.ui_state.show_system_overlay = true;
+                    ctx.ui_state.system_scroll.reset();
+                    return Some(Vec::new());
+                }
                 ctx.ui_state.show_system_panel = !ctx.ui_state.show_system_panel;
                 info!(
                     "System sidebar: {}",
@@ -358,6 +398,10 @@ fn security_details_fit(area_height: u16, stats_height: u16, full_security_heigh
     area_height >= required_height
 }
 
+pub(in crate::ui) fn compact_layout(area: Rect) -> bool {
+    area.width < SYSTEM_PANEL_MIN_AREA_WIDTH
+}
+
 /// Actual row capacity after the section and column headings.
 pub(in crate::ui) fn visible_connection_rows(area: Rect) -> usize {
     usize::from(crate::ui::connection_table::table_rows_area(crate::ui::section_body(area)).height)
@@ -412,13 +456,31 @@ fn draw_overview(
         );
     }
 
-    if show_system_panel {
+    if show_system_panel || ctx.ui_state.show_system_overlay {
         let connection_counts = if ctx.ui_state.has_active_filter() {
             ctx.app.get_connection_counts()
         } else {
             ConnectionCounts::from_connections(ctx.connections)
         };
-        draw_stats_panel(f, connection_counts, ctx.stats, ctx.app, chunks[1])?;
+        if ctx.ui_state.show_system_overlay {
+            let width = area.width.saturating_sub(4).min(72);
+            let popup = Rect::new(
+                area.x + (area.width - width) / 2,
+                area.y,
+                width,
+                area.height,
+            );
+            draw_stats_panel(
+                f,
+                connection_counts,
+                ctx.stats,
+                ctx.app,
+                popup,
+                Some(&ctx.ui_state.system_scroll),
+            )?;
+        } else {
+            draw_stats_panel(f, connection_counts, ctx.stats, ctx.app, chunks[1], None)?;
+        }
     }
 
     Ok(())
@@ -807,18 +869,27 @@ fn draw_stats_panel(
     stats: &AppStats,
     app: &App,
     area: Rect,
+    scroll: Option<&PaneScroll>,
 ) -> Result<()> {
     // Borderless: a single quiet vertical rule separates the sidebar
     // from the connections table, and the section header names it:
     // deliberately *not* the same chrome as the table so the two read
     // as different kinds of content.
-    let panel = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(theme::fg(theme::border()))
-        .padding(Padding::horizontal(1));
-    let inner_area = panel.inner(area);
-    f.render_widget(panel, area);
-    let inner_area = section_header(f, inner_area, section_title(" System"));
+    let inner_area = if scroll.is_some() {
+        let panel = panel_block(" System info ").padding(Padding::horizontal(1));
+        let inner = panel.inner(area);
+        f.render_widget(Clear, area);
+        f.render_widget(panel, area);
+        inner
+    } else {
+        let panel = Block::default()
+            .borders(Borders::LEFT)
+            .border_style(theme::fg(theme::border()))
+            .padding(Padding::horizontal(1));
+        let inner = panel.inner(area);
+        f.render_widget(panel, area);
+        section_header(f, inner, section_title(" System"))
+    };
 
     // Build the security/sandbox text up front so the chunk height can match
     // its content. Otherwise long feature lists get clipped on narrow columns.
@@ -972,7 +1043,8 @@ fn draw_stats_panel(
     // the overall sandbox status and hide the static detail lines. They return
     // automatically as soon as the terminal is tall enough.
     let full_security_height = 1u16.saturating_add(security_text.len() as u16);
-    let compact_security = full_security_height > COMPACT_SECURITY_HEIGHT
+    let compact_security = scroll.is_none()
+        && full_security_height > COMPACT_SECURITY_HEIGHT
         && !security_details_fit(inner_area.height, stats_height, full_security_height);
     if compact_security {
         security_text.truncate(1);
@@ -1154,16 +1226,6 @@ fn draw_stats_panel(
         ]);
     }
 
-    // Wrap so the indented reason line for a degraded eBPF status (which can
-    // be ~140 chars in the EbpfLoadFailed catch-all) flows to the next visual
-    // row instead of being clipped on a narrow right column. trim:false
-    // preserves the leading indent on continuation rows.
-    let conn_stats = Paragraph::new(conn_stats_text)
-        .style(Style::default())
-        .wrap(Wrap { trim: false });
-    f.render_widget(conn_stats, chunks[0]);
-    render_section_separator(f, chunks[1]);
-
     let total_retransmits = stats
         .total_tcp_retransmits
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -1197,13 +1259,6 @@ fn draw_stats_panel(
         )),
     ];
 
-    let network_stats = Paragraph::new(network_stats_text).style(Style::default());
-    f.render_widget(network_stats, chunks[2]);
-    render_section_separator(f, chunks[3]);
-
-    draw_interface_stats_with_graph(f, app, chunks[4])?;
-    render_section_separator(f, chunks[5]);
-
     let security_heading = if compact_security {
         Line::from(vec![
             Span::styled("Security ", theme::bold_fg(theme::heading())),
@@ -1214,6 +1269,71 @@ fn draw_stats_panel(
     };
     let mut security_lines: Vec<Line> = vec![security_heading];
     security_lines.extend(security_text);
+    if let Some(scroll) = scroll {
+        let mut lines = conn_stats_text;
+        lines.push(Line::default());
+        lines.extend(network_stats_text);
+        lines.push(Line::default());
+        lines.push(Line::styled("Traffic", theme::bold_fg(theme::heading())));
+        let history = app.get_traffic_history();
+        let rx = history
+            .get_rx_sparkline_data(1)
+            .last()
+            .copied()
+            .unwrap_or(0);
+        let tx = history
+            .get_tx_sparkline_data(1)
+            .last()
+            .copied()
+            .unwrap_or(0);
+        lines.push(Line::from(vec![
+            Span::styled(format!("RX {}/s", format_bytes(rx)), theme::fg(theme::rx())),
+            Span::raw(" · "),
+            Span::styled(format!("TX {}/s", format_bytes(tx)), theme::fg(theme::tx())),
+        ]));
+        lines.extend(interface_error_lines(app, usize::MAX));
+        lines.push(Line::default());
+        lines.extend(security_lines);
+        let text_area = Rect {
+            width: inner_area.width.saturating_sub(2),
+            ..inner_area
+        };
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let rows = paragraph.line_count(text_area.width.max(1));
+        let offset = scroll.clamp_for_render(
+            u16::try_from(rows)
+                .unwrap_or(u16::MAX)
+                .saturating_sub(text_area.height),
+        );
+        scroll.record_viewport(text_area.height);
+        f.render_widget(paragraph.scroll((offset, 0)), text_area);
+        draw_scrollbar(
+            f,
+            inner_area,
+            rows,
+            usize::from(offset),
+            usize::from(inner_area.height),
+        );
+        return Ok(());
+    }
+
+    // Wrap so the indented reason line for a degraded eBPF status (which can
+    // be ~140 chars in the EbpfLoadFailed catch-all) flows to the next visual
+    // row instead of being clipped on a narrow right column. trim:false
+    // preserves the leading indent on continuation rows.
+    let conn_stats = Paragraph::new(conn_stats_text)
+        .style(Style::default())
+        .wrap(Wrap { trim: false });
+    f.render_widget(conn_stats, chunks[0]);
+    render_section_separator(f, chunks[1]);
+
+    let network_stats = Paragraph::new(network_stats_text).style(Style::default());
+    f.render_widget(network_stats, chunks[2]);
+    render_section_separator(f, chunks[3]);
+
+    draw_interface_stats_with_graph(f, app, chunks[4])?;
+    render_section_separator(f, chunks[5]);
+
     let security_stats = Paragraph::new(security_lines).style(Style::default());
     f.render_widget(security_stats, chunks[6]);
 
@@ -1390,6 +1510,15 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
     let rates_para = Paragraph::new(rates_text);
     f.render_widget(rates_para, sparkline_rows[2]);
 
+    let max_interfaces = usize::from(sections[1].height).saturating_sub(1);
+    let interface_text = interface_error_lines(app, max_interfaces);
+    let interface_para = Paragraph::new(interface_text);
+    f.render_widget(interface_para, sections[1]);
+
+    Ok(())
+}
+
+fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>> {
     // Errors/drops only; rates are in the sparklines above.
     let all_interface_stats = app.get_interface_stats();
 
@@ -1418,11 +1547,7 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
             .collect()
     };
 
-    // One line per interface.
-    let available_height = sections[1].height as usize;
-    let max_interfaces = available_height.saturating_sub(1); // Reserve 1 for "more" message
-
-    let interface_text: Vec<Line> = if filtered_interface_stats.is_empty() {
+    if filtered_interface_stats.is_empty() {
         vec![Line::from(Span::styled(
             "No interface stats available",
             theme::fg(theme::muted()),
@@ -1454,12 +1579,7 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
             )));
         }
         lines
-    };
-
-    let interface_para = Paragraph::new(interface_text);
-    f.render_widget(interface_para, sections[1]);
-
-    Ok(())
+    }
 }
 
 #[cfg(test)]

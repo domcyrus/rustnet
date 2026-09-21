@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────
+▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────
+▎ Traffic (6/6) · v next section ───────────────────────────────────────────────
+Bytes Sent            12.21 KB                                                  
+Bytes Received        234.38 KB                                                 
+Packets Sent          12                                                        
+Packets Received      234                                                       
+Current Rate (In)     3.05 MB/s                                                 
+Current Rate (Out)    927.73 KB/s                                               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ v section  j/k prev/next  c copy remote addr  esc back          h help  q quit

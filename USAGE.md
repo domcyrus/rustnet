@@ -440,7 +440,16 @@ click anywhere dismisses it.
 At 80×24, Activity keeps its process table and TX/RX summaries visible. Shorter
 terminals condense the summaries and process rows, keeping current rates,
 capture coverage, and attribution visible at 80×12. Overview's System sidebar
-needs at least 90 columns; widening the terminal restores it if enabled.
+needs at least 90 columns. Below that width, `i` opens a scrollable System info
+overlay. Use `j`/`k`, Page Up/Down, or the mouse wheel to scroll; `i` or `Esc`
+closes it without changing the selected connection or filter.
+
+Details uses section pages below 100 columns or 24 content rows (27 terminal
+rows without an open filter or expanded error banner). Press `v` to cycle
+through Connection, Network, Process, Application, Health, and Traffic. A
+one-line connection header leaves room for the selected section. `j`/`k` still
+switch connections, keeping the selected section; Ctrl+D/U or the mouse wheel
+scrolls a section if it does not fit. Larger terminals retain the full dashboard.
 
 Graph shows one section at a time below 100 columns or 32 content rows
 (35 terminal rows without an open filter or expanded error banner). Press `v`
@@ -460,7 +469,7 @@ including space taken by the filter editor or a two-row capture-error banner.
 - `x` - Clear all connections and reset statistics (press twice to confirm)
 - `t` - Toggle display of historic (closed) connections
 - `i` - Toggle the System info sidebar on Overview or open interface details on Host
-- `v` - Cycle Graph sections on compact terminals
+- `v` - Cycle Details or Graph sections on compact terminals
 - `r` - Reset view to defaults (clears grouping, sort, filter, and historic)
 
 ### Process Grouping

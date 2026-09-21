@@ -169,7 +169,10 @@ const OVERVIEW_KEYS: &[HelpRow] = &[
     ("Space", "Expand or collapse the selected group"),
     ("←/→, l", "Collapse or expand the selected group"),
     ("t", "Toggle historic connections"),
-    ("i", "Toggle the System info panel"),
+    (
+        "i",
+        "Toggle System info (scrollable overlay on narrow terminals)",
+    ),
     ("r", "Reset grouping, sorting, filter, and history"),
 ];
 
@@ -219,6 +222,7 @@ const CONNECTION_DISPLAY: &[HelpRow] = &[
 ];
 
 const DETAILS_KEYS: &[HelpRow] = &[
+    ("v", "Next information section on compact terminals"),
     ("↑/k, ↓/j", "Show the previous or next connection"),
     ("g, G", "Show the first or last connection"),
     ("Page Up/Down", "Move through connections by one page"),

@@ -27,7 +27,7 @@ expression: output
     │   Space   Expand or collapse the selected group                                          │    
     │   ←/→, l  Collapse or expand the selected group                                          │    
     │   t       Toggle historic connections                                                    │    
-    │   i       Toggle the System info panel                                                   │    
+    │   i       Toggle System info (scrollable overlay on narrow terminals)                    │    
     │   r       Reset grouping, sorting, filter, and history                                   │    
     │                                                                                          │    
     │ ▎ Connection Display                                                                     │    

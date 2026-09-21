@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Compact layouts**: Graph exposes Traffic, Health, and Distribution through
-  `v` on small terminals. Short Activity views preserve process rows and coverage.
+  `v` on small terminals. Details offers six information pages with the same key,
+  and Overview's `i` opens a scrollable System info overlay below 90 columns.
+  Short Activity views preserve process rows and coverage.
 - **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
   process ranking, and a separate capture-quality sidebar on wide terminals.
   Share bars use theme-derived gradients with textured ANSI fallbacks.

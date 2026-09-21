@@ -131,6 +131,51 @@ impl GraphSection {
     }
 }
 
+/// Information page selected in compact Details layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailsSection {
+    #[default]
+    Connection,
+    Network,
+    Process,
+    Application,
+    Health,
+    Traffic,
+}
+
+impl DetailsSection {
+    pub const ALL: [Self; 6] = [
+        Self::Connection,
+        Self::Network,
+        Self::Process,
+        Self::Application,
+        Self::Health,
+        Self::Traffic,
+    ];
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|section| *section == self)
+            .unwrap_or(0)
+    }
+
+    pub fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Connection => "Connection",
+            Self::Network => "Network",
+            Self::Process => "Process",
+            Self::Application => "Application",
+            Self::Health => "Health",
+            Self::Traffic => "Traffic",
+        }
+    }
+}
+
 /// Sort modes for the process activity view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActivitySort {
@@ -449,6 +494,10 @@ pub struct UiState {
     /// Whether the System stats sidebar is visible on the Overview tab.
     /// A layout preference, so deliberately not reset by `reset_view()`.
     pub show_system_panel: bool,
+    /// System information is modal when the sidebar cannot fit.
+    pub show_system_overlay: bool,
+    pub system_compact: Cell<bool>,
+    pub system_scroll: PaneScroll,
     /// Number of visible connection rows, measured before rendering each frame
     pub visible_rows: usize,
     /// Scroll offset for flat connection list (persisted for stable scrolling)
@@ -457,6 +506,8 @@ pub struct UiState {
     pub grouped_scroll_offset: usize,
     /// Scroll state for the Details info panes (reset when the selection changes)
     pub details_scroll: PaneScroll,
+    pub details_section: DetailsSection,
+    pub details_compact: Cell<bool>,
     /// Scroll state for the contextual help overlay.
     pub help_scroll: PaneScroll,
     /// Scroll state for the Host tab's interface table.
@@ -502,10 +553,15 @@ impl Default for UiState {
             last_click: None,
             show_historic: false,
             show_system_panel: true,
+            show_system_overlay: false,
+            system_compact: Cell::new(false),
+            system_scroll: PaneScroll::default(),
             visible_rows: 10,
             scroll_offset: 0,
             grouped_scroll_offset: 0,
             details_scroll: PaneScroll::default(),
+            details_section: DetailsSection::default(),
+            details_compact: Cell::new(false),
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),

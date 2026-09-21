@@ -102,8 +102,9 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub(crate) use crate::network::process_activity::process_group_label;
 pub use state::{
-    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GraphSection, GroupedRow,
-    HostView, PaneScroll, SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,
+    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, DetailsSection, GraphSection,
+    GroupedRow, HostView, PaneScroll, SortColumn, UiState, compute_grouped_rows,
+    compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
@@ -376,6 +377,17 @@ pub fn draw(
         connections,
         grouped_rows,
     );
+
+    ui_state
+        .system_compact
+        .set(tabs::overview::compact_layout(content_area));
+    if ui_state.selected_tab != 0 || !ui_state.system_compact.get() {
+        ui_state.show_system_overlay = false;
+    }
+    let compact_details = tabs::details::compact_layout(content_area);
+    if ui_state.details_compact.replace(compact_details) != compact_details {
+        ui_state.details_scroll.reset();
+    }
 
     let comp_ctx = ComponentContext {
         app,
@@ -2942,6 +2954,266 @@ mod snapshot_tests {
                 render_app(&app, &mut state, &connections, None, width, height);
             }
         }
+    }
+
+    #[test]
+    fn compact_details_pages_preserve_selection_and_expose_every_section() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            selected_tab: 1,
+            ..Default::default()
+        };
+        state.set_selected_by_index(&connections, 0);
+        let selected = state.selected_connection_key.clone();
+        for section in DetailsSection::ALL {
+            let (output, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+            assert_eq!(state.details_section, section);
+            assert!(output.contains(&format!("{} ({}/6)", section.title(), section.index() + 1)));
+            assert!(output.contains("v next section"));
+            assert_eq!(state.selected_connection_key, selected);
+            assert!(
+                !state.details_scroll.can_scroll(),
+                "section should fit: {output}"
+            );
+            insta::with_settings!({filters => time_filters()}, {
+                insta::assert_snapshot!(format!("compact_details_{}", section.title().to_lowercase()), output);
+            });
+            let mut ctx = HandlerContext {
+                app: &app,
+                ui_state: &mut state,
+                connections: &connections,
+                grouped_rows: None,
+                click_regions: &regions,
+            };
+            dispatch_key(
+                1,
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .expect("section switch handled");
+        }
+        assert_eq!(state.details_section, DetailsSection::Connection);
+        let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+        state.details_section = DetailsSection::Application;
+        let mut ctx = HandlerContext {
+            app: &app,
+            ui_state: &mut state,
+            connections: &connections,
+            grouped_rows: None,
+            click_regions: &regions,
+        };
+        dispatch_key(
+            1,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &mut ctx,
+        )
+        .expect("connection navigation handled");
+        assert_eq!(state.get_selected_index(&connections), Some(1));
+        assert_eq!(state.details_section, DetailsSection::Application);
+        let application = render_app(&app, &mut state, &connections, None, 80, 24);
+        assert!(application.contains("DNS Query"));
+        assert!(application.contains("example.com"));
+    }
+
+    #[test]
+    fn compact_details_keep_copy_targets_aligned_after_scrolling_and_resizing() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            selected_tab: 1,
+            ..Default::default()
+        };
+        for (width, height) in [(80, 24), (50, 12), (140, 24), (140, 40), (80, 24)] {
+            let (_, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, height);
+            assert_eq!(state.details_compact.get(), width < 100 || height < 27);
+            if height == 12 {
+                assert!(state.details_scroll.can_scroll());
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                dispatch_key(
+                    1,
+                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                    &mut ctx,
+                )
+                .expect("scroll handled");
+                let (output, regions) =
+                    render_app_frame(&app, &mut state, &connections, None, width, height);
+                let mut targets = 0;
+                for y in 0..height {
+                    if let Some(ClickAction::CopyField { label, value }) = regions.hit_test(0, y) {
+                        let line = output.lines().nth(usize::from(y)).unwrap();
+                        assert!(line.contains(label), "misaligned target {label}: {line}");
+                        assert!(!value.is_empty());
+                        targets += 1;
+                    }
+                }
+                assert!(targets >= 3);
+                state.details_section = DetailsSection::Traffic;
+            }
+        }
+        assert_eq!(state.details_section, DetailsSection::Traffic);
+    }
+
+    #[test]
+    fn compact_details_preserve_protocol_fields_from_the_full_layout() {
+        use std::collections::BTreeSet;
+        let app = test_app();
+        let mut connections: Vec<_> = dpi_variants_full()
+            .into_iter()
+            .map(dpi_details_connection)
+            .collect();
+        connections.extend([
+            arp_details_connection(true),
+            icmp_echo_details_connection(),
+            icmpv6_ndp_details_connection(),
+            igmp_details_connection(),
+        ]);
+        let labels = |regions: &ClickableRegions, width: u16, height: u16| -> BTreeSet<String> {
+            (0..height)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .filter_map(|(x, y)| match regions.hit_test(x, y) {
+                    Some(ClickAction::CopyField { label, .. }) if label != "Traffic Total" => {
+                        Some(label.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        for conn in connections {
+            let connections = [conn];
+            let mut state = UiState {
+                selected_tab: 1,
+                ..Default::default()
+            };
+            let (_, wide) = render_app_frame(&app, &mut state, &connections, None, 140, 100);
+            let wide_labels = labels(&wide, 140, 100);
+            let mut compact_labels = BTreeSet::new();
+            for section in DetailsSection::ALL {
+                state.details_section = section;
+                let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
+                compact_labels.extend(labels(&regions, 80, 24));
+            }
+            assert!(
+                wide_labels.is_subset(&compact_labels),
+                "missing fields: {:?}",
+                wide_labels.difference(&compact_labels).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_overview_info_opens_scrolls_and_preserves_the_connection() {
+        use crossterm::event::{
+            KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        let app = test_app();
+        let connections = overview_connections();
+        for width in [50, 80, 89] {
+            let mut state = UiState {
+                show_system_panel: false,
+                ..Default::default()
+            };
+            state.set_selected_by_index(&connections, 2);
+            let selected = state.selected_connection_key.clone();
+            let (_, regions) = render_app_frame(&app, &mut state, &connections, None, width, 24);
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                0,
+                KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+            assert!(state.show_system_overlay);
+            let (output, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, 24);
+            assert!(output.contains("System info"));
+            assert!(output.contains("Interface: eth0"));
+            assert!(output.contains("close info"));
+            assert!(state.system_scroll.can_scroll());
+            assert_eq!(state.selected_connection_key, selected);
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            // Selection/filter commands remain contained in the modal view.
+            dispatch_key(
+                0,
+                KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+            assert!(!ctx.ui_state.filter_mode);
+            assert!(
+                dispatch_key(
+                    0,
+                    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                    &mut ctx
+                )
+                .is_none()
+            );
+            dispatch_key(0, KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &mut ctx).unwrap();
+            let (bottom, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, 24);
+            assert!(bottom.contains("Security"), "{bottom}");
+            assert!(!bottom.contains("(compact)"));
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_mouse(
+                0,
+                MouseEvent {
+                    kind: MouseEventKind::ScrollUp,
+                    column: 0,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &mut ctx,
+            )
+            .unwrap();
+            dispatch_mouse(
+                0,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 0,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &mut ctx,
+            )
+            .unwrap();
+            assert!(!state.show_system_overlay);
+            assert_eq!(state.selected_connection_key, selected);
+            assert!(!state.show_system_panel);
+            // Reopen and close with Escape without clearing the current filter.
+            state.filter_query = "process:sshd".to_string();
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                0,
+                KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+            dispatch_key(0, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut ctx).unwrap();
+            assert_eq!(state.filter_query, "process:sshd");
+            assert!(!state.show_system_overlay);
+        }
+    }
+
+    #[test]
+    fn info_overlay_yields_to_wide_layout_and_other_tabs() {
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            show_system_overlay: true,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        assert!(state.show_system_overlay);
+        let output = render_app(&app, &mut state, &connections, None, 90, 24);
+        assert!(!state.show_system_overlay);
+        assert!(output.contains("System"));
+        state.show_system_overlay = true;
+        state.selected_tab = 1;
+        render_app(&app, &mut state, &connections, None, 80, 24);
+        assert!(!state.show_system_overlay);
     }
 
     // --- Application card: fixed per-protocol row sets ---

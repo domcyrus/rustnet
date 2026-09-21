@@ -10,7 +10,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::Paragraph,
 };
 
 use crossterm::event::{KeyEvent, MouseEvent};
@@ -94,8 +94,7 @@ const APPLICATION_CARD_ROWS: usize = 11;
 /// dashboard.
 const TRANSPORT_CARD_ROWS: usize = 9;
 
-/// Details tab. Pulls the DNS resolver per render from the app; no
-/// per-tab state today.
+/// Connection metadata and traffic, with section navigation on compact layouts.
 pub(in crate::ui) struct DetailsTab;
 
 impl Component for DetailsTab {
@@ -116,6 +115,11 @@ impl Component for DetailsTab {
         // taller than the pane (j/k etc. stay reserved for flipping
         // between connections).
         match (key.code, key.modifiers) {
+            (KeyCode::Char('v'), KeyModifiers::NONE) if ctx.ui_state.details_compact.get() => {
+                ctx.ui_state.details_section = ctx.ui_state.details_section.next();
+                ctx.ui_state.details_scroll.reset();
+                return Some(Vec::new());
+            }
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                 ctx.ui_state.details_scroll.scroll_down(DETAILS_SCROLL_STEP);
                 return Some(Vec::new());
@@ -928,6 +932,104 @@ fn draw_connection_strip(
     }
 }
 
+pub(in crate::ui) fn compact_layout(area: Rect) -> bool {
+    area.width < DETAILS_SPLIT_MIN_WIDTH || area.height < 24
+}
+
+fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
+    let mut traffic = DetailsBuilder::new(theme::fg(theme::label()));
+    let rx = theme::fg(theme::rx());
+    let tx = theme::fg(theme::tx());
+    for (label, value, style) in [
+        ("Bytes Sent", format_bytes(conn.bytes_sent), tx),
+        ("Bytes Received", format_bytes(conn.bytes_received), rx),
+        ("Packets Sent", conn.packets_sent.to_string(), tx),
+        ("Packets Received", conn.packets_received.to_string(), rx),
+        (
+            "Current Rate (In)",
+            if conn.is_historic {
+                "n/a".to_string()
+            } else {
+                format_rate(conn.current_incoming_rate_bps)
+            },
+            rx,
+        ),
+        (
+            "Current Rate (Out)",
+            if conn.is_historic {
+                "n/a".to_string()
+            } else {
+                format_rate(conn.current_outgoing_rate_bps)
+            },
+            tx,
+        ),
+    ] {
+        traffic.field_styled(label, value, style);
+    }
+    traffic
+}
+
+fn draw_compact_details(
+    f: &mut Frame,
+    ctx: &ComponentContext<'_>,
+    conn: &Connection,
+    area: Rect,
+    mut details: DetailsBuilder<'_>,
+    ranges: [std::ops::Range<usize>; 5],
+    click_regions: &mut ClickableRegions,
+) {
+    let section = ctx.ui_state.details_section;
+    if section == crate::ui::DetailsSection::Traffic {
+        details = traffic_details(conn);
+    } else {
+        let range = ranges[section.index()].clone();
+        details.lines = details.lines.drain(range.clone()).collect();
+        details.fields = details.fields.drain(range).collect();
+    }
+    // Card padding aligns the wide dashboard, but serves no purpose on a page.
+    while details.lines.last().is_some_and(line_is_blank) {
+        details.lines.pop();
+        details.fields.pop();
+    }
+    while details.lines.first().is_some_and(line_is_blank) {
+        details.lines.remove(0);
+        details.fields.remove(0);
+    }
+    let inner = section_header(
+        f,
+        area,
+        Line::from(vec![
+            section_title(format!(" {} ({}/6)", section.title(), section.index() + 1)),
+            Span::styled(" · v next section", theme::fg(theme::muted())),
+        ]),
+    );
+    let total = details.lines.len();
+    let scroll = ctx
+        .ui_state
+        .details_scroll
+        .clamp_for_render((total as u16).saturating_sub(inner.height));
+    ctx.ui_state.details_scroll.record_viewport(inner.height);
+    let text_area = Rect {
+        width: inner.width.saturating_sub(2),
+        ..inner
+    };
+    register_detail_clicks(
+        click_regions,
+        text_area,
+        &details.fields,
+        section != crate::ui::DetailsSection::Traffic,
+        scroll,
+    );
+    f.render_widget(Paragraph::new(details.lines).scroll((scroll, 0)), text_area);
+    draw_scrollbar(
+        f,
+        inner,
+        total,
+        usize::from(scroll),
+        usize::from(inner.height),
+    );
+}
+
 pub(in crate::ui) fn draw_connection_details(
     f: &mut Frame,
     ctx: &ComponentContext<'_>,
@@ -954,9 +1056,13 @@ pub(in crate::ui) fn draw_connection_details(
     // section is placed directly below the info panes (not pinned to
     // the bottom of the screen), so the tab reads top-down without a
     // void in the middle.
+    let compact = compact_layout(area);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(STRIP_HEIGHT), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(if compact { 0 } else { STRIP_HEIGHT }),
+            Constraint::Min(0),
+        ])
         .split(area);
 
     let strip_area = Rect::new(
@@ -965,14 +1071,16 @@ pub(in crate::ui) fn draw_connection_details(
         chunks[0].width,
         chunks[0].height.saturating_sub(1), // trailing blank separator row
     );
-    draw_connection_strip(
-        f,
-        ctx,
-        strip_area,
-        dns_resolver,
-        has_country_db,
-        click_regions,
-    );
+    if !compact {
+        draw_connection_strip(
+            f,
+            ctx,
+            strip_area,
+            dns_resolver,
+            has_country_db,
+            click_regions,
+        );
+    }
     let body = chunks[1];
 
     // The Executable row shortens its path to the value column, so the pane
@@ -980,7 +1088,7 @@ pub(in crate::ui) fn draw_connection_details(
     // derivation further down: content-width cap, scrollbar gutter, and the
     // two-column split with its spacing.
     let info_width = body.width.min(DETAILS_MAX_CONTENT_WIDTH);
-    let pane_width = if info_width >= DETAILS_SPLIT_MIN_WIDTH {
+    let pane_width = if !compact && info_width >= DETAILS_SPLIT_MIN_WIDTH {
         info_width.saturating_sub(4) / 2
     } else {
         info_width.saturating_sub(2)
@@ -1133,6 +1241,7 @@ pub(in crate::ui) fn draw_connection_details(
         })
     });
 
+    let network_start = details.rows();
     details.section("Network Context");
     details.field_styled_opt(
         "Local Hostname",
@@ -1201,6 +1310,7 @@ pub(in crate::ui) fn draw_connection_details(
     // The Kubernetes block below stays conditional: being a k8s workload is
     // a class distinction, not missing data.
     let process_value_style = theme::fg(theme::field_process());
+    let attribution_start = details.rows();
     details.section("Attribution");
 
     details.field_styled_opt(
@@ -1848,7 +1958,26 @@ pub(in crate::ui) fn draw_connection_details(
     // panel collapses back to a single column so narrow terminals stay
     // readable. The right pane needs no title of its own; its content
     // starts with the bold Application and Transport Health headings.
-    let split_horizontally = info_area.width >= DETAILS_SPLIT_MIN_WIDTH;
+    if compact {
+        let end = details.rows();
+        draw_compact_details(
+            f,
+            ctx,
+            conn,
+            info_area,
+            details,
+            [
+                0..network_start,
+                network_start..attribution_start,
+                attribution_start..application_start,
+                application_start..metrics_start,
+                metrics_start..end,
+            ],
+            click_regions,
+        );
+        return Ok(());
+    }
+
     // The builder is done; the drain below reshuffles raw lines and fields.
     let DetailsBuilder {
         lines: mut details_text,
@@ -1857,23 +1986,21 @@ pub(in crate::ui) fn draw_connection_details(
     } = details;
     let mut right_text: Vec<Line> = Vec::new();
     let mut right_fields: Vec<Option<(String, String)>> = Vec::new();
-    if split_horizontally {
-        // Drain in reverse so earlier ranges aren't shifted by later drains.
-        for range in right_ranges.iter().rev() {
-            let mut sec_text: Vec<Line> = details_text.drain(range.clone()).collect();
-            let mut sec_fields: Vec<Option<(String, String)>> =
-                detail_fields.drain(range.clone()).collect();
-            sec_text.append(&mut right_text);
-            sec_fields.append(&mut right_fields);
-            right_text = sec_text;
-            right_fields = sec_fields;
-        }
-        // The first surviving entry in right_text is a leading blank from the
-        // first section's separator; trim it so the right pane starts clean.
-        if right_text.first().map(line_is_blank).unwrap_or(false) {
-            right_text.remove(0);
-            right_fields.remove(0);
-        }
+    // Drain in reverse so earlier ranges aren't shifted by later drains.
+    for range in right_ranges.iter().rev() {
+        let mut sec_text: Vec<Line> = details_text.drain(range.clone()).collect();
+        let mut sec_fields: Vec<Option<(String, String)>> =
+            detail_fields.drain(range.clone()).collect();
+        sec_text.append(&mut right_text);
+        sec_fields.append(&mut right_fields);
+        right_text = sec_text;
+        right_fields = sec_fields;
+    }
+    // The first surviving entry in right_text is a leading blank from the
+    // first section's separator; trim it so the right pane starts clean.
+    if right_text.first().map(line_is_blank).unwrap_or(false) {
+        right_text.remove(0);
+        right_fields.remove(0);
     }
 
     // The normal wide layout resolves to fixed-height dashboard cards, while
@@ -1895,16 +2022,11 @@ pub(in crate::ui) fn draw_connection_details(
         info_h,
     );
 
-    let info_chunks: Vec<Rect> = if split_horizontally {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .spacing(2)
-            .split(panes_area)
-            .to_vec()
-    } else {
-        vec![panes_area]
-    };
+    let info_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .spacing(2)
+        .split(panes_area);
 
     // Both panes share one scroll offset (Ctrl+D/U, mouse wheel) so
     // they stay row-aligned; the taller pane bounds it.
@@ -1945,8 +2067,6 @@ pub(in crate::ui) fn draw_connection_details(
         info_h as usize,
     );
 
-    let mut traffic = DetailsBuilder::new(label_style);
-
     let rx_value_style = theme::fg(theme::rx());
     let tx_value_style = theme::fg(theme::tx());
     let current_in_rate = if conn.is_historic {
@@ -1959,34 +2079,6 @@ pub(in crate::ui) fn draw_connection_details(
     } else {
         format_rate(conn.current_outgoing_rate_bps)
     };
-    traffic.field_styled("Bytes Sent", format_bytes(conn.bytes_sent), tx_value_style);
-    traffic.field_styled(
-        "Bytes Received",
-        format_bytes(conn.bytes_received),
-        rx_value_style,
-    );
-    traffic.field_styled(
-        "Packets Sent",
-        conn.packets_sent.to_string(),
-        tx_value_style,
-    );
-    traffic.field_styled(
-        "Packets Received",
-        conn.packets_received.to_string(),
-        rx_value_style,
-    );
-    traffic.field_styled("Current Rate (In)", current_in_rate.clone(), rx_value_style);
-    traffic.field_styled(
-        "Current Rate (Out)",
-        current_out_rate.clone(),
-        tx_value_style,
-    );
-    let DetailsBuilder {
-        lines: traffic_text,
-        fields: traffic_fields,
-        ..
-    } = traffic;
-
     // Traffic section directly under the info panes: one blank spacer
     // row, the section header, then the stat fields with per-connection
     // RX/TX gradient waves alongside (when there's room).
@@ -2003,138 +2095,129 @@ pub(in crate::ui) fn draw_connection_details(
     );
     let traffic_area = section_header(f, traffic_full, section_title(" Traffic Statistics"));
 
-    if split_horizontally {
-        // Reuse the exact dashboard rectangles rather than recomputing a
-        // percentage split. This guarantees that RX begins under Connection
-        // and TX begins under Application and Transport Health.
-        let cols = [
-            Rect::new(
-                info_chunks[0].x,
-                traffic_area.y,
-                info_chunks[0].width,
-                traffic_area.height,
-            ),
-            Rect::new(
-                info_chunks[1].x,
-                traffic_area.y,
-                info_chunks[1].width,
-                traffic_area.height,
-            ),
-        ];
+    // Reuse the exact dashboard rectangles rather than recomputing a
+    // percentage split. This guarantees that RX begins under Connection
+    // and TX begins under Application and Transport Health.
+    let cols = [
+        Rect::new(
+            info_chunks[0].x,
+            traffic_area.y,
+            info_chunks[0].width,
+            traffic_area.height,
+        ),
+        Rect::new(
+            info_chunks[1].x,
+            traffic_area.y,
+            info_chunks[1].width,
+            traffic_area.height,
+        ),
+    ];
 
-        let history = if conn.is_historic {
-            None
-        } else {
-            ctx.app.get_connection_rate_history(&conn.key())
-        };
-        let fallback_rx = [if conn.is_historic {
-            0
-        } else {
-            conn.current_incoming_rate_bps.max(0.0) as u64
-        }];
-        let fallback_tx = [if conn.is_historic {
-            0
-        } else {
-            conn.current_outgoing_rate_bps.max(0.0) as u64
-        }];
-        let (rx, tx): (&[u64], &[u64]) = history
-            .as_ref()
-            .map(|history| (history.rx.as_slice(), history.tx.as_slice()))
-            .unwrap_or((&fallback_rx, &fallback_tx));
-        let rx_graph_ceiling = history.as_ref().map_or_else(
-            || fallback_rx[0].max(1024) as f64,
-            |history| history.rx_graph_ceiling,
-        );
-        let tx_graph_ceiling = history.as_ref().map_or_else(
-            || fallback_tx[0].max(1024) as f64,
-            |history| history.tx_graph_ceiling,
-        );
-
-        let rx_total = format_bytes(conn.bytes_received);
-        let tx_total = format_bytes(conn.bytes_sent);
-        let rx_summary = Line::from(vec![
-            Span::styled("Total ", label_style),
-            Span::styled(rx_total.clone(), rx_value_style),
-            Span::styled("  ·  ", theme::fg(theme::muted())),
-            Span::styled(format!("{} packets", conn.packets_received), rx_value_style),
-        ]);
-        let tx_summary = Line::from(vec![
-            Span::styled("Total ", label_style),
-            Span::styled(tx_total.clone(), tx_value_style),
-            Span::styled("  ·  ", theme::fg(theme::muted())),
-            Span::styled(format!("{} packets", conn.packets_sent), tx_value_style),
-        ]);
-
-        let traffic_history = ctx.app.get_traffic_history();
-        // A fallback contains no time series to advance. Driving its single
-        // point with the aggregate sampling clock makes it move left, then
-        // snap right on every tick, which is especially visible immediately
-        // after a connection becomes historic.
-        let frac = if history.is_some() {
-            traffic_history.scroll_fraction()
-        } else {
-            0.0
-        };
-        let window = traffic_history.capacity();
-        braille_graph::wave_panel(
-            f,
-            cols[0],
-            rx,
-            "↓ RX",
-            braille_graph::WavePanelOptions::new(frac, window)
-                .with_summary(rx_summary)
-                .with_max_val(rx_graph_ceiling),
-            theme::rx_wave,
-        );
-        braille_graph::wave_panel(
-            f,
-            cols[1],
-            tx,
-            "↑ TX",
-            braille_graph::WavePanelOptions::new(frac, window)
-                .with_summary(tx_summary)
-                .with_max_val(tx_graph_ceiling),
-            theme::tx_wave,
-        );
-
-        for (area, label, rate, total, packets) in [
-            (
-                cols[0],
-                "Current Rate (In)",
-                current_in_rate,
-                rx_total,
-                conn.packets_received,
-            ),
-            (
-                cols[1],
-                "Current Rate (Out)",
-                current_out_rate,
-                tx_total,
-                conn.packets_sent,
-            ),
-        ] {
-            click_regions.register(
-                Rect::new(area.x, area.y, area.width, 1),
-                ClickAction::CopyField {
-                    label: label.to_string(),
-                    value: rate,
-                },
-            );
-            click_regions.register(
-                Rect::new(area.x, area.y + 1, area.width, 1),
-                ClickAction::CopyField {
-                    label: "Traffic Total".to_string(),
-                    value: format!("{total}, {packets} packets"),
-                },
-            );
-        }
+    let history = if conn.is_historic {
+        None
     } else {
-        // Narrow terminals keep the readable single-column field list.
-        let traffic = Paragraph::new(traffic_text)
-            .style(Style::default())
-            .wrap(Wrap { trim: false });
-        f.render_widget(traffic, traffic_area);
-        register_detail_clicks(click_regions, traffic_area, &traffic_fields, false, 0);
+        ctx.app.get_connection_rate_history(&conn.key())
+    };
+    let fallback_rx = [if conn.is_historic {
+        0
+    } else {
+        conn.current_incoming_rate_bps.max(0.0) as u64
+    }];
+    let fallback_tx = [if conn.is_historic {
+        0
+    } else {
+        conn.current_outgoing_rate_bps.max(0.0) as u64
+    }];
+    let (rx, tx): (&[u64], &[u64]) = history
+        .as_ref()
+        .map(|history| (history.rx.as_slice(), history.tx.as_slice()))
+        .unwrap_or((&fallback_rx, &fallback_tx));
+    let rx_graph_ceiling = history.as_ref().map_or_else(
+        || fallback_rx[0].max(1024) as f64,
+        |history| history.rx_graph_ceiling,
+    );
+    let tx_graph_ceiling = history.as_ref().map_or_else(
+        || fallback_tx[0].max(1024) as f64,
+        |history| history.tx_graph_ceiling,
+    );
+
+    let rx_total = format_bytes(conn.bytes_received);
+    let tx_total = format_bytes(conn.bytes_sent);
+    let rx_summary = Line::from(vec![
+        Span::styled("Total ", label_style),
+        Span::styled(rx_total.clone(), rx_value_style),
+        Span::styled("  ·  ", theme::fg(theme::muted())),
+        Span::styled(format!("{} packets", conn.packets_received), rx_value_style),
+    ]);
+    let tx_summary = Line::from(vec![
+        Span::styled("Total ", label_style),
+        Span::styled(tx_total.clone(), tx_value_style),
+        Span::styled("  ·  ", theme::fg(theme::muted())),
+        Span::styled(format!("{} packets", conn.packets_sent), tx_value_style),
+    ]);
+
+    let traffic_history = ctx.app.get_traffic_history();
+    // A fallback contains no time series to advance. Driving its single
+    // point with the aggregate sampling clock makes it move left, then
+    // snap right on every tick, which is especially visible immediately
+    // after a connection becomes historic.
+    let frac = if history.is_some() {
+        traffic_history.scroll_fraction()
+    } else {
+        0.0
+    };
+    let window = traffic_history.capacity();
+    braille_graph::wave_panel(
+        f,
+        cols[0],
+        rx,
+        "↓ RX",
+        braille_graph::WavePanelOptions::new(frac, window)
+            .with_summary(rx_summary)
+            .with_max_val(rx_graph_ceiling),
+        theme::rx_wave,
+    );
+    braille_graph::wave_panel(
+        f,
+        cols[1],
+        tx,
+        "↑ TX",
+        braille_graph::WavePanelOptions::new(frac, window)
+            .with_summary(tx_summary)
+            .with_max_val(tx_graph_ceiling),
+        theme::tx_wave,
+    );
+
+    for (area, label, rate, total, packets) in [
+        (
+            cols[0],
+            "Current Rate (In)",
+            current_in_rate,
+            rx_total,
+            conn.packets_received,
+        ),
+        (
+            cols[1],
+            "Current Rate (Out)",
+            current_out_rate,
+            tx_total,
+            conn.packets_sent,
+        ),
+    ] {
+        click_regions.register(
+            Rect::new(area.x, area.y, area.width, 1),
+            ClickAction::CopyField {
+                label: label.to_string(),
+                value: rate,
+            },
+        );
+        click_regions.register(
+            Rect::new(area.x, area.y + 1, area.width, 1),
+            ClickAction::CopyField {
+                label: "Traffic Total".to_string(),
+                value: format!("{total}, {packets} packets"),
+            },
+        );
     }
 
     Ok(())
