@@ -13,7 +13,6 @@ TX 2.88 MB/s   RX 1.70 MB/s                                                     
   curl (9876)                                -    0.0%    1.50 KB     1/1 ············ 151.101.1.195:443          RX 91.8%                            
                                                                                                                   Captured: 3.67 MB                   
                                                                                                                   Interface: 4.00 MB                  
-                                                                                                                  Captured / interface traffic        
                                                                                                                   ──────────────────────────────────  
                                                                                                                   Attribution · retained traffic      
                                                                                                                   TX 100.0% mapped                    
@@ -24,8 +23,9 @@ TX 2.88 MB/s   RX 1.70 MB/s                                                     
                                                                                                                   Mapped: 3.67 MB                     
                                                                                                                   Unknown: 0 B                        
                                                                                                                   Retained: 3.67 MB                   
-                                                                                                                  ──────────────────────────────────  
-                                                                                                                  Interface inventory: Host (5)       
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
                                                                                                                                                       
                                                                                                                                                       
                                                                                                                                                       

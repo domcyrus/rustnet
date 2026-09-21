@@ -2630,7 +2630,7 @@ mod snapshot_tests {
             let top = render_app(&app, &mut state, &connections, None, width, height);
             assert!(top.contains("Basis: eth0"));
             assert!(top.contains("Captured: 5.85 MB"));
-            assert!(state.activity_capture_scroll.can_scroll());
+            assert_eq!(state.activity_capture_scroll.can_scroll(), height < 24);
             let mut all = top;
             for _ in 0..30 {
                 activity_key(&app, &mut state, KeyCode::Down);
@@ -2649,7 +2649,7 @@ mod snapshot_tests {
                 "Attribution · retained traffic",
                 "Mapped: 3.67 MB",
                 "Unknown: 0 B",
-                "Interface inventory: Host (5)",
+                "Retained: 3.67 MB",
             ] {
                 assert!(all.contains(metric), "missing {metric}");
             }
@@ -2662,7 +2662,7 @@ mod snapshot_tests {
             let compact = render_app(&app, &mut state, &connections, None, width, height);
             assert_eq!(state.activity_section, ActivitySection::Capture);
             assert_eq!(compact, before_resize);
-            assert!(compact.contains("Interface inventory: Host (5)"));
+            assert!(compact.contains("Retained: 3.67 MB"));
             activity_key(&app, &mut state, KeyCode::Esc);
             assert_eq!(state.activity_section, ActivitySection::Processes);
             state.activity_capture_scroll.reset();

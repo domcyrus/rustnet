@@ -296,14 +296,6 @@ fn draw_capture(
         lines.push(field("Captured", format_bytes(captured)));
         lines.push(field("Interface", format_bytes(interface)));
     }
-    lines.push(Line::styled(
-        if basis.exact {
-            "Captured / interface traffic"
-        } else {
-            "~ Host aggregate; may overlap"
-        },
-        theme::fg(theme::muted()),
-    ));
     lines.push(rule(inner.width.saturating_sub(2)));
     lines.push(heading("Attribution · retained traffic"));
     for direction in [ActivityDirection::Egress, ActivityDirection::Ingress] {
@@ -322,11 +314,6 @@ fn draw_capture(
         ));
         lines.push(field("Retained", format_bytes(retained)));
     }
-    lines.push(rule(inner.width.saturating_sub(2)));
-    lines.push(Line::styled(
-        "Interface inventory: Host (5)",
-        theme::fg(theme::muted()),
-    ));
     draw_scrolled_text(
         f,
         inner,

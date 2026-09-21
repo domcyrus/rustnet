@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Section tabs share the main tabs' styling and show shortcuts in the footer.
   Activity uses a scrollable process table with stable selection, row ranges, and
   inline inspection. Capture stays accessible at every size; interface inventory
-  lives in Host.
+  lives in Host. Capture panels omit explanatory footnotes.
 - **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
   process ranking, and a separate capture-quality sidebar on wide terminals.
   Share bars use theme-derived gradients with textured ANSI fallbacks.

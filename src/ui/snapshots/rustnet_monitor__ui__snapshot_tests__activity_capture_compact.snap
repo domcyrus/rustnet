@@ -7,22 +7,22 @@ expression: "render_app(&app, &mut state, &connections, None, 80, 24)"
 Processes   Capture                                                             
 ────────────━━━━━━━─────────────────────────────────────────────────────────────
 ▎ Capture ──────────────────────────────────────────────────────────────────────
-Coverage · last 60s                                                            ▐
-Basis: eth0                                                                    ▐
-TX 73.1%                                                                       ▐
-Captured: 5.85 MB                                                              ▐
-Interface: 8.00 MB                                                             ▐
-RX 91.8%                                                                       ▐
-Captured: 3.67 MB                                                              ▐
-Interface: 4.00 MB                                                             ▐
-Captured / interface traffic                                                   ▐
-────────────────────────────────────────────────────────────────────────────── ▐
-Attribution · retained traffic                                                 ▐
-TX 100.0% mapped                                                               ▐
-Mapped: 5.85 MB                                                                ▐
-Unknown: 0 B                                                                   ▐
-Retained: 5.85 MB                                                              ▐
+Coverage · last 60s                                                             
+Basis: eth0                                                                     
+TX 73.1%                                                                        
+Captured: 5.85 MB                                                               
+Interface: 8.00 MB                                                              
+RX 91.8%                                                                        
+Captured: 3.67 MB                                                               
+Interface: 4.00 MB                                                              
+──────────────────────────────────────────────────────────────────────────────  
+Attribution · retained traffic                                                  
+TX 100.0% mapped                                                                
+Mapped: 5.85 MB                                                                 
+Unknown: 0 B                                                                    
+Retained: 5.85 MB                                                               
 RX 100.0% mapped                                                                
 Mapped: 3.67 MB                                                                 
 Unknown: 0 B                                                                    
- v/V section  j/k scroll  esc details                            h help  q quit
+Retained: 3.67 MB                                                               
+ v/V section  esc details                                        h help  q quit
