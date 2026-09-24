@@ -62,15 +62,38 @@ impl HelpContext {
         }
     }
 
-    fn summary(self) -> &'static str {
+    fn introduction(self) -> &'static [&'static str] {
         match self {
-            Self::Overview => "Inspect, filter, group, and sort captured connections.",
-            Self::Details => "Inspect the currently selected connection.",
-            Self::Activity => "Compare retained traffic by process.",
-            Self::Graph => "Review live traffic, protocol, and connection charts.",
-            Self::HostSockets => "Inspect the OS socket table: listeners, bound endpoints, states.",
-            Self::HostInterfaces => "Inspect traffic and counters for each interface.",
-            Self::HostDns => "Review passive DNS outcomes, response time, and question names.",
+            Self::Overview => &[
+                "Overview is the connection browser for traffic RustNet has captured.",
+                "Find connections by process, address, or protocol, then open one in Details.",
+            ],
+            Self::Details => &[
+                "Details explains the selected connection using captured traffic and metadata.",
+                "Inspect its endpoints, process, protocol, timing, and transport health.",
+            ],
+            Self::Activity => &[
+                "Activity compares captured traffic by application and process.",
+                "Spot heavy senders or receivers, inspect PIDs and peers, and check capture coverage.",
+                "Egress (TX) is outgoing traffic; ingress (RX) is incoming traffic to this device.",
+            ],
+            Self::Graph => &[
+                "Graph shows how traffic and network health change over time.",
+                "Compare RX/TX rates, observed RTT and loss, and application protocol share.",
+            ],
+            Self::HostSockets => &[
+                "Host shows the operating system's sockets, even without captured packets.",
+                "Sockets lists TCP listeners and UDP bound endpoints, plus TCP state totals.",
+            ],
+            Self::HostInterfaces => &[
+                "Host shows the operating system's network interfaces and their counters.",
+                "Interfaces lists addresses, traffic rates, packet totals, errors, and drops.",
+            ],
+            Self::HostDns => &[
+                "DNS tracks lookups and replies seen in captured unicast UDP traffic.",
+                "Use it to spot slow or failed lookups and the most queried names.",
+                "These are passive observations; encrypted DNS and cached answers are not shown.",
+            ],
         }
     }
 }
@@ -354,6 +377,14 @@ const DNS_KEYS: &[HelpRow] = &[
 const DNS_CONCEPTS: &[HelpRow] = &[
     ("Window", "All DNS analytics cover the latest 60 seconds"),
     (
+        "Health",
+        "Recent outcomes and latency; NXDOMAIN alone is not a failure",
+    ),
+    (
+        "Failures",
+        "SERVFAIL, REFUSED, other error codes, and timeouts",
+    ),
+    (
         "NXDOMAIN",
         "The resolver replied that the question name does not exist",
     ),
@@ -437,10 +468,11 @@ fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &[HelpR
 }
 
 fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(Span::styled(
-        context.summary(),
-        theme::key_hint_label(),
-    ))];
+    let mut lines = context
+        .introduction()
+        .iter()
+        .map(|&text| Line::from(Span::styled(text, theme::key_hint_label())))
+        .collect::<Vec<_>>();
 
     if ui_state.section_navigation {
         push_section(&mut lines, "Sections", &[crate::ui::sections::SECTION_HELP]);
@@ -637,6 +669,31 @@ mod tests {
         let text = plain_text(&UiState::default());
         assert!(text.contains("Filter Examples"));
         assert!(text.contains("/port:22"));
+    }
+
+    #[test]
+    fn each_view_introduces_its_purpose() {
+        let state = UiState::default();
+        for (context, purpose) in [
+            (HelpContext::Overview, "connection browser"),
+            (HelpContext::Details, "selected connection"),
+            (HelpContext::Activity, "compares captured traffic"),
+            (HelpContext::Graph, "change over time"),
+            (HelpContext::HostSockets, "operating system's sockets"),
+            (HelpContext::HostInterfaces, "network interfaces"),
+            (HelpContext::HostDns, "tracks lookups and replies"),
+        ] {
+            let first_line = &help_lines(context, &state)[0];
+            assert!(first_line.spans[0].content.contains(purpose));
+        }
+
+        let activity = help_lines(HelpContext::Activity, &state);
+        let direction = &activity[2].spans[0].content;
+        assert!(direction.contains("Egress (TX) is outgoing traffic"));
+        assert!(direction.contains("ingress (RX) is incoming traffic to this device"));
+
+        let dns = help_lines(HelpContext::HostDns, &state);
+        assert!(dns[2].spans[0].content.contains("passive observations"));
     }
 
     #[test]

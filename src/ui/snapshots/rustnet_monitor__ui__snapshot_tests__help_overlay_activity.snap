@@ -1,0 +1,33 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+                                                                                                    
+    ╭ Help · Activity ─────────────────────────────────────────────────────────────────────────╮    
+    │ Activity compares captured traffic by application and process.                         ▐ │    
+    │ Spot heavy senders or receivers, inspect PIDs and peers, and check capture coverage.   ▐ │    
+    │ Egress (TX) is outgoing traffic; ingress (RX) is incoming traffic to this device.      ▐ │    
+    │                                                                                        ▐ │    
+    │ ▎ Activity Actions                                                                     ▐ │    
+    │   ↑/k, ↓/j              Select a row; scroll Capture or details                        ▐ │    
+    │   Page Up/Down          Move by one visible page (also Ctrl+B/F)                       ▐ │    
+    │   Home/End, g/G         Jump to the first or last row                                  ▐ │    
+    │   Enter                 Application summary, then PID list, then process details       ▐ │    
+    │   Click / double-click  Select / inspect an application or process                     ▐ │    
+    │   Scroll wheel          Navigate the table or scroll the pane under the pointer        ▐ │    
+    │   o                     Open scoped Overview connections, including history            ▐ │    
+    │   d                     Toggle Egress (TX) and Ingress (RX)                            ▐ │    
+    │   s                     Cycle the traffic sort column                                  ▐ │    
+    │   S                     Reverse the sort direction                                     ▐ │    
+    │   Esc                   Back one level; from applications return to Overview           ▐ │    
+    │                                                                                        ▐ │    
+    │ ▎ Activity Concepts                                                                    ▐ │    
+    │   Applications     Traffic grouped by process name; PIDs are inside details              │    
+    │   Scope            All captured traffic; Overview filters do not apply                   │    
+    │   Attribution      Mapped share of retained traffic, not the 60s window                  │    
+    │   Conns            Active connections / retained connections                             │    
+    │   Interfaces       Browse interface counters in Host (5)                                 │    
+    │   60s coverage     Captured connection traffic divided by interface traffic              │    
+    │   Retained         Active traffic plus recently closed connections                       │    
+    │   Unknown          Traffic that could not be attributed to a process                     │    
+    ╰──────────────────────────────────────────────────────────────────────────────────────────╯

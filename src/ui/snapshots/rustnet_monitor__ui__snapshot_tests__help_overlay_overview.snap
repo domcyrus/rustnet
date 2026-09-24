@@ -7,7 +7,8 @@ expression: output
                                                                                                     
                                                                                                     
     ╭ Help · Overview ─────────────────────────────────────────────────────────────────────────╮    
-    │ Inspect, filter, group, and sort captured connections.                                 ▐ │    
+    │ Overview is the connection browser for traffic RustNet has captured.                   ▐ │    
+    │ Find connections by process, address, or protocol, then open one in Details.           ▐ │    
     │                                                                                        ▐ │    
     │ ▎ Connection Navigation                                                                ▐ │    
     │   ↑/k, ↓/j      Select previous or next connection                                     ▐ │    
@@ -20,8 +21,8 @@ expression: output
     │   Enter           Open the selected connection in Details                              ▐ │    
     │   /               Enter filter mode                                                    ▐ │    
     │   Esc             Clear the active filter                                              ▐ │    
-    │   c               Copy the selected remote address                                     ▐ │    
-    │   p               Toggle service names and port numbers                                ▐ │    
+    │   c               Copy the selected remote address                                       │    
+    │   p               Toggle service names and port numbers                                  │    
     │   d               Toggle hostnames and IP addresses                                      │    
     │   s, S            Change sort column or direction                                        │    
     │   a               Toggle process grouping                                                │    
@@ -36,5 +37,4 @@ expression: output
     │   Countdown   Idle; the ▎ stripe and ↓/↑ countdown run yellow to red until removal       │    
     │   Gray        Historic closed connection                                                 │    
     │   ~name       Hostname inferred from an observed DNS response                            │    
-    │   App column  Application protocol, SNI, or HTTP Host                                    │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯

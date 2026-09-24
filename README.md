@@ -281,6 +281,9 @@ Esc returns one level. Both lists scroll and preserve selection. Press `o` to
 open matching connections in Overview, replacing its filter and enabling history.
 Activity totals remain independent of Overview filters. Compact layouts use
 `v` / Shift+`v` for Applications and Capture; interface inventory stays in Host.
+In Activity, Egress (TX) is outgoing traffic and Ingress (RX) is incoming traffic
+from the perspective of the device running RustNet. The contextual help on each
+tab and Host section explains what that view is for before listing its controls.
 
 See [USAGE.md](USAGE.md) for detailed keyboard controls and navigation tips.
 

@@ -4,7 +4,8 @@ expression: output
 ---
                                                                                                     
     ╭ Help · Details ──────────────────────────────────────────────────────────────────────────╮    
-    │ Inspect the currently selected connection.                                             ▐ │    
+    │ Details explains the selected connection using captured traffic and metadata.          ▐ │    
+    │ Inspect its endpoints, process, protocol, timing, and transport health.                ▐ │    
     │                                                                                        ▐ │    
     │ ▎ Details Actions                                                                      ▐ │    
     │   ↑/k, ↓/j      Show the previous or next connection                                   ▐ │    
@@ -19,7 +20,7 @@ expression: output
     │   Window Size     Advertised receive windows: ↓ this host's, ↑ the remote's            ▐ │    
     │   unknown window  Scaling is announced only in a handshake rustnet did not see         ▐ │    
     │   Initial RTT     Blank without a captured handshake; Live RTT still measures          ▐ │    
-    │                                                                                        ▐ │    
+    │                                                                                          │    
     │ ▎ Connection Display                                                                     │    
     │   Full color  Active connection                                                          │    
     │   Countdown   Idle; the ▎ stripe and ↓/↑ countdown run yellow to red until removal       │    
@@ -29,5 +30,4 @@ expression: output
     │   R3/O1       Health for TCP: retransmits and out-of-order packets                       │    
     │   R1/V0       Health for QUIC: Retry and Version Negotiation packets                     │    
     │   R2/T1       Health for UDP requests: retries and timeouts                              │    
-    │   ok, -       Healthy connection, or an ungraded protocol                                │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯

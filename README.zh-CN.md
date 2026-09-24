@@ -267,6 +267,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 
 Activity 将进程名完全相同的多个 PID 汇总为一行应用。依次按 Enter 打开应用概要、PID 列表和单个进程详情，Esc 返回上一级。两个列表均可滚动，并在更新和调整大小时保持选择。按 `o` 在 Overview 中查看对应连接，会替换其筛选条件并启用历史连接。Activity 总计不受 Overview 筛选条件影响。紧凑布局使用 `v` / Shift+`v` 切换 Applications 与 Capture，接口清单统一放在 Host。
 
+在 Activity 中，以运行 RustNet 的设备为视角，Egress (TX) 是出站流量，Ingress (RX) 是入站流量。每个标签页及 Host 区块的上下文帮助都会先说明该视图的用途，再列出操作方式。
+
 ## 过滤与排序
 
 **快速过滤示例：**
