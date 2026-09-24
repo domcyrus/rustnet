@@ -21,6 +21,7 @@ use crate::network::parser::ParsedPacket;
 use crate::network::{
     capture::CapturedPacket,
     dns::DnsResolver,
+    dns_analytics::DnsAnalyticsSnapshot,
     geoip::{GeoIpConfig, GeoIpResolver},
     interface_stats::{InterfaceRates, InterfaceStats, InterfaceTrafficWindow},
     neighbors::NeighborEntry,
@@ -542,6 +543,11 @@ impl App {
             .collect()
     }
 
+    /// Return passive DNS analytics for the latest rolling window.
+    pub(crate) fn get_dns_analytics_snapshot(&self) -> DnsAnalyticsSnapshot {
+        self.tracker.dns_analytics_snapshot()
+    }
+
     /// Get interface rates (bytes/sec)
     pub(crate) fn get_interface_rates(&self) -> HashMap<String, InterfaceRates> {
         self.interface_rates
@@ -781,7 +787,13 @@ impl App {
     /// Seed the tracker through the production ingest path. Tests only.
     #[cfg(test)]
     pub(crate) fn ingest_packet_for_test(&self, parsed: &ParsedPacket) {
-        self.tracker.ingest_at(parsed, SystemTime::now());
+        self.ingest_packet_at_for_test(parsed, SystemTime::now());
+    }
+
+    /// Feed one parsed packet to the tracker at a deterministic capture time.
+    #[cfg(test)]
+    pub(crate) fn ingest_packet_at_for_test(&self, parsed: &ParsedPacket, at: SystemTime) {
+        self.tracker.ingest_at(parsed, at);
     }
 
     /// Override the current interface label. Tests only.

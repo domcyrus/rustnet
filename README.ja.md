@@ -24,8 +24,8 @@ RustNet は、各接続を所有するプロセス、通信量、状態、アプ
 - TCP、UDP、QUIC 接続とプロセスの対応付け。詳細には PID、実行ファイル、ユーザー/グループ名、照合の信頼度、全プラットフォーム共通の親プロセスチェーン（上限あり）を表示
 - Linux 5.11 以降では、起動時の BPF task-file イテレーターにより、ファイル capabilities で実行した場合でも root や他ユーザーが所有する既存 socket を識別
 - HTTP、TLS/SNI、DNS、SSH、QUIC、WireGuard、OpenVPN などの深層パケット解析
-- TCP、QUIC ハンドシェイク、DNS 応答、ICMP エコーの往復時間（RTT）と、TCP の再送・順序入れ替わりをリアルタイム表示。Overview テーブルではプロトコル別のヘルスバッジにより、TCP の問題、明示的な QUIC Retry/バージョンネゴシエーション、トランザクション型 UDP の再試行/タイムアウトを表示し、重大度順に並べ替え可能
-- Host タブに TCP LISTEN ソケット、UDP BOUND エンドポイント、TCP 状態集計、観測 RTT、所有プロセス、インターフェース統計を表示
+- TCP、QUIC ハンドシェイク、DNS 応答、ICMP エコーの往復時間（RTT）と、TCP の再送・順序入れ替わりをリアルタイム表示。Overview テーブルではプロトコル別のヘルスバッジにより、TCP の問題、明示的な QUIC Retry/バージョンネゴシエーション、トランザクション型 UDP の再試行/タイムアウトを表示し、重大度順に並べ替え可能。DNS の応答コード、タイムアウト、レイテンシ分位点、質問名、ヘルス状態も受動的に集計
+- Host タブに TCP LISTEN ソケット、UDP BOUND エンドポイント、TCP 状態集計、観測 RTT、所有プロセス、インターフェース統計、DNS 分析を表示
 - `port:`、`process:`、`sni:`、`state:` などのフィルター
 - TUI を使わず、バージョン付き JSONL スナップショットをストリーミング出力、または終了時に最終 JSON スナップショットを 1 件出力できるヘッドレスモード（未リリース）。対話表示と同じ接続フィルターを利用可能
 - 注釈付き PCAPNG、PCAP と JSONL sidecar、JSON ログの出力
@@ -155,7 +155,7 @@ rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
 | `a` | プロセス単位のグループ表示 |
 | `Space` | 選択したプロセスグループを展開または折りたたむ |
 | `t` | 終了済み接続の表示を切り替え |
-| `v` / `Shift+v` | コンパクト表示または Host の次 / 前のセクション |
+| `v` / `Shift+v` | コンパクト表示または Host の次 / 前のセクション（Sockets / Interfaces / DNS） |
 | `[` / `]` | 前 / 次のメインタブ |
 | `i` | 幅の広い Overview で System サイドバーを表示または非表示 |
 | `r` | 表示、並び替え、フィルターをリセット |
@@ -182,7 +182,7 @@ Graph の Observed Network Health、Observed TCP States、Application Distributi
 
 ### 小さいターミナルでの表示
 
-Overview、Details、Activity、Graph は、全体を表示できない場合に共通のセクション選択行を表示します。`v` で次、Shift+`v` で前のセクションへ移動し、名前のクリックでも選択できます。Host では `v` / Shift+`v` で Sockets と Interfaces を切り替えます。Tab / Shift+Tab、`[` / `]`、1-5 は全画面でメインタブを切り替えます。セクション選択行はメインタブと同じタイトルと下線の描画を共有し、ショートカットは画面下部に表示します。System 情報には区切り線を表示します。
+Overview、Details、Activity、Graph は、全体を表示できない場合に共通のセクション選択行を表示します。`v` で次、Shift+`v` で前のセクションへ移動し、名前のクリックでも選択できます。Host では `v` / Shift+`v` で Sockets / Interfaces / DNS を切り替えます。Tab / Shift+Tab、`[` / `]`、1-5 は全画面でメインタブを切り替えます。セクション選択行はメインタブと同じタイトルと下線の描画を共有し、ショートカットは画面下部に表示します。System 情報には区切り線を表示します。
 
 Overview は 90 列未満では Connections または System をページ内に表示します。System は `j` / `k`、Page Up/Down、マウスホイールでスクロールし、Esc で Connections に戻ります。幅が広い場合は従来の接続一覧と System サイドバーを表示し、`i` でサイドバーを切り替えます。
 

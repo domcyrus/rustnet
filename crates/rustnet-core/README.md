@@ -20,6 +20,8 @@ to analyze.
   (retransmissions, out-of-order, fast-retransmit).
 - **Reusable filtering and retention policy** through `ConnectionFilter` and
   `TrackerConfig`, without depending on the terminal UI.
+- **Passive DNS analytics** with transaction-correlated response latency,
+  response outcomes, timeouts, question aggregates, and health classification.
 - **GeoIP** lookups against MaxMind GeoLite2 databases.
 - **Reverse DNS** with background async resolution and caching.
 - **OUI vendor** and **service-name** resolution from baked-in datasets (no

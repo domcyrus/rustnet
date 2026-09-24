@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   letters, e.g. `TCP Retransmits (R)` and `Out-of-Order (O)` (#583)
 - **VPN Traffic Detection**: identify WireGuard and OpenVPN connections through
   packet signatures, including OpenVPN over UDP and TCP (#581)
+- **Passive DNS Analytics**: the Host tab now shows rolling response codes,
+  timeouts, matched latency, question names, and DNS health, with a compact
+  health line in Overview
 - **Host Socket Inventory**: the new Host tab shows TCP LISTEN sockets, UDP
   BOUND endpoints, TCP state totals, observed RTT, process owners, and the
   detailed interface table on Linux, macOS, FreeBSD, and Windows

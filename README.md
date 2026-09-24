@@ -36,7 +36,7 @@
 - **Deep packet inspection**: Identify HTTP, HTTPS/TLS with SNI, DNS, SSH, FTP, QUIC, MQTT, BitTorrent, WireGuard, OpenVPN, STUN, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, and NetBIOS, without external dissectors.
 - **Annotated PCAPNG export**: `--pcapng-export` writes a Wireshark-ready capture with process, PID, direction, DPI/SNI, and GeoIP embedded as per-packet comments. Open it in Wireshark and every packet already names its owning process, with no post-processing. Classic `--pcap-export` with a JSONL sidecar for offline correlation is also available.
 - **Security sandboxing**: Landlock (Linux 5.13+), Seatbelt (macOS), token privilege drop + job-object child-process block (Windows). Drops privileges after initialization; a failed requested UID/GID drop stops startup before packet-processing workers run. See [SECURITY.md](SECURITY.md).
-- **Network analytics**: Real-time round-trip times for TCP, QUIC handshakes, DNS responses, and ICMP echo, plus TCP retransmission, out-of-order, and fast-retransmit detection. Protocol-aware health badges surface TCP issues, explicit QUIC Retry/version events, and retries/timeouts for transaction-based UDP, with severity-first sorting in the Overview table.
+- **Network analytics**: Real-time round-trip times for TCP, QUIC handshakes, DNS responses, and ICMP echo, plus TCP retransmission, out-of-order, and fast-retransmit detection. Protocol-aware health badges surface TCP issues, explicit QUIC Retry/version events, and retries/timeouts for transaction-based UDP, with severity-first sorting in the Overview table. Passive DNS analytics add response codes, timeouts, latency percentiles, question names, and a compact health signal.
 - **Smart connection lifecycle**: Protocol-aware timeouts; idle rows get a yellow-to-red stripe and removal countdown and soften toward gray. Toggle `t` to keep historic (closed) connections visible for forensics.
 - **Vim/fzf-style filtering**: `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, `proto:`, plus regex via `/(?i)pattern/`.
 - **Headless automation (unreleased)**: Run without the TUI and stream versioned JSONL snapshots, or emit one final JSON snapshot, with the same connection filters used by the interactive view.
@@ -103,8 +103,9 @@ RustNet combines process-level traffic accounting with real-time network interfa
 - **Overview Tab**: Shows active interfaces with current rates, errors, and drops
 - **Activity Tab** (press `3`): Ranks applications by Egress (TX) or Ingress (RX), with per-PID details, including retained and rolling traffic, rates, shares, connections, and destinations
 - **Security Workflow**: Sort by Egress, identify an unexpected uploader, then inspect its top remote peer and retained traffic even after the connection closes
-- **Host Tab** (press `5`): Shows TCP LISTEN sockets, UDP BOUND endpoints, aggregated TCP states, observed RTT, and process ownership
+- **Host Tab** (press `5`): Shows TCP LISTEN sockets, UDP BOUND endpoints, aggregated TCP states, observed RTT, process ownership, and passive DNS analytics
 - **Interface Details** (select Interfaces on Host): Shows comprehensive metrics for every interface
+- **DNS Details** (select DNS on Host): Shows a rolling outcome summary, matched response latency, and the most active question names
 - **Cross-Platform**: Linux (sysfs), macOS/FreeBSD (getifaddrs), Windows (GetIfTable2 API)
 - **Smart Filtering**: Windows automatically excludes virtual/filter adapters
 
