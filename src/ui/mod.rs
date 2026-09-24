@@ -2594,6 +2594,83 @@ mod snapshot_tests {
         insta::assert_snapshot!(render_host_dns(80, 24));
     }
 
+    #[test]
+    fn host_dns_navigation_preserves_scroll_and_sort_across_sections() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+
+        let app = test_app();
+        let started = SystemTime::now() - Duration::from_secs(2);
+        for txid in 0..30 {
+            seed_dns_lookup(
+                &app,
+                txid,
+                &format!("name{txid:02}.example.com"),
+                DnsQueryType::A,
+                0,
+                started,
+                Duration::from_millis(10),
+            );
+        }
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Dns,
+            ..Default::default()
+        };
+        let (output, regions) = render_app_frame(&app, &mut state, &[], None, 80, 24);
+        assert!(output.contains("name00.example.com"));
+        assert!(state.dns_questions_scroll.can_scroll());
+        let page = state.dns_questions_scroll.viewport_rows();
+        {
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                4,
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+        }
+        let output = render_app(&app, &mut state, &[], None, 80, 24);
+        assert!(!output.contains("name00.example.com"));
+        assert!(output.contains(&format!("name{page:02}.example.com")));
+        {
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_mouse(
+                4,
+                MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: 10,
+                    row: 16,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &mut ctx,
+            )
+            .unwrap();
+        }
+        let scrolled = render_app(&app, &mut state, &[], None, 80, 24);
+        assert_ne!(scrolled, output);
+        state.select_section(0);
+        render_app(&app, &mut state, &[], None, 80, 24);
+        state.select_section(2);
+        assert_eq!(render_app(&app, &mut state, &[], None, 80, 24), scrolled);
+        {
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                4,
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+        }
+        let sorted = render_app(&app, &mut state, &[], None, 80, 24);
+        assert!(sorted.contains("sort: NXDOMAIN"));
+        assert!(sorted.contains("name00.example.com"));
+        for (width, height) in [(20, 12), (140, 50), (80, 24)] {
+            render_app(&app, &mut state, &[], None, width, height);
+            assert_eq!(state.host_view, HostView::Dns);
+            assert_eq!(state.dns_sort, DnsSort::Nxdomain);
+        }
+    }
+
     fn seeded_activity_app() -> App {
         let app = test_app();
         let mut connections = sample_connections();
@@ -3823,7 +3900,7 @@ mod snapshot_tests {
                 assert!(state.show_help);
             }
         }
-        // Host still has two selectable views on a wide terminal.
+        // Host keeps its selectable sections on a wide terminal.
         state.selected_tab = 4;
         let output = render_app(&app, &mut state, &connections, None, 140, 50);
         assert!(output.contains(sections::SECTION_KEYS));

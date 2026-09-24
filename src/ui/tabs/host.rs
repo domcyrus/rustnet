@@ -269,7 +269,7 @@ fn draw_dns_latency(f: &mut Frame, area: Rect, snapshot: &DnsAnalyticsSnapshot) 
             format!("{bucket_label:<9}"),
             theme::fg(theme::muted()),
         )];
-        spans.extend(glow_bar::spans(fraction, bar_width, theme::accent_wave));
+        spans.extend(glow_bar::themed_spans(fraction, bar_width, theme::accent()));
         spans.push(Span::styled(
             format!(" {:>3}%", (fraction * 100.0).round() as usize),
             theme::fg(theme::muted()),

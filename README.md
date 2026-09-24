@@ -257,7 +257,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `Esc` | Go back or clear filter |
 | `c` | Copy remote address |
 | `p` | Toggle service names/ports |
-| `d` | Toggle hostnames/IPs on Overview, Egress/Ingress on Activity, or open DNS on Host |
+| `d` | Toggle hostnames/IPs on Overview or Egress/Ingress on Activity |
 | `s` `S` | Cycle sort columns / toggle direction |
 | `a` | Toggle process grouping |
 | `Space` | Expand/collapse process group |

@@ -1268,7 +1268,7 @@ fn draw_stats_panel(
         ]),
         dns_health_line(
             &app.get_dns_analytics_snapshot(),
-            app.get_capture_error().is_some(),
+            app.capture_error().is_some(),
         ),
         Line::from(format!(
             "TCP Retransmits: {} / {}",
@@ -1664,7 +1664,7 @@ mod tests {
             ..DnsAnalyticsSnapshot::default()
         };
         assert_eq!(
-            line_text(dns_health_line(&responsive, false)),
+            line_text(&dns_health_line(&responsive, false)),
             "DNS: responsive · p95 18ms"
         );
 
@@ -1674,7 +1674,7 @@ mod tests {
             ..DnsAnalyticsSnapshot::default()
         };
         assert_eq!(
-            line_text(dns_health_line(&no_replies, false)),
+            line_text(&dns_health_line(&no_replies, false)),
             "DNS: no replies · 4 timeouts"
         );
 
@@ -1686,11 +1686,11 @@ mod tests {
             ..DnsAnalyticsSnapshot::default()
         };
         assert_eq!(
-            line_text(dns_health_line(&slow, false)),
+            line_text(&dns_health_line(&slow, false)),
             "DNS: degraded · p95 620ms"
         );
         assert_eq!(
-            line_text(dns_health_line(&responsive, true)),
+            line_text(&dns_health_line(&responsive, true)),
             "DNS: unknown · capture stopped"
         );
     }

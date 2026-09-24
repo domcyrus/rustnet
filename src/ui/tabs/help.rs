@@ -601,19 +601,35 @@ mod tests {
 
     #[test]
     fn host_help_lists_scroll_keys_only_when_the_pane_scrolls() {
-        let state = UiState {
-            selected_tab: 4,
-            ..UiState::default()
-        };
-        let fits = plain_text(&state);
-        assert!(!fits.contains("Scroll one line"));
-        assert!(!fits.contains("Scroll wheel"));
-        assert!(fits.contains("Return to Overview"));
+        for host_view in [HostView::Sockets, HostView::Interfaces, HostView::Dns] {
+            let state = UiState {
+                selected_tab: 4,
+                host_view,
+                section_navigation: true,
+                ..UiState::default()
+            };
+            let fits = plain_text(&state);
+            assert!(!fits.contains("Scroll one line"));
+            assert!(!fits.contains("Scroll wheel"));
+            assert!(fits.contains(crate::ui::sections::SECTION_KEYS));
+            assert!(fits.contains("Return to Overview"));
+            assert!(!fits.contains("Switch Host view"));
+            assert!(!fits.contains("Show interface details"));
+            assert_eq!(
+                fits.contains("Cycle question sort metric"),
+                host_view == HostView::Dns
+            );
 
-        state.host_sockets_scroll.clamp_for_render(3);
-        let outgrown = plain_text(&state);
-        assert!(outgrown.contains("Scroll one line"));
-        assert!(outgrown.contains("Scroll the endpoint table"));
+            let scroll = match host_view {
+                HostView::Sockets => &state.host_sockets_scroll,
+                HostView::Interfaces => &state.interfaces_scroll,
+                HostView::Dns => &state.dns_questions_scroll,
+            };
+            scroll.clamp_for_render(3);
+            let outgrown = plain_text(&state);
+            assert!(outgrown.contains("Scroll one line"));
+            assert!(outgrown.contains("Scroll wheel"));
+        }
     }
 
     #[test]
