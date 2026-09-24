@@ -1,0 +1,33 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+                                                                                                    
+    ╭ Help · Host · DNS ───────────────────────────────────────────────────────────────────────╮    
+    │ DNS tracks lookups and replies seen in captured unicast UDP traffic.                     │    
+    │ Use it to spot slow or failed lookups and the most queried names.                        │    
+    │ These are passive observations; encrypted DNS and cached answers are not shown.          │    
+    │                                                                                          │    
+    │ ▎ DNS Actions                                                                            │    
+    │   o    Cycle question sort metric                                                        │    
+    │   Esc  Return to Overview                                                                │    
+    │                                                                                          │    
+    │ ▎ DNS Concepts                                                                           │    
+    │   Window         All DNS analytics cover the latest 60 seconds                           │    
+    │   Health         Recent outcomes and latency; NXDOMAIN alone is not a failure            │    
+    │   Failures       SERVFAIL, REFUSED, other error codes, and timeouts                      │    
+    │   NXDOMAIN       The resolver replied that the question name does not exist              │    
+    │   NODATA         The name exists but has no answer of the requested type                 │    
+    │   Response time  Outgoing queries paired with replies by transaction ID                  │    
+    │   Timeout        An outgoing query had no matching reply within 10 seconds               │    
+    │                                                                                          │    
+    │ ▎ Global                                                                                 │    
+    │   Tab, ]        Next tab                                                                 │    
+    │   Shift+Tab, [  Previous tab                                                             │    
+    │   1-5           Jump to Overview, Details, Activity, Graph, or Host                      │    
+    │   x             Clear all connections (press twice)                                      │    
+    │   h, Esc        Close this help overlay                                                  │    
+    │   q             Quit application (press twice to confirm)                                │    
+    │   Ctrl+C        Quit immediately                                                         │    
+    │                                                                                          │    
+    ╰──────────────────────────────────────────────────────────────────────────────────────────╯

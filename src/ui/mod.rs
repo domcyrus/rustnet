@@ -817,6 +817,35 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn help_overlay_activity() {
+        use crate::ui::tabs::help::draw_help_overlay;
+        let ui_state = UiState {
+            selected_tab: 2,
+            show_help: true,
+            ..UiState::default()
+        };
+        let output = render(100, 30, |f| {
+            draw_help_overlay(f, &ui_state, f.area()).expect("draw help overlay");
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn help_overlay_host_dns() {
+        use crate::ui::tabs::help::draw_help_overlay;
+        let ui_state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Dns,
+            show_help: true,
+            ..UiState::default()
+        };
+        let output = render(100, 30, |f| {
+            draw_help_overlay(f, &ui_state, f.area()).expect("draw help overlay");
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
     fn tabs_bar_overview_active() {
         let ui_state = UiState {
             selected_tab: 0,

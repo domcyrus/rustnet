@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Contextual help**: each tab and Host section now explains its purpose before
+  listing controls. Activity defines Egress (TX) and Ingress (RX) from the device's
+  perspective; Host DNS explains passive lookup outcomes and coverage limits.
 - **Compact layouts**: Overview, Details, Activity, and Graph share clickable section
   selectors with `v` / Shift+`v` when the full layout does not fit. Overview
   shows System inline with dividers; Host uses the same controls for its two views.
