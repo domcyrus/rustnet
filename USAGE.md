@@ -332,6 +332,16 @@ per-process name tints darken likewise. Terminals that do not answer the query
 keep the theme as-is, and explicit `[theme.overrides]` values are never
 touched.
 
+**Unreleased:** The same file accepts an optional `[view]` table. Set `group_by_process = true`
+to start Overview with collapsed process groups. The default is `false` (flat).
+`a` toggles grouping for the session, `Space` expands a group, and `r` restores
+the configured grouping preference. These settings do not affect headless output.
+
+```toml
+[view]
+group_by_process = true
+```
+
 Related: `--no-color` disables all colors entirely (also honors the `NO_COLOR`
 environment variable).
 

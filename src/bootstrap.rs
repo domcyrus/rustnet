@@ -108,6 +108,7 @@ pub fn run() -> Result<()> {
         info!("PTR lookup connections will be shown in UI");
     }
 
+    let mut user_config = config::UserConfig::default();
     if !headless {
         // Check NO_COLOR environment variable and --no-color flag (https://no-color.org)
         let no_color =
@@ -119,7 +120,7 @@ pub fn run() -> Result<()> {
 
         // Color theme: CLI --theme > config file > muted default. Warnings go
         // to stderr here, before the terminal enters raw mode.
-        let user_config = config::load();
+        user_config = config::load();
         let theme_name = matches
             .get_one::<String>("theme")
             .map(String::as_str)
@@ -377,7 +378,7 @@ pub fn run() -> Result<()> {
     let mut terminal = ui::setup_terminal(backend)?;
     info!("Terminal UI initialized");
 
-    let res = crate::tui::run(&mut terminal, &app, &SHUTDOWN_REQUESTED);
+    let res = crate::tui::run(&mut terminal, &app, &SHUTDOWN_REQUESTED, &user_config);
 
     let stop_report = app.stop();
     ui::restore_terminal(&mut terminal)?;

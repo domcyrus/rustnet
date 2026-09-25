@@ -325,6 +325,16 @@ Unix），并在背景报告为浅色时将这些灰色层级加深为 ANSI Dark
 辨识色也会相应加深。不回应查询的终端保持主题原样，显式的 `[theme.overrides]`
 值也绝不会被改动。
 
+**未发布：** 同一文件还支持可选的 `[view]` 表。设置 `group_by_process = true` 可在启动时
+按进程分组显示 Overview，分组初始为折叠状态。默认值为 `false`（平铺）。
+`a` 在当前会话中切换分组，`Space` 展开分组，`r` 恢复配置的分组偏好。
+这些设置不影响无界面模式的输出。
+
+```toml
+[view]
+group_by_process = true
+```
+
 相关：`--no-color` 完全禁用所有颜色（同时尊重 `NO_COLOR` 环境变量）。
 
 #### `-f, --bpf-filter <FILTER>`<a id="-f---bpf-filter-filter"></a>
