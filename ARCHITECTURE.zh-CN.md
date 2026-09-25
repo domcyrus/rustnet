@@ -2,6 +2,8 @@
 
 # 架构
 
+> **文档版本：** `main` 分支上的本指南描述开发中的代码，可能包含尚未发布的实现细节。使用 v1.6.0 时，请参阅 [v1.6.0 架构指南](https://github.com/domcyrus/rustnet/blob/v1.6.0/ARCHITECTURE.zh-CN.md)。运行 `rustnet --version` 可查看已安装的版本。
+
 本文档描述 RustNet 的技术架构和实现细节。
 
 ## 目录

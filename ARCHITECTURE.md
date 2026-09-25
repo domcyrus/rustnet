@@ -2,6 +2,8 @@
 
 # Architecture
 
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased implementation details. For v1.6.0, use the [v1.6.0 architecture guide](https://github.com/domcyrus/rustnet/blob/v1.6.0/ARCHITECTURE.md). Check `rustnet --version` for your installed version.
+
 This document describes the technical architecture and implementation details of RustNet.
 
 ## Table of Contents

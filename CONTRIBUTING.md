@@ -95,6 +95,12 @@ Security is important for a network monitoring tool:
 - Verify locally before opening the PR. The PR template lists the exact commands.
 - Add user-visible changes to the `## [Unreleased]` section of `CHANGELOG.md` in the same PR
 
+## Documentation
+
+- Keep the READMEs concise: a short introduction, primary installation method, demo and screenshots, brief highlights, and links to detailed guides. Avoid adding long feature lists, setup instructions, CLI references, or implementation details there.
+- Put details in the relevant guides (`INSTALL.md`, `USAGE.md`, `SECURITY.md`, or `ARCHITECTURE.md`) and link to them from the README when useful.
+- Do not describe unreleased features as available in README highlights or media. Mark development-only information in the guides and `CHANGELOG.md`; update the release note and claims in all three READMEs when a release ships. Keep the English, Chinese, and Japanese READMEs aligned.
+
 ## Duplicate Pull Requests
 
 If two or more PRs address the same issue, the maintainers will evaluate them on their merits (code quality, test coverage, architectural fit) rather than submission order. The PR that best fits the project will be merged; others will be closed with thanks. If your PR is closed in favor of another, useful pieces from your work (documentation, tests, edge cases) may be ported over and credited.
