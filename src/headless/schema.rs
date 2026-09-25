@@ -201,6 +201,8 @@ impl SandboxSnapshot {
 
 #[derive(Serialize)]
 struct StatsSnapshot {
+    packets_captured: u64,
+    bytes_captured: u64,
     packets_processed: u64,
     packets_dropped: u64,
     capture_packets_dropped: u64,
@@ -226,6 +228,8 @@ impl StatsSnapshot {
     fn from_stats(stats: &AppStats) -> Self {
         let load = |counter: &std::sync::atomic::AtomicU64| counter.load(Ordering::Relaxed);
         Self {
+            packets_captured: load(&stats.packets_captured),
+            bytes_captured: load(&stats.bytes_captured),
             packets_processed: load(&stats.packets_processed),
             packets_dropped: load(&stats.packets_dropped),
             capture_packets_dropped: load(&stats.capture_packets_dropped),
@@ -525,6 +529,19 @@ mod tests {
     use crate::network::types::{Protocol, ProtocolState, TcpState};
 
     #[test]
+    fn capture_totals_survive_stats_snapshot_and_reset_in_wire_output() {
+        let stats = AppStats::default();
+        stats.packets_captured.store(3, Ordering::Relaxed);
+        stats.bytes_captured.store(10_560, Ordering::Relaxed);
+        stats.reset_counters();
+
+        let value = serde_json::to_value(StatsSnapshot::from_stats(&stats.snapshot())).unwrap();
+        assert_eq!(value["packets_captured"], 3);
+        assert_eq!(value["bytes_captured"], 10_560);
+        assert_eq!(value["packets_processed"], 0);
+    }
+
+    #[test]
     fn version_one_schema_keys_and_protocol_timings_are_stable() {
         let app = app_with_connections();
         let (_, snapshot) = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None);
@@ -579,9 +596,11 @@ mod tests {
         assert_eq!(
             object_keys(&value["stats"]),
             [
+                "bytes_captured",
                 "capture_packets_dropped",
                 "connections_tracked",
                 "interface_packets_dropped",
+                "packets_captured",
                 "packets_dropped",
                 "packets_processed",
                 "pcap_export_errors",

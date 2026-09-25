@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Headless Traffic Counters**: JSON/JSONL stats include lifetime packet and
+  original-length byte totals from capture, independent of connection snapshots
+  and TUI clears, for external metrics exporters
 - **Headless Mode**: `--headless` runs without the TUI, with optional
   `--duration` and shared `--filter` syntax. Versioned snapshots stream as
   JSONL by default, while `--output json` emits one final snapshot. Stdout is

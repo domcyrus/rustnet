@@ -425,12 +425,18 @@ fn packet_predates_attribution_start(
     capture_not_before.is_some_and(|cutoff| timestamp < cutoff)
 }
 
-fn route_pre_attribution_packet(
+/// Count every delivered frame before attribution gating or queue admission.
+fn route_captured_packet(
     packet: CapturedPacket,
     capture_not_before: Option<SystemTime>,
     pcapng_tx: Option<&Sender<PcapngRecord>>,
     stats: &AppStats,
 ) -> Option<CapturedPacket> {
+    stats.packets_captured.fetch_add(1, Ordering::Relaxed);
+    stats
+        .bytes_captured
+        .fetch_add(u64::from(packet.original_len), Ordering::Relaxed);
+
     if !packet_predates_attribution_start(packet.timestamp, capture_not_before) {
         return Some(packet);
     }
@@ -680,7 +686,7 @@ impl App {
                                     }
                                 }
 
-                                let Some(packet) = route_pre_attribution_packet(
+                                let Some(packet) = route_captured_packet(
                                     packet,
                                     capture_not_before,
                                     pcapng_tx.as_ref(),
@@ -2089,10 +2095,11 @@ mod connection_lifecycle_tests {
 
 #[cfg(test)]
 mod attribution_cutoff_tests {
-    use super::{packet_predates_attribution_start, route_pre_attribution_packet};
+    use super::{packet_predates_attribution_start, route_captured_packet, try_send_packet_batch};
     use crate::app::types::AppStats;
     use crate::network::capture::CapturedPacket;
     use crossbeam::channel;
+    use std::ops::ControlFlow;
     use std::sync::atomic::Ordering;
     use std::time::{Duration, SystemTime};
 
@@ -2121,12 +2128,40 @@ mod attribution_cutoff_tests {
         let stats = AppStats::default();
         let (tx, rx) = channel::bounded(1);
 
-        assert!(route_pre_attribution_packet(packet, Some(cutoff), Some(&tx), &stats).is_none());
+        assert!(route_captured_packet(packet, Some(cutoff), Some(&tx), &stats).is_none());
         assert_eq!(stats.pre_attribution_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.packets_captured.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.bytes_captured.load(Ordering::Relaxed), 3);
         let exported = rx
             .try_recv()
             .expect("packet should remain in PCAPNG output");
         assert_eq!(exported.data, vec![1, 2, 3]);
         assert!(exported.key.is_none());
+    }
+
+    #[test]
+    fn capture_totals_include_truncated_and_unparseable_packets_rejected_by_queue() {
+        let stats = AppStats::default();
+        let (tx, _rx) = channel::bounded(1);
+        let mut parser = crate::network::parser::PacketParser::new().with_linktype(1);
+
+        for original_len in [1500, 9000, 60] {
+            let packet = CapturedPacket {
+                data: vec![0; 3],
+                timestamp: SystemTime::UNIX_EPOCH,
+                original_len,
+            };
+            assert!(parser.parse_packet_with_refresh(&packet.data).is_none());
+            let packet = route_captured_packet(packet, None, None, &stats).unwrap();
+            assert_eq!(
+                try_send_packet_batch(&tx, &mut vec![packet], &stats),
+                ControlFlow::Continue(())
+            );
+        }
+
+        assert_eq!(stats.packets_captured.load(Ordering::Relaxed), 3);
+        assert_eq!(stats.bytes_captured.load(Ordering::Relaxed), 10_560);
+        assert_eq!(stats.packets_dropped.load(Ordering::Relaxed), 2);
+        assert_eq!(stats.packets_processed.load(Ordering::Relaxed), 0);
     }
 }
