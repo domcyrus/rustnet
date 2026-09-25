@@ -214,6 +214,11 @@ assets = [
         "usr/share/applications/",
         "644",
     ],
+    [
+        "resources/packaging/linux/graphics/rustnet.svg",
+        "usr/share/icons/hicolor/scalable/apps/rustnet.svg",
+        "644",
+    ],
 ]
 conf-files = []
 
@@ -223,6 +228,7 @@ assets = [
     { source = "README.md", dest = "/usr/share/doc/rustnet-monitor/README.md", mode = "644" },
     { source = "crates/rustnet-core/assets/services", dest = "/usr/share/rustnet-monitor/services", mode = "644" },
     { source = "resources/packaging/linux/graphics/rustnet.png", dest = "/usr/share/icons/hicolor/256x256/apps/rustnet.png", mode = "644" },
+    { source = "resources/packaging/linux/graphics/rustnet.svg", dest = "/usr/share/icons/hicolor/scalable/apps/rustnet.svg", mode = "644" },
     { source = "resources/packaging/linux/rustnet.desktop", dest = "/usr/share/applications/rustnet.desktop", mode = "644" },
 ]
 [package.metadata.generate-rpm.requires]
