@@ -1,24 +1,7 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="128" height="128" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="RustNet Internet Logo">
-  <!-- Outer circle (globe outline) -->
-  <circle cx="512" cy="512" r="450" fill="none" stroke="#f97316" stroke-width="40"/>
-
-  <!-- Latitude lines -->
-  <ellipse cx="512" cy="512" rx="450" ry="300" fill="none" stroke="#38bdf8" stroke-width="16"/>
-  <ellipse cx="512" cy="512" rx="450" ry="220" fill="none" stroke="#38bdf8" stroke-width="16"/>
-  <ellipse cx="512" cy="512" rx="450" ry="120" fill="none" stroke="#38bdf8" stroke-width="12"/>
-
-  <!-- Longitude lines -->
-  <ellipse cx="512" cy="512" rx="300" ry="450" fill="none" stroke="#38bdf8" stroke-width="16"/>
-  <ellipse cx="512" cy="512" rx="220" ry="450" fill="none" stroke="#38bdf8" stroke-width="16"/>
-  <ellipse cx="512" cy="512" rx="120" ry="450" fill="none" stroke="#38bdf8" stroke-width="12"/>
-
-  <!-- Horizontal + vertical axis -->
-  <line x1="62" y1="512" x2="962" y2="512" stroke="#38bdf8" stroke-width="12"/>
-  <line x1="512" y1="62" x2="512" y2="962" stroke="#38bdf8" stroke-width="12"/>
-
-  <!-- Text in center -->
-  <text x="512" y="560" font-family="monospace" font-weight="bold" font-size="200" text-anchor="middle" fill="#f97316">
-    RustNet
-  </text>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">RustNet terminal signal</title>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 88 148 L 190 256 L 88 364" stroke="#0891b2" stroke-width="52"/>
+    <path d="M 238 316 H 298 V 228 H 372 V 316 H 460" stroke="#10b981" stroke-width="44"/>
+  </g>
 </svg>

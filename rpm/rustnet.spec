@@ -89,6 +89,7 @@ install -Dpm 0755 target/release/rustnet -t %{buildroot}%{_bindir}/
 %endif
 install -Dpm 0644 crates/rustnet-core/assets/services -t %{buildroot}%{_datadir}/%{name}/
 install -Dpm 0644 resources/packaging/linux/graphics/rustnet.png -t %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/
+install -Dpm 0644 resources/packaging/linux/graphics/rustnet.svg -t %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/
 install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_datadir}/applications/
 
 %files
@@ -101,6 +102,9 @@ install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_da
 %dir %{_datadir}/icons/hicolor/256x256
 %dir %{_datadir}/icons/hicolor/256x256/apps
 %{_datadir}/icons/hicolor/256x256/apps/rustnet.png
+%dir %{_datadir}/icons/hicolor/scalable
+%dir %{_datadir}/icons/hicolor/scalable/apps
+%{_datadir}/icons/hicolor/scalable/apps/rustnet.svg
 %{_datadir}/applications/rustnet.desktop
 
 %post

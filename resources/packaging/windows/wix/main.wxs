@@ -92,6 +92,7 @@
         </Directory>
 
         <Icon Id="rustnet.ico" SourceFile="resources\packaging\windows\graphics\rustnet.ico" />
+        <Property Id="ARPPRODUCTICON" Value="rustnet.ico" />
 
         <Feature
             Id='Complete'

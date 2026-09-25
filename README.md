@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="https://raw.githubusercontent.com/domcyrus/rustnet/main/assets/rustnet.svg" alt="RustNet logo" width="96" height="96">
+</p>
+
+<p align="center">
   <h1 align="center">RustNet</h1>
   <p align="center">
     <strong>Per-process network monitoring for terminals and automation: live TCP, UDP, and QUIC connections with deep packet inspection, sandboxed by default.</strong>

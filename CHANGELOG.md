@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **App artwork**: use a cyan and green terminal signal for desktop icons,
+  the macOS installer, and the README logo in all three languages.
 - **Contextual help**: each tab and Host section now explains its purpose before
   listing controls. Activity defines Egress (TX) and Ingress (RX) from the device's
   perspective; Host DNS explains passive lookup outcomes and coverage limits.

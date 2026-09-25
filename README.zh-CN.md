@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="https://raw.githubusercontent.com/domcyrus/rustnet/main/assets/rustnet.svg" alt="RustNet 标志" width="96" height="96">
+</p>
+
+<p align="center">
   <h1 align="center">RustNet</h1>
   <p align="center">
     <strong>面向终端与自动化的进程级网络监控工具：实时呈现 TCP、UDP、QUIC 连接，自带深度包检测，默认沙箱隔离运行。</strong>
