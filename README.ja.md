@@ -24,7 +24,7 @@ macOS または Linux で Homebrew を使う場合:
 brew install rustnet
 ```
 
-パケットキャプチャには `sudo "$(command -v rustnet)"` で起動します。ほかのパッケージマネージャーは以下に、権限設定とトラブルシューティングは[インストールガイド](INSTALL.md)に記載しています。
+パケットキャプチャにはプラットフォームに応じた権限設定が必要です。Linux のケーパビリティ、macOS の PKTAP と BPF へのアクセス、ほかのパッケージマネージャー、トラブルシューティングは[インストールガイド](INSTALL.md)を参照してください。
 
 > **リリース状況:** 以下の特長、GIF、スクリーンショットは v1.6.0 の内容です。`main` からリンクされるガイドには[未リリースの変更](CHANGELOG.md#unreleased)も含まれる場合があります。リリース版を使う場合は [v1.6.0 のドキュメント](https://github.com/domcyrus/rustnet/blob/v1.6.0/README.ja.md)を参照し、`rustnet --version` と `rustnet --help` でバージョンと対応オプションを確認してください。
 
@@ -72,14 +72,15 @@ Windows では [Npcap](https://npcap.com) も必要です。v1.6.0 を使う場�
 
 ## 実行
 
-macOS または Linux では:
+Linux でケーパビリティを設定した後:
 
 ```bash
-sudo "$(command -v rustnet)"           # ターミナル UI を起動
-sudo "$(command -v rustnet)" -i eth0   # 指定したインターフェースをキャプチャ
+rustnet
 ```
 
-`/` で絞り込み、`Enter` で詳細を表示し、`q` で終了します。オプション、キー操作、フィルター、エクスポートについては[使用ガイド](USAGE.md)を参照してください。
+macOS で PKTAP を使用するには `sudo` が必要です。BPF へのアクセスを設定すれば sudo なしでも実行できますが、プロセスの検出には `lsof` を使います。
+
+`/` で絞り込み、`Enter` で詳細を表示し、`q` で終了します。インターフェースの選択、オプション、キー操作、フィルター、エクスポートについては[使用ガイド](USAGE.md)を参照してください。
 
 ## ドキュメント
 
