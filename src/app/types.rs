@@ -167,6 +167,12 @@ impl ConnectionCounts {
 /// Application statistics
 #[derive(Debug)]
 pub struct AppStats {
+    /// Packets delivered by the capture backend since startup, before queue
+    /// drops, attribution gating, parsing, or connection tracking.
+    pub packets_captured: AtomicU64,
+    /// Sum of libpcap's original packet lengths, before snaplen truncation.
+    /// Includes the backend's link-layer headers, not physical wire overhead.
+    pub bytes_captured: AtomicU64,
     pub packets_processed: AtomicU64,
     /// Packets rejected by the bounded capture-to-processor queue.
     pub packets_dropped: AtomicU64,
@@ -201,6 +207,8 @@ pub struct AppStats {
 impl Default for AppStats {
     fn default() -> Self {
         Self {
+            packets_captured: AtomicU64::new(0),
+            bytes_captured: AtomicU64::new(0),
             packets_processed: AtomicU64::new(0),
             packets_dropped: AtomicU64::new(0),
             capture_packets_dropped: AtomicU64::new(0),
@@ -227,9 +235,8 @@ impl Default for AppStats {
 }
 
 impl AppStats {
-    /// Every atomic counter, in declaration order. This is the single place
-    /// a new counter has to be registered so that snapshots and resets stay
-    /// complete.
+    /// Session counters cleared by the UI, in declaration order. Lifetime
+    /// capture totals and output failures are deliberately excluded.
     fn counters(&self) -> [&AtomicU64; 19] {
         [
             &self.packets_processed,
@@ -254,7 +261,7 @@ impl AppStats {
         ]
     }
 
-    /// Reset every counter to zero (the last-update timestamp is kept).
+    /// Reset session counters, preserving lifetime totals and the timestamp.
     pub(crate) fn reset_counters(&self) {
         for counter in self.counters() {
             counter.store(0, Ordering::Relaxed);
@@ -264,6 +271,8 @@ impl AppStats {
     /// Copy of the current counter values and last-update timestamp.
     pub(crate) fn snapshot(&self) -> AppStats {
         let snapshot = AppStats {
+            packets_captured: AtomicU64::new(self.packets_captured.load(Ordering::Relaxed)),
+            bytes_captured: AtomicU64::new(self.bytes_captured.load(Ordering::Relaxed)),
             last_update: RwLock::new(*self.last_update.read().unwrap()),
             ..AppStats::default()
         };
@@ -373,18 +382,25 @@ mod app_stats_tests {
     use super::*;
 
     #[test]
-    fn snapshots_and_resets_every_counter() {
+    fn snapshots_all_counters_and_resets_only_session_counters() {
         let stats = AppStats::default();
+        stats.packets_captured.store(42, Ordering::Relaxed);
+        stats.bytes_captured.store(63_000, Ordering::Relaxed);
         for (index, counter) in stats.counters().into_iter().enumerate() {
             counter.store(index as u64 + 1, Ordering::Relaxed);
         }
 
         let snapshot = stats.snapshot();
+        assert_eq!(snapshot.packets_captured.load(Ordering::Relaxed), 42);
+        assert_eq!(snapshot.bytes_captured.load(Ordering::Relaxed), 63_000);
         for (index, counter) in snapshot.counters().into_iter().enumerate() {
             assert_eq!(counter.load(Ordering::Relaxed), index as u64 + 1);
         }
 
         stats.reset_counters();
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.packets_captured.load(Ordering::Relaxed), 42);
+        assert_eq!(snapshot.bytes_captured.load(Ordering::Relaxed), 63_000);
         for counter in stats.counters() {
             assert_eq!(counter.load(Ordering::Relaxed), 0);
         }
