@@ -398,6 +398,8 @@ rustnet --bpf-filter "not port 22"
 
 **在集群上运行：** 最简单的方法是使用 [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) 插件（`kubectl krew install rustnet`）。它使用官方镜像在节点上启动临时调试 pod，以只读方式挂载 kubelet 日志目录来解析名称，并在退出时清理 pod。由于插件让 RustNet 在 pod 内运行，默认的 `auto` 模式无需额外参数即可启用归属识别。
 
+**短连接（尚未发布）：** eBPF 可在进程退出后保留 cgroup v2 的 pod/容器身份。保留限制和独立插件的 `--output-dir` 后续任务见 [Kubernetes 抓包](KUBERNETES.zh-CN.md)。
+
 ```bash
 # 在 Kubernetes 集群上通过插件作为临时调试 pod 运行
 kubectl rustnet --node worker-3

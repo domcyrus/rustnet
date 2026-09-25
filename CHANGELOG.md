@@ -122,6 +122,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Short Kubernetes flows**: retain cgroup v2 pod/container identity with eBPF
+  socket records after process exit, match both endpoint orientations, and
+  evict old records when the map fills.
+  Track evidence export before debug-pod cleanup in the separate
+  [kubectl-rustnet follow-up](https://github.com/domcyrus/kubectl-rustnet/issues/20).
 - Clarify unreleased features and Windows setup in all three documentation
   languages; link v1.6.0 docs and add release checks for availability notes (#620)
 - **Connection viewport**: paging, scrollbars, and mouse targets track the current

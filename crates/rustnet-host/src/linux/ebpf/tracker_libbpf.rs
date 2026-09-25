@@ -153,8 +153,8 @@ impl LibbpfSocketTracker {
         }
     }
 
-    /// Look up a socket by its exact key, then by the same key with a zero
-    /// source address, which is how unbound UDP, ICMP and pre-connect TCP
+    /// Look up a socket in both orientations, allowing a zero source
+    /// address in each, which is how unbound UDP, ICMP and pre-connect TCP
     /// sockets commonly appear in the map. `label` only names the lookup in
     /// debug logs.
     fn lookup_keys(
@@ -165,40 +165,31 @@ impl LibbpfSocketTracker {
     ) -> Option<SocketMatch> {
         let socket_map = self.loader.socket_map();
 
-        match MapReader::lookup_connection(socket_map, exact_key) {
-            Ok(Some(result)) => return Some(SocketMatch::new(result, MatchQuality::ExactTuple)),
-            Ok(None) => {
-                log::debug!("eBPF {label} exact lookup miss, trying with zero source address");
-            }
-            Err(e) => {
-                log::debug!("eBPF {label} lookup failed: {e}");
-            }
-        }
-
-        match MapReader::lookup_connection(socket_map, zero_src_key) {
-            Ok(Some(result)) => {
-                log::debug!(
-                    "eBPF {label} lookup succeeded with zero source address: PID {}, comm {}",
-                    result.pid,
-                    result.comm
-                );
-                // Let cleanup handle entry deletion based on age
-                Some(SocketMatch::new(result, MatchQuality::WildcardLocalAddress))
-            }
-            Ok(None) => {
-                log::debug!("eBPF {label} lookup missed with both exact and zero-source keys");
-                if log::log_enabled!(log::Level::Debug)
-                    && let Err(e) = MapReader::debug_lookup_miss(socket_map, &exact_key)
-                {
-                    log::debug!("Failed to debug lookup: {e}");
-                }
-                None
-            }
-            Err(e) => {
-                log::debug!("eBPF {label} zero-source lookup failed: {e}");
-                None
+        // Neither pod IP is necessarily local to the capture namespace.
+        // Preserve a local wildcard match before trying the other endpoint:
+        // on loopback both endpoints can have different owners.
+        let reverse_key = exact_key.reversed();
+        for (key, quality) in [
+            (exact_key, MatchQuality::ExactTuple),
+            (zero_src_key, MatchQuality::WildcardLocalAddress),
+            (reverse_key, MatchQuality::ExactTuple),
+            (
+                reverse_key.without_source_address(),
+                MatchQuality::WildcardLocalAddress,
+            ),
+        ] {
+            match MapReader::lookup_connection(socket_map, key) {
+                Ok(Some(result)) => return Some(SocketMatch::new(result, quality)),
+                Ok(None) => {}
+                Err(error) => log::debug!("eBPF {label} lookup failed: {error}"),
             }
         }
+        if log::log_enabled!(log::Level::Debug)
+            && let Err(error) = MapReader::debug_lookup_miss(socket_map, &exact_key)
+        {
+            log::debug!("Failed to debug lookup: {error}");
+        }
+        None
     }
 
     /// Remove stale entries from the eBPF map, returning how many were removed.
@@ -306,7 +297,11 @@ mod integration_tests {
         );
     }
 
-    fn test_tcp(tracker: &mut LibbpfSocketTracker, loopback: IpAddr, check_accept_tid: bool) {
+    fn test_tcp(
+        tracker: &mut LibbpfSocketTracker,
+        loopback: IpAddr,
+        check_accept_tid: bool,
+    ) -> u32 {
         let listener = TcpListener::bind((loopback, 0)).unwrap();
         let server = listener.local_addr().unwrap();
         let client = TcpStream::connect(server).unwrap();
@@ -338,6 +333,7 @@ mod integration_tests {
         if check_accept_tid && ids_are_comparable(&accept_info.info) {
             assert_eq!(accept_info.info.tid, current_tid());
         }
+        connect_info.info.pid
     }
 
     /// A socket created by a worker thread must be attributed to that thread,
@@ -411,6 +407,105 @@ mod integration_tests {
         ));
     }
 
+    #[test]
+    #[ignore = "helper process for retained socket attribution tests"]
+    fn short_lived_socket_child() {
+        let Ok(server) = std::env::var("RUSTNET_TEST_FLOW_SERVER") else {
+            return;
+        };
+        if let Some(path) = std::env::var_os("RUSTNET_TEST_FLOW_CGROUP") {
+            std::fs::write(
+                std::path::Path::new(&path).join("cgroup.procs"),
+                std::process::id().to_string(),
+            )
+            .unwrap();
+        }
+        if std::env::var_os("RUSTNET_TEST_FLOW_UDP").is_some() {
+            let server: std::net::SocketAddr = server.parse().unwrap();
+            let socket = UdpSocket::bind((server.ip(), 0)).unwrap();
+            socket.connect(server).unwrap();
+            socket.send(b"short flow").unwrap();
+            println!("FLOW_SOURCE={}", socket.local_addr().unwrap());
+        } else {
+            let socket = TcpStream::connect(server).unwrap();
+            println!("FLOW_SOURCE={}", socket.local_addr().unwrap());
+        }
+    }
+
+    fn test_exited_process(
+        tracker: &mut LibbpfSocketTracker,
+        loopback: IpAddr,
+        is_tcp: bool,
+        parent_tgid: u32,
+        cgroup: Option<&std::path::Path>,
+    ) -> SocketMatch {
+        let tcp = TcpListener::bind((loopback, 0)).unwrap();
+        let udp = UdpSocket::bind((loopback, 0)).unwrap();
+        let server = if is_tcp {
+            tcp.local_addr()
+        } else {
+            udp.local_addr()
+        }
+        .unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "linux::ebpf::tracker_libbpf::integration_tests::short_lived_socket_child",
+                "--nocapture",
+            ])
+            .env("RUSTNET_TEST_FLOW_SERVER", server.to_string());
+        if let Some(path) = cgroup {
+            command.env("RUSTNET_TEST_FLOW_CGROUP", path);
+        }
+        if !is_tcp {
+            command.env("RUSTNET_TEST_FLOW_UDP", "1");
+        }
+        let child = command
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "child failed: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let source: std::net::SocketAddr = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("FLOW_SOURCE="))
+            .expect("child reports its tuple")
+            .parse()
+            .unwrap();
+        // Both socket and process have gone before the first lookup. No
+        // namespace scan or earlier userspace cache hit can provide this owner.
+        let matched = lookup_with_retry(
+            tracker,
+            source.ip(),
+            server.ip(),
+            source.port(),
+            server.port(),
+            is_tcp,
+        );
+        if parent_tgid == std::process::id() {
+            assert_eq!(matched.info.pid, pid);
+        }
+        assert!(matched.info.pid > 0);
+        assert_ne!(matched.info.pid, parent_tgid);
+        assert!(!matched.info.comm.is_empty());
+        let reversed = lookup_with_retry(
+            tracker,
+            server.ip(),
+            source.ip(),
+            server.port(),
+            source.port(),
+            is_tcp,
+        );
+        assert_eq!(reversed.info.pid, matched.info.pid);
+        assert_eq!(reversed.info.socket_cgroup, matched.info.socket_cgroup);
+        assert_eq!(reversed.quality, MatchQuality::ExactTuple);
+        matched
+    }
+
     fn run_socket_attribution_matrix(mut tracker: LibbpfSocketTracker) {
         eprintln!(
             "testing backend {} with capabilities {:?}",
@@ -423,13 +518,100 @@ mod integration_tests {
                 .contains(crate::linux::ebpf::loader::CORE_CAPABILITIES)
         );
 
+        // Two local UDP peers can both be recorded, with the sender bound
+        // to 0.0.0.0 and the receiver bound to a concrete address. Adding a
+        // reverse lookup must not replace the sender with the receiver.
+        {
+            use libbpf_rs::MapCore;
+            let forward = ConnKey::new_v4(
+                Ipv4Addr::new(192, 0, 2, 1),
+                Ipv4Addr::new(192, 0, 2, 2),
+                40000,
+                5300,
+                false,
+            );
+            for (key, pid) in [
+                (forward.without_source_address(), 100_u32),
+                (forward.reversed(), 200),
+            ] {
+                let mut value = [0; super::super::maps_libbpf::CONN_INFO_SIZE];
+                value[..4].copy_from_slice(&pid.to_ne_bytes());
+                tracker
+                    .loader
+                    .socket_map()
+                    .update(&key.as_bytes(), &value, libbpf_rs::MapFlags::ANY)
+                    .unwrap();
+            }
+            let matched = tracker
+                .lookup_keys(forward, forward.without_source_address(), "UDP")
+                .unwrap();
+            assert_eq!(matched.info.pid, 100);
+            assert_eq!(matched.quality, MatchQuality::WildcardLocalAddress);
+        }
+
         // The accepted-socket TID assertion runs for v4 only; the v6 run
         // covers the rest of the scenario.
-        test_tcp(&mut tracker, Ipv4Addr::LOCALHOST.into(), true);
+        let parent_tgid = test_tcp(&mut tracker, Ipv4Addr::LOCALHOST.into(), true);
         test_tcp(&mut tracker, Ipv6Addr::LOCALHOST.into(), false);
         test_udp(&mut tracker, Ipv4Addr::LOCALHOST.into());
         test_udp(&mut tracker, Ipv6Addr::LOCALHOST.into());
         test_worker_thread_tid(&mut tracker);
+        for loopback in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ] {
+            test_exited_process(&mut tracker, loopback, true, parent_tgid, None);
+            test_exited_process(&mut tracker, loopback, false, parent_tgid, None);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires root, eBPF, and a writable private cgroup v2 mount"]
+    fn exited_kubernetes_process_keeps_cgroup_names() {
+        // Only create descendants of a unique test directory. Drop removes
+        // these empty directories even if a later assertion fails.
+        struct Cgroups(Vec<std::path::PathBuf>);
+        impl Drop for Cgroups {
+            fn drop(&mut self) {
+                for path in self.0.iter().rev() {
+                    let _ = std::fs::remove_dir(path);
+                }
+            }
+        }
+        let mut dirs = Cgroups(Vec::new());
+        let root = std::path::Path::new("/sys/fs/cgroup")
+            .join(format!("rustnet-flow-test-{}", std::process::id()));
+        let parent = "pod123e4567-e89b-12d3-a456-426614174000";
+        let name = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let pod = root.join(parent);
+        let container = pod.join(name);
+        for path in [&root, &pod, &container] {
+            std::fs::create_dir(path).unwrap();
+            dirs.0.push(path.clone());
+        }
+        for backend in [
+            AttributionBackend::EbpfFentry,
+            AttributionBackend::EbpfKprobe,
+        ] {
+            let mut tracker = LibbpfSocketTracker::new_for_backend(backend).unwrap();
+            let parent_tgid = test_tcp(&mut tracker, Ipv4Addr::LOCALHOST.into(), true);
+            for is_tcp in [true, false] {
+                let matched = test_exited_process(
+                    &mut tracker,
+                    Ipv4Addr::LOCALHOST.into(),
+                    is_tcp,
+                    parent_tgid,
+                    Some(&container),
+                );
+                assert_eq!(
+                    matched.info.socket_cgroup,
+                    Some(crate::SocketCgroup {
+                        name: name.into(),
+                        parent: parent.into(),
+                    })
+                );
+            }
+        }
     }
 
     #[test]

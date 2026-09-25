@@ -88,6 +88,7 @@ Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See th
 - [Usage](USAGE.md): controls, filtering, automation, and capture exports
 - [Security](SECURITY.md): sandboxing and privilege management
 - [Architecture](ARCHITECTURE.md): platform backends and performance
+- [Kubernetes capture](KUBERNETES.md): attribution limits and evidence export follow-up
 - [Changelog](CHANGELOG.md): releases and upcoming changes
 - [Contributing](CONTRIBUTING.md): how to contribute
 
