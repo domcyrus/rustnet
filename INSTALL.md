@@ -129,10 +129,7 @@ sudo apt update
 # Install rustnet
 sudo apt install rustnet
 
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
+# Grant capabilities to run as a regular user (modern kernel 5.8+)
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
@@ -267,10 +264,7 @@ sudo dnf copr enable domcyrus/rustnet
 # Install rustnet
 sudo dnf install rustnet
 
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
+# Grant capabilities to run as a regular user (modern kernel 5.8+)
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
@@ -286,10 +280,7 @@ sudo zypper addrepo https://download.opensuse.org/repositories/home:/domcyrus:/r
 sudo zypper refresh
 sudo zypper install rustnet
 
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
+# Grant capabilities to run as a regular user (modern kernel 5.8+)
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```

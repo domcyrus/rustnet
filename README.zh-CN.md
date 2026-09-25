@@ -24,7 +24,7 @@ RustNet 是一款终端网络监控工具，可实时显示 TCP、UDP 和 QUIC �
 brew install rustnet
 ```
 
-运行 `sudo "$(command -v rustnet)"` 以获得抓包权限。下文列出其他包管理器；权限配置和故障排查见[安装指南](INSTALL.zh-CN.md)。
+抓包需要按平台配置权限。Linux capabilities、macOS 的 PKTAP 和 BPF 访问权限、其他包管理器及故障排查见[安装指南](INSTALL.zh-CN.md)。
 
 > **发布状态：** 下文的功能亮点、GIF 和截图对应 v1.6.0。`main` 分支链接的指南还可能介绍[尚未发布的变更](CHANGELOG.md#unreleased)。使用已发布版本时，请参阅 [v1.6.0 文档](https://github.com/domcyrus/rustnet/blob/v1.6.0/README.zh-CN.md)，并运行 `rustnet --version` 和 `rustnet --help` 确认版本及选项。
 
@@ -72,14 +72,15 @@ Windows 还需要安装 [Npcap](https://npcap.com)。使用 v1.6.0 时，请启�
 
 ## 运行
 
-在 macOS 或 Linux 上：
+在 Linux 上配置好 capabilities 后：
 
 ```bash
-sudo "$(command -v rustnet)"           # 启动终端界面
-sudo "$(command -v rustnet)" -i eth0   # 抓取指定接口的流量
+rustnet
 ```
 
-按 `/` 过滤连接，按 `Enter` 查看详情，按 `q` 退出。其他选项、键盘操作、过滤和导出方法见[使用指南](USAGE.zh-CN.md)。
+在 macOS 上，使用 PKTAP 需要 `sudo`。配置 BPF 访问权限后也可不使用 sudo 运行，但 RustNet 会通过 `lsof` 检测进程。
+
+按 `/` 过滤连接，按 `Enter` 查看详情，按 `q` 退出。接口选择、其他选项、键盘操作、过滤和导出方法见[使用指南](USAGE.zh-CN.md)。
 
 ## 文档
 

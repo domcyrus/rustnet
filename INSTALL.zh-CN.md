@@ -129,10 +129,7 @@ sudo apt update
 # 安装 rustnet
 sudo apt install rustnet
 
-# 使用 sudo 运行
-sudo rustnet
-
-# 可选：授予 Linux capabilities 以无需 sudo 运行（现代内核 5.8+）
+# 授予 Linux capabilities，以普通用户身份运行（现代内核 5.8+）
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
@@ -266,10 +263,7 @@ sudo dnf copr enable domcyrus/rustnet
 # 安装 rustnet
 sudo dnf install rustnet
 
-# 使用 sudo 运行
-sudo rustnet
-
-# 可选：授予 Linux capabilities 以无需 sudo 运行（现代内核 5.8+）
+# 授予 Linux capabilities，以普通用户身份运行（现代内核 5.8+）
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
@@ -285,10 +279,7 @@ sudo zypper addrepo https://download.opensuse.org/repositories/home:/domcyrus:/r
 sudo zypper refresh
 sudo zypper install rustnet
 
-# 使用 sudo 运行
-sudo rustnet
-
-# 可选：授予 Linux capabilities 以无需 sudo 运行（现代内核 5.8+）
+# 授予 Linux capabilities，以普通用户身份运行（现代内核 5.8+）
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```

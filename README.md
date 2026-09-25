@@ -24,7 +24,7 @@ On macOS or Linux with Homebrew:
 brew install rustnet
 ```
 
-Run `sudo "$(command -v rustnet)"` to allow packet capture. Other package managers are listed below; the [installation guide](INSTALL.md) covers permissions and troubleshooting.
+Packet capture needs platform-specific permissions. See the [installation guide](INSTALL.md) for Linux capabilities, macOS PKTAP and BPF access, other package managers, and troubleshooting.
 
 > **Release status:** The highlights, GIF, and screenshots below reflect v1.6.0. The guides linked from `main` may also describe [unreleased changes](CHANGELOG.md#unreleased). For the installed release, use the [v1.6.0 documentation](https://github.com/domcyrus/rustnet/blob/v1.6.0/README.md) and check `rustnet --version` and `rustnet --help`.
 
@@ -72,14 +72,15 @@ Windows also requires [Npcap](https://npcap.com). For v1.6.0, enable its "WinPca
 
 ## Run
 
-On macOS or Linux:
+On Linux, after configuring capabilities:
 
 ```bash
-sudo "$(command -v rustnet)"           # Start the terminal UI
-sudo "$(command -v rustnet)" -i eth0   # Capture one interface
+rustnet
 ```
 
-Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See the [usage guide](USAGE.md) for options, controls, filters, and exports.
+On macOS, PKTAP requires `sudo`. With BPF access configured, RustNet can run without it but uses `lsof` for process detection.
+
+Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See the [usage guide](USAGE.md) for interface selection, options, controls, filters, and exports.
 
 ## Documentation
 
