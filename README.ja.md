@@ -3,6 +3,9 @@
   <p align="center">
     <strong>プロセス単位で TCP、UDP、QUIC 接続を監視できる、ターミナルと自動化に対応したサンドボックス対応ネットワークモニター。</strong>
   </p>
+  <p align="center">
+    <a href="INSTALL.md"><img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20FreeBSD-blue.svg" alt="対応プラットフォーム: Linux、macOS、Windows、FreeBSD"></a>
+  </p>
 </p>
 
 <p align="center">
