@@ -14,6 +14,7 @@ This guide covers all installation methods for RustNet across different platform
   - [macOS DMG Installation](#macos-dmg-installation)
   - [Windows MSI Installation](#windows-msi-installation)
   - [Windows Chocolatey Installation](#windows-chocolatey-installation)
+  - [Windows Scoop Installation](#windows-scoop-installation)
   - [Linux Package Installation](#linux-package-installation)
   - [FreeBSD Installation](#freebsd-installation)
   - [Android (Termux) Installation](#android-termux-installation)
@@ -89,6 +90,16 @@ The easiest way to install RustNet on Windows is via [Chocolatey](https://commun
 ```powershell
 # Run in Administrator PowerShell
 choco install rustnet
+```
+
+**Note:** Install [Npcap](https://npcap.com) separately. For RustNet v1.6.0, enable **"WinPcap API compatible mode"**. Support for default Npcap settings is currently unreleased and available on `main`.
+
+### Windows Scoop Installation
+
+RustNet is available in [Scoop's main bucket](https://github.com/ScoopInstaller/Main/blob/master/bucket/rustnet.json):
+
+```powershell
+scoop install rustnet
 ```
 
 **Note:** Install [Npcap](https://npcap.com) separately. For RustNet v1.6.0, enable **"WinPcap API compatible mode"**. Support for default Npcap settings is currently unreleased and available on `main`.

@@ -191,6 +191,13 @@ cargo install rustnet-monitor
 choco install rustnet
 ```
 
+**Windows (Scoop):**
+```powershell
+scoop install rustnet
+```
+
+Install [Npcap](https://npcap.com) separately. For RustNet v1.6.0, enable "WinPcap API compatible mode" when installing Npcap.
+
 **Other platforms:**
 - **FreeBSD**: Download from [rustnet-bsd releases](https://github.com/domcyrus/rustnet-bsd/releases)
 - **Docker, source builds, other Linux distros**: See [INSTALL.md](INSTALL.md) for detailed instructions
