@@ -42,7 +42,7 @@ brew install rustnet
 - PCAP や注釈付き PCAPNG を出力し、Wireshark で分析できます。
 - 起動後に不要な権限を削除し、対応プラットフォームではサンドボックスを使います。
 
-機能の詳細は[使用ガイド](USAGE.md)、[アーキテクチャガイド](ARCHITECTURE.md)、[セキュリティガイド](SECURITY.md)を参照してください。
+機能の詳細は[使用ガイド](USAGE.md)、[アーキテクチャガイド](ARCHITECTURE.md)、[セキュリティガイド](SECURITY.md)を参照してください。開発版の [VLAN 表示の説明（日本語）](VLAN.ja.md)もあります。
 
 ## スクリーンショット
 

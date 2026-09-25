@@ -339,6 +339,15 @@ fn apply_packet(conn: &mut Connection, parsed: &ParsedPacket, now: SystemTime) -
     conn.remote_addr_kind = parsed.remote_addr_kind;
     conn.remote_is_gateway = parsed.remote_is_gateway;
 
+    // Keep observations from both directions, including priority tags. A
+    // packet without a visible tag cannot erase earlier evidence. The
+    // 12-bit VID bounds the set even when ingesting externally built packets.
+    if let Some(vlan_id) = parsed.vlan_id.filter(|id| *id <= 0x0fff)
+        && let Err(index) = conn.observed_vlan_ids.binary_search(&vlan_id)
+    {
+        conn.observed_vlan_ids.insert(index, vlan_id);
+    }
+
     if parsed.is_outgoing {
         conn.packets_sent += 1;
         conn.bytes_sent += parsed.packet_len as u64;
@@ -1196,6 +1205,32 @@ mod tests {
         assert_eq!(conn.packets_received, 1);
         assert_eq!(conn.bytes_received, 100);
         assert_eq!(conn.packets_sent, 0);
+    }
+
+    #[test]
+    fn vlan_observations_accumulate_without_duplicates_or_erasure() {
+        let mut packet = create_test_packet(true, false);
+        packet.vlan_id = Some(42);
+        let mut conn = create_connection_from_packet(&packet, SystemTime::now());
+        assert_eq!(conn.observed_vlan_ids, [42]);
+
+        packet.is_outgoing = false;
+        for vlan_id in [
+            None,
+            Some(42),
+            Some(100),
+            Some(0),
+            Some(42),
+            Some(65535),
+            None,
+        ] {
+            packet.vlan_id = vlan_id;
+            merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+        }
+        assert_eq!(conn.observed_vlan_ids, [0, 42, 100]);
+        assert_eq!(conn.snapshot_clone().observed_vlan_ids, [0, 42, 100]);
+        let fresh = create_connection_from_packet(&packet, SystemTime::now());
+        assert!(fresh.observed_vlan_ids.is_empty());
     }
 
     #[test]

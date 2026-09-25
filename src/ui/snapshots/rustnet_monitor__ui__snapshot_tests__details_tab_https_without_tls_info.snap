@@ -21,18 +21,18 @@ State                 ESTABLISHED                                               
 Process               proc                                                                                                                 ▐
 PID                   4242                                                                                                                 ▐
 Service               -                                                                                                                    ▐
+Observed VLANs        -                                                                                                                    ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               Initial RTT           -                                              ▐
 Local MAC             -                                               Live RTT              -                                              ▐
 Remote Hostname       -                                               TCP Retransmits (R)   0                                              ▐
-Attributed Name       -                                               Out-of-Order (O)      0                                              ▐
-Attributed Via        -                                               Duplicate ACKs        0                                              ▐
+Attributed Name       -                                               Out-of-Order (O)      0                                               
+Attributed Via        -                                               Duplicate ACKs        0                                               
 Remote MAC            -                                               Fast Retransmits      0                                               
 Country               -                                               Window Size           -                                               
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
-                                                                                                                                            
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

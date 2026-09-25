@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Observed VLAN IDs**: preserve captured 802.1Q IDs in connection details,
+  headless snapshots, JSON event logs, and PCAP sidecars, including priority
+  tags (VID 0). Supports Ethernet and Linux cooked capture; stripped tags
+  remain unknown
 - **Headless Traffic Counters**: JSON/JSONL stats include lifetime packet and
   original-length byte totals from capture, independent of connection snapshots
   and TUI clears, for external metrics exporters

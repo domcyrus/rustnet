@@ -83,9 +83,9 @@ const DETAILS_MAX_CONTENT_WIDTH: u16 = 140;
 
 /// Rows reserved for the Application card before the Transport Health card.
 /// The current protocol decoders expose at most seven application fields. The
-/// right pane trims the first separator, so eleven buffered rows leave ten
+/// right pane trims the first separator, so twelve buffered rows leave eleven
 /// visible rows and align Transport Health with Network Context on the left.
-const APPLICATION_CARD_ROWS: usize = 11;
+const APPLICATION_CARD_ROWS: usize = 12;
 
 /// Rows reserved for the Transport Health card, including its blank separator
 /// and heading. TCP fills all of them with the RTT rows and counters; the
@@ -1086,7 +1086,7 @@ pub(in crate::ui) fn draw_connection_details(
 
     // Unlike regular sections, the first card starts without a blank separator.
     // Together with the fixed nine-row Network Context card below this gives
-    // the left dashboard column a 21-row footprint for every protocol, ARP
+    // the left dashboard column a 22-row footprint for every protocol, ARP
     // included, so the cards below never move.
     details.plain_line(Line::from(Span::styled(
         "Connection",
@@ -1159,6 +1159,16 @@ pub(in crate::ui) fn draw_connection_details(
         "Service",
         conn.service_name.clone(),
         theme::fg(theme::field_service()),
+    );
+    details.field_opt(
+        "Observed VLANs",
+        (!conn.observed_vlan_ids.is_empty()).then(|| {
+            conn.observed_vlan_ids
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        }),
     );
 
     // Network enrichment is a fixed card. Fields remain in the same rows even

@@ -1705,10 +1705,33 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn details_show_vlan_observations_in_full_and_compact_layouts() {
+        let app = test_app();
+        let mut connections = sample_connections();
+        connections[0].observed_vlan_ids = vec![0, 42, 100];
+        app.set_connections_snapshot_for_test(connections.clone());
+        for (width, height) in [(140, 40), (80, 24)] {
+            let mut state = UiState {
+                selected_tab: 1,
+                selected_connection_key: Some(connections[0].key()),
+                ..Default::default()
+            };
+            let (output, regions) =
+                render_app_frame(&app, &mut state, &connections, None, width, height);
+            assert!(output.contains("Observed VLANs"));
+            assert!(output.contains("0, 42, 100"));
+            assert!((0..height).any(|row| (0..width).any(|col| {
+                matches!(regions.hit_test(col, row), Some(ClickAction::CopyField { value, .. }) if value == "0, 42, 100")
+            })));
+        }
+    }
+
+    #[test]
     fn details_tab_tcp_https() {
         let app = test_app();
         app.ingest_packet_for_test(&gateway_arp_reply());
-        let connections = sample_connections();
+        let mut connections = sample_connections();
+        connections[0].observed_vlan_ids = vec![0, 42];
         app.set_connections_snapshot_for_test(connections.clone());
 
         let output = render_details(&app, &connections, 0);

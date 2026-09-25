@@ -478,6 +478,27 @@ attribution summary. Wide terminals show Capture beside the application table.
 Connection paging, scrollbars, and mouse selection use the actual table height,
 including space taken by the filter editor or a two-row capture-error banner.
 
+### Observed VLAN IDs
+
+> **Unreleased:** available on `main`, not in v1.6.0.
+
+Details shows **Observed VLANs** in the Connection section, with the sorted,
+unique 802.1Q IDs seen for that connection. The field supports click-to-copy.
+A placeholder means no tag was observed, not proof that the traffic is untagged.
+VID `0` denotes a priority tag, not VLAN membership. Later packets without a
+visible tag do not erase earlier observations.
+
+Headless JSON/JSONL connections include `observed_vlan_ids` (an empty array
+when none were observed), an additive field in schema version 1. JSON event
+logs and PCAP sidecars include the same array when nonempty, using the IDs
+known at the time of the record.
+
+Tags must be present in captured Ethernet, Linux SLL, or SLL2 frames. OS/NIC
+stripping, including macOS PKTAP, can hide them. Only the existing single
+802.1Q tag parser is supported; this does not add stacked VLAN parsing.
+Connection grouping still uses the protocol and endpoint tuple: multiple IDs
+are observations for that row, not a VLAN stack or isolation between VLANs.
+
 ### Actions
 
 - `c` - Copy remote address to clipboard

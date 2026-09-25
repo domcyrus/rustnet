@@ -21,18 +21,18 @@ State                 DNS_RESPONSE                                              
 Process               proc                                                                                                                 ▐
 PID                   4242                                                                                                                 ▐
 Service               -                                                                                                                    ▐
+Observed VLANs        -                                                                                                                    ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               DNS Response Time     -                                              ▐
 Local MAC             -                                               Last Response Code    NOERROR                                        ▐
 Remote Hostname       -                                               Request Retries (R)   -                                              ▐
-Attributed Name       -                                               Request Timeouts (T)  -                                              ▐
-Attributed Via        -                                                                                                                    ▐
+Attributed Name       -                                               Request Timeouts (T)  -                                               
+Attributed Via        -                                                                                                                     
 Remote MAC            -                                               Timed by pairing query and response IDs                               
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
-                                                                                                                                            
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

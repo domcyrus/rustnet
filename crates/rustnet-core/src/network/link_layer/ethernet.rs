@@ -7,11 +7,11 @@ use crate::network::parser::{PacketParser, ParsedPacket};
 
 /// Extract the effective EtherType and payload offset from an Ethernet frame.
 ///
-/// Returns `(ethertype, offset)` where `offset` is the number of bytes before
+/// Returns `(ethertype, offset, vlan_id)` where `offset` is the number of bytes before
 /// the IP/ARP payload:
 /// - Standard frame: offset = 14
 /// - 802.1Q VLAN-tagged frame: offset = 18 (extra 4-byte VLAN tag)
-fn extract_ethertype(data: &[u8]) -> Option<(u16, usize)> {
+fn extract_ethertype(data: &[u8]) -> Option<(u16, usize, Option<u16>)> {
     let ethertype = u16::from_be_bytes([data[12], data[13]]);
     if ethertype == 0x8100 {
         if data.len() < 18 {
@@ -20,9 +20,9 @@ fn extract_ethertype(data: &[u8]) -> Option<(u16, usize)> {
         }
         let vlan_id = u16::from_be_bytes([data[14], data[15]]) & 0x0FFF;
         log::trace!("Ethernet: 802.1Q VLAN tag detected (VID={})", vlan_id);
-        Some((u16::from_be_bytes([data[16], data[17]]), 18))
+        Some((u16::from_be_bytes([data[16], data[17]]), 18, Some(vlan_id)))
     } else {
-        Some((ethertype, 14))
+        Some((ethertype, 14, None))
     }
 }
 
@@ -52,9 +52,9 @@ pub fn parse(
         return None;
     }
 
-    let (ethertype, offset) = extract_ethertype(data)?;
+    let (ethertype, offset, vlan_id) = extract_ethertype(data)?;
 
-    match ethertype {
+    let mut packet = match ethertype {
         0x0800 => {
             log::trace!("Ethernet: IPv4 packet detected");
             parser.parse_ipv4_packet_inner(data, offset, process_name, process_id)
@@ -71,7 +71,9 @@ pub fn parse(
             log::debug!("Ethernet: Unknown EtherType: 0x{:04x}", ethertype);
             None
         }
-    }
+    }?;
+    packet.vlan_id = vlan_id;
+    Some(packet)
 }
 
 #[cfg(test)]
@@ -101,9 +103,10 @@ mod tests {
         frame[16] = 0x08;
         frame[17] = 0x00;
 
-        let (ethertype, offset) = extract_ethertype(&frame).unwrap();
+        let (ethertype, offset, vlan_id) = extract_ethertype(&frame).unwrap();
         assert_eq!(ethertype, 0x0800);
         assert_eq!(offset, 18);
+        assert_eq!(vlan_id, Some(42));
     }
 
     #[test]
@@ -116,9 +119,10 @@ mod tests {
         frame[16] = 0x86;
         frame[17] = 0xdd; // inner EtherType = IPv6
 
-        let (ethertype, offset) = extract_ethertype(&frame).unwrap();
+        let (ethertype, offset, vlan_id) = extract_ethertype(&frame).unwrap();
         assert_eq!(ethertype, 0x86dd);
         assert_eq!(offset, 18);
+        assert_eq!(vlan_id, Some(42));
     }
 
     #[test]

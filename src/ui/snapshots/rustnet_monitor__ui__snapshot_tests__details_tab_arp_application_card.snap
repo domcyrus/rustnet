@@ -21,18 +21,18 @@ State                 ARP_WHO_HAS 192.168.1.1 (Apple, Inc.)           Target Ven
 Process               -                                               Target IP             192.168.1.1                                    ▐
 PID                   -                                                                                                                    ▐
 Service               -                                                                                                                    ▐
+Observed VLANs        -                                                                                                                    ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               No transport metrics for this protocol                               ▐
 Local MAC             -                                                                                                                    ▐
 Remote Hostname       -                                                                                                                    ▐
-Attributed Name       -                                                                                                                    ▐
-Attributed Via        -                                                                                                                    ▐
+Attributed Name       -                                                                                                                     
+Attributed Via        -                                                                                                                     
 Remote MAC            -                                                                                                                     
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
-                                                                                                                                            
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

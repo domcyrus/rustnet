@@ -21,18 +21,18 @@ State                 ECHO_REQ(4660)                                            
 Process               ping                                                                                                                 ▐
 PID                   -                                                                                                                    ▐
 Service               -                                                                                                                    ▐
+Observed VLANs        -                                                                                                                    ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               Ping RTT              8.7ms                                          ▐
 Local MAC             -                                               Last Sequence         42                                             ▐
 Remote Hostname       -                                                                                                                    ▐
-Attributed Name       -                                               Paired by echo ID and sequence                                       ▐
-Attributed Via        -                                                                                                                    ▐
+Attributed Name       -                                               Paired by echo ID and sequence                                        
+Attributed Via        -                                                                                                                     
 Remote MAC            -                                                                                                                     
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
-                                                                                                                                            
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
