@@ -25,7 +25,7 @@ RustNet is a Cargo workspace of five crates. The analysis logic, capture backend
 | [`rustnet-core`](crates/rustnet-core) | library | Platform- and capture-independent analysis core: packet parsing, protocol/connection types, deep packet inspection, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups, a reusable `ConnectionTracker`, and bounded retained process-activity accounting. Operates only on byte slices and parsed structures, with no libpcap, raw sockets, or OS process tables. |
 | [`rustnet-capture`](crates/rustnet-capture) | library | libpcap/Npcap packet-capture backend: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame `PacketReader`. |
 | [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution plus a host TCP/UDP socket inventory: eBPF/procfs on Linux, PKTAP/lsof on macOS, ETW/IP Helper on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
-| [`rustnet-sandbox`](crates/rustnet-sandbox) | library | Post-initialization sandboxing and root privilege dropping behind one `apply_sandbox` entry point: Landlock + capability drops on Linux, Seatbelt on macOS, restricted token + job object on Windows, and the shared uid drop on Linux/macOS/FreeBSD. Depends on no other workspace crate. |
+| [`rustnet-sandbox`](crates/rustnet-sandbox) | library | Post-initialization sandboxing and root privilege dropping behind one `apply_sandbox` entry point: Landlock + capability drops on Linux, Seatbelt on macOS, token privilege removal + job object on Windows, and the shared uid drop on Linux/macOS/FreeBSD. Depends on no other workspace crate. |
 | `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, and the app event loop. Dogfoods `ConnectionTracker` as the single source of truth. |
 
 The package is named `rustnet-monitor` because the `rustnet` crate name is taken on crates.io; the installed binary is `rustnet`.
@@ -234,10 +234,13 @@ TCP teardown packets from creating phantom established rows.
 
 **Visual Staleness Indicators:**
 
-Connections change color based on proximity to timeout:
-- **White** (default): < 75% of timeout
-- **Yellow**: 75-90% of timeout (warning)
-- **Red**: > 90% of timeout (critical)
+Once a connection has used at least half of its cleanup timeout and both
+displayed traffic rates have decayed to zero, its row shows a left-edge stripe
+and a removal countdown. Context columns soften toward the muted color on
+truecolor themes; signal columns retain their colors. The stripe and countdown
+progress from yellow toward red as cleanup approaches. A selected row with a
+selection background keeps its context colors for readability. Unselected
+historic rows appear gray when history is enabled.
 
 ### 7. Rate Refresh Thread
 
@@ -251,11 +254,11 @@ Updates bandwidth calculations every 500ms with gentle decay. This provides smoo
 
 ### 8. DashMap
 
-Concurrent hashmap (`DashMap<ConnectionKey, Connection>`) for storing connection state. This lock-free data structure enables efficient concurrent access from multiple threads.
+Concurrent hashmap (`DashMap<ConnectionKey, Connection>`) for storing connection state. It uses per-shard locks for concurrent access; lifecycle transitions also use a separate synchronization lock.
 
 **Key Features:**
 - Fine-grained locking (per-shard)
-- No global lock contention
+- Sharded access to connection entries
 - Safe concurrent reads and writes
 - High performance under concurrent load
 
@@ -340,20 +343,19 @@ The same backend publishes a socket snapshot every 5 seconds for the Host tab. T
 
 ### Network Interfaces
 
-The tool automatically detects and lists available network interfaces using platform-specific methods:
+The capture backend lists devices through libpcap/Npcap and selects a suitable
+active device when `--interface` is omitted. Separately, the packet parser
+collects the host's assigned addresses to determine traffic direction:
 
-- **Linux**: Uses `netlink` or falls back to `/sys/class/net/`
-- **macOS**: Uses `getifaddrs()` system call
-- **Windows**: Uses IP Helper APIs (`GetAdaptersInfo()` for interface listing and
-  `GetAdaptersAddresses()` for the parser's complete IPv4/IPv6 local-address set)
-- **All platforms**: Falls back to pcap's `pcap_findalldevs()` when native methods fail
+- **Linux, macOS, and FreeBSD**: `pnet_datalink` enumerates assigned IPv4 and IPv6 addresses.
+- **Windows**: IP Helper's `GetAdaptersAddresses()` enumerates assigned IPv4 and IPv6 addresses.
 
 Packet endpoint orientation maintains a snapshot of the addresses currently assigned to
 the host. Packet-processing workers refresh it every 30 seconds and, when neither unicast
 endpoint is recognized as local, perform a rate-limited refresh and retry that packet once.
 This keeps direction detection correct across DHCP changes, VPN connections, roaming, and
-IPv6 privacy-address rotation. On Windows, `GetAdaptersAddresses()` supplements
-`pnet_datalink`'s IPv4-only adapter data so temporary and stable IPv6 addresses are included.
+IPv6 privacy-address rotation. On Windows, `GetAdaptersAddresses()` supplies
+both temporary and stable IPv6 addresses without relying on the capture driver.
 
 ### Process Activity Accounting
 
@@ -376,23 +378,19 @@ Packet processing is distributed across multiple threads (up to 4 by default, ba
 
 ### Concurrent Data Structures
 
-**DashMap** provides lock-free concurrent access with:
-- Per-shard locking (16 shards by default)
-- No global lock contention
-- Read-heavy workload optimization
-- Safe concurrent modifications
+**DashMap** uses per-shard locking for concurrent connection-map access. It
+avoids one global map lock, but operations on the same shard can still contend.
 
 ### Batch Processing
 
-Packets are processed in batches to improve cache efficiency:
-- Multiple packets processed before context switching
-- Reduced system call overhead
-- Better CPU cache utilization
+The capture thread sends bounded packet batches to the processing queue. A
+single worker processes each packet immediately; multiple workers may combine
+already queued batches before ordered tracker updates.
 
 ### Selective DPI
 
 Deep packet inspection can be disabled with `--no-dpi` for lower overhead:
-- Reduces CPU usage by 20-40% on high-traffic networks
+- Can reduce CPU usage on busy networks; measure the effect on your workload
 - Still tracks basic connection information
 - Useful for performance-constrained environments
 
@@ -409,12 +407,11 @@ Adjust refresh rates based on your needs:
 **Connection cleanup** prevents unbounded memory growth:
 - Protocol-aware timeouts remove stale connections
 - Visual staleness warnings before removal
-- Configurable timeout thresholds
 
 **Snapshot isolation** prevents UI blocking:
 - UI reads from immutable snapshots
 - Background threads update DashMap concurrently
-- No lock contention between UI and packet processing
+- UI rendering does not hold connection-map locks used by packet processing
 
 ## Dependencies
 
@@ -483,114 +480,30 @@ A GitHub Action (`.github/workflows/update-oui.yml`) updates this file monthly f
 
 For security documentation including Landlock sandboxing, privilege requirements, and threat model, see [SECURITY.md](SECURITY.md).
 
-## Comparison with Similar Tools
+## Packet Capture and Process Attribution <a id="comparison-with-similar-tools"></a>
 
-Network monitoring tools exist on a spectrum from simple connection listing to full packet forensics:
+RustNet combines packet capture with operating-system process lookup to show
+connection metadata in the terminal. Process attribution is best effort: it can
+be unavailable or delayed when privileges, the capture interface, or a platform
+backend limit visibility. RustNet does not decode every protocol or retain full
+packet payloads in its connection view.
 
-```
-Simple ←─────────────────────────────────────────────────────→ Complex
+Use `--pcap-export` to save captured packets to a standard PCAP file. RustNet
+also writes `capture.pcap.connections.jsonl` when the PCAP path is
+`capture.pcap`; this sidecar records connection metadata as connections close.
+The sidecar is a separate file and is not embedded in the PCAP.
 
-netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
-   │          │           │            │            │            │
-   └── Socket ┴── Bandwidth ──────────┴── Live DPI ┴── Capture ──┴── Forensics
-       state      monitoring             + Process     & CLI        & Deep
-                                         tracking                   Analysis
-```
-
-**RustNet's position**: Real-time connection monitoring with DPI and process identification - more capable than bandwidth monitors, more focused than forensic capture tools.
-
-### Feature Comparison
-
-| Feature | RustNet | bandwhich | sniffnet | iftop | netstat | ss | tcpdump/wireshark |
-|---------|---------|-----------|----------|-------|---------|-----|-------------------|
-| **Language** | Rust | Rust | Rust | C | C | C | C |
-| **Interface** | TUI | TUI | GUI | TUI | CLI | CLI | CLI/GUI |
-| **Real-time monitoring** | Yes | Yes | Yes | Yes | Snapshot | Snapshot | Yes |
-| **Process identification** | Yes | Yes | No | No | Yes | Yes | No |
-| **Deep Packet Inspection** | Yes | No | No | No | No | No | Yes |
-| **SNI/Host extraction** | Yes | No | No | No | No | No | Yes |
-| **Protocol state tracking** | Yes | No | Partial | No | Yes | Yes | Yes |
-| **Bandwidth per connection** | Yes | Yes | Yes | Yes | No | No | No |
-| **Connection filtering** | Yes | No | Yes | Yes | No | Yes | Yes (BPF) |
-| **DNS reverse lookup** | Yes | Yes | Yes | Yes | No | No | Yes |
-| **GeoIP lookup** | Yes | No | Yes | No | No | No | Yes |
-| **Notifications** | No | No | Yes | No | No | No | No |
-| **i18n (translations)** | No | No | Yes | No | No | No | No |
-| **Cross-platform** | Linux, macOS, Windows, FreeBSD | Linux, macOS | Linux, macOS, Windows | Linux, macOS, BSD | All | Linux | All |
-| **eBPF support** | Yes (Linux) | No | No | No | No | Yes | No |
-| **Landlock sandboxing** | Yes (Linux) | No | No | No | No | No | No |
-| **JSON event logging** | Yes | No | No | No | No | No | Yes |
-| **PCAP export** | Yes (+ process sidecar / annotated PCAPNG) | No | Yes | No | No | No | Yes |
-| **Packet capture** | libpcap | Raw sockets | libpcap | libpcap | Kernel | Kernel | libpcap |
-
-### Tool Focus Areas
-
-- **RustNet**: Real-time connection monitoring with DPI, protocol state tracking, and process identification in a TUI
-- **bandwhich**: Bandwidth utilization by process/connection with minimal overhead
-- **sniffnet**: Network traffic analysis with a graphical interface and notifications
-- **iftop**: Interface bandwidth monitoring with per-host traffic display
-- **netstat/ss**: System socket and connection state inspection (ss is the modern replacement for netstat on Linux)
-- **tcpdump/wireshark/tshark**: Full packet capture and protocol analysis for deep debugging
-
-### Choosing the Right Tool
-
-| Your Goal | Best Tool |
-|-----------|-----------|
-| See which process is making a connection | RustNet |
-| Decode packets byte-by-byte | Wireshark |
-| Monitor connection states (SYN_SENT, ESTABLISHED, etc.) | RustNet |
-| Extract files or credentials from traffic | Wireshark |
-| Attribute network activity to specific applications | RustNet |
-| Deep protocol dissection (3000+ protocols) | Wireshark |
-| Quick terminal-based network overview | RustNet |
-| Save captures with process attribution | RustNet (`--pcap-export` or `--pcapng-export`) |
-| Save captures for deep analysis | Wireshark/tcpdump |
-
-### RustNet and Wireshark: Different Strengths
-
-The key difference: **RustNet knows which process owns each connection. Wireshark cannot.**
-
-Wireshark operates at the packet capture layer (libpcap) - it sees raw network traffic but has no visibility into which application created it. RustNet combines packet capture with OS-level socket introspection (via eBPF on Linux, /proc, or platform APIs) to attribute every connection to its owning process.
-
-| Capability | RustNet | Wireshark |
-|------------|---------|-----------|
-| Process identification | Yes (eBPF, procfs, platform APIs) | No |
-| Connection state tracking | Native (TCP FSM, QUIC states) | Via dissectors |
-| Protocol dissectors | ~15 common protocols | 3000+ protocols |
-| Packet-level inspection | Metadata only | Full payload |
-| Interface | TUI (terminal) | GUI |
-| Capture to file | Yes (`--pcap-export`) | Yes (native) |
-
-Both tools can run in real-time. Choose based on what you need to see:
-- **"What is making this connection?"** → RustNet
-- **"What's inside this packet?"** → Wireshark
-
-### Bridging the Gap: PCAP Export with Process Attribution
-
-RustNet can now export packet captures while preserving process attribution - something neither tcpdump nor Wireshark can do alone:
+Use `--pcapng-export` to write packet comments with the process information
+available at capture time. These annotations are best effort and can be absent
+when ownership has not yet been resolved. Both capture formats can be opened in
+Wireshark for packet analysis.
 
 ```bash
-# Capture packets with RustNet (includes process tracking)
 sudo rustnet -i eth0 --pcap-export capture.pcap
-
-# Creates:
-#   capture.pcap                    - Standard PCAP file
-#   capture.pcap.connections.jsonl  - Process attribution (PID, name, timestamps)
-
-# Or write an annotated PCAPNG directly during live capture
 sudo rustnet -i eth0 --pcapng-export annotated.pcapng
 
-# Or enrich a classic PCAP after capture
+# Optional: combine a saved PCAP with its sidecar after capture.
 python scripts/pcap_enrich.py capture.pcap -o enriched.pcapng
-
-# Open in Wireshark - packets now show process info in comments
-wireshark annotated.pcapng
 ```
 
-This workflow gives you the best of both worlds:
-- **RustNet's process attribution**: Know which application generated each packet
-- **Wireshark's deep analysis**: Full protocol dissection with 3000+ analyzers
-
-Native PCAPNG export embeds live best-effort packet comments directly. The enrichment script remains useful when cleanup-time sidecar metadata completeness is more important than producing a single file during capture.
-
-See [USAGE.md - PCAP Export](USAGE.md#pcap-export) for detailed documentation.
+See [PCAP Export](USAGE.md#pcap-export) for output details and limitations.

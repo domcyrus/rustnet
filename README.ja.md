@@ -14,7 +14,7 @@
 
 <p align="center"><a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a> | <strong>日本語</strong></p>
 
-RustNet は、TCP、UDP、QUIC の接続とその所有プロセスをリアルタイムで表示するターミナル向けネットワークモニターです。Linux、macOS、Windows、FreeBSD に対応しています。
+RustNet は、TCP、UDP、QUIC の接続と、取得できる場合はその所有プロセスをリアルタイムで表示するターミナル向けネットワークモニターです。Linux、macOS、Windows、FreeBSD に対応しています。
 
 ## インストール
 
@@ -36,10 +36,10 @@ brew install rustnet
 
 ## 特長
 
-- SSH 越しでも使えるターミナル UI で、各接続の所有プロセス、状態、通信量、アプリケーションプロトコルを表示します。
+- SSH 越しでも使えるターミナル UI で、接続の状態、通信量、アプリケーションプロトコルと、取得できたプロセス情報を表示します。
 - パケット解析で HTTP、TLS/SNI、DNS、SSH、QUIC などを識別します。
 - プロセス、アドレス、ポート、プロトコルなどで接続を絞り込みます。
-- PCAP や注釈付き PCAPNG を出力し、Wireshark で分析できます。
+- PCAP や、取得できた情報を注釈に含む PCAPNG を出力し、Wireshark で分析できます。
 - 起動後に不要な権限を削除し、対応プラットフォームではサンドボックスを使います。
 
 機能の詳細は[使用ガイド](USAGE.md)、[アーキテクチャガイド](ARCHITECTURE.md)、[セキュリティガイド](SECURITY.md)を参照してください。
@@ -84,6 +84,8 @@ macOS で PKTAP を使用するには `sudo` が必要です。BPF へのアク�
 
 ## ドキュメント
 
+以下の詳細ガイドは英語版です。各ガイドの先頭から簡体字中国語版にも移動できます。
+
 - [インストール](INSTALL.md): 対応プラットフォーム、権限設定、トラブルシューティング
 - [使用方法](USAGE.md): 操作、フィルター、自動化、キャプチャの出力
 - [セキュリティ](SECURITY.md): サンドボックスと権限管理
@@ -91,6 +93,6 @@ macOS で PKTAP を使用するには `sudo` が必要です。BPF へのアク�
 - [変更履歴](CHANGELOG.md): リリース済みおよび今後の変更
 - [貢献](CONTRIBUTING.md): コントリビューションガイド
 
-RustNet のターミナル UI には [ratatui](https://github.com/ratatui-org/ratatui)、パケットキャプチャには [libpcap](https://www.tcpdump.org/) を使用しています。貢献者は [CONTRIBUTORS.md](CONTRIBUTORS.md) を参照してください。
+RustNet のターミナル UI には [ratatui](https://github.com/ratatui-org/ratatui)、パケットキャプチャには [libpcap](https://www.tcpdump.org/)/[Npcap](https://npcap.com/) を使用しています。貢献者は [CONTRIBUTORS.md](CONTRIBUTORS.md) を参照してください。
 
 ライセンスは [Apache License 2.0](LICENSE) です。

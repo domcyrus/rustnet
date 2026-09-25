@@ -18,7 +18,7 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 - [权限剥离与 Job Object 沙箱（Windows）](#privilege-drop-and-job-object-sandboxing-windows)
 - [权限需求](#privilege-requirements)
 - [只读操作](#read-only-operation)
-- [不主动对外通信](#no-external-communication)
+- [网络通信](#no-external-communication)
 - [日志文件隐私](#log-file-privacy)
 - [eBPF 安全](#ebpf-security)
 - [威胁模型](#threat-model)
@@ -34,10 +34,10 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 
 | 限制项 | 内核版本 | 描述 |
 |--------|----------|------|
-| 文件系统 | 5.13+ | 仅 `/proc` 可读（用于进程识别） |
-| 网络 | 6.4+ | 禁止 TCP bind/connect（RustNet 为被动模式） |
+| 文件系统 | 5.13+ | 读取权限限于 `/proc`、接口统计所需的 sysfs 路径，以及运行时所需的账户、解析器、GeoIP 和可选 Kubernetes 路径 |
+| 网络 | 6.7+ | 禁止 TCP bind；启用反向 DNS 时仅允许连接目的端口 53。当前 Landlock 策略不限制 UDP |
 | Linux capabilities | 任意 | pcap socket 打开后丢弃 `CAP_NET_RAW` |
-| Linux capabilities | 任意 | eBPF 程序加载后丢弃 `CAP_BPF`、`CAP_PERFMON`、`CAP_SYS_ADMIN` |
+| Linux capabilities | 任意 | eBPF 程序加载后丢弃 `CAP_BPF`、`CAP_PERFMON` |
 | root uid | 任意 | 以 root 启动时（如 `sudo rustnet`），初始化完成后降权到调用用户（`SUDO_UID`/`SUDO_GID`）或 `nobody` |
 | 特权 | 3.5+ | `PR_SET_NO_NEW_PRIVS` 由 RustNet 自身设置——始终生效，即使使用 `--no-sandbox`——防止通过 setuid 二进制文件提升特权 |
 
@@ -45,16 +45,17 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 
 1. **初始化阶段**：RustNet 加载 eBPF 程序、打开包捕获句柄、创建日志文件
 2. **特权锁定**：设置 `PR_SET_NO_NEW_PRIVS`（即使禁用沙箱也会应用）
-3. **Linux capabilities 剥离**：移除 `CAP_NET_RAW`、`CAP_BPF`、`CAP_PERFMON` 和 `CAP_SYS_ADMIN`
+3. **Linux capabilities 剥离**：移除 `CAP_NET_RAW`、`CAP_BPF` 和 `CAP_PERFMON`
 4. **root uid 降权**：以 root 运行时，通过 `setresuid`/`setresgid` 切换到调用 sudo 的用户（或 `nobody`）。已打开的捕获 socket、eBPF 程序和日志/导出文件继续有效。在没有 Landlock 的内核上，这是主要的隔离手段
 5. **Landlock**：限制文件系统和网络访问
 
 ### 安全收益
 
-如果攻击者利用 DPI/包解析中的漏洞：
+在 Landlock 生效时，利用 DPI/包解析漏洞的攻击者会受到以下限制。
+其中 TCP 限制要求 Linux 6.7+ 且 Landlock 网络策略已生效：
 - 无法读取任意文件（凭据、配置等）
 - 无法打开新的可写路径；已打开的输出文件描述符仍可写入
-- 无法建立出站 TCP 连接（阻止数据外泄）
+- 除启用反向 DNS 时连接目的端口 53 外，无法建立出站 TCP 连接
 - 无法绑定 TCP 端口（阻止反向 shell）
 - 无法创建新的 raw socket（Linux capabilities 已剥离）
 - 无法通过 setuid 二进制文件提升特权（`PR_SET_NO_NEW_PRIVS`，即使使用 `--no-sandbox` 也会设置）
@@ -79,8 +80,8 @@ root uid 降权的权衡：降权后，procfs 回退路径的进程归属只能�
 ### 优雅降级
 
 - **Kernel < 5.13**：跳过沙箱，记录警告
-- **Kernel 5.13-6.3**：仅文件系统限制
-- **Kernel 6.4+**：完整的文件系统 + 网络限制
+- **Kernel 5.13-6.6**：仅文件系统限制
+- **Kernel 6.7+**：文件系统和 TCP 限制；当前 Landlock 策略仍不限制 UDP
 - **Docker**：Landlock 可能受限；应用正常运行
 
 ## Seatbelt 沙箱（macOS）<a id="seatbelt-sandboxing-macos"></a>
@@ -91,7 +92,7 @@ root uid 降权的权衡：降权后，procfs 回退路径的进程归属只能�
 
 | 限制项 | 描述 |
 |--------|------|
-| 出站网络 | TCP/UDP 出站被阻止；Unix socket（Mach IPC）允许 |
+| 出站网络 | TCP/UDP 出站被阻止；启用反向 DNS 时允许目的端口 53，Unix socket（Mach IPC）允许 |
 | 文件系统读取 | 禁止读取用户主目录（`/Users`、`/var/root`）；GeoIP 路径显式允许 |
 | 文件系统写入 | 禁止写入所有用户主目录（`/Users`、`/var/root`） |
 | 输出文件 | 通过保留的文件描述符写入，不授予输出路径写入例外 |
@@ -107,7 +108,11 @@ root uid 降权的权衡：降权后，procfs 回退路径的进程归属只能�
 
 ### 配置文件策略
 
-RustNet 使用 **默认允许** 的 SBPL 配置文件配合针对性拒绝。拒绝默认的配置文件需要显式将所有系统库、Mach 端口、区域设置数据、字体和其他 OS 内部组件加入白名单——脆弱且容易出错。默认允许配合针对性拒绝覆盖了主要威胁（凭据窃取、数据外泄、shell 逃逸），同时避免操作风险。具体的拒绝规则阻止对用户主目录下的文件读/写、出站网络连接，以及除 `/usr/sbin/lsof` 外所有二进制文件的执行。
+RustNet 使用 **默认允许** 的 SBPL 配置文件配合针对性拒绝。
+默认拒绝的配置文件需要显式允许所有系统库、Mach 端口、区域设置数据、
+字体及其他操作系统内部组件，容易随系统版本变化而失效。
+当前的针对性规则阻止对用户主目录的读写、出站网络连接
+（启用反向 DNS 时的目的端口 53 除外），以及执行除 `/usr/sbin/lsof` 外的二进制文件。
 
 ### 输出文件支持
 
@@ -120,9 +125,8 @@ RustNet 使用 **默认允许** 的 SBPL 配置文件配合针对性拒绝。拒
 如果攻击者利用 DPI/包解析中的漏洞：
 - 无法读取 `/Users` 下的 SSH 密钥、AWS 凭据、浏览器配置文件或其他凭据文件
 - 无法写入 `/Users` 下的 SSH 密钥、AWS 凭据、浏览器配置文件或其他凭据文件
-- 无法建立出站 TCP/UDP 连接（阻止数据外泄）
-- 无法打开新的 raw network socket
-- 无法执行二进制文件（不能通过 `/bin/sh`、`/usr/bin/curl` 等逃逸 shell）
+- 除启用反向 DNS 时连接目的端口 53 外，无法建立出站 TCP/UDP 连接
+- 除 `/usr/sbin/lsof` 外无法执行二进制文件（不能通过 `/bin/sh`、`/usr/bin/curl` 等逃逸 shell）
 - 不以 root 运行：使用 `sudo rustnet` 时进程会切换为调用用户
 
 ### CLI 选项
@@ -192,9 +196,10 @@ FreeBSD 当前未启用沙箱。计划使用 `cap_enter()` 配合 `libcasper` �
 
 ### 局限性
 
-Windows 沙箱弱于 Linux/macOS/FreeBSD：
+Windows 沙箱的文件系统和网络限制少于 Linux Landlock 或 macOS Seatbelt。
+FreeBSD 目前没有同类沙箱：
 - 无文件系统限制 —— Windows 缺少与 Landlock 或 Seatbelt 等效的进程级文件系统沙箱
-- 无网络限制 —— 阻止出站会中断 Npcap 包捕获
+- 无网络限制；仍可建立出站连接
 - 特权移除仅影响提升进程已拥有的特权
 
 ### CLI 选项
@@ -249,13 +254,11 @@ RustNet 仅监控流量，不会：
 
 包捕获以非混杂、只读模式打开。
 
-## 不主动对外通信<a id="no-external-communication"></a>
+## 网络通信<a id="no-external-communication"></a>
 
-RustNet 完全在本地运行：
-- 无遥测或分析
-- 无网络请求（除监控的流量外）
-- 无云服务或远程 API
-- 所有数据保留在你的系统上
+RustNet 没有遥测、云服务或远程 API。GeoIP 查询使用本地数据库文件。
+反向 DNS 默认启用，可能向系统配置的 DNS 解析器发送针对所观察 IP 地址的 PTR 查询。
+使用 `--no-resolve-dns` 可避免这些查询。除非你自行分享，捕获的流量、日志和导出文件均保存在本地。
 
 ## 日志文件隐私<a id="log-file-privacy"></a>
 

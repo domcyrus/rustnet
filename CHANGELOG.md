@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Documentation accuracy**: Align English, Chinese, and Japanese feature
+  claims, installation and profiling steps, sandbox limits, and the roadmap
+  with the current implementation.
 - **App artwork**: use a cyan and green terminal signal for desktop icons,
   the macOS installer, and the README logo in all three languages.
 - Document Scoop installation in all three README languages and both
@@ -944,7 +947,7 @@ Special thanks to the external contributors in this release:
 ### Added
 - **Landlock Sandbox for Linux**: Filesystem and network sandboxing for enhanced security
   - Restricts filesystem access to `/proc` only after initialization
-  - Network sandbox blocks TCP bind/connect on kernel 6.4+
+  - Network sandbox blocks TCP bind/connect on kernel 6.7+
   - Drops `CAP_NET_RAW` capability after pcap handle is opened
   - New CLI options: `--no-sandbox` and `--sandbox-strict`
   - Comprehensive security documentation in SECURITY.md

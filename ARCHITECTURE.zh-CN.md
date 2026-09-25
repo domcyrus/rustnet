@@ -25,7 +25,7 @@ RustNet 是一个由五个 crate 组成的 Cargo 工作区。分析逻辑、捕�
 | [`rustnet-core`](crates/rustnet-core) | 库 | 与平台和捕获无关的分析核心：数据包解析、协议/连接类型、深度包检测、链路层解析器、连接合并、DNS/GeoIP/OUI 查找、可复用的 `ConnectionTracker`，以及有界的保留进程活动计量。仅操作字节切片和已解析的结构，不依赖 libpcap、原始套接字或操作系统进程表。 |
 | [`rustnet-capture`](crates/rustnet-capture) | 库 | 基于 libpcap/Npcap 的数据包捕获后端：设备选择、BPF 过滤器、macOS PKTAP、TUN/TAP，以及原始帧 `PacketReader`。 |
 | [`rustnet-host`](crates/rustnet-host) | 库 | 按连接进程归属及主机 TCP/UDP 套接字清单：Linux 上的 eBPF/procfs、macOS 上的 PKTAP/lsof、Windows 上的 ETW/IP Helper，以及 FreeBSD 上的 `sockstat`。负责 eBPF 构建工具链及内置的 `vmlinux.h`。 |
-| [`rustnet-sandbox`](crates/rustnet-sandbox) | 库 | 初始化完成后的沙箱与 root 权限降级，统一入口 `apply_sandbox`：Linux 上的 Landlock + 能力降级、macOS 上的 Seatbelt、Windows 上的受限令牌 + 作业对象，以及 Linux/macOS/FreeBSD 共享的 uid 降级。不依赖任何其他工作区 crate。 |
+| [`rustnet-sandbox`](crates/rustnet-sandbox) | 库 | 初始化完成后的沙箱与 root 权限降级，统一入口 `apply_sandbox`：Linux 上的 Landlock + 能力降级、macOS 上的 Seatbelt、Windows 上的令牌特权移除 + 作业对象，以及 Linux/macOS/FreeBSD 共享的 uid 降级。不依赖任何其他工作区 crate。 |
 | `rustnet-monitor`（二进制 `rustnet`） | 二进制 | 面向用户的应用：CLI、TUI 和应用事件循环。以 `ConnectionTracker` 作为唯一数据来源（dogfooding）。 |
 
 包名为 `rustnet-monitor`，因为 `rustnet` 这个 crate 名称在 crates.io 上已被占用；安装后的二进制文件名为 `rustnet`。
@@ -229,10 +229,11 @@ CNAME 链不需要单独的映射：DNS DPI 解析器记录的是原始*问题*�
 
 **视觉陈旧度指示器：**
 
-连接根据距离超时的远近改变颜色：
-- **白色**（默认）：< 75% 的超时时间
-- **黄色**：75-90% 的超时时间（警告）
-- **红色**：> 90% 的超时时间（严重）
+连接的清理计时达到超时时间的一半，且显示的双向流量速率都衰减为零后，
+行左侧会出现条纹，并显示移除倒计时。真彩色主题下，标识信息列会逐渐接近
+柔和色，状态等信号列则保留原有颜色。随着清理时间临近，条纹与倒计时由黄
+色渐变为红色。带背景色的选中行保留标识信息列的颜色，以便阅读。启用历史
+记录时，未选中的已归档连接显示为灰色。
 
 ### 7. 速率刷新线程
 
@@ -246,11 +247,11 @@ CNAME 链不需要单独的映射：DNS DPI 解析器记录的是原始*问题*�
 
 ### 8. DashMap
 
-并发哈希表（`DashMap<ConnectionKey, Connection>`）用于存储连接状态。这种无锁数据结构支持来自多个线程的高效并发访问。
+并发哈希表（`DashMap<ConnectionKey, Connection>`）用于存储连接状态。它使用分片锁支持并发访问；生命周期转换还使用独立的同步锁。
 
 **关键特性：**
 - 细粒度锁定（per-shard）
-- 无全局锁竞争
+- 对连接条目进行分片访问
 - 安全的并发读写
 - 高并发负载下的高性能
 
@@ -334,19 +335,18 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 
 ### 网络接口
 
-该工具使用平台特定的方法自动检测和列出可用网络接口：
+抓包后端通过 libpcap/Npcap 列出设备。未指定 `--interface` 时，
+它会选择一个合适的活动设备。数据包解析器另行收集主机已分配的地址，
+用于判断流量方向：
 
-- **Linux**：使用 `netlink` 或回退到 `/sys/class/net/`
-- **macOS**：使用 `getifaddrs()` 系统调用
-- **Windows**：使用 IP Helper API（`GetAdaptersInfo()` 用于列出接口，
-  `GetAdaptersAddresses()` 用于获取解析器所需的完整 IPv4/IPv6 本地地址集合）
-- **所有平台**：当原生方法失败时回退到 pcap 的 `pcap_findalldevs()`
+- **Linux、macOS 和 FreeBSD**：`pnet_datalink` 枚举已分配的 IPv4 和 IPv6 地址。
+- **Windows**：IP Helper 的 `GetAdaptersAddresses()` 枚举已分配的 IPv4 和 IPv6 地址。
 
 数据包端点方向判定会维护当前分配给主机的地址快照。数据包处理线程每 30 秒刷新一次；
 当两个单播端点都无法识别为本地地址时，还会以限速方式立即刷新，并重新解析该数据包一次。
 因此，DHCP 地址变化、VPN 连接、网络漫游以及 IPv6 隐私地址轮换后，流量方向仍能正确判定。
-在 Windows 上，`GetAdaptersAddresses()` 会补充 `pnet_datalink` 仅包含 IPv4 的适配器数据，
-从而纳入临时和稳定的 IPv6 地址。
+在 Windows 上，`GetAdaptersAddresses()` 不依赖抓包驱动，
+即可获取临时和稳定的 IPv6 地址。
 
 ### 进程活动计量
 
@@ -369,23 +369,18 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 
 ### 并发数据结构
 
-**DashMap** 提供无锁并发访问，具备：
-- Per-shard 锁定（默认 16 个 shard）
-- 无全局锁竞争
-- 读密集型工作负载优化
-- 安全的并发修改
+**DashMap** 通过分片锁提供并发连接映射访问，避免单个全局映射锁；
+访问同一分片的操作仍可能发生锁竞争。
 
 ### 批处理
 
-数据包以批次处理以提高缓存效率：
-- 上下文切换前处理多个数据包
-- 减少系统调用开销
-- 更好的 CPU 缓存利用率
+抓包线程将有界的数据包批次送入处理队列。单个处理线程会立即处理每个数据包；
+多个处理线程可以在有序更新连接跟踪器之前合并队列中已有的批次。
 
 ### 选择性 DPI
 
 可以使用 `--no-dpi` 禁用深度包检测以降低开销：
-- 在高流量网络中降低 20-40% 的 CPU 使用率
+- 在繁忙网络上可能降低 CPU 使用率；实际效果需按工作负载测量
 - 仍然追踪基本连接信息
 - 适用于性能受限的环境
 
@@ -402,12 +397,11 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 **连接清理**防止内存无界增长：
 - 协议感知的超时移除陈旧连接
 - 移除前的视觉陈旧度警告
-- 可配置的超时阈值
 
 **快照隔离**防止 UI 阻塞：
 - UI 从不可变快照读取
 - 后台线程并发更新 DashMap
-- UI 和数据包处理之间无锁竞争
+- UI 渲染不会持有数据包处理所用的连接映射锁
 
 ## 依赖项<a id="dependencies"></a>
 
@@ -476,114 +470,27 @@ GitHub Action（`.github/workflows/update-oui.yml`）每月从 [IEEE 公开数�
 
 关于 Landlock 沙箱、权限需求和威胁模型的安全文档，参见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
 
-## 与同类工具的对比<a id="comparison-with-similar-tools"></a>
+## 数据包捕获与进程归属<a id="comparison-with-similar-tools"></a>
 
-网络监控工具存在于从简单连接列表到完整数据包取证的光谱上：
+RustNet 将数据包捕获与操作系统的进程查询结合，在终端显示连接元数据。
+进程归属采用尽力而为的方式：权限、抓包接口或平台后端的限制，
+可能使归属信息缺失或延迟。连接视图不会解析所有协议，也不会保留完整数据包负载。
 
-```
-简单 ←─────────────────────────────────────────────────────→ 复杂
+使用 `--pcap-export` 将捕获的数据包保存为标准 PCAP 文件。
+如果路径是 `capture.pcap`，RustNet 还会写入
+`capture.pcap.connections.jsonl`，在连接关闭时记录其元数据。
+Sidecar 是独立文件，不嵌入 PCAP。
 
-netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
-   │          │           │            │            │            │
-   └── Socket ┴── Bandwidth ──────────┴── Live DPI ┴── Capture ──┴── Forensics
-       state      monitoring             + Process     & CLI        & Deep
-                                          tracking                   Analysis
-```
-
-**RustNet 的定位**：实时连接监控，带 DPI 和进程识别——比带宽监控器功能更强，比取证捕获工具更聚焦。
-
-### 功能对比
-
-| 功能 | RustNet | bandwhich | sniffnet | iftop | netstat | ss | tcpdump/wireshark |
-|---------|---------|-----------|----------|-------|---------|-----|-------------------|
-| **语言** | Rust | Rust | Rust | C | C | C | C |
-| **界面** | TUI | TUI | GUI | TUI | CLI | CLI | CLI/GUI |
-| **实时监控** | 是 | 是 | 是 | 是 | 快照 | 快照 | 是 |
-| **进程识别** | 是 | 是 | 否 | 否 | 是 | 是 | 否 |
-| **深度包检测** | 是 | 否 | 否 | 否 | 否 | 否 | 是 |
-| **SNI/主机提取** | 是 | 否 | 否 | 否 | 否 | 否 | 是 |
-| **协议状态追踪** | 是 | 否 | 部分 | 否 | 是 | 是 | 是 |
-| **逐连接带宽** | 是 | 是 | 是 | 是 | 否 | 否 | 否 |
-| **连接过滤** | 是 | 否 | 是 | 是 | 否 | 是 | 是（BPF） |
-| **DNS 反向解析** | 是 | 是 | 是 | 是 | 否 | 否 | 是 |
-| **GeoIP 查询** | 是 | 否 | 是 | 否 | 否 | 否 | 是 |
-| **通知** | 否 | 否 | 是 | 否 | 否 | 否 | 否 |
-| **i18n（翻译）** | 否 | 否 | 是 | 否 | 否 | 否 | 否 |
-| **跨平台** | Linux、macOS、Windows、FreeBSD | Linux、macOS | Linux、macOS、Windows | Linux、macOS、BSD | 全部 | Linux | 全部 |
-| **eBPF 支持** | 是（Linux） | 否 | 否 | 否 | 否 | 是 | 否 |
-| **Landlock 沙箱** | 是（Linux） | 否 | 否 | 否 | 否 | 否 | 否 |
-| **JSON 事件日志** | 是 | 否 | 否 | 否 | 否 | 否 | 是 |
-| **PCAP 导出** | 是（PCAP + sidecar，或带注释 PCAPNG） | 否 | 是 | 否 | 否 | 否 | 是 |
-| **数据包捕获** | libpcap | Raw sockets | libpcap | libpcap | Kernel | Kernel | libpcap |
-
-### 工具聚焦领域
-
-- **RustNet**：TUI 中的实时连接监控，带 DPI、协议状态追踪和进程识别
-- **bandwhich**：按进程/连接的带宽利用率，开销最小
-- **sniffnet**：带图形界面和通知的网络流量分析
-- **iftop**：带逐主机流量显示的接口带宽监控
-- **netstat/ss**：系统 socket 和连接状态检查（ss 是 Linux 上 netstat 的现代替代品）
-- **tcpdump/wireshark/tshark**：用于深度调试的完整数据包捕获和协议分析
-
-### 如何选择合适的工具
-
-| 你的目标 | 最佳工具 |
-|-----------|-----------|
-| 查看哪个进程正在建立连接 | RustNet |
-| 逐字节解码数据包 | Wireshark |
-| 监控连接状态（SYN_SENT、ESTABLISHED 等） | RustNet |
-| 从流量中提取文件或凭据 | Wireshark |
-| 将网络活动归因于特定应用 | RustNet |
-| 深度协议解析（3000+ 协议） | Wireshark |
-| 快速终端网络概览 | RustNet |
-| 保存带进程归因的捕获 | RustNet（`--pcap-export` 或 `--pcapng-export`） |
-| 保存捕获用于深度分析 | Wireshark/tcpdump |
-
-### RustNet 与 Wireshark：不同的强项
-
-关键区别：**RustNet 知道每个连接属于哪个进程。Wireshark 不知道。**
-
-Wireshark 在数据包捕获层（libpcap）运行——它看到原始网络流量，但不知道哪个应用创建了它。RustNet 将数据包捕获与 OS 级 socket 内省（通过 Linux eBPF、/proc 或平台 API）相结合，将每个连接归因于其所属进程。
-
-| 能力 | RustNet | Wireshark |
-|------------|---------|-----------|
-| 进程识别 | 是（eBPF、procfs、平台 API） | 否 |
-| 连接状态追踪 | 原生（TCP FSM、QUIC 状态） | 通过解析器 |
-| 协议解析器 | ~15 个常见协议 | 3000+ 协议 |
-| 数据包级检查 | 仅元数据 | 完整 payload |
-| 界面 | TUI（终端） | GUI |
-| 捕获到文件 | 是（`--pcap-export`、`--pcapng-export`） | 是（原生） |
-
-两种工具都可以实时运行。根据你想看什么来选择：
-- **"是什么在发起这个连接？"** → RustNet
-- **"这个数据包里有什么？"** → Wireshark
-
-### 弥合差距：带进程归因的 PCAP 导出
-
-RustNet 现在可以在保留进程归因的同时导出数据包捕获——这是 tcpdump 和 Wireshark 单独都无法做到的：
+使用 `--pcapng-export` 写出包含抓包时已知进程信息的数据包注释。
+这些注释采用尽力而为的方式；若当时尚未识别进程，注释可能缺失。
+两种格式都可在 Wireshark 中打开以分析数据包。
 
 ```bash
-# 使用 RustNet 捕获数据包（包含进程追踪）
 sudo rustnet -i eth0 --pcap-export capture.pcap
-
-# 创建：
-#   capture.pcap                    - 标准 PCAP 文件
-#   capture.pcap.connections.jsonl  - 进程归因（PID、名称、时间戳）
-
-# 用进程信息富化 PCAP 并创建注释过的 PCAPNG
-python scripts/pcap_enrich.py capture.pcap -o annotated.pcapng
-
-# 或者直接写出带 RustNet 数据包注释的 PCAPNG
 sudo rustnet -i eth0 --pcapng-export annotated.pcapng
 
-# 在 Wireshark 中打开 —— 数据包现在显示进程信息注释
-wireshark annotated.pcapng
+# 可选：抓包结束后将 PCAP 与其 sidecar 合并。
+python scripts/pcap_enrich.py capture.pcap -o enriched.pcapng
 ```
 
-这个工作流让你兼得两者之长：
-- **RustNet 的进程归因**：知道哪个应用生成了每个数据包
-- **Wireshark 的深度分析**：3000+ 解析器的完整协议解析
-
-原生 PCAPNG 导出会直接嵌入实时 best-effort 数据包注释。富化脚本在清理阶段 sidecar 元数据完整性比捕获时生成单个文件更重要时仍然有用。
-
-详见 [USAGE.zh-CN.md - PCAP 导出](USAGE.zh-CN.md#pcap-export)。
+输出细节和限制见[PCAP 导出](USAGE.zh-CN.md#pcap-export)。

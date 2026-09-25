@@ -22,7 +22,7 @@ Unavailable optional sandbox layers may still degrade gracefully. Explicit
 - [Privilege Drop and Job Object Sandboxing (Windows)](#privilege-drop-and-job-object-sandboxing-windows)
 - [Privilege Requirements](#privilege-requirements)
 - [Read-Only Operation](#read-only-operation)
-- [No External Communication](#no-external-communication)
+- [Network Communication](#no-external-communication)
 - [Log File Privacy](#log-file-privacy)
 - [eBPF Security](#ebpf-security)
 - [Threat Model](#threat-model)
@@ -38,8 +38,8 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 
 | Restriction | Kernel Version | Description |
 |-------------|----------------|-------------|
-| Filesystem | 5.13+ | Only `/proc` readable (for process identification) |
-| Network | 6.4+ | TCP bind/connect blocked (RustNet is passive) |
+| Filesystem | 5.13+ | Read access limited to `/proc`, interface-statistics sysfs paths, and account, resolver, GeoIP, and optional Kubernetes paths needed at runtime |
+| Network | 6.7+ | TCP bind blocked; TCP connect blocked except destination port 53 when reverse DNS is enabled. The current Landlock policy does not restrict UDP |
 | Capabilities | Any | `CAP_NET_RAW` dropped after pcap socket opened |
 | Capabilities | Any | `CAP_BPF`, `CAP_PERFMON` dropped after eBPF programs loaded |
 | Root uid | Any | When started as root (e.g. `sudo rustnet`), the process drops to the invoking user (`SUDO_UID`/`SUDO_GID`) or `nobody` after initialization |
@@ -55,10 +55,12 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 
 ### Security Benefits
 
-If an attacker exploits a vulnerability in DPI/packet parsing:
+When Landlock is enforced, an attacker exploiting DPI/packet parsing is subject
+to these restrictions. The TCP restrictions require Linux 6.7+ and an active
+Landlock network policy:
 - Cannot read arbitrary files (credentials, configs, etc.)
 - Cannot open new writable paths; existing output descriptors remain writable
-- Cannot make outbound TCP connections (data exfiltration blocked)
+- Cannot make outbound TCP connections other than DNS on destination port 53 when reverse DNS is enabled
 - Cannot bind TCP ports (reverse shell blocked)
 - Cannot create new raw sockets (capability dropped)
 - Cannot escalate privileges via setuid binaries (`PR_SET_NO_NEW_PRIVS`, set even with `--no-sandbox`)
@@ -85,8 +87,8 @@ kernel, and need to attribute other users' processes, use `--no-uid-drop`.
 ### Graceful Degradation
 
 - **Kernel < 5.13**: Sandboxing skipped, warning logged
-- **Kernel 5.13-6.3**: Filesystem restrictions only
-- **Kernel 6.4+**: Full filesystem + network restrictions
+- **Kernel 5.13-6.6**: Filesystem restrictions only
+- **Kernel 6.7+**: Filesystem and TCP restrictions; UDP remains unrestricted by the current Landlock policy
 - **Docker**: Landlock may be restricted; app continues normally
 
 ## Seatbelt Sandboxing (macOS)
@@ -97,7 +99,7 @@ On macOS 10.5+, RustNet uses [Seatbelt](https://theapplewiki.com/wiki/Dev:Seatbe
 
 | Restriction | Description |
 |-------------|-------------|
-| Outbound network | TCP/UDP outbound blocked; Unix sockets (Mach IPC) allowed |
+| Outbound network | TCP/UDP outbound blocked except destination port 53 when reverse DNS is enabled; Unix sockets (Mach IPC) allowed |
 | Filesystem reads | User home directories blocked (`/Users`, `/var/root`); GeoIP paths explicitly allowed |
 | Filesystem writes | All user home directories blocked (`/Users`, `/var/root`) |
 | Output files | Writes use retained descriptors; no output-path write exceptions are granted |
@@ -113,7 +115,12 @@ On macOS 10.5+, RustNet uses [Seatbelt](https://theapplewiki.com/wiki/Dev:Seatbe
 
 ### Profile Strategy
 
-RustNet uses an **allow-default** SBPL profile with targeted denies. A deny-default profile would require explicitly whitelisting all system libraries, Mach ports, locale data, fonts, and other OS internals — fragile and error-prone. Allow-default with targeted denies covers the primary threats (credential theft, data exfiltration, shell escapes) without operational risk. Specific deny rules block file reads/writes under user home directories, outbound network connections, and execution of all binaries except `/usr/sbin/lsof`.
+RustNet uses an **allow-default** SBPL profile with targeted denies. A
+deny-default profile would require explicitly whitelisting all system libraries,
+Mach ports, locale data, fonts, and other OS internals, which is fragile across
+OS releases. The targeted rules block reads and writes under user home
+directories, outbound network connections except DNS on port 53 when enabled,
+and execution of all binaries except `/usr/sbin/lsof`.
 
 ### Output File Support
 
@@ -126,9 +133,8 @@ All three flags work normally within the sandbox.
 If an attacker exploits a vulnerability in DPI/packet parsing:
 - Cannot read SSH keys, AWS credentials, browser profiles, or other credential files under `/Users`
 - Cannot write to SSH keys, AWS credentials, browser profiles, or other credential files
-- Cannot make outbound TCP/UDP connections (data exfiltration blocked)
-- Cannot open new raw network sockets
-- Cannot execute binaries (no shell escapes via `/bin/sh`, `/usr/bin/curl`, etc.)
+- Cannot make outbound TCP/UDP connections other than DNS on destination port 53 when reverse DNS is enabled
+- Cannot execute binaries other than `/usr/sbin/lsof` (no shell escapes via `/bin/sh`, `/usr/bin/curl`, etc.)
 - Does not run as root: under `sudo rustnet` the process continues as the invoking user
 
 ### CLI Options
@@ -199,9 +205,10 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 
 ### Limitations
 
-Windows sandboxing is weaker than Linux/macOS/FreeBSD:
+Windows sandboxing provides fewer filesystem and network restrictions than
+Linux Landlock or macOS Seatbelt. FreeBSD currently has no comparable sandbox:
 - No filesystem restriction — Windows lacks a process-wide filesystem sandbox equivalent to Landlock or Seatbelt
-- No network restriction — blocking outbound would break Npcap packet capture
+- No network restriction; outbound connections remain possible
 - Privilege removal only affects privileges the elevated process held
 
 ### CLI Options
@@ -258,13 +265,13 @@ RustNet only monitors traffic; it does not:
 
 The packet capture is opened in non-promiscuous, read-only mode.
 
-## No External Communication
+## Network Communication <a id="no-external-communication"></a>
 
-RustNet operates entirely locally:
-- No telemetry or analytics
-- No network requests (except monitored traffic)
-- No cloud services or remote APIs
-- All data stays on your system
+RustNet has no telemetry, cloud service, or remote API. Its GeoIP lookups use
+local database files. Reverse DNS is enabled by default and may send PTR
+queries for observed IP addresses to the system's configured DNS resolver.
+Use `--no-resolve-dns` to avoid those lookups. Captured traffic, logs, and
+exports are written locally unless you choose to share them.
 
 ## Log File Privacy
 

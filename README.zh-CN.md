@@ -14,7 +14,7 @@
 
 <p align="center"><a href="README.md">English</a> | <strong>简体中文</strong> | <a href="README.ja.md">日本語</a></p>
 
-RustNet 是一款终端网络监控工具，可实时显示 TCP、UDP 和 QUIC 连接及其所属进程。支持 Linux、macOS、Windows 和 FreeBSD。
+RustNet 是一款终端网络监控工具，可实时显示 TCP、UDP 和 QUIC 连接，并在可获取时显示其所属进程。支持 Linux、macOS、Windows 和 FreeBSD。
 
 ## 安装
 
@@ -36,10 +36,10 @@ brew install rustnet
 
 ## 功能亮点
 
-- 在可通过 SSH 使用的终端界面中，显示每条连接的所属进程、状态、流量和应用层协议。
+- 在可通过 SSH 使用的终端界面中，显示连接状态、流量、应用层协议及可获取的进程信息。
 - 通过数据包检测识别 HTTP、TLS/SNI、DNS、SSH、QUIC 等协议。
 - 按进程、地址、端口、协议等条件过滤连接。
-- 导出 PCAP 或带注释的 PCAPNG，供 Wireshark 分析。
+- 导出 PCAP 或带尽力而为注释的 PCAPNG，供 Wireshark 分析。
 - 启动后降低权限，并在支持的平台上启用沙箱。
 
 功能详情见[使用指南](USAGE.zh-CN.md)、[架构指南](ARCHITECTURE.zh-CN.md)和[安全指南](SECURITY.zh-CN.md)。
@@ -91,6 +91,6 @@ rustnet
 - [更新日志](CHANGELOG.md)：已发布和即将发布的变更
 - [参与贡献](CONTRIBUTING.zh-CN.md)：贡献指南
 
-RustNet 使用 [ratatui](https://github.com/ratatui-org/ratatui) 构建终端界面，使用 [libpcap](https://www.tcpdump.org/) 抓包。项目贡献者见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
+RustNet 使用 [ratatui](https://github.com/ratatui-org/ratatui) 构建终端界面，使用 [libpcap](https://www.tcpdump.org/)/[Npcap](https://npcap.com/) 抓包。项目贡献者见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
 本项目采用 [Apache License 2.0](LICENSE) 许可证。

@@ -43,7 +43,7 @@ If you prefer to use `perf` directly:
 
 ```bash
 # Build with debug symbols
-cargo build --release
+CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release
 
 # Record performance data (run for 30-60 seconds, then Ctrl+C to stop)
 sudo perf record -F 99 -g ./target/release/rustnet -i eth0
@@ -94,6 +94,8 @@ Microbenchmarks for core operations live in `benches/`. Run them with:
 | Packet parsing | `cargo bench --bench packet_parsing` |
 | Connection merge | `cargo bench --bench connection_merge` |
 | Snapshot creation | `cargo bench --bench snapshot` |
+| Rate tracking | `cargo bench --bench rate_tracker` |
+| Tracker ingestion | `cargo bench --bench tracker_ingest` |
 | All benchmarks | `cargo bench` |
 | Struct sizes | `cargo test --lib struct_sizes -- --nocapture` |
 
@@ -104,9 +106,11 @@ Criterion produces HTML reports in `target/criterion/` with statistical comparis
 For consistent benchmarks:
 
 ```bash
-# Run with consistent traffic
-sudo ./target/release/rustnet --interface eth0 &
-PID=$!
+# Run with consistent traffic; headless mode is required without a terminal
+sudo -v
+sudo ./target/release/rustnet --headless --interface eth0 > /dev/null &
+sleep 1
+PID=$(pgrep -n -x rustnet)
 
 # Monitor CPU usage
 top -p $PID
@@ -118,16 +122,20 @@ sudo perf stat -p $PID sleep 60
 sudo kill $PID
 ```
 
+The headless examples require a build from current `main`; v1.6.0 does not
+include `--headless`. Run this example when no other `rustnet` process is active
+so `pgrep` selects the process you started.
+
 ## Performance Regression Testing
 
 After making changes, compare before/after:
 
 ```bash
 # Baseline (before changes)
-sudo perf stat -r 3 timeout 60s ./target/release/rustnet-before > /dev/null
+sudo perf stat -r 3 ./target/release/rustnet-before --headless --duration 60 --output json > /dev/null
 
 # After changes
-sudo perf stat -r 3 timeout 60s ./target/release/rustnet > /dev/null
+sudo perf stat -r 3 ./target/release/rustnet --headless --duration 60 --output json > /dev/null
 ```
 
 Key metrics to compare:
@@ -190,7 +198,7 @@ timeout 60 sudo -E ~/.cargo/bin/flamegraph -- ./target/release/rustnet
 
 If the TUI feels sluggish:
 
-1. **Check refresh rate**: Default is 1000ms, can be adjusted with `--refresh-interval`
+1. **Check refresh rate**: Default is 500ms, can be adjusted with `--refresh-interval`
 2. **Check connection count**: High connection counts increase sorting overhead
 3. **Profile the UI loop**: Look for hot spots in `run_ui_loop`, `draw`, or `sort_connections`
 4. **Monitor thread contention**: Check if packet processing threads are blocking the snapshot provider
