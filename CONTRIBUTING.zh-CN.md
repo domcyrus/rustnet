@@ -95,6 +95,12 @@ RustNet 追求小而快。并不是每个协议或功能都适合放在核心工
 - 在提交 PR 之前在本地验证。PR 模板中列出了需要执行的精确命令。
 - 在同一个 PR 中把用户可见的改动写入 `CHANGELOG.md` 的 `## [Unreleased]` 小节
 
+## 文档<a id="documentation"></a>
+
+- 保持 README 简洁：简短介绍、主要安装方式、演示动画和截图、少量功能亮点，以及详细指南的链接。不要在 README 中加入冗长的功能列表、安装细节、命令行参考或实现细节。
+- 将详细内容写入相应指南（`INSTALL.zh-CN.md`、`USAGE.zh-CN.md`、`SECURITY.zh-CN.md` 或 `ARCHITECTURE.zh-CN.md`），适用时从 README 链接到这些指南。
+- 不要在 README 的功能亮点或媒体中将未发布功能描述为已可用。在指南和 `CHANGELOG.md` 中标明仅限开发版本的内容；发布新版本时，更新三个语言版本 README 的版本说明和功能描述，并保持内容一致。
+
 ## 重复 Pull Request<a id="duplicate-pull-requests"></a>
 
 如果两个或多个 PR 解决了同一个 issue，维护者将根据代码质量、测试覆盖率和架构契合度来评估，而不是提交顺序。最符合项目需求的 PR 将被合并；其他 PR 将被关闭并致谢。如果你的 PR 被另一个替代，你工作中的有用部分（文档、测试、边界情况）可能会被移植并给予署名。
