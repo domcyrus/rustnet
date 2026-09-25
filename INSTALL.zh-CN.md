@@ -14,6 +14,7 @@
   - [macOS DMG 安装](#macos-dmg-installation)
   - [Windows MSI 安装](#windows-msi-installation)
   - [Windows Chocolatey 安装](#windows-chocolatey-installation)
+  - [Windows Scoop 安装](#windows-scoop-installation)
   - [Linux 包安装](#linux-package-installation)
   - [FreeBSD 安装](#freebsd-installation)
   - [Android（Termux）安装](#android-termux-installation)
@@ -89,6 +90,16 @@
 ```powershell
 # 在 Administrator PowerShell 中运行
 choco install rustnet
+```
+
+**注意：** 请单独安装 [Npcap](https://npcap.com)。使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。对 Npcap 默认设置的支持尚未发布，目前仅在 `main` 中可用。
+
+### Windows Scoop 安装<a id="windows-scoop-installation"></a>
+
+RustNet 已收录在 [Scoop main bucket](https://github.com/ScoopInstaller/Main/blob/master/bucket/rustnet.json) 中：
+
+```powershell
+scoop install rustnet
 ```
 
 **注意：** 请单独安装 [Npcap](https://npcap.com)。使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。对 Npcap 默认设置的支持尚未发布，目前仅在 `main` 中可用。

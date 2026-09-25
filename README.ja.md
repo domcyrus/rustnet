@@ -85,6 +85,14 @@ Windows で RustNet v1.6.0 を使う場合、Npcap のインストール時に�
 choco install rustnet
 ```
 
+Scoop を使う場合:
+
+```powershell
+scoop install rustnet
+```
+
+[Npcap](https://npcap.com) は別途インストールしてください。RustNet v1.6.0 では「WinPcap API compatible mode」を有効にする必要があります。
+
 Docker、FreeBSD、ソースビルド、その他の方法は [INSTALL.md](INSTALL.md) を参照してください。
 
 ## 実行
