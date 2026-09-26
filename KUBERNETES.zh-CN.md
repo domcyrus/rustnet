@@ -20,8 +20,8 @@ Socket 映射最多保留 32,768 个连接元组，容量不足时淘汰较旧�
 
 Cgroup v1、容器下的嵌套 cgroup、eBPF 不可用，以及无法读取或被截断的 cgroup 名称仍依赖 procfs 扫描，可能遗漏在两次扫描之间退出的进程。解析可读名称需要相应的 kubelet 日志元数据仍然存在。
 
-## 导出后续工作
+## 配合 kubectl-rustnet 使用
 
-kubectl 插件位于独立仓库：[domcyrus/kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet)。配套的 [`--output-dir` 后续任务](https://github.com/domcyrus/kubectl-rustnet/issues/20) 要求先正常停止抓包，刷新并复制 JSONL 或 PCAPNG 证据（包括 sidecar），然后才能删除调试 pod。如果复制失败，必须保留 pod 并提供恢复说明。
+[kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) 提供主机 PID、网络访问及 eBPF 权限。通过 `--image` 选择包含此修改的 RustNet 镜像，通用容器识别不需要其他插件参数。默认 Pod 挂载 kubelet 日志，但不挂载 Docker/Podman 元数据，因此独立容器的名称可能缺失。Kubernetes 工作负载继续使用现有的 Pod/容器字段和过滤器。
 
-该参数属于插件的计划功能，本次 RustNet 修改尚未实现。在插件支持该功能之前，请在调试 pod 仍运行时、退出会话之前使用 `kubectl cp` 复制文件。Kubernetes 配置见[使用指南](USAGE.zh-CN.md#--kubernetes-mode-optional-feature)。
+包含 [PR #21](https://github.com/domcyrus/kubectl-rustnet/pull/21) 的插件版本支持 `--output-dir ./captures`，先保存并验证文件，再删除调试 Pod；复制失败时保留 Pod 并提供恢复说明。RustNet 参数放在 `--` 之后，例如：`kubectl rustnet --image YOUR_IMAGE --output-dir ./captures -- --filter 'container:web'`。旧版插件需要在退出前使用 `kubectl cp` 复制文件。Kubernetes 配置见[使用指南](USAGE.zh-CN.md#--kubernetes-mode-optional-feature)。
