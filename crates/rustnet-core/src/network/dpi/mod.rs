@@ -78,12 +78,18 @@ pub(crate) fn analyze_tcp_packet(
     } else {
         local_port
     };
-    if let Some(info) = mysql::analyze_mysql(payload, destination_port == 3306) {
+    // Both binary decoders cap message lengths at 16 KiB. Check the zero
+    // high bytes here before calling them on unrelated TCP payloads.
+    if matches!(payload, [_, _, 0, ..])
+        && let Some(info) = mysql::analyze_mysql(payload, destination_port == 3306)
+    {
         return Some(DpiResult {
             application: ApplicationProtocol::MySql(info),
         });
     }
-    if let Some(info) = postgres::analyze_postgres(payload) {
+    if payload.starts_with(&[0, 0])
+        && let Some(info) = postgres::analyze_postgres(payload)
+    {
         return Some(DpiResult {
             application: ApplicationProtocol::PostgreSql(info),
         });
@@ -91,7 +97,8 @@ pub(crate) fn analyze_tcp_packet(
     // RESP replies can also be arrays of bulk strings. On the standard port,
     // only inspect traffic toward the server so result values cannot become
     // command metadata.
-    if source_port != 6379
+    if payload[0] == b'*'
+        && source_port != 6379
         && let Some(info) = redis::analyze_redis(payload, destination_port == 6379)
     {
         return Some(DpiResult {

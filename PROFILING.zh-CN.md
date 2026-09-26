@@ -92,12 +92,17 @@ sudo perf report
 | 基准测试 | 命令 |
 |-----------|---------|
 | 数据包解析 | `cargo bench --bench packet_parsing` |
+| DPI 开销及混合解析/跟踪 | `cargo bench --bench dpi_overhead` |
 | 连接合并 | `cargo bench --bench connection_merge` |
 | 快照创建 | `cargo bench --bench snapshot` |
 | 全部基准测试 | `cargo bench` |
 | 结构体大小 | `cargo test --lib struct_sizes -- --nocapture` |
 
 Criterion 会在 `target/criterion/` 中生成 HTML 报告，并对多次运行结果进行统计比较。
+
+`dpi_overhead` 基准测试包含普通流量和数据库流量的固定 Ethernet/TCP 数据包，以及混合解析/连接跟踪负载，无需抓包文件。如需按抓包文件记录的链路类型回放受控流量，请设置 `RUSTNET_BENCH_PCAP=/path/to/capture.pcap`；文件无法读取、为空或包含不支持的数据包时，测试会失败。
+
+比较修改前后的性能时，两版应使用相同的基准测试源码、抓包文件、编译器、构建配置和机器。先完成两版构建，再交替重复测量，避免同时运行其他高负载任务。数据库识别增加了基础版本没有执行的工作，因此应将其开销与普通流量的变化分别报告。这些测量覆盖解析和连接跟踪的 CPU 耗时，不代表实时抓包丢包率或界面响应速度。
 
 ## 临时基准测试<a id="ad-hoc-benchmarking"></a>
 

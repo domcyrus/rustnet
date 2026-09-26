@@ -247,6 +247,10 @@ insta = { version = "1", features = ["filters"] }
 rustc-hash.workspace = true
 
 [[bench]]
+name = "dpi_overhead"
+harness = false
+
+[[bench]]
 name = "packet_parsing"
 harness = false
 
