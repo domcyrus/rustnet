@@ -1,6 +1,6 @@
 //! Vim/fzf-style connection filter: parses `port:`, `src:`, `dst:`,
-//! `sni:`, `process:`, `state:`, `proto:`, (and `pod:`, `ns:`,
-//! `container:` when the `kubernetes` feature is enabled) keyword
+//! `sni:`, `process:`, `state:`, `proto:`, `container:`, `runtime:`,
+//! (and `pod:`, `ns:` when the `kubernetes` feature is enabled) keyword
 //! expressions (with
 //! optional `(?i)…` regex literals via `regex-lite`) and matches them
 //! against live `Connection` records.
@@ -62,9 +62,10 @@ enum FilterCriteria {
     /// Match Kubernetes pod namespace
     #[cfg(feature = "kubernetes")]
     Namespace(FilterValue),
-    /// Match Kubernetes container name or ID
-    #[cfg(feature = "kubernetes")]
+    /// Match container name or ID, including Kubernetes.
     Container(FilterValue),
+    /// Match the container manager.
+    Runtime(FilterValue),
 }
 
 pub struct ConnectionFilter {
@@ -189,7 +190,9 @@ impl ConnectionFilter {
                     "ns" | "namespace" => {
                         criteria.push(FilterCriteria::Namespace(parse_filter_value(&value)));
                     }
-                    #[cfg(feature = "kubernetes")]
+                    "runtime" => {
+                        criteria.push(FilterCriteria::Runtime(parse_filter_value(&value)));
+                    }
                     "container" | "cont" => {
                         criteria.push(FilterCriteria::Container(parse_filter_value(&value)));
                     }
@@ -257,13 +260,26 @@ impl ConnectionFilter {
                     .as_deref()
                     .is_some_and(|ns| match_text(ns, fv))
             }),
-            #[cfg(feature = "kubernetes")]
-            FilterCriteria::Container(fv) => connection.k8s_info.as_ref().is_some_and(|k| {
-                k.container_name
-                    .as_deref()
-                    .is_some_and(|n| match_text(n, fv))
-                    || k.container_id.as_deref().is_some_and(|c| match_text(c, fv))
-            }),
+            FilterCriteria::Runtime(fv) => connection
+                .container_info
+                .as_ref()
+                .is_some_and(|c| match_text(c.runtime.as_str(), fv)),
+            FilterCriteria::Container(fv) => {
+                let generic = connection.container_info.as_ref().is_some_and(|c| {
+                    match_text(&c.id, fv) || c.name.as_deref().is_some_and(|n| match_text(n, fv))
+                });
+                #[cfg(feature = "kubernetes")]
+                let generic = generic
+                    || connection.k8s_info.as_ref().is_some_and(|k| {
+                        k.container_name
+                            .as_deref()
+                            .is_some_and(|n| match_text(n, fv))
+                            || k.container_id
+                                .as_deref()
+                                .is_some_and(|id| match_text(id, fv))
+                    });
+                generic
+            }
         })
     }
 
@@ -696,5 +712,33 @@ mod tests {
         assert!(!ConnectionFilter::parse("pod:nginx").matches(&bare));
         assert!(!ConnectionFilter::parse("ns:demo").matches(&bare));
         assert!(!ConnectionFilter::parse("container:nginx").matches(&bare));
+    }
+
+    #[test]
+    fn generic_container_filters_work_without_kubernetes() {
+        use crate::network::types::{ContainerInfo, ContainerRuntime};
+        let mut conn = conn(Protocol::Tcp, "127.0.0.1:12345", "10.0.0.1:80");
+        assert!(!ConnectionFilter::parse("runtime:docker").matches(&conn));
+        conn.container_info = Some(ContainerInfo {
+            runtime: ContainerRuntime::Podman,
+            id: "0123456789abcdef".into(),
+            name: Some("Web-Worker".into()),
+            cgroup_path: None,
+        });
+        for query in [
+            "runtime:PODMAN",
+            "container:web",
+            "cont:012345",
+            "runtime:/pod.*/ container:/worker$/",
+        ] {
+            assert!(ConnectionFilter::parse(query).matches(&conn), "{query}");
+        }
+        for query in [
+            "runtime:docker",
+            "container:missing",
+            "runtime:podman container:other",
+        ] {
+            assert!(!ConnectionFilter::parse(query).matches(&conn), "{query}");
+        }
     }
 }

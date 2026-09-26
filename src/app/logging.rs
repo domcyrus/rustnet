@@ -142,6 +142,13 @@ fn add_process_fields(event: &mut Value, conn: &Connection) {
         event["process_lineage"] = process_lineage_json(lineage);
     }
 
+    if let Some(container) = &conn.container_info {
+        event["container"] = json!({
+            "runtime": container.runtime.as_str(), "id": container.id,
+            "name": container.name, "cgroup_path": container.cgroup_path,
+        });
+    }
+
     // Round-trip estimate: smoothed TCP data RTT, a handshake RTT, or the
     // latest ICMP echo RTT. One decimal of milliseconds.
     if let Some(rtt) = conn.current_rtt() {
@@ -401,6 +408,12 @@ mod vlan_tests {
         ));
         assert!(log_pcap_connection(&writer, &conn));
         conn.observed_vlan_ids = vec![0, 42, 100];
+        conn.container_info = Some(crate::network::types::ContainerInfo {
+            runtime: crate::network::types::ContainerRuntime::Docker,
+            id: "0123456789abcdef".into(),
+            name: Some("web".into()),
+            cgroup_path: None,
+        });
         assert!(log_connection_event(
             &writer,
             "connection_closed",
@@ -419,9 +432,13 @@ mod vlan_tests {
         assert_eq!(records.len(), 4);
         for record in &records[..2] {
             assert!(record.get("observed_vlan_ids").is_none());
+            assert!(record.get("container").is_none());
         }
         for record in &records[2..] {
             assert_eq!(record["observed_vlan_ids"], json!([0, 42, 100]));
+            assert_eq!(record["container"]["runtime"], "docker");
+            assert_eq!(record["container"]["id"], "0123456789abcdef");
+            assert_eq!(record["container"]["name"], "web");
         }
     }
 }

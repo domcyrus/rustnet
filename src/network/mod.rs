@@ -9,6 +9,8 @@
 //! capture lives in the [`rustnet_capture`] crate and is re-exported here as
 //! [`capture`]; sandboxing and the root uid drop live in `rustnet-sandbox`.
 
+pub mod containers;
+
 #[cfg(feature = "kubernetes")]
 pub mod kubernetes;
 pub mod platform;

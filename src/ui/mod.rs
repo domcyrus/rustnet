@@ -1727,6 +1727,30 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn details_shows_generic_container_identity() {
+        use crate::network::types::{ContainerInfo, ContainerRuntime};
+        let app = test_app();
+        let mut connections = sample_connections();
+        connections[0].container_info = Some(ContainerInfo {
+            runtime: ContainerRuntime::Podman,
+            id: "0123456789abcdef".into(),
+            name: Some("web-worker".into()),
+            cgroup_path: None,
+        });
+        app.set_connections_snapshot_for_test(connections.clone());
+        let output = render_details_frame(&app, &connections, 0, 60).0;
+        for text in [
+            "Container",
+            "Runtime",
+            "podman",
+            "web-worker",
+            "0123456789abcdef",
+        ] {
+            assert!(output.contains(text), "missing {text}: {output}");
+        }
+    }
+
+    #[test]
     fn details_tab_tcp_https() {
         let app = test_app();
         app.ingest_packet_for_test(&gateway_arp_reply());

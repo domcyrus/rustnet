@@ -89,6 +89,7 @@ macOS で PKTAP を使用するには `sudo` が必要です。BPF へのアク�
 - [セキュリティ](SECURITY.md): サンドボックスと権限管理
 - [アーキテクチャ](ARCHITECTURE.md): プラットフォーム別の実装と性能
 - [Kubernetes のキャプチャ](KUBERNETES.ja.md): 所有者特定の制限と証拠保存の後続作業
+- [コンテナの所有者特定](CONTAINERS.ja.md): Docker、Podman、LXC（未リリース）
 - [変更履歴](CHANGELOG.md): リリース済みおよび今後の変更
 - [貢献](CONTRIBUTING.md): コントリビューションガイド
 
