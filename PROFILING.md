@@ -92,12 +92,17 @@ Microbenchmarks for core operations live in `benches/`. Run them with:
 | Benchmark | Command |
 |-----------|---------|
 | Packet parsing | `cargo bench --bench packet_parsing` |
+| DPI overhead and mixed parsing/tracking | `cargo bench --bench dpi_overhead` |
 | Connection merge | `cargo bench --bench connection_merge` |
 | Snapshot creation | `cargo bench --bench snapshot` |
 | All benchmarks | `cargo bench` |
 | Struct sizes | `cargo test --lib struct_sizes -- --nocapture` |
 
 Criterion produces HTML reports in `target/criterion/` with statistical comparison between runs.
+
+The `dpi_overhead` benchmark includes deterministic Ethernet/TCP fixtures for ordinary and database traffic, plus a mixed parsing/tracking workload. It needs no capture file. To also replay a controlled capture using its recorded link type, set `RUSTNET_BENCH_PCAP=/path/to/capture.pcap`; an unreadable, empty, or unsupported capture fails the benchmark.
+
+For before/after comparisons, use the same benchmark source, capture, compiler, build settings, and machine on both revisions. Build both versions before timing them, then alternate repeated runs without other heavy jobs. Database recognition adds work that the base revision did not perform, so report that cost separately from ordinary traffic. These measurements cover parsing and tracking CPU time, not live capture loss or UI responsiveness.
 
 ## Ad-hoc Benchmarking
 

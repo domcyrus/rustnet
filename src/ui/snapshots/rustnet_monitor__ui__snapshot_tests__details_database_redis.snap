@@ -1,0 +1,44 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
+                                                                                                                                            
+▌ proc (4242)           203.0.113.7:4433        192.168.1.10:50000 -          TCP·Redis (GET)          ESTABLISHED       - ok            -/-
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+▎ proc → 203.0.113.7:4433 [ESTABLISHED] · click a field to copy ────────────────────────────────────────────────────────────────────────────
+Connection                                                            Application: Redis                                                   ▐
+Protocol              TCP                                             Command               GET                                            ▐
+Status                Active (last seen <T> ago)                       Requested RESP        3                                              ▐
+Local Address         192.168.1.10:50000                              Requested DB          2                                              ▐
+Remote Address        203.0.113.7:4433                                                                                                     ▐
+Scope                 DOCUMENTATION                                                                                                        ▐
+State                 ESTABLISHED                                                                                                          ▐
+Process               proc                                                                                                                 ▐
+PID                   4242                                                                                                                 ▐
+Service               -                                                                                                                    ▐
+Observed VLANs        -                                                                                                                    ▐
+                                                                                                                                           ▐
+Network Context                                                       Transport Health                                                     ▐
+Local Hostname        -                                               Initial RTT           -                                              ▐
+Local MAC             -                                               Live RTT              -                                              ▐
+Remote Hostname       -                                               TCP Retransmits (R)   0                                              ▐
+Attributed Name       -                                               Out-of-Order (O)      0                                               
+Attributed Via        -                                               Duplicate ACKs        0                                               
+Remote MAC            -                                               Fast Retransmits      0                                               
+Country               -                                               Window Size           -                                               
+City                  -                                                                                                                     
+ASN                   -                                                                                                                     
+                                                                                                                                            
+▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
+Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+ j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back                                                                h help  q quit

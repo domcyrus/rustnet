@@ -392,6 +392,22 @@ impl ConnectionFilter {
                 match_text("mqtt", fv)
                     || any_text_matches(fv, [info.client_id.as_deref(), info.topic.as_deref()])
             }
+            ApplicationProtocol::MySql(info) => any_text_matches(
+                fv,
+                [
+                    info.server_version.as_deref(),
+                    info.tls_info.as_ref().and_then(|tls| tls.sni.as_deref()),
+                ],
+            ),
+            ApplicationProtocol::Redis(info) => match_text(&info.command, fv),
+            ApplicationProtocol::PostgreSql(info) => any_text_matches(
+                fv,
+                [
+                    info.database.as_deref(),
+                    info.application_name.as_deref(),
+                    info.tls_info.as_ref().and_then(|tls| tls.sni.as_deref()),
+                ],
+            ),
             ApplicationProtocol::WireGuard(info) => match_text(&info.packet_type.to_string(), fv),
             ApplicationProtocol::OpenVpn(info) => {
                 match_text(&info.packet_type.to_string(), fv)

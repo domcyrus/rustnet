@@ -264,6 +264,20 @@ RustNet 自动检测 TUN/TAP 接口并相应调整数据包解析。接口类型
 
 适用于性能受限的环境或不需要应用层详细信息时。
 
+#### 数据库 DPI（尚未发布）
+
+启用 DPI 后，**Details → Application** 显示：
+
+| 协议 | 元数据 |
+| --- | --- |
+| MySQL | 服务端版本、连接 ID、TLS 能力或请求 |
+| Redis | 命令、HELLO 请求的版本和 SELECT 请求的数据库索引 |
+| PostgreSQL | 请求的协议版本、数据库名、应用名、TLS 请求 |
+
+使用 `app:mysql`、`app:redis` 或 `app:postgresql` 筛选连接。无界面输出和 JSON 日志使用相同的协议名。
+
+仅检查单个 TCP 数据包内的完整消息；加密或分段流量可能无法识别。凭据、SQL、Redis 键和值不会作为 DPI 元数据保留。
+
 #### `--no-resolve-dns` / `--show-ptr-lookups`<a id="--no-resolve-dns--show-ptr-lookups"></a>
 
 反向 DNS 查找**默认启用**：IP 地址在后台解析为主机名，并显示在连接列表中（按 `d` 键切换）和详情标签页中。

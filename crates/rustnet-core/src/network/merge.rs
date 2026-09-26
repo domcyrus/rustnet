@@ -614,6 +614,34 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     merge_ftp_info(old_info, new_info);
                 }
 
+                (ApplicationProtocol::MySql(old), ApplicationProtocol::MySql(new)) => {
+                    set_if_absent(&mut old.server_version, &new.server_version);
+                    set_if_absent(&mut old.connection_id, &new.connection_id);
+                    set_if_absent(&mut old.tls_supported, &new.tls_supported);
+                    old.tls_requested |= new.tls_requested;
+                    merge_tls_info(&mut old.tls_info, &new.tls_info);
+                }
+                (ApplicationProtocol::Redis(old), ApplicationProtocol::Redis(new)) => {
+                    old.command.clone_from(&new.command);
+                    overwrite_if_present(&mut old.requested_version, &new.requested_version);
+                    overwrite_if_present(&mut old.requested_database, &new.requested_database);
+                }
+                (ApplicationProtocol::PostgreSql(old), ApplicationProtocol::PostgreSql(new)) => {
+                    set_if_absent(&mut old.protocol_minor, &new.protocol_minor);
+                    set_if_absent(&mut old.database, &new.database);
+                    set_if_absent(&mut old.application_name, &new.application_name);
+                    old.tls_requested |= new.tls_requested;
+                    merge_tls_info(&mut old.tls_info, &new.tls_info);
+                }
+                // Preserve the database identity after an observed plaintext
+                // startup; the existing TLS decoder supplies handshake metadata.
+                (ApplicationProtocol::MySql(old), ApplicationProtocol::Https(new)) => {
+                    merge_tls_info(&mut old.tls_info, &new.tls_info);
+                }
+                (ApplicationProtocol::PostgreSql(old), ApplicationProtocol::Https(new)) => {
+                    merge_tls_info(&mut old.tls_info, &new.tls_info);
+                }
+
                 _ => {
                     // Keep existing protocol
                 }

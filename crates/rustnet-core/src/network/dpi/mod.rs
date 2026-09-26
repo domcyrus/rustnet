@@ -3,6 +3,8 @@ use log::{debug, warn};
 
 mod bittorrent;
 mod cipher_suites;
+#[cfg(test)]
+mod database_tests;
 mod dhcp;
 mod dns;
 mod ftp;
@@ -11,10 +13,13 @@ mod https;
 mod llmnr;
 mod mdns;
 mod mqtt;
+mod mysql;
 mod netbios;
 mod ntp;
 mod openvpn;
+mod postgres;
 mod quic;
+mod redis;
 mod snmp;
 mod ssdp;
 mod ssh;
@@ -61,6 +66,44 @@ pub(crate) fn analyze_tcp_packet(
 ) -> Option<DpiResult> {
     if payload.is_empty() {
         return None;
+    }
+
+    let source_port = if _is_outgoing {
+        local_port
+    } else {
+        remote_port
+    };
+    let destination_port = if _is_outgoing {
+        remote_port
+    } else {
+        local_port
+    };
+    // Both binary decoders cap message lengths at 16 KiB. Check the zero
+    // high bytes here before calling them on unrelated TCP payloads.
+    if matches!(payload, [_, _, 0, ..])
+        && let Some(info) = mysql::analyze_mysql(payload, destination_port == 3306)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::MySql(info),
+        });
+    }
+    if payload.starts_with(&[0, 0])
+        && let Some(info) = postgres::analyze_postgres(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::PostgreSql(info),
+        });
+    }
+    // RESP replies can also be arrays of bulk strings. On the standard port,
+    // only inspect traffic toward the server so result values cannot become
+    // command metadata.
+    if payload[0] == b'*'
+        && source_port != 6379
+        && let Some(info) = redis::analyze_redis(payload, destination_port == 6379)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Redis(info),
+        });
     }
 
     // Try protocols in order of likelihood/speed

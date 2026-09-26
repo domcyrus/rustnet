@@ -264,6 +264,20 @@ Disable Deep Packet Inspection (DPI). This reduces CPU usage by 20-40% on high-t
 
 Useful for performance-constrained environments or when application-level details aren't needed.
 
+#### Database DPI (unreleased)
+
+With DPI enabled, **Details → Application** shows:
+
+| Protocol | Metadata |
+| --- | --- |
+| MySQL | Server version, connection ID, TLS capability/request |
+| Redis | Command, requested HELLO version and SELECT database index |
+| PostgreSQL | Requested protocol version, database, application name, TLS request |
+
+Filter with `app:mysql`, `app:redis`, or `app:postgresql`. These protocol names also appear in headless output and JSON logs.
+
+Only complete messages within a single TCP packet are inspected; encrypted or split traffic may remain unidentified. Credentials, SQL, Redis keys and values are excluded from DPI metadata.
+
 #### `--no-resolve-dns` / `--show-ptr-lookups`
 
 Reverse DNS lookups are **enabled by default**: IP addresses are resolved to hostnames in the background and shown in the connection list (toggle with the `d` key) and in the Details tab.

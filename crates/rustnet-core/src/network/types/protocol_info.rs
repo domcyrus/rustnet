@@ -203,6 +203,9 @@ pub enum ApplicationProtocol {
     BitTorrent(BitTorrentInfo),
     Stun(StunInfo),
     Mqtt(MqttInfo),
+    MySql(MySqlInfo),
+    Redis(RedisInfo),
+    PostgreSql(PostgreSqlInfo),
     Ftp(FtpInfo),
     WireGuard(WireGuardInfo),
     OpenVpn(OpenVpnInfo),
@@ -221,6 +224,9 @@ impl ApplicationProtocol {
             ApplicationProtocol::Llmnr(_) => "LLMNR",
             ApplicationProtocol::Mdns(_) => "mDNS",
             ApplicationProtocol::Mqtt(_) => "MQTT",
+            ApplicationProtocol::MySql(_) => "MySQL",
+            ApplicationProtocol::Redis(_) => "Redis",
+            ApplicationProtocol::PostgreSql(_) => "PostgreSQL",
             ApplicationProtocol::NetBios(_) => "NetBIOS",
             ApplicationProtocol::Ntp(_) => "NTP",
             ApplicationProtocol::OpenVpn(_) => "OpenVPN",
@@ -233,17 +239,19 @@ impl ApplicationProtocol {
         }
     }
 
-    /// TLS handshake metadata for the protocols that carry it (HTTPS, QUIC).
+    /// TLS handshake metadata, including observed database TLS upgrades.
     pub fn tls_info(&self) -> Option<&TlsInfo> {
         match self {
             ApplicationProtocol::Https(info) => info.tls_info.as_ref(),
+            ApplicationProtocol::MySql(info) => info.tls_info.as_ref(),
+            ApplicationProtocol::PostgreSql(info) => info.tls_info.as_ref(),
             ApplicationProtocol::Quic(info) => info.tls_info.as_ref(),
             _ => None,
         }
     }
 
-    /// Hostname carried in the protocol payload: the TLS SNI for HTTPS and
-    /// QUIC, or the Host header for HTTP. DNS query names are deliberately
+    /// Hostname carried in the protocol payload: TLS SNI (including observed
+    /// database upgrades), or the Host header for HTTP. DNS query names are deliberately
     /// excluded; call sites that want them match `Dns` explicitly.
     pub fn hostname(&self) -> Option<&str> {
         match self {
@@ -343,10 +351,49 @@ impl std::fmt::Display for ApplicationProtocol {
                     }
                 }
             },
+            ApplicationProtocol::MySql(info) => labeled(f, "MySQL", info.server_version.as_deref()),
+            ApplicationProtocol::Redis(info) => labeled(f, "Redis", Some(info.command.as_str())),
+            ApplicationProtocol::PostgreSql(info) => {
+                labeled(f, "PostgreSQL", info.database.as_deref())
+            }
             ApplicationProtocol::WireGuard(_) => write!(f, "WireGuard"),
             ApplicationProtocol::OpenVpn(_) => write!(f, "OpenVPN"),
         }
     }
+}
+
+/// Metadata from a complete MySQL classic-protocol greeting or SSLRequest.
+/// Authentication data and SQL are never retained by this decoder.
+#[derive(Debug, Clone, Default)]
+pub struct MySqlInfo {
+    pub server_version: Option<String>,
+    pub connection_id: Option<u32>,
+    pub tls_supported: Option<bool>,
+    /// An SSLRequest was observed, not proof that encryption succeeded.
+    pub tls_requested: bool,
+    pub tls_info: Option<TlsInfo>,
+}
+
+/// Metadata from a complete RESP command array (also used by RESP3 clients).
+#[derive(Debug, Clone)]
+pub struct RedisInfo {
+    pub command: String,
+    /// Version requested by HELLO, not a confirmed server negotiation.
+    pub requested_version: Option<u8>,
+    /// Database index requested by SELECT, not a confirmed server selection.
+    pub requested_database: Option<u32>,
+}
+
+/// Metadata from PostgreSQL startup messages or SSLRequest.
+#[derive(Debug, Clone, Default)]
+pub struct PostgreSqlInfo {
+    /// Minor version of protocol 3 requested by the client.
+    pub protocol_minor: Option<u16>,
+    pub database: Option<String>,
+    pub application_name: Option<String>,
+    /// An SSLRequest was observed, not proof that encryption succeeded.
+    pub tls_requested: bool,
+    pub tls_info: Option<TlsInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
