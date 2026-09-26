@@ -1,6 +1,16 @@
-# Kubernetes 抓包与证据导出
+# Kubernetes 与容器抓包
 
 [English](KUBERNETES.md) | [日本語](KUBERNETES.ja.md)
+
+## Docker、Podman 和 LXC（未发布）
+
+Linux 容器归属识别不依赖 `kubernetes` 特性或守护进程套接字，通过进程 cgroup 和 eBPF 保留的套接字标识工作，需要主机 PID、cgroup 和网络可见性。未知布局保持未知，procfs 回退无法恢复已退出的进程。
+
+Details 显示运行时、ID 和可用名称。可使用 `runtime:docker`、`runtime:podman`、`runtime:lxc` 或 `container:web` 过滤；`cont:` 同样匹配名称或 ID，包括 Kubernetes 容器。使用 `-i any` 捕获 bridge/veth 流量。
+
+Docker 和 Podman 名称来自降低权限前读取的本地元数据；LXC 的 cgroup 名称同时作为 ID 和名称。自定义存储目录、其他用户的 rootless 容器等情况可能导致名称缺失或直到重启才更新。
+
+无界面 JSON、JSONL 日志和 PCAP 附属文件中的 `container` 包含 `runtime`、`id`、`name` 和 `cgroup_path`，后两项可为 null。PCAPNG 注释包含 `runtime=`、`container_id=` 和可用时的 `container=` 名称。事件反映写入时已知的元数据；PCAP 附属文件包含关闭时仍被跟踪连接的最终元数据。
 
 ## 短连接（尚未发布）
 

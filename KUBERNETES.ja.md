@@ -1,6 +1,16 @@
-# Kubernetes のキャプチャと証拠の保存
+# Kubernetes とコンテナのキャプチャ
 
 [English](KUBERNETES.md) | [简体中文](KUBERNETES.zh-CN.md)
+
+## Docker、Podman、LXC（未リリース）
+
+Linux のコンテナ識別は `kubernetes` 機能やデーモンソケットを必要とせず、プロセスの cgroup と eBPF が保持したソケット情報を使います。ホスト PID、cgroup、ネットワークの可視性が必要です。未知の構成は不明のままで、procfs では終了済みプロセスを復元できません。
+
+Details にランタイム、ID、取得できた名前を表示します。`runtime:docker`、`runtime:podman`、`runtime:lxc`、`container:web` で絞り込めます。`cont:` も名前や ID に一致し、Kubernetes コンテナも検索します。bridge/veth トラフィックには `-i any` を使用します。
+
+Docker と Podman の名前は権限を落とす前に読めたローカルメタデータから取得し、LXC は cgroup 名を ID と名前に使います。独自の保存先や別ユーザーの rootless コンテナなどでは、名前が不明、または再起動まで更新されない場合があります。
+
+ヘッドレス JSON、JSONL ログ、PCAP サイドカーの `container` は `runtime`、`id`、`name`、`cgroup_path` を含み、後者二つは null の場合があります。PCAPNG コメントは `runtime=`、`container_id=`、取得できた場合は `container=` を含みます。イベントは書き込み時点の情報、PCAP サイドカーは終了時に追跡中の接続の最終情報を出力します。
 
 ## 短い接続（未リリース）
 

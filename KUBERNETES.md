@@ -1,6 +1,16 @@
-# Kubernetes capture and evidence
+# Kubernetes and container capture
 
 [简体中文](KUBERNETES.zh-CN.md) | [日本語](KUBERNETES.ja.md)
+
+## Docker, Podman and LXC (unreleased)
+
+On Linux, container attribution works without the `kubernetes` feature or daemon sockets. It uses process cgroups and retained eBPF socket identity; host PID/cgroup and network visibility are required. Unknown layouts stay unknown, and procfs fallback cannot recover exited processes.
+
+Details shows runtime, ID and available names. Filter with `runtime:docker`, `runtime:podman`, `runtime:lxc` or `container:web` (`cont:` also matches names or IDs, including Kubernetes containers). Use `-i any` for bridge/veth traffic.
+
+Docker and Podman names come from readable local metadata collected before privilege drop; LXC uses its cgroup name as its ID and name. Names may be missing or stale until restart, especially with custom storage paths or another user's rootless containers.
+
+Headless JSON, JSONL logs and PCAP sidecars expose `container` with `runtime`, `id`, `name` and `cgroup_path`; the last two may be null. PCAPNG comments include `runtime=`, `container_id=` and available `container=` names. Events reflect metadata known when written; PCAP sidecars include final metadata for connections still tracked at shutdown.
 
 ## Short flows (unreleased)
 
