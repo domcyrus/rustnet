@@ -13,6 +13,7 @@ pub(crate) fn run<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
     app: &app::App,
     shutdown_requested: &AtomicBool,
+    user_config: &crate::config::UserConfig,
 ) -> Result<()>
 where
     <B as ratatui::prelude::Backend>::Error: Send + Sync + 'static,
@@ -31,7 +32,7 @@ where
     let mut last_tick = std::time::Instant::now();
     let mut last_draw = std::time::Instant::now();
     let mut needs_redraw = true; // first frame
-    let mut ui_state = ui::UiState::default();
+    let mut ui_state = ui::UiState::from_config(user_config);
     let (has_country_db, _, _) = app.get_geoip_status();
     ui_state.has_geoip = has_country_db;
     let mut click_regions = ui::ClickableRegions::default();

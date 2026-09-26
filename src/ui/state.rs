@@ -569,6 +569,8 @@ pub struct UiState {
     pub show_hostnames: bool,
     /// Whether grouping by process is enabled
     pub grouping_enabled: bool,
+    /// Configured grouping preference restored by reset view.
+    pub default_grouping_enabled: bool,
     /// Set of expanded process group names
     pub expanded_groups: HashSet<String>,
     /// Selected group name when in grouped view (for group-level selection)
@@ -646,6 +648,7 @@ impl Default for UiState {
             sort_ascending: true, // Default to ascending
             show_hostnames: true, // Show hostnames by default when DNS resolution is enabled
             grouping_enabled: false,
+            default_grouping_enabled: false,
             expanded_groups: HashSet::new(),
             selected_group: None,
             has_geoip: false,
@@ -708,6 +711,14 @@ pub fn compute_scroll_offset(
 }
 
 impl UiState {
+    pub(crate) fn from_config(config: &crate::config::UserConfig) -> Self {
+        Self {
+            grouping_enabled: config.group_by_process,
+            default_grouping_enabled: config.group_by_process,
+            ..Self::default()
+        }
+    }
+
     /// Keep virtualization, navigation, and hit testing on the current frame's
     /// viewport. Run after layout, before any rows are drawn.
     pub(super) fn prepare_connection_viewport(
@@ -973,7 +984,7 @@ impl UiState {
 
     /// Reset all view settings to defaults (grouping, sort, filter, historic).
     pub fn reset_view(&mut self) {
-        self.grouping_enabled = false;
+        self.grouping_enabled = self.default_grouping_enabled;
         self.expanded_groups.clear();
         self.selected_group = None;
         self.sort_column = SortColumn::default();
@@ -1231,6 +1242,30 @@ mod tests {
     use super::*;
     use crate::ui::TAB_COUNT;
     use crate::ui::test_support::local_tcp;
+
+    #[test]
+    fn configured_grouping_applies_at_startup_and_reset() {
+        for group_by_process in [false, true] {
+            let config = crate::config::UserConfig {
+                group_by_process,
+                ..Default::default()
+            };
+            let mut ui = UiState::from_config(&config);
+            assert_eq!(ui.grouping_enabled, group_by_process);
+            assert!(ui.expanded_groups.is_empty());
+
+            ui.toggle_grouping();
+            assert_eq!(ui.grouping_enabled, !group_by_process);
+            ui.expanded_groups.insert("firefox".to_string());
+            ui.selected_group = Some("firefox".to_string());
+            ui.filter_query = "proto:tcp".to_string();
+            ui.reset_view();
+            assert_eq!(ui.grouping_enabled, group_by_process);
+            assert!(ui.expanded_groups.is_empty());
+            assert!(ui.selected_group.is_none());
+            assert!(ui.filter_query.is_empty());
+        }
+    }
 
     #[test]
     fn step_index_wraps_and_clamps() {
