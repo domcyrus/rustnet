@@ -140,6 +140,25 @@ impl KubernetesResolver {
         Some(info)
     }
 
+    /// Prefer the identity retained with the socket over a PID that may have
+    /// exited or been reused since the event. Do not put event data in the
+    /// PID cache: it belongs to this socket, not the current owner of the PID.
+    pub fn enrich_socket(
+        &self,
+        pid: u32,
+        cgroup: Option<&rustnet_host::SocketCgroup>,
+    ) -> Option<crate::network::types::K8sInfo> {
+        if let Some(cgroup) = cgroup
+            && let Some(mut info) = socket_cgroup_info(cgroup)
+        {
+            if let Ok(meta) = self.metadata.read() {
+                meta.apply(&mut info);
+            }
+            return Some(info);
+        }
+        self.enrich(pid)
+    }
+
     /// Reload the on-disk pod metadata table. Cheap (a directory read) and
     /// safe to call on the enrichment refresh tick.
     pub fn refresh_metadata(&self) {
@@ -165,6 +184,22 @@ impl KubernetesResolver {
     fn fetch(&self, _pid: u32) -> Option<crate::network::types::K8sInfo> {
         None
     }
+}
+
+/// Standard cgroupfs and systemd Kubernetes layouts both have a container
+/// leaf immediately below a pod. Only accept both complete identifiers.
+fn socket_cgroup_info(
+    cgroup: &rustnet_host::SocketCgroup,
+) -> Option<crate::network::types::K8sInfo> {
+    Some(crate::network::types::K8sInfo {
+        pod_uid: Some(extract_pod_uid(&cgroup.parent)?),
+        container_id: Some(extract_container_id(&cgroup.name)?),
+        // The kernel record contains two names, not an absolute path.
+        cgroup_path: None,
+        pod_name: None,
+        pod_namespace: None,
+        container_name: None,
+    })
 }
 
 impl Default for KubernetesResolver {
@@ -487,7 +522,6 @@ fn extract_path(line: &str) -> &str {
 /// Extract a pod UID from a single path segment. Accepts:
 ///   - `pod<UID>` (raw, e.g. v2 layout)
 ///   - `kubepods-<qos>-pod<UID>.slice` and similar systemd-encoded forms
-#[cfg(any(test, target_os = "linux"))]
 fn extract_pod_uid(segment: &str) -> Option<String> {
     // The systemd-encoded slice form ("kubepods-besteffort-pod<UID>.slice")
     // contains two occurrences of "pod": the one inside "kubepods" and the
@@ -502,7 +536,6 @@ fn extract_pod_uid(segment: &str) -> Option<String> {
 /// Normalise `123e4567_e89b_12d3_a456_426614174000` or
 /// `123e4567-e89b-12d3-a456-426614174000` to the canonical hyphenated form.
 /// Returns `None` if the input isn't a recognisable UUID.
-#[cfg(any(test, target_os = "linux"))]
 fn canonicalize_uid(raw: &str) -> Option<String> {
     let normalised: String = raw
         .chars()
@@ -530,7 +563,6 @@ fn canonicalize_uid(raw: &str) -> Option<String> {
     None
 }
 
-#[cfg(any(test, target_os = "linux"))]
 fn is_canonical_uuid(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.len() != 36 {
@@ -554,7 +586,6 @@ fn is_canonical_uuid(s: &str) -> bool {
 }
 
 /// Extract the container ID from the last segment of a cgroup path.
-#[cfg(any(test, target_os = "linux"))]
 fn extract_container_id(segment: &str) -> Option<String> {
     let trimmed = segment.trim_end_matches(".scope");
     // Strip well-known runtime prefixes.
@@ -582,6 +613,64 @@ mod tests {
     const DEMO_POD_UID: &str = "123e4567-e89b-12d3-a456-426614174000";
     const DEMO_CONTAINER_ID: &str =
         "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+    #[test]
+    fn socket_identity_survives_exit_and_does_not_follow_reused_pid() {
+        let resolver = KubernetesResolver::new();
+        let stale = crate::network::types::K8sInfo {
+            pod_uid: Some("different-pod".into()),
+            container_id: None,
+            cgroup_path: None,
+            pod_name: None,
+            pod_namespace: None,
+            container_name: None,
+        };
+        // No live process or namespace socket scan is needed. Even a cached
+        // identity for a reused PID must not replace the socket's identity.
+        resolver.cache.insert(u32::MAX, stale);
+        resolver.metadata.write().unwrap().by_container_id.insert(
+            DEMO_CONTAINER_ID.into(),
+            ContainerMeta {
+                pod_name: "job".into(),
+                namespace: "batch".into(),
+                container_name: "worker".into(),
+            },
+        );
+        for (name, parent) in [
+            (DEMO_CONTAINER_ID.to_string(), format!("pod{DEMO_POD_UID}")),
+            (
+                format!("cri-containerd-{DEMO_CONTAINER_ID}.scope"),
+                format!(
+                    "kubepods-burstable-pod{}.slice",
+                    DEMO_POD_UID.replace('-', "_")
+                ),
+            ),
+        ] {
+            let cgroup = rustnet_host::SocketCgroup { name, parent };
+            let info = resolver.enrich_socket(u32::MAX, Some(&cgroup)).unwrap();
+            assert_eq!(info.pod_uid.as_deref(), Some(DEMO_POD_UID));
+            assert_eq!(info.container_id.as_deref(), Some(DEMO_CONTAINER_ID));
+            assert_eq!(info.pod_name.as_deref(), Some("job"));
+            assert_eq!(info.pod_namespace.as_deref(), Some("batch"));
+            assert_eq!(info.container_name.as_deref(), Some("worker"));
+            assert!(info.cgroup_path.is_none());
+        }
+        assert_eq!(
+            resolver.cache.get(&u32::MAX).unwrap().pod_uid.as_deref(),
+            Some("different-pod")
+        );
+    }
+
+    #[test]
+    fn incomplete_or_non_pod_socket_cgroups_are_not_attributed() {
+        for (name, parent) in [
+            ("user.scope".to_string(), "system.slice".to_string()),
+            ("truncated".to_string(), format!("pod{DEMO_POD_UID}")),
+            (DEMO_CONTAINER_ID.to_string(), "pod-invalid".to_string()),
+        ] {
+            assert!(socket_cgroup_info(&rustnet_host::SocketCgroup { name, parent }).is_none());
+        }
+    }
 
     /// Assert that `line` parses to the demo pod UID and container ID.
     fn assert_parses_demo_pod(line: &str) {

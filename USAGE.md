@@ -406,6 +406,8 @@ Attribution is surfaced in:
 
 **Running on a cluster:** the easiest way to use this is the [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) plugin (`kubectl krew install rustnet`). It launches RustNet as an ephemeral debug pod on a node using the official image, mounts the kubelet log directories read-only for name resolution, and cleans up the pod on exit. Since the plugin runs RustNet inside a pod, the default `auto` mode enables attribution without any flags.
 
+**Short flows (unreleased):** eBPF retains cgroup v2 pod/container identity after process exit. See [Kubernetes capture](KUBERNETES.md) for retention limits and the separate plugin’s `--output-dir` follow-up.
+
 ```bash
 # On a Kubernetes cluster: run as an ephemeral debug pod via the plugin
 kubectl rustnet --node worker-3

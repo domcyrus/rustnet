@@ -40,6 +40,7 @@ pub(super) struct ProcessInfo {
     /// `bpf_ktime_get_ns` reading: nanoseconds on a **monotonic** clock, not
     /// wall-clock time.
     pub(super) timestamp: u64,
+    pub(super) socket_cgroup: Option<crate::SocketCgroup>,
 }
 
 /// A socket-map hit together with how the lookup key matched it.

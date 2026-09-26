@@ -3,6 +3,7 @@
 
 #define MAX_ENTRIES 32768
 #define TASK_COMM_LEN 16
+#define CGROUP_NAME_LEN 128
 
 /* Network constants are not included in every generated vmlinux.h. */
 #define AF_INET 2
@@ -13,7 +14,7 @@
 #define IPPROTO_ICMPV6 58
 
 #define CONN_KEY_SIZE 40
-#define CONN_INFO_SIZE 40
+#define CONN_INFO_SIZE 296
 
 /*
  * Map ABI shared with maps_libbpf.rs. Explicit trailing padding keeps the
@@ -38,6 +39,8 @@ struct conn_info
     __u32 gid;
     char comm[TASK_COMM_LEN];
     __u64 timestamp;
+    char cgroup_name[CGROUP_NAME_LEN];
+    char cgroup_parent[CGROUP_NAME_LEN];
 } __attribute__((aligned(8)));
 
 _Static_assert(sizeof(struct conn_key) == CONN_KEY_SIZE,

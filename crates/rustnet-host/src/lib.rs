@@ -246,6 +246,15 @@ bitflags::bitflags! {
     }
 }
 
+/// Cgroup v2 identity retained at a Linux socket event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocketCgroup {
+    /// Cgroup v2 leaf name recorded at the socket event.
+    pub name: String,
+    /// Immediate parent name. These two names are not a full cgroup path.
+    pub parent: String,
+}
+
 /// A rich process-attribution result.
 ///
 /// Everything past `tgid`/`name` is best effort: a backend fills in what it
@@ -274,6 +283,8 @@ pub struct ProcessAttribution {
     pub quality: MatchQuality,
     /// Best-effort parent chain, ordered oldest retained ancestor first.
     pub lineage: Option<ProcessLineage>,
+    /// Cgroup names retained by Linux eBPF even after the process exits.
+    pub socket_cgroup: Option<SocketCgroup>,
 }
 
 impl ProcessAttribution {
@@ -288,6 +299,7 @@ impl ProcessAttribution {
             executable: None,
             quality,
             lineage: None,
+            socket_cgroup: None,
         }
     }
 

@@ -5,7 +5,8 @@
 
 struct
 {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    /* Keep closed sockets for delayed enrichment, evicting old records when full. */
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, MAX_ENTRIES);
     __type(key, struct conn_key);
     __type(value, struct conn_info);
@@ -15,10 +16,26 @@ struct
  * Minimal CO-RE view of task_struct. Referencing the full generated type makes
  * older clang versions emit BTF that skeleton generation cannot consume.
  */
+struct cgroup___local
+{
+    struct kernfs_node *kn;
+} __attribute__((preserve_access_index));
+
+struct kernfs_node___new
+{
+    struct kernfs_node *__parent;
+} __attribute__((preserve_access_index));
+
+struct css_set___local
+{
+    struct cgroup___local *dfl_cgrp;
+} __attribute__((preserve_access_index));
+
 struct task_struct___local
 {
     struct task_struct___local *group_leader;
     char comm[TASK_COMM_LEN];
+    struct css_set___local *cgroups;
 } __attribute__((preserve_access_index));
 
 static __always_inline void get_process_info(struct conn_info *info)
@@ -39,6 +56,28 @@ static __always_inline void get_process_info(struct conn_info *info)
     {
         bpf_get_current_comm(&info->comm, sizeof(info->comm));
     }
+
+    /* Retain cgroup v2 identity before /proc/<tgid> disappears. Standard
+     * Kubernetes layouts put the container immediately below its pod.
+     * Reading kernel names also works from a private cgroup namespace.
+     * Reject truncated names instead of producing a plausible wrong ID. */
+    if (!bpf_core_field_exists(task->cgroups))
+        return;
+    struct kernfs_node *kn = BPF_CORE_READ(task, cgroups, dfl_cgrp, kn);
+    const char *name = BPF_CORE_READ(kn, name);
+    err = bpf_probe_read_kernel_str(info->cgroup_name, CGROUP_NAME_LEN, name);
+    if (err <= 0 || err >= CGROUP_NAME_LEN)
+        info->cgroup_name[0] = '\0';
+    /* kernfs renamed parent to __parent on newer kernels. */
+    struct kernfs_node *parent;
+    if (bpf_core_field_exists(kn->parent))
+        parent = BPF_CORE_READ(kn, parent);
+    else
+        parent = BPF_CORE_READ((struct kernfs_node___new *)kn, __parent);
+    name = BPF_CORE_READ(parent, name);
+    err = bpf_probe_read_kernel_str(info->cgroup_parent, CGROUP_NAME_LEN, name);
+    if (err <= 0 || err >= CGROUP_NAME_LEN)
+        info->cgroup_parent[0] = '\0';
 }
 
 static __always_inline int store_connection(struct conn_key *key)

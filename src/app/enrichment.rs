@@ -341,7 +341,8 @@ impl App {
                     #[cfg(feature = "kubernetes")]
                     if let Some(resolver) = &kubernetes_resolver
                         && entry.k8s_info.is_none()
-                        && let Some(k8s) = resolver.enrich(pid)
+                        && let Some(k8s) =
+                            resolver.enrich_socket(pid, attribution.socket_cgroup.as_ref())
                     {
                         entry.k8s_info = Some(k8s);
                     }

@@ -6,7 +6,8 @@ use libbpf_rs::MapCore;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 pub(super) const CONN_KEY_SIZE: usize = 40;
-pub(super) const CONN_INFO_SIZE: usize = 40;
+pub(super) const CONN_INFO_SIZE: usize = 296;
+const CGROUP_NAME_LEN: usize = 128;
 
 /// Connection key matching `socket_tracker_types.h`.
 #[repr(C)]
@@ -31,6 +32,8 @@ struct ConnInfo {
     pub gid: u32,
     pub comm: [u8; TASK_COMM_LEN],
     pub timestamp: u64,
+    pub cgroup_name: [u8; CGROUP_NAME_LEN],
+    pub cgroup_parent: [u8; CGROUP_NAME_LEN],
 }
 
 const _: () = assert!(std::mem::size_of::<ConnKey>() == CONN_KEY_SIZE);
@@ -46,6 +49,20 @@ const IPPROTO_UDP: u8 = 17;
 const IPPROTO_ICMPV6: u8 = 58;
 
 impl ConnKey {
+    /// Host capture can orient pod traffic opposite to the owning socket.
+    pub(super) fn reversed(mut self) -> Self {
+        std::mem::swap(&mut self.saddr, &mut self.daddr);
+        if matches!(self.proto, IPPROTO_TCP | IPPROTO_UDP) {
+            std::mem::swap(&mut self.sport, &mut self.dport);
+        }
+        self
+    }
+
+    pub(super) fn without_source_address(mut self) -> Self {
+        self.saddr = [0; 4];
+        self
+    }
+
     fn empty(sport: u16, dport: u16, proto: u8, family: u8) -> Self {
         Self {
             saddr: [0; 4],
@@ -163,6 +180,14 @@ impl From<ConnInfo> for ProcessInfo {
             gid: info.gid,
             comm: decode_comm(&info.comm),
             timestamp: info.timestamp,
+            socket_cgroup: if info.cgroup_name[0] != 0 && info.cgroup_parent[0] != 0 {
+                Some(crate::SocketCgroup {
+                    name: decode_comm(&info.cgroup_name),
+                    parent: decode_comm(&info.cgroup_parent),
+                })
+            } else {
+                None
+            },
         }
     }
 }
@@ -297,6 +322,8 @@ mod tests {
             gid: 13,
             comm,
             timestamp: 14,
+            cgroup_name: [0; CGROUP_NAME_LEN],
+            cgroup_parent: [0; CGROUP_NAME_LEN],
         };
 
         let converted = ProcessInfo::from(raw);
@@ -306,6 +333,24 @@ mod tests {
         assert_eq!(converted.gid, 13);
         assert_eq!(converted.comm, "rustnet");
         assert_eq!(converted.timestamp, 14);
+        assert!(converted.socket_cgroup.is_none());
+    }
+
+    #[test]
+    fn retained_cgroup_names_follow_the_map_abi() {
+        let mut bytes = [0; CONN_INFO_SIZE];
+        bytes[40..49].copy_from_slice(b"container");
+        bytes[168..171].copy_from_slice(b"pod");
+        let converted = ProcessInfo::from(ConnInfo::from_bytes(&bytes).unwrap());
+        let cgroup = converted.socket_cgroup.unwrap();
+        assert_eq!(cgroup.name, "container");
+        assert_eq!(cgroup.parent, "pod");
+        bytes[168] = 0;
+        assert!(
+            ProcessInfo::from(ConnInfo::from_bytes(&bytes).unwrap())
+                .socket_cgroup
+                .is_none()
+        );
     }
 
     #[test]
@@ -334,6 +379,31 @@ mod tests {
         assert_eq!(&bytes[16..32], &destination.octets());
         assert_eq!(key.family, AF_INET6);
         assert_eq!(key.proto, IPPROTO_TCP);
+    }
+
+    #[test]
+    fn reverse_lookup_preserves_protocol_and_icmp_identifier() {
+        let tcp = ConnKey::new_v4(
+            Ipv4Addr::LOCALHOST,
+            Ipv4Addr::new(10, 0, 0, 1),
+            1234,
+            443,
+            true,
+        );
+        let reversed = tcp.reversed();
+        assert_eq!(reversed.saddr, tcp.daddr);
+        assert_eq!(reversed.daddr, tcp.saddr);
+        assert_eq!((reversed.sport, reversed.dport), (443, 1234));
+        assert_eq!(reversed.reversed(), tcp);
+        assert_eq!(reversed.without_source_address().saddr, [0; 4]);
+        let icmp = ConnKey::new_icmp_v6(Ipv6Addr::LOCALHOST, Ipv6Addr::UNSPECIFIED, 42);
+        let reversed = icmp.reversed();
+        assert_eq!(reversed.saddr, icmp.daddr);
+        assert_eq!(reversed.daddr, icmp.saddr);
+        assert_eq!(
+            (reversed.sport, reversed.dport, reversed.proto),
+            (42, 0, IPPROTO_ICMPV6)
+        );
     }
 
     #[test]

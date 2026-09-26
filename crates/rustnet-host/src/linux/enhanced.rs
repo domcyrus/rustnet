@@ -214,6 +214,7 @@ impl EnhancedLinuxProcessLookup {
         let mut attribution = ProcessAttribution::new(info.pid, name, quality)
             .with_credentials(info.uid, info.gid)
             .with_executable(executable);
+        attribution.socket_cgroup = info.socket_cgroup;
         if let Some(ppid) = ppid {
             attribution = attribution
                 .with_parent_pid(ppid)
@@ -413,10 +414,16 @@ mod tests {
     /// A result carrying everything only eBPF can observe, so a cache round
     /// trip that drops any of it is visible.
     fn ebpf_attribution() -> ProcessAttribution {
-        ProcessAttribution::new(4242, "curl", MatchQuality::WildcardLocalAddress)
-            .with_parent_pid(4000)
-            .with_credentials(1000, 100)
-            .with_executable(Some(PathBuf::from("/usr/bin/curl")))
+        let mut attribution =
+            ProcessAttribution::new(4242, "curl", MatchQuality::WildcardLocalAddress)
+                .with_parent_pid(4000)
+                .with_credentials(1000, 100)
+                .with_executable(Some(PathBuf::from("/usr/bin/curl")));
+        attribution.socket_cgroup = Some(crate::SocketCgroup {
+            name: "container".into(),
+            parent: "pod".into(),
+        });
+        attribution
     }
 
     #[test]
