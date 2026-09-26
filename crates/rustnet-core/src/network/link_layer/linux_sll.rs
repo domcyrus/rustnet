@@ -69,19 +69,20 @@ fn parse_cooked(
 
     let protocol = u16::from_be_bytes([data[proto_offset], data[proto_offset + 1]]);
 
-    let (protocol, payload_offset) = if protocol == 0x8100 {
+    let (protocol, payload_offset, vlan_id) = if protocol == 0x8100 {
         if data.len() < header_len + 4 {
             log::debug!("{}: VLAN frame too small: {} bytes", name, data.len());
             return None;
         }
         let inner_proto = u16::from_be_bytes([data[header_len + 2], data[header_len + 3]]);
+        let vlan_id = u16::from_be_bytes([data[header_len], data[header_len + 1]]) & 0x0fff;
         log::trace!("{}: 802.1Q VLAN tag detected", name);
-        (inner_proto, header_len + 4)
+        (inner_proto, header_len + 4, Some(vlan_id))
     } else {
-        (protocol, header_len)
+        (protocol, header_len, None)
     };
 
-    match protocol {
+    let mut packet = match protocol {
         0x0800 => {
             // IPv4 - the cooked header is sliced off, so packet_len excludes it
             log::trace!("{}: IPv4 packet detected", name);
@@ -101,7 +102,9 @@ fn parse_cooked(
             log::debug!("{}: Unknown protocol: 0x{:04x}", name, protocol);
             None
         }
-    }
+    }?;
+    packet.vlan_id = vlan_id;
+    Some(packet)
 }
 
 #[cfg(test)]

@@ -21,18 +21,18 @@ State                 NTP                                                       
 Process               proc                                                                                                                 ▐
 PID                   4242                                                                                                                 ▐
 Service               -                                                                                                                    ▐
+Observed VLANs        -                                                                                                                    ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               NTP RTT               -                                              ▐
 Local MAC             -                                               Request Retries (R)   -                                              ▐
 Remote Hostname       -                                               Request Timeouts (T)  -                                              ▐
-Attributed Name       -                                                                                                                    ▐
-Attributed Via        -                                               Paired by originate timestamp echo                                   ▐
+Attributed Name       -                                                                                                                     
+Attributed Via        -                                               Paired by originate timestamp echo                                    
 Remote MAC            -                                                                                                                     
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
-                                                                                                                                            
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

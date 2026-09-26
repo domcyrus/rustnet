@@ -261,6 +261,7 @@ struct ConnectionSnapshot {
     local: EndpointSnapshot,
     remote: EndpointSnapshot,
     remote_is_gateway: bool,
+    observed_vlan_ids: Vec<u16>,
     direction: Option<&'static str>,
     process: Option<ProcessSnapshot>,
     service: Option<String>,
@@ -374,6 +375,7 @@ impl ConnectionSnapshot {
                 address_kind: connection.remote_addr_kind.as_token(),
             },
             remote_is_gateway: connection.remote_is_gateway,
+            observed_vlan_ids: connection.observed_vlan_ids.clone(),
             direction: connection
                 .connection_direction
                 .map(|outgoing| if outgoing { "outbound" } else { "inbound" }),
@@ -542,6 +544,23 @@ mod tests {
     }
 
     #[test]
+    fn snapshots_export_observed_vlan_ids_including_priority_tags() {
+        let app = app_with_connections();
+        let mut connection = app.get_connections()[0].clone();
+        let snapshot = ConnectionSnapshot::from_connection(&connection);
+        assert_eq!(
+            serde_json::to_value(snapshot).unwrap()["observed_vlan_ids"],
+            serde_json::json!([])
+        );
+        connection.observed_vlan_ids = vec![0, 42, 100];
+        let snapshot = ConnectionSnapshot::from_connection(&connection);
+        assert_eq!(
+            serde_json::to_value(snapshot).unwrap()["observed_vlan_ids"],
+            serde_json::json!([0, 42, 100])
+        );
+    }
+
+    #[test]
     fn version_one_schema_keys_and_protocol_timings_are_stable() {
         let app = app_with_connections();
         let (_, snapshot) = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None);
@@ -641,6 +660,7 @@ mod tests {
                 "kubernetes",
                 "last_activity",
                 "local",
+                "observed_vlan_ids",
                 "process",
                 "protocol",
                 "remote",

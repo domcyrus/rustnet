@@ -92,11 +92,11 @@ impl JsonLineWriter {
     }
 }
 
-/// Address-kind and gateway markers, parameterized on the two key vocabularies
+/// Observed VLAN IDs, address-kind and gateway markers, with endpoint fields
+/// parameterized on the two key vocabularies
 /// (`source_`/`destination_` in the event log, `local_`/`remote_` in the
-/// sidecar). Only emitted for broadcast/multicast endpoints, keeping unicast
-/// records (and consumers of older logs) unchanged.
-fn add_addr_kind_fields(
+/// sidecar). Fields are omitted when there is no corresponding observation.
+fn add_network_fields(
     event: &mut Value,
     conn: &Connection,
     local_key: &str,
@@ -111,6 +111,9 @@ fn add_addr_kind_fields(
     }
     if conn.remote_is_gateway {
         event[gateway_key] = json!(true);
+    }
+    if !conn.observed_vlan_ids.is_empty() {
+        event["observed_vlan_ids"] = json!(conn.observed_vlan_ids);
     }
 }
 
@@ -249,7 +252,7 @@ pub(super) fn log_connection_event(
         "destination_port": conn.remote_addr.port(),
     });
 
-    add_addr_kind_fields(
+    add_network_fields(
         &mut event,
         conn,
         "source_addr_kind",
@@ -324,7 +327,7 @@ pub(super) fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) ->
         "state": conn.state(),
     });
 
-    add_addr_kind_fields(
+    add_network_fields(
         &mut event,
         conn,
         "local_addr_kind",
@@ -363,5 +366,62 @@ mod tests {
         assert!(!writer.write(&json!({"record": 1})));
         assert!(!writer.write(&json!({"record": 2})));
         assert_eq!(writer.failed_writes(), 2);
+    }
+}
+
+#[cfg(test)]
+mod vlan_tests {
+    use super::*;
+    use crate::network::types::ProtocolState;
+
+    #[test]
+    fn events_and_sidecars_export_only_observed_vlan_ids() {
+        let path = std::env::temp_dir().join(format!(
+            "rustnet-vlan-log-{}-{}.jsonl",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let file = File::create_new(&path).unwrap();
+        let writer = JsonLineWriter::new(file, path.display().to_string());
+        let mut conn = Connection::new(
+            Protocol::Udp,
+            "192.0.2.1:1234".parse().unwrap(),
+            "192.0.2.2:5678".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        assert!(log_connection_event(
+            &writer,
+            "new_connection",
+            &conn,
+            None,
+            None
+        ));
+        assert!(log_pcap_connection(&writer, &conn));
+        conn.observed_vlan_ids = vec![0, 42, 100];
+        assert!(log_connection_event(
+            &writer,
+            "connection_closed",
+            &conn,
+            Some(0),
+            None
+        ));
+        assert!(log_pcap_connection(&writer, &conn));
+        drop(writer);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let records: Vec<Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 4);
+        for record in &records[..2] {
+            assert!(record.get("observed_vlan_ids").is_none());
+        }
+        for record in &records[2..] {
+            assert_eq!(record["observed_vlan_ids"], json!([0, 42, 100]));
+        }
     }
 }

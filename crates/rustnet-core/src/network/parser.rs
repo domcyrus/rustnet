@@ -30,6 +30,9 @@ pub struct ParsedPacket {
     /// Whether the remote endpoint is a default-gateway address, stamped
     /// centrally alongside the address kinds from the parser's route snapshot.
     pub remote_is_gateway: bool,
+    /// 802.1Q VID present in the captured frame. `Some(0)` is a
+    /// priority tag; `None` means no tag was observed, including stripped tags.
+    pub vlan_id: Option<u16>,
     pub tcp_header: Option<TcpHeaderInfo>, // TCP header info (seq, ack, window, flags)
     pub protocol_state: ProtocolState,
     pub is_outgoing: bool,
@@ -63,6 +66,7 @@ impl ParsedPacket {
             local_addr_kind: AddrKind::Unicast,
             remote_addr_kind: AddrKind::Unicast,
             remote_is_gateway: false,
+            vlan_id: None,
             tcp_header: None,
             protocol_state,
             is_outgoing,
@@ -1080,6 +1084,56 @@ mod tests {
 
         let parsed = parser.parse_packet(&truncated);
         assert!(parsed.is_none(), "Should reject truncated packets");
+    }
+
+    #[test]
+    fn vlan_metadata_survives_ethernet_and_cooked_ipv4_ipv6_and_arp() {
+        let parser = create_parser_with_linktype(1);
+        let mut arp = vec![0xff; 6];
+        arp.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x08, 0x06]);
+        arp.extend_from_slice(&[
+            0, 1, 0x08, 0, 6, 4, 0, 1, // Ethernet/IPv4 ARP request
+            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 192, 168, 1, 100, 0, 0, 0, 0, 0, 0, 192, 168, 1, 1,
+        ]);
+        for frame in [
+            ethernet_ipv4_tcp_syn(),
+            ethernet_ipv4_udp_dns(),
+            ethernet_ipv6_tcp(),
+            arp,
+        ] {
+            let untagged = parser.parse_packet(&frame).unwrap();
+            assert_eq!(untagged.vlan_id, None);
+            for (linktype, header_len, proto_offset) in [(113, 16, 14), (276, 20, 0)] {
+                let cooked_parser = create_parser_with_linktype(linktype);
+                let mut cooked = vec![0; header_len];
+                cooked[proto_offset..proto_offset + 2].copy_from_slice(&frame[12..14]);
+                cooked.extend_from_slice(&frame[14..]);
+                let plain = cooked_parser.parse_packet(&cooked).unwrap();
+                assert_eq!(plain.vlan_id, None);
+                for vlan_id in [0u16, 42, 4094] {
+                    let mut tagged = cooked.clone();
+                    tagged[proto_offset..proto_offset + 2].copy_from_slice(&[0x81, 0x00]);
+                    let tci = (0xf000 | vlan_id).to_be_bytes();
+                    tagged.splice(
+                        header_len..header_len,
+                        [tci[0], tci[1], frame[12], frame[13]],
+                    );
+                    let parsed = cooked_parser.parse_packet(&tagged).unwrap();
+                    assert_eq!(parsed.vlan_id, Some(vlan_id));
+                    assert_eq!(parsed.connection_key(), plain.connection_key());
+                }
+            }
+            for vlan_id in [0u16, 42, 4094] {
+                let mut tagged = frame.clone();
+                // PCP and DEI must not become part of the VID.
+                let tci = (0xf000 | vlan_id).to_be_bytes();
+                tagged.splice(12..12, [0x81, 0x00, tci[0], tci[1]]);
+                let parsed = parser.parse_packet(&tagged).unwrap();
+                assert_eq!(parsed.vlan_id, Some(vlan_id));
+                assert_eq!(parsed.connection_key(), untagged.connection_key());
+                assert_eq!(parsed.packet_len, untagged.packet_len + 4);
+            }
+        }
     }
 
     #[test]

@@ -134,6 +134,10 @@ pub struct Connection {
     /// Whether the remote endpoint is a default-gateway address from the
     /// host's routing table at the time the last packet was observed.
     pub remote_is_gateway: bool,
+    /// Sorted, unique 802.1Q VIDs observed on this connection. These are
+    /// capture metadata, not part of the connection key or a VLAN stack.
+    /// Empty means no tag observed; zero denotes a priority tag.
+    pub observed_vlan_ids: Vec<u16>,
 
     // Protocol state
     pub protocol_state: ProtocolState,
@@ -286,6 +290,7 @@ impl Connection {
             local_addr_kind: AddrKind::default(),
             remote_addr_kind: AddrKind::default(),
             remote_is_gateway: false,
+            observed_vlan_ids: Vec::new(),
             protocol_state: state,
             pid: None,
             process_ppid: None,
