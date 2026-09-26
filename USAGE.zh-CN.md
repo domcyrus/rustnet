@@ -264,6 +264,24 @@ RustNet 自动检测 TUN/TAP 接口并相应调整数据包解析。接口类型
 
 适用于性能受限的环境或不需要应用层详细信息时。
 
+#### 数据库 DPI（尚未发布）
+
+启用 DPI 后，**Details → Application** 显示以下信息：
+
+| 协议 | 提取的元数据 |
+| --- | --- |
+| MySQL | 经典协议服务端版本、连接 ID、声明的 TLS 能力、已观察到的 TLS 请求 |
+| Redis | 命令名、最近观察到的 HELLO 版本请求和 SELECT 数据库索引请求 |
+| PostgreSQL | 请求的协议 3 版本、显式指定的数据库名和应用名、已观察到的 TLS 请求 |
+
+可使用 `app:mysql`、`app:redis`、`app:postgresql` 筛选连接。无界面输出的 `application` 字段和 JSON 事件日志使用相同的协议名。后续观察到 TLS 握手时保留数据库协议标识；MySQL 和 PostgreSQL 的 Details 可显示现有 TLS 解析器提取的 SNI 和版本。TLS、HELLO、SELECT 请求均不表示协商或数据库选择已经成功。
+
+解析器仅检查单个 TCP 负载起始处的第一个完整受支持消息，不缓存流、不拼接分段消息，也不遍历流水线中的多个请求。MySQL 协议 10 握手、PostgreSQL 协议 3 启动消息和 SSLRequest、使用已知命令的 Redis RESP 数组可在非标准端口识别。MySQL 协议 4.1 SSLRequest 要求目标端口为 3306；其他 Redis 命令名（包括模块命令）要求目标端口为 6379。源端口为 6379 的响应不会按命令解析；非标准端口上的响应数组若与已知命令形式相同，仍可能产生歧义。端口号本身不能确认协议。RESP2 和 RESP3 客户端均使用 RESP 命令数组；版本字段仅由已观察到的 HELLO 请求填充。Valkey 等兼容服务也可能显示为 Redis。
+
+MySQL 和 PostgreSQL 启动消息上限为 16 KiB。Redis 最多检查 128 个参数，每个参数不超过 16 KiB。PostgreSQL 仅保留不含控制字符、非空且不超过 256 字节的 UTF-8 数据库名和应用名。凭据、SQL 语句、Redis 键和值不会作为 DPI 元数据保留；现有原始 PCAP 导出仍包含捕获的数据包字节。
+
+中途开始捕获、截断、分段、Redis 内联命令或仅观察到响应时，可能无法识别协议。未观察到受支持的明文启动消息时，直接 TLS（包括 PostgreSQL 直接 TLS 和 Redis TLS）仍显示为通用 TLS；本功能不解密流量。
+
 #### `--no-resolve-dns` / `--show-ptr-lookups`<a id="--no-resolve-dns--show-ptr-lookups"></a>
 
 反向 DNS 查找**默认启用**：IP 地址在后台解析为主机名，并显示在连接列表中（按 `d` 键切换）和详情标签页中。

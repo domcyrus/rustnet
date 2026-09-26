@@ -4074,12 +4074,12 @@ mod snapshot_tests {
         use crate::network::types::{
             ApplicationProtocol, BitTorrentInfo, BitTorrentType, DhcpInfo, DhcpMessageType,
             DnsInfo, DnsQueryType, FtpInfo, FtpMessageType, HttpInfo, HttpVersion, HttpsInfo,
-            LlmnrInfo, MdnsInfo, MqttInfo, MqttPacketType, MqttVersion, NetBiosInfo, NetBiosOpcode,
-            NetBiosResponseStatus, NetBiosService, NtpInfo, NtpMode, OpenVpnInfo,
-            OpenVpnPacketType, QuicConnectionState, QuicInfo, QuicPacketType, SnmpInfo,
-            SnmpPduType, SnmpVersion, SsdpInfo, SsdpMethod, SshConnectionState, SshInfo,
-            SshVersion, StunInfo, StunMessageClass, StunMethod, TlsInfo, TlsVersion, WireGuardInfo,
-            WireGuardPacketType,
+            LlmnrInfo, MdnsInfo, MqttInfo, MqttPacketType, MqttVersion, MySqlInfo, NetBiosInfo,
+            NetBiosOpcode, NetBiosResponseStatus, NetBiosService, NtpInfo, NtpMode, OpenVpnInfo,
+            OpenVpnPacketType, PostgreSqlInfo, QuicConnectionState, QuicInfo, QuicPacketType,
+            RedisInfo, SnmpInfo, SnmpPduType, SnmpVersion, SsdpInfo, SsdpMethod,
+            SshConnectionState, SshInfo, SshVersion, StunInfo, StunMessageClass, StunMethod,
+            TlsInfo, TlsVersion, WireGuardInfo, WireGuardPacketType,
         };
 
         let tls_info = TlsInfo {
@@ -4191,6 +4191,24 @@ mod snapshot_tests {
                 topic: Some("home/temp".to_string()),
                 qos: Some(1),
             }),
+            ApplicationProtocol::MySql(MySqlInfo {
+                server_version: Some("8.4.0".to_string()),
+                connection_id: Some(123),
+                tls_supported: Some(true),
+                tls_requested: true,
+                tls_info: None,
+            }),
+            ApplicationProtocol::Redis(RedisInfo {
+                command: "GET".to_string(),
+                requested_version: Some(3),
+                requested_database: Some(2),
+            }),
+            ApplicationProtocol::PostgreSql(PostgreSqlInfo {
+                protocol_minor: Some(0),
+                database: Some("inventory".to_string()),
+                application_name: Some("psql".to_string()),
+                ..Default::default()
+            }),
             ApplicationProtocol::Ftp(FtpInfo {
                 message_type: FtpMessageType::Response,
                 command: Some("USER".to_string()),
@@ -4236,13 +4254,16 @@ mod snapshot_tests {
                 ApplicationProtocol::Stun(_) => {}
                 ApplicationProtocol::Mqtt(_) => {}
                 ApplicationProtocol::Ftp(_) => {}
+                ApplicationProtocol::MySql(_) => {}
+                ApplicationProtocol::Redis(_) => {}
+                ApplicationProtocol::PostgreSql(_) => {}
                 ApplicationProtocol::WireGuard(_) => {}
                 ApplicationProtocol::OpenVpn(_) => {}
             }
         }
         assert_eq!(
             seen.len(),
-            18,
+            21,
             "fixture list out of sync with ApplicationProtocol: update the \
              variants vec (and this count) alongside the match above"
         );
@@ -4262,6 +4283,9 @@ mod snapshot_tests {
                 | ApplicationProtocol::BitTorrent(_)
                 | ApplicationProtocol::Mqtt(_)
                 | ApplicationProtocol::Ftp(_)
+                | ApplicationProtocol::MySql(_)
+                | ApplicationProtocol::Redis(_)
+                | ApplicationProtocol::PostgreSql(_)
         );
         let (protocol, state) = if tcp_based {
             (Protocol::Tcp, ProtocolState::Tcp(TcpState::Established))
@@ -4351,6 +4375,29 @@ mod snapshot_tests {
                 group_addr: Some(Ipv4Addr::new(224, 0, 0, 251)),
             },
         )
+    }
+
+    #[test]
+    fn database_application_cards_show_metadata() {
+        use crate::network::types::ApplicationProtocol;
+        let app = test_app();
+        for variant in dpi_variants_full().into_iter().filter(|variant| {
+            matches!(
+                variant,
+                ApplicationProtocol::MySql(_)
+                    | ApplicationProtocol::Redis(_)
+                    | ApplicationProtocol::PostgreSql(_)
+            )
+        }) {
+            let name = variant.sort_key();
+            let connections = vec![dpi_details_connection(variant)];
+            app.set_connections_snapshot_for_test(connections.clone());
+            let output = render_details(&app, &connections, 0);
+            assert!(output.contains(&format!("Application: {name}")));
+            insta::with_settings!({filters => time_filters()}, {
+                insta::assert_snapshot!(format!("details_database_{}", name.to_lowercase()), output);
+            });
+        }
     }
 
     /// Rows between the Application heading and the Transport Health heading

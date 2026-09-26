@@ -1585,6 +1585,68 @@ pub(in crate::ui) fn draw_connection_details(
                     ("Software", info.software.clone()),
                 ]);
             }
+            crate::network::types::ApplicationProtocol::MySql(info) => {
+                details.app_rows(&[
+                    ("Server Version", info.server_version.clone()),
+                    ("Connection ID", info.connection_id.map(|id| id.to_string())),
+                    (
+                        "TLS Advertised",
+                        info.tls_supported
+                            .map(|yes| if yes { "Yes" } else { "No" }.to_string()),
+                    ),
+                    (
+                        "TLS Request",
+                        info.tls_requested.then(|| "Observed".to_string()),
+                    ),
+                    (
+                        "SNI",
+                        info.tls_info.as_ref().and_then(|tls| tls.sni.clone()),
+                    ),
+                    (
+                        "TLS Version",
+                        info.tls_info
+                            .as_ref()
+                            .and_then(|tls| tls.version.map(|v| v.to_string())),
+                    ),
+                ]);
+            }
+            crate::network::types::ApplicationProtocol::Redis(info) => {
+                details.app_rows(&[
+                    ("Command", Some(info.command.clone())),
+                    (
+                        "Requested RESP",
+                        info.requested_version.map(|v| v.to_string()),
+                    ),
+                    (
+                        "Requested DB",
+                        info.requested_database.map(|db| db.to_string()),
+                    ),
+                ]);
+            }
+            crate::network::types::ApplicationProtocol::PostgreSql(info) => {
+                details.app_rows(&[
+                    (
+                        "Startup Version",
+                        info.protocol_minor.map(|v| format!("3.{v}")),
+                    ),
+                    ("Database", info.database.clone()),
+                    ("Client App", info.application_name.clone()),
+                    (
+                        "TLS Request",
+                        info.tls_requested.then(|| "Observed".to_string()),
+                    ),
+                    (
+                        "SNI",
+                        info.tls_info.as_ref().and_then(|tls| tls.sni.clone()),
+                    ),
+                    (
+                        "TLS Version",
+                        info.tls_info
+                            .as_ref()
+                            .and_then(|tls| tls.version.map(|v| v.to_string())),
+                    ),
+                ]);
+            }
             crate::network::types::ApplicationProtocol::Ftp(info) => {
                 // Code and message describe one server reply; a merged row
                 // keeps the seven-row FTP card inside the shared budget.

@@ -264,6 +264,47 @@ Disable Deep Packet Inspection (DPI). This reduces CPU usage by 20-40% on high-t
 
 Useful for performance-constrained environments or when application-level details aren't needed.
 
+#### Database DPI (unreleased)
+
+With DPI enabled, **Details → Application** shows:
+
+| Protocol | Extracted metadata |
+| --- | --- |
+| MySQL | Classic-protocol server version, connection ID, advertised TLS capability, observed TLS request |
+| Redis | Command name, most recently observed HELLO version request and SELECT database-index request |
+| PostgreSQL | Requested protocol-3 version, explicit database and application name, observed TLS request |
+
+Use `app:mysql`, `app:redis`, or `app:postgresql` to filter connections. The
+same names appear in headless output's `application` field and JSON event
+logs. Database identity survives a later observed TLS handshake; MySQL and
+PostgreSQL Details can then show SNI and version from the existing TLS parser.
+A TLS request, Redis HELLO, or SELECT is a client request, not confirmation
+that negotiation or database selection succeeded.
+
+These decoders inspect the first complete supported message at the start of
+one captured TCP payload. They do not buffer streams, join split messages,
+or walk a pipeline of requests. MySQL protocol-10 greetings, PostgreSQL
+protocol-3 startup/SSLRequest, and known Redis commands in RESP arrays can be
+identified on nonstandard ports. MySQL protocol-4.1 SSLRequest detection
+requires destination port 3306; additional Redis command names (including
+module commands) require destination port 6379. Replies from source port
+6379 are excluded; on nonstandard ports, a reply array resembling a known
+command can still be ambiguous. Port numbers alone never confirm a
+protocol. RESP arrays are used by both RESP2 and RESP3 clients; the displayed
+RESP version is only populated by an observed HELLO request. Redis-compatible
+servers such as Valkey may also appear as Redis.
+
+MySQL and PostgreSQL startup messages are limited to 16 KiB. Redis inspection
+is bounded to 128 arguments, each at most 16 KiB. PostgreSQL retains only
+nonempty, control-free UTF-8 database/application names up to 256 bytes.
+Credentials, SQL statements, Redis keys and values are not retained as DPI
+metadata. Existing raw PCAP exports still contain the captured packet bytes.
+
+Capture starting midstream, truncation, fragmentation, inline Redis commands,
+and response-only traffic may leave the protocol unidentified. Implicit TLS
+(including direct PostgreSQL TLS and Redis TLS) remains generic TLS unless a
+supported plaintext startup was observed; this feature does not decrypt it.
+
 #### `--no-resolve-dns` / `--show-ptr-lookups`
 
 Reverse DNS lookups are **enabled by default**: IP addresses are resolved to hostnames in the background and shown in the connection list (toggle with the `d` key) and in the Details tab.

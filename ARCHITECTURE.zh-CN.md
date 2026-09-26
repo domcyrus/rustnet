@@ -116,6 +116,7 @@ flowchart LR
   - 带命令、响应代码、用户名、服务器软件和系统类型的 FTP 控制通道
   - 带 CONNECTION_CLOSE 帧检测的 QUIC 协议
   - 带报文类型、版本和客户端标识符的 MQTT
+  - MySQL 经典握手/SSLRequest、Redis RESP 命令以及 PostgreSQL 启动消息/SSLRequest，使用有界的单包解析（尚未发布）
   - BitTorrent 握手和 DHT 消息
   - WireGuard 和 OpenVPN 隧道流量
   - 用于 WebRTC 和 NAT 穿越的 STUN

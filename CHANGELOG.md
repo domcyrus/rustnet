@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Database DPI**: identify MySQL classic greetings and TLS requests, Redis
+  RESP command arrays, and PostgreSQL startup messages and TLS requests.
+  Details shows bounded metadata without retaining credentials, SQL, Redis
+  keys, or values. Recognition uses complete messages within one TCP payload;
+  no stream reassembly or TLS decryption is added
 - **Observed VLAN IDs**: preserve captured 802.1Q IDs in connection details,
   headless snapshots, JSON event logs, and PCAP sidecars, including priority
   tags (VID 0). Supports Ethernet and Linux cooked capture; stripped tags

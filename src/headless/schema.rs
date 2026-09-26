@@ -561,6 +561,34 @@ mod tests {
     }
 
     #[test]
+    fn database_classifications_appear_in_headless_output() {
+        use crate::network::types::{
+            ApplicationProtocol, DpiInfo, MySqlInfo, PostgreSqlInfo, RedisInfo,
+        };
+        let app = app_with_connections();
+        let mut connection = app.get_connections()[0].clone();
+        for (name, application) in [
+            ("MySQL", ApplicationProtocol::MySql(MySqlInfo::default())),
+            (
+                "PostgreSQL",
+                ApplicationProtocol::PostgreSql(PostgreSqlInfo::default()),
+            ),
+            (
+                "Redis",
+                ApplicationProtocol::Redis(RedisInfo {
+                    command: "GET".into(),
+                    requested_version: None,
+                    requested_database: None,
+                }),
+            ),
+        ] {
+            connection.dpi_info = Some(DpiInfo { application });
+            let snapshot = ConnectionSnapshot::from_connection(&connection);
+            assert_eq!(serde_json::to_value(snapshot).unwrap()["application"], name);
+        }
+    }
+
+    #[test]
     fn version_one_schema_keys_and_protocol_timings_are_stable() {
         let app = app_with_connections();
         let (_, snapshot) = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None);
