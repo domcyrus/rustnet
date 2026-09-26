@@ -134,7 +134,7 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**重要：** 该 PPA 仅支持上述四个系列，因为构建需要 Rust 1.88+（项目中使用了 let-chains）。其他 Ubuntu 系列的仓库中没有足够新的 `rustc`。对于这些版本，请使用 GitHub releases 中的 [.deb 包](#debianubuntu-deb-packages)或[从源码构建](#building-from-source)。
+**重要：** 该 PPA 仅支持上述三个系列，因为构建需要 Rust 1.88+（项目中使用了 let-chains）。其他 Ubuntu 系列的仓库中没有足够新的 `rustc`。对于这些版本，请使用 GitHub releases 中的 [.deb 包](#debianubuntu-deb-packages)或[从源码构建](#building-from-source)。
 
 #### Debian/Ubuntu（.deb 包）<a id="debianubuntu-deb-packages"></a>
 
@@ -146,20 +146,20 @@ rustnet
 # - Rustnet_LinuxDEB_arm64.deb（ARM64）
 # - Rustnet_LinuxDEB_armhf.deb（ARMv7）
 
-# 安装包（Linux capabilities 会自动配置）
+# 安装包（安装后脚本会尝试设置 Linux capabilities）
 sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
 
 # 如有需要安装依赖
 sudo apt-get install -f
 
-# 无需 sudo 运行（post-install 脚本已设置 Linux capabilities）
-rustnet
-
 # 验证 Linux capabilities
 getcap /usr/bin/rustnet
+
+# 若存在 CAP_NET_RAW，可无需 sudo 运行；否则使用 sudo
+rustnet
 ```
 
-**注意：** .deb 包通过 post-install 脚本自动设置 Linux capabilities，因此你可以无需 sudo 运行 RustNet。
+**注意：** .deb 包的安装后脚本会在 `setcap` 可用时尝试设置 Linux capabilities。请用 `getcap /usr/bin/rustnet` 验证；若缺少 `CAP_NET_RAW`，请手动配置 capabilities 或使用 `sudo`。
 
 #### RedHat/Fedora/CentOS（.rpm 包）<a id="redhatfedoracentos-rpm-packages"></a>
 
@@ -170,19 +170,19 @@ getcap /usr/bin/rustnet
 # - Rustnet_LinuxRPM_x86_64.rpm
 # - Rustnet_LinuxRPM_aarch64.rpm
 
-# 安装包（Linux capabilities 会自动配置）
+# 安装包（安装后脚本会尝试设置 Linux capabilities）
 sudo rpm -i Rustnet_LinuxRPM_x86_64.rpm
 # 或使用 dnf/yum：
 sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
 
-# 无需 sudo 运行（post-install 脚本已设置 Linux capabilities）
-rustnet
-
 # 验证 Linux capabilities
 getcap /usr/bin/rustnet
+
+# 若存在 CAP_NET_RAW，可无需 sudo 运行；否则使用 sudo
+rustnet
 ```
 
-**注意：** .rpm 包通过 post-install 脚本自动设置 Linux capabilities，因此你可以无需 sudo 运行 RustNet。
+**注意：** .rpm 包的安装后脚本会在 `setcap` 可用时尝试设置 Linux capabilities。请用 `getcap /usr/bin/rustnet` 验证；若缺少 `CAP_NET_RAW`，请手动配置 capabilities 或使用 `sudo`。
 
 #### Arch Linux
 

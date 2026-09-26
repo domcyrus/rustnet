@@ -31,7 +31,7 @@ Packet capture requires elevated privileges on most systems. See [INSTALL.md](IN
 **Quick start:**
 
 ```bash
-# Run with sudo (works on all platforms)
+# Run with sudo on Unix-like systems
 sudo rustnet
 
 # Or grant capabilities to run without sudo (see INSTALL.md for details)
@@ -39,6 +39,10 @@ sudo rustnet
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /path/to/rustnet
 rustnet
 ```
+
+On Windows, install Npcap and run `rustnet.exe` from PowerShell or Command
+Prompt. Capture permissions depend on the Npcap installation. See the
+[Windows installation steps](INSTALL.md#windows-msi-installation).
 
 **Basic usage examples:**
 
@@ -114,8 +118,8 @@ Options:
       --geoip-city <PATH>                Path to GeoLite2-City.mmdb (auto-discovered if not specified)
       --no-geoip                         Disable GeoIP lookups entirely
   -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
-      --no-sandbox                       Disable Landlock sandboxing (Linux only)
-      --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
+      --no-sandbox                       Disable platform sandboxing
+      --sandbox-strict                   Require full sandbox enforcement or exit
       --no-uid-drop                      Keep running as root instead of dropping to
                                          SUDO_UID/SUDO_GID (or nobody) after initialization (Linux, macOS, and FreeBSD)
   -h, --help                             Print help
@@ -227,7 +231,7 @@ RustNet automatically detects TUN/TAP interfaces and adjusts packet parsing acco
 **Platform-specific notes:**
 - **macOS**: Without `-i`, PKTAP is used automatically for better process detection. Use `-i <interface>` to monitor a specific interface instead
 - **Linux**: Use `-i any` to capture on all interfaces simultaneously (not available on other platforms)
-- **TUN/TAP**: Fully supported on all platforms - RustNet detects interface type by name and adjusts parsing
+- **TUN/TAP**: When libpcap/Npcap exposes the interface, RustNet detects its type by name and adjusts parsing
 - **All platforms**: If you specify a non-existent interface, an error will show available interfaces
 
 **Finding your interfaces:**
@@ -255,7 +259,8 @@ Set the UI and headless snapshot refresh rate in milliseconds. The minimum is 1m
 
 #### `--no-dpi`
 
-Disable Deep Packet Inspection (DPI). This reduces CPU usage by 20-40% on high-traffic networks but disables:
+Disable Deep Packet Inspection (DPI). This can reduce CPU usage on busy
+networks, but disables:
 - HTTP host detection
 - HTTPS/TLS SNI extraction
 - DNS query/response detection
@@ -280,7 +285,7 @@ Select the color theme preset:
 - **`muted`** (default): A restrained palette with one cyan accent. Addresses
   keep calm colors (remote = blue, local = cyan); everything else uses color
   only for *signals*: transitional connection states, staleness (a removal
-  stripe and countdown running yellow to red while the row softens to gray),
+  stripe and countdown running yellow to red while context cells soften),
   and live bandwidth.
 - **`vivid`**: The same ANSI-16 palette as `muted`, but the chrome itself takes
   color: yellow headings and keys, magenta borders, and a distinct color per
@@ -385,7 +390,7 @@ Enable logging with the specified level. Logging is **disabled by default**.
 
 Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`
 
-#### `--kubernetes <MODE>` (optional feature)
+#### `--kubernetes <MODE>` (optional feature) <a id="--kubernetes-mode-optional-feature"></a>
 
 Attribute connections to their owning Kubernetes pod and container. This flag only exists in builds compiled with the `kubernetes` cargo feature: the official Docker image (`ghcr.io/domcyrus/rustnet`) ships with it enabled, while native installs (cargo, Homebrew, deb/rpm) leave it off.
 
@@ -1230,28 +1235,34 @@ The leading `~` glyph signals that the hostname was *inferred* from a DNS respon
 
 ### Visual Staleness Indicators
 
-> **Unreleased:** The stripe and countdown below are unavailable in v1.6.0. That release uses row colors, with the first warning at 75% of the timeout.
+> **Unreleased:** The stripe and countdown below are unavailable in v1.6.0. In
+> that release, the entire expiring row turns yellow at 75% of its timeout and
+> progresses toward red during the final 10% before cleanup.
 
-Idle rows announce their cleanup with a stripe and a countdown instead of recoloring the whole row:
+The cleanup clock uses the time since the last packet for nonterminal connections
+and the first terminal observation for terminal connections. The visual cue also
+requires both displayed traffic rates to have decayed to zero, so it can start
+later than halfway through the timeout:
 
-| Look | Meaning | Staleness |
+| Look | Meaning | Condition |
 |------|---------|-----------|
-| **Full color** | Active connection | < 50% of timeout |
-| **Stripe + countdown** | Idle, approaching timeout; a `▎` stripe at the left edge of the row and the time left in the ↓/↑ column, e.g. `45s left`, run yellow through orange to red (bold for the final stretch), while Process, Remote, Local, Loc, Service, and App soften toward gray | 50-100% of timeout |
-| **Gray** | Historic, closed and archived; `closed` in State, `n/a` in ↓/↑ | after timeout (toggle `t`) |
+| **Full color** | Live rates and connection details remain visible | Before halfway through the timeout, or while either displayed rate is nonzero |
+| **Stripe + countdown** | A `▎` stripe and time left in ↓/↑, e.g. `45s left`, run yellow through orange to red | At least halfway through the timeout, with both displayed rates at zero |
+| **Gray** | Historic, archived connection; `closed` in State, `n/a` in ↓/↑ | After cleanup or replacement by a new connection generation (toggle `t`) |
 
-State, RTT, and Health never fade, so a red retransmit counter on an idle row
-is still a real problem. The stripe and the countdown are the only lifecycle
-cells that use yellow and red, and the countdown's text says what the color
-means, so those hues never recolor a whole row. The fade stops at the muted tier: the faint gray of
-historic rows is reserved for closed connections, so on dark and light
-terminals alike an idle row keeps its colored stripe, its countdown, and its colored
-signal cells while a historic row is uniformly gray.
+Only the Process, Remote, Local, Loc, Service, and App columns soften. Truecolor
+themes blend these context colors toward the muted tier; ANSI themes switch them
+to the muted color around 75% of the timeout. State, RTT, and Health retain
+their colors. A selected row with a selection background keeps its context
+colors, and `NO_COLOR` disables color softening. The stripe and countdown still
+identify a connection approaching cleanup. The Details Status line shows the
+same countdown. Unselected historic rows alone use the faint gray row style.
 
-**Example**: An HTTP connection with a 10-minute timeout will:
-- Keep **full color** for the first 5 minutes
-- Show a `▎` **stripe** at its left edge and a **countdown** in the ↓/↑ column from 5 to 10 minutes, both turning from yellow to red, while its identifying columns soften
-- Be removed at 10 minutes, becoming a gray historic row marked `closed`
+**Example**: An HTTP connection with a 10-minute timeout keeps its live display
+until at least 5 minutes without packets and until its displayed rates reach
+zero. It then shows the stripe and countdown. The next cleanup sweep after the
+10-minute deadline removes it; with history visible, its archived row reads
+`closed`.
 
 This gives you advance warning when a connection is about to disappear from the list.
 
@@ -1290,10 +1301,12 @@ established row.
 
 ### Why Connections Disappear
 
-A connection is removed when:
-1. **No packets received** for the duration of its timeout period
-2. The connection enters a **closed state** (TCP CLOSED, QUIC CLOSED)
-3. **Explicit close frames** detected (QUIC CONNECTION_CLOSE)
+A connection is removed by the periodic cleanup sweep after its protocol and
+state-specific timeout elapses. For nonterminal connections, packets reset the
+idle clock. TCP TIME_WAIT/CLOSED and terminal QUIC states use the first terminal
+observation as the cleanup clock; entering those states or seeing a QUIC close
+frame does not remove the row immediately. A new TCP SYN reusing a closing
+connection's tuple can archive the old generation sooner.
 
 **Note**: Rate indicators show decaying traffic based on recent activity. A
 connection may show declining bandwidth while it approaches its idle or

@@ -14,7 +14,7 @@
 
 <p align="center"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a></p>
 
-RustNet is a terminal network monitor that shows live TCP, UDP, and QUIC connections alongside the processes that own them. It runs on Linux, macOS, Windows, and FreeBSD.
+RustNet is a terminal network monitor that shows live TCP, UDP, and QUIC connections with process attribution when available. It runs on Linux, macOS, Windows, and FreeBSD.
 
 ## Install
 
@@ -36,10 +36,10 @@ Packet capture needs platform-specific permissions. See the [installation guide]
 
 ## Highlights
 
-- Shows each connection's process, state, traffic, and application protocol in a terminal UI that works over SSH.
+- Shows connection state, traffic, application protocol, and available process information in a terminal UI that works over SSH.
 - Identifies protocols such as HTTP, TLS/SNI, DNS, SSH, and QUIC through packet inspection.
 - Filters connections by process, address, port, protocol, and more.
-- Exports captures as PCAP or annotated PCAPNG for analysis in Wireshark.
+- Exports captures as PCAP or PCAPNG with best-effort annotations for analysis in Wireshark.
 - Reduces privileges after startup and uses platform sandboxing where supported.
 
 See the [usage guide](USAGE.md), [architecture guide](ARCHITECTURE.md), and [security guide](SECURITY.md) for feature details.
@@ -91,6 +91,6 @@ Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See th
 - [Changelog](CHANGELOG.md): releases and upcoming changes
 - [Contributing](CONTRIBUTING.md): how to contribute
 
-RustNet uses [ratatui](https://github.com/ratatui-org/ratatui) for its terminal UI and [libpcap](https://www.tcpdump.org/) for packet capture. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for project contributors.
+RustNet uses [ratatui](https://github.com/ratatui-org/ratatui) for its terminal UI and [libpcap](https://www.tcpdump.org/)/[Npcap](https://npcap.com/) for packet capture. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for project contributors.
 
 Licensed under [Apache License 2.0](LICENSE).
