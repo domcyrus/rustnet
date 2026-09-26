@@ -612,7 +612,8 @@ Use keyword filters for targeted searches:
 | `proto:` | `protocol:` | Protocol type | `proto:tcp` matches TCP connections |
 | `pod:` | | Kubernetes pod name or UID * | `pod:nginx` matches nginx-86644db9cc-mf5lx |
 | `ns:` | `namespace:` | Kubernetes pod namespace * | `ns:kube-system` matches pods in kube-system |
-| `container:` | `cont:` | Kubernetes container name or ID * | `container:nginx` matches the nginx container |
+| `container:` | `cont:` | Container name or ID (generic Linux support is unreleased) | `container:nginx` matches the nginx container |
+| `runtime:` | | Container manager (unreleased) | `runtime:docker`, `runtime:podman`, `runtime:lxc` |
 
 \* Requires a build with the `kubernetes` feature and active pod attribution. See [`--kubernetes`](#--kubernetes-mode-optional-feature).
 

@@ -272,6 +272,7 @@ struct ConnectionSnapshot {
     rtt: RttSnapshot,
     geoip: Option<GeoIpSnapshot>,
     kubernetes: Option<KubernetesSnapshot>,
+    container: Option<ContainerSnapshot>,
     created_at: String,
     last_activity: String,
     historic: bool,
@@ -413,6 +414,15 @@ impl ConnectionSnapshot {
             },
             geoip,
             kubernetes,
+            container: connection
+                .container_info
+                .as_ref()
+                .map(|c| ContainerSnapshot {
+                    runtime: c.runtime.as_str(),
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    cgroup_path: c.cgroup_path.clone(),
+                }),
             created_at: timestamp(connection.created_at),
             last_activity: timestamp(connection.last_activity),
             historic: connection.is_historic,
@@ -485,6 +495,14 @@ struct GeoIpSnapshot {
     as_org: Option<String>,
     city: Option<String>,
     postal_code: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ContainerSnapshot {
+    runtime: &'static str,
+    id: String,
+    name: Option<String>,
+    cgroup_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -678,6 +696,7 @@ mod tests {
             [
                 "application",
                 "closed_at",
+                "container",
                 "created_at",
                 "direction",
                 "geoip",
@@ -929,5 +948,31 @@ mod tests {
 
         assert!(value["filter"].is_null());
         assert_eq!(value["connection_count"], 2);
+    }
+
+    #[test]
+    fn generic_container_snapshot_has_stable_fields() {
+        use crate::network::types::{ContainerInfo, ContainerRuntime};
+        let mut conn = Connection::new(
+            Protocol::Udp,
+            "127.0.0.1:1234".parse().unwrap(),
+            "127.0.0.1:5678".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        conn.container_info = Some(ContainerInfo {
+            runtime: ContainerRuntime::Lxc,
+            id: "web".into(),
+            name: Some("web".into()),
+            cgroup_path: Some("/lxc.payload.web".into()),
+        });
+        let value = serde_json::to_value(ConnectionSnapshot::from_connection(&conn)).unwrap();
+        assert_eq!(
+            object_keys(&value["container"]),
+            ["cgroup_path", "id", "name", "runtime"]
+        );
+        assert_eq!(value["container"]["runtime"], "lxc");
+        assert_eq!(value["container"]["id"], "web");
+        assert_eq!(value["container"]["name"], "web");
+        assert_eq!(value["container"]["cgroup_path"], "/lxc.payload.web");
     }
 }

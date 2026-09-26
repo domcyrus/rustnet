@@ -1,6 +1,16 @@
-# Kubernetes のキャプチャと証拠の保存
+# Kubernetes とコンテナのキャプチャ
 
 [English](KUBERNETES.md) | [简体中文](KUBERNETES.zh-CN.md)
+
+## Docker、Podman、LXC（未リリース）
+
+Linux のコンテナ識別は `kubernetes` 機能やデーモンソケットを必要とせず、プロセスの cgroup と eBPF が保持したソケット情報を使います。ホスト PID、cgroup、ネットワークの可視性が必要です。未知の構成は不明のままで、procfs では終了済みプロセスを復元できません。
+
+Details にランタイム、ID、取得できた名前を表示します。`runtime:docker`、`runtime:podman`、`runtime:lxc`、`container:web` で絞り込めます。`cont:` も名前や ID に一致し、Kubernetes コンテナも検索します。bridge/veth トラフィックには `-i any` を使用します。
+
+Docker と Podman の名前は権限を落とす前に読めたローカルメタデータから取得し、LXC は cgroup 名を ID と名前に使います。独自の保存先や別ユーザーの rootless コンテナなどでは、名前が不明、または再起動まで更新されない場合があります。
+
+ヘッドレス JSON、JSONL ログ、PCAP サイドカーの `container` は `runtime`、`id`、`name`、`cgroup_path` を含み、後者二つは null の場合があります。PCAPNG コメントは `runtime=`、`container_id=`、取得できた場合は `container=` を含みます。イベントは書き込み時点の情報、PCAP サイドカーは終了時に追跡中の接続の最終情報を出力します。
 
 ## 短い接続（未リリース）
 
@@ -10,8 +20,8 @@ Socket マップは最大 32,768 個の接続タプルを保持し、容量が�
 
 Cgroup v1、コンテナ配下の入れ子の cgroup、eBPF が利用できない環境、読み取れないか切り詰められた cgroup 名では、引き続き procfs スキャンに依存し、スキャンの間に終了するプロセスを取り逃す場合があります。読みやすい名前の解決には kubelet ログのメタデータが必要です。
 
-## エクスポートの後続作業
+## kubectl-rustnet との併用
 
-kubectl プラグインは別のリポジトリ [domcyrus/kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) で管理されています。連携する [`--output-dir` の後続タスク](https://github.com/domcyrus/kubectl-rustnet/issues/20) では、キャプチャを正常に停止し、JSONL または PCAPNG の証拠ファイル（sidecar を含む）をフラッシュしてコピーした後に、デバッグ pod を削除する必要があります。コピーが失敗した場合は pod を保持し、復旧手順を表示します。
+[kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) はホスト PID、ネットワークへのアクセスと eBPF 権限を提供します。`--image` でこの変更を含む RustNet イメージを選択してください。一般的なコンテナ識別に追加のプラグインオプションは不要です。既定の Pod は kubelet ログをマウントしますが、Docker/Podman のメタデータはマウントしないため、単独コンテナの名前が不明な場合があります。Kubernetes ワークロードは既存の Pod/コンテナ情報とフィルターを使用します。
 
-このオプションはプラグインで計画中の機能であり、今回の RustNet の変更には実装されていません。対応版が出るまでは、セッションを終了する前に、デバッグ pod が動作している間に `kubectl cp` でファイルをコピーしてください。Kubernetes の設定は[使用ガイド（英語）](USAGE.md#--kubernetes-mode-optional-feature)を参照してください。
+[PR #21](https://github.com/domcyrus/kubectl-rustnet/pull/21) を含むプラグインでは、`--output-dir ./captures` により保存と検証を終えてからデバッグ Pod を削除します。コピーに失敗した場合は Pod と復旧手順を残します。RustNet の引数は `--` の後に指定します。例：`kubectl rustnet --image YOUR_IMAGE --output-dir ./captures -- --filter 'container:web'`。旧版では終了前に `kubectl cp` で保存してください。Kubernetes の設定は[使用ガイド（英語）](USAGE.md#--kubernetes-mode-optional-feature)を参照してください。

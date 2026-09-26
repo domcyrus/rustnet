@@ -352,6 +352,16 @@ fn build_pcapng_comment(conn: &Connection) -> Option<String> {
         // Already whitespace-free, so no sanitization needed.
         fields.push(format!("attr={}", quality.as_token()));
     }
+    if let Some(container) = &conn.container_info {
+        fields.push(format!("runtime={}", container.runtime));
+        fields.push(format!(
+            "container_id={}",
+            sanitize_comment_value(&container.id)
+        ));
+        if let Some(name) = &container.name {
+            fields.push(format!("container={}", sanitize_comment_value(name)));
+        }
+    }
     #[cfg(feature = "kubernetes")]
     if let Some(k8s) = &conn.k8s_info {
         if let Some(name) = &k8s.pod_name {
@@ -629,5 +639,26 @@ mod pcapng_export_tests {
         let pos_a = out.iter().position(|&b| b == 0xAA).unwrap();
         let pos_b = out.iter().position(|&b| b == 0xBB).unwrap();
         assert!(pos_a < pos_b, "records were written out of arrival order");
+    }
+
+    #[test]
+    fn generic_container_comment_sanitizes_names() {
+        use crate::network::types::{ContainerInfo, ContainerRuntime, ProtocolState};
+        let mut conn = Connection::new(
+            Protocol::Udp,
+            "127.0.0.1:1234".parse().unwrap(),
+            "127.0.0.1:5678".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        conn.container_info = Some(ContainerInfo {
+            runtime: ContainerRuntime::Docker,
+            id: "abcdef".into(),
+            name: Some("web\ninjected=value".into()),
+            cgroup_path: None,
+        });
+        let comment = build_pcapng_comment(&conn).unwrap();
+        assert!(comment.contains("runtime=docker"));
+        assert!(comment.contains("container_id=abcdef"));
+        assert!(!comment.contains('\n'));
     }
 }

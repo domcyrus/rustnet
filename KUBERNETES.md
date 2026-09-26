@@ -1,6 +1,16 @@
-# Kubernetes capture and evidence
+# Kubernetes and container capture
 
 [简体中文](KUBERNETES.zh-CN.md) | [日本語](KUBERNETES.ja.md)
+
+## Docker, Podman and LXC (unreleased)
+
+On Linux, container attribution works without the `kubernetes` feature or daemon sockets. It uses process cgroups and retained eBPF socket identity; host PID/cgroup and network visibility are required. Unknown layouts stay unknown, and procfs fallback cannot recover exited processes.
+
+Details shows runtime, ID and available names. Filter with `runtime:docker`, `runtime:podman`, `runtime:lxc` or `container:web` (`cont:` also matches names or IDs, including Kubernetes containers). Use `-i any` for bridge/veth traffic.
+
+Docker and Podman names come from readable local metadata collected before privilege drop; LXC uses its cgroup name as its ID and name. Names may be missing or stale until restart, especially with custom storage paths or another user's rootless containers.
+
+Headless JSON, JSONL logs and PCAP sidecars expose `container` with `runtime`, `id`, `name` and `cgroup_path`; the last two may be null. PCAPNG comments include `runtime=`, `container_id=` and available `container=` names. Events reflect metadata known when written; PCAP sidecars include final metadata for connections still tracked at shutdown.
 
 ## Short flows (unreleased)
 
@@ -10,8 +20,8 @@ The socket map holds up to 32,768 tuples and evicts older records under pressure
 
 Cgroup v1, nested cgroups below the container, unavailable eBPF, and unreadable or truncated cgroup names still rely on procfs discovery and can miss processes that exit between scans. Human-readable names require the kubelet log metadata to remain available.
 
-## Export follow-up
+## Using kubectl-rustnet
 
-The kubectl plugin lives in a separate repository: [domcyrus/kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet). Its coordinated [`--output-dir` follow-up](https://github.com/domcyrus/kubectl-rustnet/issues/20) must stop capture gracefully, flush and copy JSONL or PCAPNG evidence (including any sidecar), and only then delete the debug pod. If copying fails, it must preserve the pod and report recovery instructions.
+[kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) provides host PID/network access and eBPF capabilities. Use `--image` to select a RustNet image containing this change; generic attribution needs no additional plugin flag. The default pod mounts kubelet logs, but not Docker/Podman metadata, so standalone container names may be unavailable. Kubernetes workloads keep their existing pod/container fields and filters.
 
-This flag is planned in the plugin, not implemented by this RustNet change. Until it ships, copy exports with `kubectl cp` while the debug pod is still running, before quitting the session. See the [usage guide](USAGE.md#--kubernetes-mode-optional-feature) for Kubernetes setup.
+With a plugin version containing [PR #21](https://github.com/domcyrus/kubectl-rustnet/pull/21), `--output-dir ./captures` saves and verifies exports before deleting the debug pod; copy failures retain it with recovery instructions. RustNet flags follow `--`, for example: `kubectl rustnet --image YOUR_IMAGE --output-dir ./captures -- --filter 'container:web'`. Older plugin versions require copying files with `kubectl cp` before quitting. See the [usage guide](USAGE.md#--kubernetes-mode-optional-feature) for Kubernetes setup.

@@ -104,6 +104,25 @@ impl AppProtocolDistribution {
     }
 }
 
+/// Container manager identified from a Linux cgroup, without a daemon query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainerRuntime {
+    Docker,
+    Podman,
+    Lxc,
+}
+
+static_names! { ContainerRuntime { Docker => "docker", Podman => "podman", Lxc => "lxc" } }
+
+/// Generic container identity. LXC uses its cgroup name as the identifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerInfo {
+    pub runtime: ContainerRuntime,
+    pub id: String,
+    pub name: Option<String>,
+    pub cgroup_path: Option<String>,
+}
+
 /// Kubernetes pod and container metadata attached to a connection when the
 /// owning process is part of a pod on the current node. Populated by the
 /// resolver in `network::kubernetes`; `None` when rustnet is not running
@@ -169,6 +188,9 @@ pub struct Connection {
     /// Parent processes, ordered from the oldest retained ancestor to the
     /// direct parent. Shared because connection snapshots are cloned in bulk.
     pub process_lineage: Option<Arc<ProcessLineage>>,
+
+    /// Container identity independent of Kubernetes support.
+    pub container_info: Option<ContainerInfo>,
 
     // Kubernetes attribution (pod/container), populated on K8s nodes
     #[cfg(feature = "kubernetes")]
@@ -303,6 +325,7 @@ impl Connection {
             process_gid: None,
             attribution_quality: None,
             process_lineage: None,
+            container_info: None,
             #[cfg(feature = "kubernetes")]
             k8s_info: None,
             connection_direction: None,

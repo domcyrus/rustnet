@@ -26,13 +26,17 @@ use super::types::ProcessDetectionStatus;
 /// their read/write modes. The worker therefore needs no retained capability.
 pub(super) struct PreparedProcessEnrichment {
     process_lookup: Box<dyn rustnet_host::ProcessLookup>,
+    container_resolver: crate::network::containers::ContainerResolver,
 }
 
 fn prepare_process_lookup_with<F>(use_pktap: bool, create: F) -> Result<PreparedProcessEnrichment>
 where
     F: FnOnce(bool) -> Result<Box<dyn rustnet_host::ProcessLookup>>,
 {
-    create(use_pktap).map(|process_lookup| PreparedProcessEnrichment { process_lookup })
+    create(use_pktap).map(|process_lookup| PreparedProcessEnrichment {
+        process_lookup,
+        container_resolver: crate::network::containers::ContainerResolver::new(),
+    })
 }
 
 fn activate_process_lookup(
@@ -92,8 +96,9 @@ impl App {
     pub(super) fn start_process_enrichment_thread(
         &mut self,
         tracker: Arc<ConnectionTracker>,
-        prepared: PreparedProcessEnrichment,
+        mut prepared: PreparedProcessEnrichment,
     ) -> Result<Option<SystemTime>> {
+        let container_resolver = std::mem::take(&mut prepared.container_resolver);
         let process_lookup = activate_process_lookup(prepared)?;
         let process_detection_status = Arc::clone(&self.process_detection_status);
         let socket_snapshot = Arc::clone(&self.socket_snapshot);
@@ -123,6 +128,7 @@ impl App {
                 let failure_status = Arc::clone(&process_detection_status);
                 if let Err(e) = Self::run_process_enrichment(
                     process_lookup,
+                    container_resolver,
                     tracker,
                     shutdown,
                     socket_snapshot,
@@ -153,6 +159,7 @@ impl App {
 
     fn run_process_enrichment(
         process_lookup: Box<dyn rustnet_host::ProcessLookup>,
+        container_resolver: crate::network::containers::ContainerResolver,
         tracker: Arc<ConnectionTracker>,
         shutdown: ShutdownSignal,
         socket_snapshot: Arc<RwLock<rustnet_host::SocketSnapshot>>,
@@ -267,6 +274,10 @@ impl App {
                     let pid = attribution.tgid;
                     let name = attribution.name;
                     let mut did_enrich = false;
+                    if entry.container_info.is_none() {
+                        entry.container_info =
+                            container_resolver.enrich(pid, attribution.socket_cgroup.as_ref());
+                    }
 
                     let upgrades_placeholder = name != UNKNOWN_PROCESS_NAME
                         && entry.process_name.as_deref() == Some(UNKNOWN_PROCESS_NAME);

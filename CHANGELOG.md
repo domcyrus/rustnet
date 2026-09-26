@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Generic container attribution (Linux)**: identify Docker, Podman and LXC
+  from socket/process cgroups without daemon sockets. Show runtime, ID and
+  available names in Details, `container:` / `runtime:` filters, headless JSON,
+  JSONL logs, PCAP sidecars and PCAPNG comments
 - **Database DPI**: identify MySQL classic greetings and TLS requests, Redis
   RESP command arrays, and PostgreSQL startup messages and TLS requests.
   Details shows bounded metadata without retaining credentials, SQL, Redis

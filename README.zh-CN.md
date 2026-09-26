@@ -88,7 +88,7 @@ rustnet
 - [使用](USAGE.zh-CN.md)：操作、过滤、自动化与抓包导出
 - [安全](SECURITY.zh-CN.md)：沙箱与权限管理
 - [架构](ARCHITECTURE.zh-CN.md)：各平台后端与性能
-- [Kubernetes 抓包](KUBERNETES.zh-CN.md)：归属识别限制及证据导出后续工作
+- [Kubernetes 与容器](KUBERNETES.zh-CN.md)：归属识别与抓包导出
 - [更新日志](CHANGELOG.md)：已发布和即将发布的变更
 - [参与贡献](CONTRIBUTING.zh-CN.md)：贡献指南
 

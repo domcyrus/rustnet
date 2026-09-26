@@ -546,7 +546,8 @@ RustNet 具有完整的鼠标支持。鼠标捕获自动启用 —— 以下描�
 | `proto:` | `protocol:` | 协议类型 | `proto:tcp` 匹配 TCP 连接 |
 | `pod:` | | Kubernetes pod 名或 UID * | `pod:nginx` 匹配 nginx-86644db9cc-mf5lx |
 | `ns:` | `namespace:` | Kubernetes pod namespace * | `ns:kube-system` 匹配 kube-system 中的 pod |
-| `container:` | `cont:` | Kubernetes container 名或 ID * | `container:nginx` 匹配 nginx container |
+| `container:` | `cont:` | 容器名称或 ID（通用 Linux 支持尚未发布） | `container:nginx` 匹配 nginx container |
+| `runtime:` | | 容器运行时（未发布） | `runtime:docker`、`runtime:podman`、`runtime:lxc` |
 
 \* 需要启用 `kubernetes` feature 的构建，并已激活 pod 归属识别。详见 [`--kubernetes`](#--kubernetes-mode-optional-feature)。
 

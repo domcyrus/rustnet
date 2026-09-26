@@ -1350,6 +1350,18 @@ pub(in crate::ui) fn draw_connection_details(
         theme::fg(quality_color),
     );
 
+    if let Some(container) = &conn.container_info {
+        details.section("Container");
+        details.field_styled(
+            "Runtime",
+            container.runtime.to_string(),
+            process_value_style,
+        );
+        details.field_styled_opt("Name", container.name.clone(), process_value_style);
+        details.field_styled("Container ID", container.id.clone(), process_value_style);
+        details.field_opt("Cgroup", container.cgroup_path.clone());
+    }
+
     // Kubernetes attribution (pod / container) when the owning process is in
     // a kubepods cgroup. The card's presence is the class distinction (being
     // a k8s workload); once present, every row renders with a placeholder
