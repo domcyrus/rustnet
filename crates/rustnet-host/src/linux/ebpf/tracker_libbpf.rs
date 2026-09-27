@@ -2,6 +2,7 @@
 
 use super::{
     SocketMatch,
+    cookie::SocketCookieTracker,
     loader::EbpfLoader,
     maps_libbpf::{ConnKey, MapReader},
 };
@@ -11,6 +12,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub(crate) struct LibbpfSocketTracker {
     loader: EbpfLoader,
+    cookies: Option<SocketCookieTracker>,
 }
 
 unsafe impl Send for LibbpfSocketTracker {}
@@ -22,7 +24,13 @@ impl LibbpfSocketTracker {
     pub(crate) fn new() -> Result<(Option<Self>, DegradationReason)> {
         let (loader_opt, reason) = EbpfLoader::try_load()?;
         match loader_opt {
-            Some(loader) => Ok((Some(Self { loader }), reason)),
+            Some(loader) => Ok((
+                Some(Self {
+                    loader,
+                    cookies: SocketCookieTracker::try_load(),
+                }),
+                reason,
+            )),
             None => Ok((None, reason)),
         }
     }
@@ -39,6 +47,7 @@ impl LibbpfSocketTracker {
     fn new_for_backend(backend: AttributionBackend) -> Result<Self> {
         Ok(Self {
             loader: EbpfLoader::load_backend_for_test(backend)?,
+            cookies: None,
         })
     }
 
@@ -189,6 +198,19 @@ impl LibbpfSocketTracker {
         {
             log::debug!("Failed to debug lookup: {error}");
         }
+        // Preserve all tracing matches, including wildcard addresses, before
+        // using the socket's creator/last cgroup actor as supplementary evidence.
+        if let Some(cookies) = &self.cookies {
+            for key in [exact_key, reverse_key] {
+                match MapReader::lookup_connection(cookies.socket_map(), key) {
+                    Ok(Some(info)) => {
+                        return Some(SocketMatch::new(info, MatchQuality::SocketCookie));
+                    }
+                    Ok(None) => {}
+                    Err(error) => log::debug!("cookie {label} lookup failed: {error}"),
+                }
+            }
+        }
         None
     }
 
@@ -197,7 +219,7 @@ impl LibbpfSocketTracker {
         let socket_map = self.loader.socket_map();
         let stale_threshold_ns = stale_threshold_secs * 1_000_000_000;
 
-        match MapReader::cleanup_stale_entries(socket_map, stale_threshold_ns) {
+        let mut removed = match MapReader::cleanup_stale_entries(socket_map, stale_threshold_ns) {
             Ok(count) => {
                 if count > 0 {
                     log::info!("eBPF map cleanup: removed {} stale entries", count);
@@ -208,7 +230,14 @@ impl LibbpfSocketTracker {
                 log::debug!("eBPF map cleanup failed: {}", e);
                 0
             }
+        };
+        if let Some(cookies) = &self.cookies {
+            match MapReader::cleanup_stale_entries(cookies.socket_map(), stale_threshold_ns) {
+                Ok(count) => removed += count,
+                Err(error) => log::debug!("cookie map cleanup failed: {error}"),
+            }
         }
+        removed
     }
 }
 
@@ -632,6 +661,45 @@ mod integration_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[ignore = "requires CAP_NET_ADMIN, eBPF permissions and cgroup v2"]
+    fn socket_cookie_fallback_preserves_tracing_priority() {
+        use libbpf_rs::MapCore;
+        let (tracker, _) = LibbpfSocketTracker::new().unwrap();
+        let mut tracker = tracker.unwrap();
+        let cookies = tracker.cookies.as_ref().expect("cookie observer enabled");
+        let source = Ipv4Addr::new(192, 0, 2, 1);
+        let destination = Ipv4Addr::new(192, 0, 2, 2);
+        let key = ConnKey::new_v4(source, destination, 12345, 9999, false);
+        let mut value = [0; super::super::maps_libbpf::CONN_INFO_SIZE];
+        value[..4].copy_from_slice(&200_u32.to_ne_bytes());
+        cookies
+            .socket_map()
+            .update(&key.as_bytes(), &value, libbpf_rs::MapFlags::ANY)
+            .unwrap();
+        let fallback = tracker
+            .lookup(source.into(), destination.into(), 12345, 9999, false)
+            .unwrap();
+        assert_eq!(fallback.info.pid, 200);
+        assert_eq!(fallback.quality, MatchQuality::SocketCookie);
+        assert!(!fallback.quality.is_exact());
+        value[..4].copy_from_slice(&100_u32.to_ne_bytes());
+        tracker
+            .loader
+            .socket_map()
+            .update(
+                &key.without_source_address().as_bytes(),
+                &value,
+                libbpf_rs::MapFlags::ANY,
+            )
+            .unwrap();
+        let preferred = tracker
+            .lookup(source.into(), destination.into(), 12345, 9999, false)
+            .unwrap();
+        assert_eq!(preferred.info.pid, 100);
+        assert_eq!(preferred.quality, MatchQuality::WildcardLocalAddress);
     }
 
     #[test]

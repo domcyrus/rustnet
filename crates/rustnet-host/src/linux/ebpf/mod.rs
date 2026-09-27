@@ -1,6 +1,7 @@
 //! Linux eBPF process tracking: socket-map lookup for TCP/UDP/ICMP
 //! connections, with procfs as the fallback.
 
+mod cookie;
 mod loader;
 mod maps_libbpf;
 mod task_file;
