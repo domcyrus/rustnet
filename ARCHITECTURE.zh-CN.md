@@ -187,7 +187,7 @@ flowchart LR
 
 **竞争安全**：`attribute()` 先把连接登记到待归因索引，然后重查缓存。如果同一 IP 的并发 `record_and_drain_pending()` 恰好落在查找和登记之间，重查会为连接打上标签；此时已过时的登记是无害的，会在连接被清理时由 `forget_pending` 移除，或在新鲜窗口过后由待归因清理移除。
 
-**与 `network::dns::DnsResolver` 的区别**：后者通过系统解析器执行*反向* DNS（IP 到 PTR）；归因缓存则是从观测到的数据包中收集的*正向* DNS（域名到 IP）。两者互补，当两边都有名字时 UI 优先使用归因缓存。
+**与 `network::dns::DnsResolver` 的区别**：后者通过系统解析器执行*反向* DNS（IP 到 PTR）；归因缓存则是从观测到的数据包中收集的*正向* DNS（域名到 IP）。两者互补。在开发版本中，UI 在 Remote 中显示反向 DNS，在 App 中显示 DNS 归因；SNI / Host 名称优先于推断名称。
 
 CNAME 链不需要单独的映射：DNS DPI 解析器记录的是原始*问题*名称，应答中的 A/AAAA 记录直接映射到它。在线路层捕获看到的信号比 eBPF 套接字层方案少（除非同时捕获 `lo`，否则看不到应用到 stub 的流量；看不到 D-Bus 解析；看不到 DoH/DoT 明文）；这是已知限制。
 

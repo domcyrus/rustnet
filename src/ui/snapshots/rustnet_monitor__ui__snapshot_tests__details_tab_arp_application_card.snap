@@ -20,19 +20,19 @@ Scope                 PRIVATE                                         Target MAC
 State                 ARP_WHO_HAS 192.168.1.1 (Apple, Inc.)           Target Vendor         ASUSTek COMPUTER INC.                          ▐
 Process               -                                               Target IP             192.168.1.1                                    ▐
 PID                   -                                                                                                                    ▐
-Service               -                                                                                                                    ▐
-Observed VLANs        -                                                                                                                    ▐
+Service               -                                               Attributed Name       -                                              ▐
+Observed VLANs        -                                               Attributed Via        -                                              ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               No transport metrics for this protocol                               ▐
 Local MAC             -                                                                                                                    ▐
 Remote Hostname       -                                                                                                                    ▐
-Attributed Name       -                                                                                                                     
-Attributed Via        -                                                                                                                     
-Remote MAC            -                                                                                                                     
+Remote MAC            -                                                                                                                    ▐
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
+                                                                                                                                            
+Attribution                                                                                                                                 
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

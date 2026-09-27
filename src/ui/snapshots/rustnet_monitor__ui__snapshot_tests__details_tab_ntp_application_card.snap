@@ -20,19 +20,19 @@ Scope                 DOCUMENTATION                                             
 State                 NTP                                                                                                                  ▐
 Process               proc                                                                                                                 ▐
 PID                   4242                                                                                                                 ▐
-Service               -                                                                                                                    ▐
-Observed VLANs        -                                                                                                                    ▐
+Service               -                                               Attributed Name       -                                              ▐
+Observed VLANs        -                                               Attributed Via        -                                              ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               NTP RTT               -                                              ▐
 Local MAC             -                                               Request Retries (R)   -                                              ▐
 Remote Hostname       -                                               Request Timeouts (T)  -                                              ▐
-Attributed Name       -                                                                                                                     
-Attributed Via        -                                               Paired by originate timestamp echo                                    
-Remote MAC            -                                                                                                                     
-Country               -                                                                                                                     
+Remote MAC            -                                                                                                                    ▐
+Country               -                                               Paired by originate timestamp echo                                    
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
+                                                                                                                                            
+Attribution                                                                                                                                 
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

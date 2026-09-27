@@ -20,19 +20,19 @@ Scope                 PUBLIC                                                    
 State                 ESTABLISHED                                                                                                          ▐
 Process               firefox                                                                                                              ▐
 PID                   2001                                                                                                                 ▐
-Service               https                                                                                                                ▐
-Observed VLANs        0, 42                                                                                                                ▐
+Service               https                                           Attributed Name       -                                              ▐
+Observed VLANs        0, 42                                           Attributed Via        -                                              ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               Initial RTT           -                                              ▐
 Local MAC             68:5e:dd:09:15:5e (Apple, Inc.)                 Live RTT              -                                              ▐
 Remote Hostname       -                                               TCP Retransmits (R)   0                                              ▐
-Attributed Name       -                                               Out-of-Order (O)      0                                               
-Attributed Via        -                                               Duplicate ACKs        0                                               
-Remote MAC            -                                               Fast Retransmits      0                                               
-Country               -                                               Window Size           -                                               
-City                  -                                                                                                                     
-ASN                   -                                                                                                                     
+Remote MAC            -                                               Out-of-Order (O)      0                                              ▐
+Country               -                                               Duplicate ACKs        0                                               
+City                  -                                               Fast Retransmits      0                                               
+ASN                   -                                               Window Size           -                                               
+                                                                                                                                            
+Attribution                                                                                                                                 
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

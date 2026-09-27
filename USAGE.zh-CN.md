@@ -1156,13 +1156,11 @@ RustNet 使用智能超时管理自动清理不活跃的连接，同时在移除
 
 ### 主机名显示
 
-从连接本身提取的主机名（HTTPS 或 QUIC 的 TLS SNI、HTTP `Host:` 头）显示在 **App** 列中。**Remote** 列中的名称按以下优先级选择（用 `d` 键切换主机名显示）：
+从连接本身提取的主机名（HTTPS 或 QUIC 的 TLS SNI、HTTP `Host:` 头）显示在 **App** 列中。在开发版本中，DNS 归因主机名也显示在 **App** 中，例如 `TCP·HTTPS (~example.com)`；尚未识别应用协议时显示为 `UDP (~example.com)`。当连接没有 SNI / Host 名称，且最近 **10 秒**内观测到了指向远程 IP 的 DNS 解析时，显示此推断名称。紧凑的 App 列省略主机名元数据。
 
-1. **DNS 归因主机名**：当连接不携带 SNI / Host 头，但在最近 **10 秒**内观测到了指向该 IP 的 DNS 解析时，以暗色的 `~name:port` 形式渲染
-2. **反向 DNS**（系统解析器，除非用 `--no-resolve-dns` 禁用）
-3. **原始 IP 地址**
+**Remote** 列显示反向 DNS 名称（除非用 `--no-resolve-dns` 禁用），否则显示原始 IP 地址。`d` 键切换反向 DNS 名称，不会隐藏应用名称。
 
-前缀 `~` 表示该主机名是从 DNS 响应*推断*出来的，而非从连接本身提取。这对握手后的 QUIC 会话（SNI 已加密）以及不携带主机名载荷的纯 TCP/UDP 连接最有用。归因不需要主动查询，因此即使使用 `--no-resolve-dns` 也能工作。详情标签页会单独显示一行 **Attributed Name**（完整的推断主机名），以及一行 **Attributed Via**（来源和观测时间，如 `Captured DNS, 5s ago`），使来源一目了然。归因主机名可以像其他主机名一样搜索：`sni:` / `host:` / `hostname:` 关键字过滤器和自由文本搜索都能匹配它们。
+前缀 `~` 表示该主机名是从 DNS 响应*推断*出来的，而非从连接本身提取。这对握手后的 QUIC 会话（SNI 已加密）以及不携带主机名载荷的纯 TCP/UDP 连接最有用。归因不需要主动查询，因此即使使用 `--no-resolve-dns` 也能工作。在开发版本中，详情标签页的 **Application** 卡片会单独显示一行 **Attributed Name**（完整的推断主机名），以及一行 **Attributed Via**（来源和观测时间，如 `Captured DNS, 5s ago`），使来源一目了然。归因主机名可以像其他主机名一样搜索：`sni:` / `host:` / `hostname:` 关键字过滤器和自由文本搜索都能匹配它们。
 
 **注意事项**（RustNet 通过嗅探线上的 DNS 学习名称）：
 

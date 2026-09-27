@@ -20,19 +20,19 @@ Scope                 DOCUMENTATION                                   Transactio
 State                 DNS_RESPONSE                                                                                                         ▐
 Process               proc                                                                                                                 ▐
 PID                   4242                                                                                                                 ▐
-Service               -                                                                                                                    ▐
-Observed VLANs        -                                                                                                                    ▐
+Service               -                                               Attributed Name       -                                              ▐
+Observed VLANs        -                                               Attributed Via        -                                              ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               DNS Response Time     -                                              ▐
 Local MAC             -                                               Last Response Code    NOERROR                                        ▐
 Remote Hostname       -                                               Request Retries (R)   -                                              ▐
-Attributed Name       -                                               Request Timeouts (T)  -                                               
-Attributed Via        -                                                                                                                     
-Remote MAC            -                                               Timed by pairing query and response IDs                               
+Remote MAC            -                                               Request Timeouts (T)  -                                              ▐
 Country               -                                                                                                                     
-City                  -                                                                                                                     
+City                  -                                               Timed by pairing query and response IDs                               
 ASN                   -                                                                                                                     
+                                                                                                                                            
+Attribution                                                                                                                                 
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
