@@ -46,6 +46,39 @@ This document outlines the planned features and improvements for RustNet.
 - [ ] **OpenBSD and NetBSD Support**: Future platforms to support
 - [x] **Linux Process Identification**: **Experimental eBPF Support Implemented** - Basic eBPF-based process identification now available with `--features ebpf`. Provides efficient kernel-level process-to-connection mapping with lower overhead than procfs. Currently has limitations (see eBPF Improvements section below).
 
+## Process Identity Retention Across Platforms
+
+Follow up on the Linux identity-retention work ([#640](https://github.com/domcyrus/rustnet/pull/640))
+and optional socket-cookie correlation ([#642](https://github.com/domcyrus/rustnet/pull/642))
+using each platform's native facilities. Prioritize Windows, then macOS, then
+FreeBSD metadata retention; evaluate additional tracing backends separately.
+
+- [ ] **Windows: Retain Rich ETW Identity**: Extend the existing network and
+  process-lifecycle event cache beyond PID and basename to preserve executable
+  paths, parent identity, and process-generation information where the event
+  schema provides them. Handle event ordering and PID reuse without attaching
+  a new process's metadata to an older connection.
+- [ ] **macOS: Retain PKTAP Process Details**: Preserve executable and parent
+  metadata as early as possible alongside PKTAP's packet-associated PID/name.
+  Validate process generations before enrichment and keep retained details
+  after exit. Early libproc caching remains best effort; evaluate Endpoint
+  Security lifecycle events separately, including Apple's entitlement and
+  deployment requirements.
+- [ ] **FreeBSD: Retain Observed Process Details**: Preserve executable paths,
+  parent identity, and start times from successful sockstat/sysctl observations
+  beyond the next refresh. Guard against PID reuse. This cannot recover
+  processes that start and exit entirely between scans.
+- [ ] **FreeBSD: Investigate Event-Driven Attribution**: Evaluate DTrace
+  process-lifecycle probes and socket-event correlation for flows missed by
+  polling. Establish privilege, kernel-support, overhead, and sandbox
+  requirements before adding a backend.
+
+Validate each implementation on its target OS with short-lived processes,
+exit before enrichment, PID reuse, lifecycle transitions, and transferred or
+inherited sockets. Keep observed identity distinct from later process changes,
+bound retained state, and expose uncertain attribution explicitly. Linux
+cgroup hooks and socket cookies are not a portable implementation API.
+
 ## eBPF Improvements (Linux)
 
 The experimental eBPF support provides efficient process identification but has several areas for improvement:
