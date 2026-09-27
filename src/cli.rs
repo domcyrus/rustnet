@@ -214,8 +214,8 @@ pub fn build_cli() -> Command {
     );
 
     // Sandbox flags exist on every platform: rustnet-sandbox has a backend
-    // for each (Linux Landlock/caps, macOS Seatbelt, Windows restricted
-    // token/job object, and the uid-drop-only FreeBSD backend).
+    // for each (Linux Landlock/caps, macOS Seatbelt, Windows token privilege
+    // removal/job object, and the uid-drop-only FreeBSD backend).
     let cmd = cmd
         .arg(
             Arg::new("no-sandbox")

@@ -2,16 +2,13 @@
 
 RustNet uses GitHub Actions to automatically build and upload packages to Ubuntu PPA.
 
-## Quick Start
+## Release Trigger
 
-Push a git tag to trigger automatic PPA release:
+The release workflow calls `ppa-release.yml` after a GitHub release is
+published. Maintainers can also dispatch `ppa-release.yml` for one Ubuntu
+series. See [RELEASE.md](../RELEASE.md) for the full release sequence.
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-This automatically builds and uploads source packages for all supported Ubuntu series:
+The workflow builds and uploads source packages for these Ubuntu series:
 
 - Ubuntu 22.04 LTS (Jammy Jellyfish)
 - Ubuntu 24.04 LTS (Noble Numbat)

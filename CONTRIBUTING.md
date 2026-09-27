@@ -45,12 +45,16 @@ Before submitting a PR, please ensure:
 - **Code style**: Follow the existing code style and patterns in the codebase
 - **Clippy**: Fix all clippy warnings
   ```bash
-  cargo clippy --all-targets --all-features -- -D warnings
+  cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
   ```
 - **No clippy suppression**: Do not use `#[allow(clippy::...)]` to suppress warnings. Fix the underlying issue instead (e.g., reduce arguments, refactor code). If a suppression is truly unavoidable, discuss it in the PR.
 - **Formatting**: Run the formatter
   ```bash
   cargo fmt
+  ```
+- **Tests**: Run the workspace test suite
+  ```bash
+  cargo test --locked --workspace --all-features
   ```
 - **Security audit**: Check for known vulnerabilities in dependencies
   ```bash

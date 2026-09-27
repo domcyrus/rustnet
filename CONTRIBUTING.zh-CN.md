@@ -45,12 +45,16 @@ RustNet 追求小而快。并不是每个协议或功能都适合放在核心工
 - **代码风格**：遵循代码库中已有的代码风格和模式
 - **Clippy**：修复所有 clippy 警告
   ```bash
-  cargo clippy --all-targets --all-features -- -D warnings
+  cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
   ```
 - **禁止 clippy 抑制**：不要使用 `#[allow(clippy::...)]` 来抑制警告。请修复根本问题（例如减少参数、重构代码）。如果确实无法避免，请在 PR 中说明。
 - **格式化**：运行格式化工具
   ```bash
   cargo fmt
+  ```
+- **测试**：运行整个工作区的测试套件
+  ```bash
+  cargo test --locked --workspace --all-features
   ```
 - **安全审计**：检查依赖中的已知漏洞
   ```bash

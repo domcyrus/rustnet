@@ -27,9 +27,9 @@ Per [CONTRIBUTING.md > Code Quality Requirements](https://github.com/domcyrus/ru
 I ran the following locally and they all pass:
 
 - [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo test --all-features`
-- [ ] `cargo build --release`
+- [ ] `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
+- [ ] `cargo test --locked --workspace --all-features`
+- [ ] `cargo build --locked --workspace --all-targets --release`
 
 <!-- If any of these did not run, say which and why. CI will also run
 them, but local verification catches issues faster. -->

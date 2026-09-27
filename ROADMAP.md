@@ -26,7 +26,7 @@ This document outlines the planned features and improvements for RustNet.
   - Write FFI bindings for `libprocstat` and `libcasper` (no Rust crate exists)
   - Link against `-lprocstat -lcasper -lcap_sysctl` (system libraries on FreeBSD 10+)
 - [ ] **Windows Sandbox Hardening**: Strengthen the current privilege-drop + Job Object setup with process mitigation policies (`SetProcessMitigationPolicy`), low-integrity execution, and evaluation of `CreateRestrictedToken` / AppContainer.
-- [ ] **macOS Seatbelt Hardening**: The current Seatbelt profile is allow-default with targeted denies (user homes, system credential stores, outbound TCP/UDP, `process-exec` except `lsof`). Tighten further:
+- [ ] **macOS Seatbelt Hardening**: The current Seatbelt profile is allow-default with targeted denies (user homes, system credential stores, outbound TCP/UDP except DNS on port 53 when reverse DNS is enabled, `process-exec` except `lsof`). Tighten further:
   - **Deny-by-default writes**: rustnet only writes its log/PCAP/JSONL output, so flip `file-write*` to deny-by-default with a small allowlist. This blocks root-level persistence (`/Library/LaunchDaemons`, `/Library/LaunchAgents`, `/private/etc` cron/launchd, etc.) that the current allow-default write policy leaves open. Needs on-host validation that the TUI's writes to the already-open tty and the `lsof` child still work.
   - **More credential read denies**: system TCC database (`/Library/Application Support/com.apple.TCC`), Kerberos keytabs, `master.passwd`/`sudoers`, saved network/Wi-Fi configuration (`/Library/Preferences/SystemConfiguration`).
   - **Eventual deny-by-default reads**: whitelist the dyld shared cache, system frameworks, `/dev/bpf*`, resolver/locale/timezone data, and the GeoIP paths. Strongest containment, but fragile across macOS releases — requires a multi-version on-host test pass before shipping.
@@ -39,10 +39,10 @@ This document outlines the planned features and improvements for RustNet.
     `--no-sandbox` keeps the process as root, clear the capability bounding set
     and drop every capability not required for continued capture or eBPF map
     access.
-  - [ ] **Block UDP egress when Landlock supports it**: Landlock ABI v4 only
-    governs TCP `bind`/`connect`, so UDP egress remains possible. Revisit this
-    when a newer Landlock ABI adds UDP support. macOS Seatbelt already blocks
-    both TCP and UDP.
+  - [ ] **Block UDP egress when supported**: The current `landlock` dependency
+    enforces TCP `bind`/`connect` but not UDP, so UDP egress remains possible.
+    Add a DNS exception when enforcing UDP. macOS Seatbelt blocks both TCP and
+    UDP except DNS on port 53 when reverse DNS is enabled.
 - [ ] **OpenBSD and NetBSD Support**: Future platforms to support
 - [x] **Linux Process Identification**: **Experimental eBPF Support Implemented** - Basic eBPF-based process identification now available with `--features ebpf`. Provides efficient kernel-level process-to-connection mapping with lower overhead than procfs. Currently has limitations (see eBPF Improvements section below).
 
@@ -146,12 +146,12 @@ The experimental eBPF support provides efficient process identification but has 
     when complete metadata arrives
   - [ ] Recover complete HTTPS/TLS ClientHello metadata across TCP segments
     through bounded TCP reassembly
-- [x] **Per-connection RTT**: Continuous smoothed round-trip estimate for every TCP connection (handshake RTT for QUIC), shown as a sortable table column, in the Details pane, and in exports
-- [x] **Connection Lifecycle Management**: Smart protocol-aware timeouts with visual staleness indicators (yellow at 75%, red at 90%)
+- [x] **Per-connection RTT**: Display observed TCP RTT, QUIC handshake RTT, or ICMP echo RTT when available, in a sortable table column, the Details pane, and exports
+- [x] **Connection Lifecycle Management**: Protocol-aware cleanup timeouts; once displayed rates reach zero, a stripe and removal countdown appear from halfway through the timeout
 - [x] **Process Identification**: Associate network connections with running processes (with experimental eBPF support on Linux)
 - [x] **Service Name Resolution**: Identify well-known services using port numbers
 - [x] **Cross-platform Support**: Works on Linux, macOS, Windows, and FreeBSD
-- [x] **DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display) - `--resolve-dns` flag with `d` key toggle
+- [x] **DNS Reverse Lookup**: Hostname resolution is enabled by default; use `--no-resolve-dns` to disable it and `d` to toggle IP/hostname display
 - [x] **IPv6 Support**: Parse and track IPv6 connections, including extension
   headers, process attribution, full-address display, and reverse DNS.
 - [ ] **IPv6-only Interface Selection and Live Validation**: Prefer a routed
@@ -198,7 +198,7 @@ The experimental eBPF support provides efficient process identification but has 
   - [x] **Linux RPM packages**: x86_64, aarch64 (via cargo-generate-rpm)
   - [x] **Cargo crates.io**: Published as `rustnet-monitor` (version 0.10.0+)
   - [x] **Docker images**: Available on GitHub Container Registry with eBPF support
-  - [x] **Homebrew formula**: Available in separate tap repository (domcyrus/rustnet)
+  - [x] **Homebrew formula**: Available in Homebrew core as `brew install rustnet`
 
 ### Future Enhancements
 
@@ -217,8 +217,8 @@ The experimental eBPF support provides efficient process identification but has 
   - [ ] Working directory
   - [x] User/UID information (UID and GID)
   - [x] Parent process information (PPID)
-- [ ] **Configuration File**: Support for persistent configuration:
-  - Custom color themes and UI styling
+- [ ] **More Configuration File Options**: The config file already supports a
+  theme preset and color token overrides. Add persistent settings for:
   - Default filters and sort preferences
   - Default process grouping (start with `group: true` in config)
   - Color mode preference (disable colors via config, complementing `--no-color` flag)
@@ -296,7 +296,7 @@ Restructure the single crate into a Cargo workspace (same GitHub repo) with clea
   so the crate needs no dependency on `rustnet-capture`.
 - [x] **rustnet-sandbox** (library): Post-initialization sandboxing and root
   privilege dropping behind one `apply_sandbox` entry point -- Landlock +
-  capability drops on Linux, Seatbelt on macOS, restricted token + job object
+  capability drops on Linux, Seatbelt on macOS, token privilege removal + job object
   on Windows, and the shared uid drop on Linux/macOS/FreeBSD. Lives at
   `crates/rustnet-sandbox` and depends on no other workspace crate, so a
   headless front-end gets identical sandboxing without linking capture or
@@ -325,23 +325,24 @@ and `landlock` / `caps` plus Seatbelt and the uid drop live in
 `rustnet-sandbox`.
 `rustnet-core` also exposes a `ConnectionTracker` so headless tools can fold
 captured packets into a live, lifecycle-managed connection table without the
-TUI. Remaining work: the headless workstream below and the `rustnet-helper`
-macOS pktap suid helper (needs real hardware).
+TUI. The binary now has a headless JSON/JSONL mode. Remaining work includes the
+reusable library APIs below and the `rustnet-helper` macOS pktap suid helper
+(needs real hardware).
 
-### Headless Front-End Workstream
+### Reusable Headless Library Workstream
 
 The library crates now cover the whole privileged pipeline: capture
 (`rustnet-capture`), parsing + connection tracking + interface stats
 (`rustnet-core`), process attribution (`rustnet-host`), and sandboxing +
 uid drop (`rustnet-sandbox`). `examples/headless.rs` is a compiling,
-runnable proof of that pairing. What a full headless front-end (Prometheus
-exporter, JSON streamer) still cannot get from the crates, from an audit of
-the binary:
+runnable proof of that pairing. The `rustnet --headless` CLI already streams
+JSONL or emits a final JSON snapshot. The following items concern reusable
+library APIs for other front-ends, such as a Prometheus exporter:
 
 Code that could move into a crate:
 
-- [ ] `ConnectionFilter` (the vim/fzf-style filter language, `src/filter`)
-  into `rustnet-core`, so headless tools can reuse the same query syntax.
+- [x] `ConnectionFilter` now lives in `rustnet-core`; the binary re-exports it
+  through `src/filter.rs` for compatibility.
 - [ ] Kubernetes pod/container resolution (`src/network/kubernetes`, ~1000
   lines) into `rustnet-host` next to the rest of attribution.
 - [ ] Process-grouping aggregation (currently in `src/ui/state.rs`) into
@@ -357,10 +358,9 @@ Composition APIs that exist only as binary wiring:
 - [ ] An engine/runtime handle for the thread topology (capture thread,
   DPI workers, batching, backpressure, `catch_unwind`) that `src/app`
   hand-builds.
-- [ ] The two-phase privileged start contract (open capture + load eBPF,
-  wait for readiness, sandbox, then spawn workers) as an API instead of
-  main.rs choreography; the ordering is documented in `rustnet-sandbox` but
-  each front-end still re-implements the sequence.
+- [ ] Expose the two-phase privileged start contract (open capture + load eBPF,
+  wait for readiness, sandbox, then spawn workers) as a reusable API.
+  `src/bootstrap.rs` implements it for the binary today.
 - [ ] A published-snapshot policy layer (service-name enrichment, localhost
   and PTR-lookup filtering, historic merge, sorting) over
   `ConnectionTracker::snapshot`.
@@ -407,5 +407,5 @@ Security properties:
   - [x] **Rust workflow**: Basic CI checks
 - [x] **Documentation**: Comprehensive README with usage guides, architecture overview, and troubleshooting
 - [x] **Packaging/Distribution**: Create packages for easy installation on Linux, macOS, and Windows
-  - DMG packages with code signing
-  - MSI packages with code signing for Windows
+  - DMG packages; code signing and notarization when release credentials are configured
+  - MSI packages for Windows

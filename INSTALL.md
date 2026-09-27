@@ -32,7 +32,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 
 ### macOS DMG Installation
 
-> ** Prefer Homebrew?** If you have Homebrew installed, using `brew install` is easier and avoids Gatekeeper bypass steps. See [Homebrew Installation](#homebrew-installation) for instructions.
+> **Prefer Homebrew?** If you have Homebrew installed, using `brew install` is easier and avoids Gatekeeper bypass steps. See [Homebrew Installation](#homebrew-installation) for instructions.
 
 1. **Download** the appropriate DMG for your architecture:
    - `Rustnet_macOS_AppleSilicon.dmg` for Apple Silicon Macs (M1/M2/M3)
@@ -134,7 +134,7 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**Important:** The PPA supports only the four series listed above because the build requires Rust 1.88+ (used for let-chains in the project). Other Ubuntu series don't ship a recent enough `rustc` in their repositories. For those, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
+**Important:** The PPA supports only the three series listed above because the build requires Rust 1.88+ (used for let-chains in the project). Other Ubuntu series don't ship a recent enough `rustc` in their repositories. For those, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
 
 #### Debian/Ubuntu (.deb packages)
 
@@ -146,20 +146,20 @@ For manual installation or non-Ubuntu Debian-based distributions:
 # - Rustnet_LinuxDEB_arm64.deb (ARM64)
 # - Rustnet_LinuxDEB_armhf.deb (ARMv7)
 
-# Install the package (capabilities are automatically configured)
+# Install the package (post-install script attempts to set capabilities)
 sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
 
 # Install dependencies if needed
 sudo apt-get install -f
 
-# Run without sudo (capabilities were set by post-install script)
-rustnet
-
 # Verify capabilities
 getcap /usr/bin/rustnet
+
+# Run without sudo if CAP_NET_RAW is present; otherwise use sudo
+rustnet
 ```
 
-**Note:** The .deb package automatically sets Linux capabilities via post-install script, so you can run RustNet without sudo.
+**Note:** The .deb post-install script attempts to set Linux capabilities when `setcap` is available. Check with `getcap /usr/bin/rustnet`; if `CAP_NET_RAW` is absent, configure capabilities manually or run with `sudo`.
 
 #### RedHat/Fedora/CentOS (.rpm packages)
 
@@ -170,19 +170,19 @@ For manual installation or distributions not using COPR:
 # - Rustnet_LinuxRPM_x86_64.rpm
 # - Rustnet_LinuxRPM_aarch64.rpm
 
-# Install the package (capabilities are automatically configured)
+# Install the package (post-install script attempts to set capabilities)
 sudo rpm -i Rustnet_LinuxRPM_x86_64.rpm
 # Or with dnf/yum:
 sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
 
-# Run without sudo (capabilities were set by post-install script)
-rustnet
-
 # Verify capabilities
 getcap /usr/bin/rustnet
+
+# Run without sudo if CAP_NET_RAW is present; otherwise use sudo
+rustnet
 ```
 
-**Note:** The .rpm package automatically sets Linux capabilities via post-install script, so you can run RustNet without sudo.
+**Note:** The .rpm post-install script attempts to set Linux capabilities when `setcap` is available. Check with `getcap /usr/bin/rustnet`; if `CAP_NET_RAW` is absent, configure capabilities manually or run with `sudo`.
 
 #### Arch Linux
 

@@ -263,7 +263,7 @@ pub fn run() -> Result<()> {
     }
 
     // Apply the sandbox (rustnet-sandbox crate: Landlock + capability drops
-    // on Linux, uid drop + Seatbelt on macOS, restricted token + job object
+    // on Linux, uid drop + Seatbelt on macOS, token privilege removal + job object
     // on Windows, uid drop on FreeBSD).
     // This must be done AFTER process detection and capture init because:
     // - eBPF programs need to be loaded first (requires CAP_BPF + CAP_PERFMON)

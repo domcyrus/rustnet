@@ -1,4 +1,4 @@
-//! Windows restricted token and job object sandboxing
+//! Windows token privilege removal and job object sandboxing
 //!
 //! After initialization, dangerous privileges are removed from the process
 //! token and a Job Object that prevents child process creation is applied.
@@ -43,7 +43,7 @@ const PRIVILEGES_TO_REMOVE: &[&str] = &[
     "SeImpersonatePrivilege",        // Impersonate other users
 ];
 
-/// Result of restricted token application
+/// Result of token privilege removal
 pub(super) struct RestrictedTokenResult {
     /// Whether at least one privilege was removed (count > 0).
     /// False for non-elevated processes that never held the privileges.
