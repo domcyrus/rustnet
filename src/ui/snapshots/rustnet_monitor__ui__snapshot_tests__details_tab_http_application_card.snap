@@ -20,19 +20,19 @@ Scope                 DOCUMENTATION                                   HTTP Statu
 State                 ESTABLISHED                                     User-Agent            curl/8.9.0                                     ▐
 Process               proc                                                                                                                 ▐
 PID                   4242                                                                                                                 ▐
-Service               -                                                                                                                    ▐
-Observed VLANs        -                                                                                                                    ▐
+Service               -                                               Attributed Name       -                                              ▐
+Observed VLANs        -                                               Attributed Via        -                                              ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               Initial RTT           -                                              ▐
 Local MAC             -                                               Live RTT              -                                              ▐
 Remote Hostname       -                                               TCP Retransmits (R)   0                                              ▐
-Attributed Name       -                                               Out-of-Order (O)      0                                               
-Attributed Via        -                                               Duplicate ACKs        0                                               
-Remote MAC            -                                               Fast Retransmits      0                                               
-Country               -                                               Window Size           -                                               
-City                  -                                                                                                                     
-ASN                   -                                                                                                                     
+Remote MAC            -                                               Out-of-Order (O)      0                                              ▐
+Country               -                                               Duplicate ACKs        0                                               
+City                  -                                               Fast Retransmits      0                                               
+ASN                   -                                               Window Size           -                                               
+                                                                                                                                            
+Attribution                                                                                                                                 
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

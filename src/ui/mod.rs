@@ -2370,6 +2370,24 @@ mod snapshot_tests {
         }));
         rich_app.set_connections_snapshot_for_test(rich_connections.clone());
         let rich = render_details_frame(&rich_app, &rich_connections, 0, 52).0;
+        let attributed_row = rich
+            .lines()
+            .find(|line| line.contains("Attributed Name"))
+            .unwrap();
+        let application_row = rich
+            .lines()
+            .find(|line| line.contains("Application"))
+            .unwrap();
+        assert_eq!(
+            attributed_row.find("Attributed Name"),
+            application_row.find("Application"),
+            "DNS attribution must be in the Application card",
+        );
+        assert!(attributed_row.contains("~lb-140-82-121-4.github.com"));
+        assert!(
+            rich.lines()
+                .any(|line| line.contains("Attributed Via") && line.contains("Captured DNS"))
+        );
 
         let bare_app = test_app();
         let mut bare_connections = sample_connections();

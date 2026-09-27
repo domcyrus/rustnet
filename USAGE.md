@@ -1235,13 +1235,11 @@ RustNet uses intelligent timeout management to automatically clean up inactive c
 
 ### Hostname Display
 
-Hostnames extracted from the connection itself (TLS SNI from HTTPS or QUIC, the HTTP `Host:` header) are shown in the **App** column. The name in the **Remote** column is chosen by priority (toggle hostnames with the `d` key):
+Hostnames extracted from the connection itself (TLS SNI from HTTPS or QUIC, the HTTP `Host:` header) are shown in the **App** column. In development builds, DNS-attributed names also appear in **App**, for example `TCP·HTTPS (~example.com)` or `UDP (~example.com)` when no application protocol is detected. They appear when no SNI / Host name is available and a DNS resolution to the remote IP was observed within the last **10 seconds**. Compact App columns omit hostname metadata.
 
-1. **DNS-attributed hostname**: rendered as `~name:port` in a dim color when the connection carries no SNI / Host header but a DNS resolution to this IP was observed within the last **10 seconds**
-2. **Reverse DNS** (system resolver, unless disabled with `--no-resolve-dns`)
-3. **Raw IP address**
+The **Remote** column shows reverse DNS (unless disabled with `--no-resolve-dns`), falling back to the raw IP address. The `d` key toggles reverse-DNS names without hiding application names.
 
-The leading `~` glyph signals that the hostname was *inferred* from a DNS response seen on the wire, not extracted from the connection. This is most useful for QUIC sessions after the handshake (where SNI is encrypted) and for plain TCP/UDP connections that carry no hostname-bearing payload. Attribution needs no active lookups, so it works even with `--no-resolve-dns`. The Details tab shows a separate **Attributed Name** row with the full inferred hostname, plus an **Attributed Via** row with the source and observation age (`Captured DNS, 5s ago`) so the provenance is explicit. Attributed names are searchable like any other hostname: both the `sni:` / `host:` / `hostname:` keyword filter and the free-text search match them.
+The leading `~` glyph signals that the hostname was *inferred* from a DNS response seen on the wire, not extracted from the connection. This is most useful for QUIC sessions after the handshake (where SNI is encrypted) and for plain TCP/UDP connections that carry no hostname-bearing payload. Attribution needs no active lookups, so it works even with `--no-resolve-dns`. In development builds, the Details tab’s **Application** card shows a separate **Attributed Name** row with the full inferred hostname, plus an **Attributed Via** row with the source and observation age (`Captured DNS, 5s ago`) so the provenance is explicit. Attributed names are searchable like any other hostname: both the `sni:` / `host:` / `hostname:` keyword filter and the free-text search match them.
 
 **Caveats** (RustNet learns names by sniffing DNS on the wire):
 

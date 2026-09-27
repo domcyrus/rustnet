@@ -20,19 +20,19 @@ Scope                 MULTICAST                                                 
 State                 REPORT_V2(224.0.0.251)                                                                                               ▐
 Process               -                                                                                                                    ▐
 PID                   -                                                                                                                    ▐
-Service               -                                                                                                                    ▐
-Observed VLANs        -                                                                                                                    ▐
+Service               -                                               Attributed Name       -                                              ▐
+Observed VLANs        -                                               Attributed Via        -                                              ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               No transport metrics for this protocol                               ▐
 Local MAC             -                                                                                                                    ▐
 Remote Hostname       -                                                                                                                    ▐
-Attributed Name       -                                                                                                                     
-Attributed Via        -                                                                                                                     
-Remote MAC            -                                                                                                                     
+Remote MAC            -                                                                                                                    ▐
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
+                                                                                                                                            
+Attribution                                                                                                                                 
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

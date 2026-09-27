@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- Move DNS-inferred hostnames from Remote to App and their Details metadata
+  into the Application card, retaining the `~` marker and SNI / Host precedence (#638)
 - **Documentation accuracy**: Align English, Chinese, and Japanese feature
   claims, installation and profiling steps, sandbox limits, and the roadmap
   with the current implementation.

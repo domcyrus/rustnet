@@ -20,19 +20,19 @@ Scope                 PUBLIC                                                    
 State                 ECHO_REQ(4660)                                                                                                       ▐
 Process               ping                                                                                                                 ▐
 PID                   -                                                                                                                    ▐
-Service               -                                                                                                                    ▐
-Observed VLANs        -                                                                                                                    ▐
+Service               -                                               Attributed Name       -                                              ▐
+Observed VLANs        -                                               Attributed Via        -                                              ▐
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               Ping RTT              8.7ms                                          ▐
 Local MAC             -                                               Last Sequence         42                                             ▐
 Remote Hostname       -                                                                                                                    ▐
-Attributed Name       -                                               Paired by echo ID and sequence                                        
-Attributed Via        -                                                                                                                     
-Remote MAC            -                                                                                                                     
+Remote MAC            -                                               Paired by echo ID and sequence                                       ▐
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
+                                                                                                                                            
+Attribution                                                                                                                                 
                                                                                                                                             
 ▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   

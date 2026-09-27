@@ -1238,7 +1238,7 @@ pub(in crate::ui) fn draw_connection_details(
         local_hostname,
         theme::fg(theme::field_local_addr()),
     );
-    // MAC and attribution rows always render, with a placeholder when
+    // MAC rows always render, with a placeholder when
     // unresolved, so the cards below keep static positions while navigating,
     // for every protocol including ARP. The details pane scrolls, so the
     // fixed rows cannot make content unreachable on short terminals.
@@ -1251,36 +1251,6 @@ pub(in crate::ui) fn draw_connection_details(
         "Remote Hostname",
         remote_hostname,
         theme::fg(theme::field_remote_addr()),
-    );
-    // Hostname inferred from a DNS response observed on the wire, with
-    // its provenance and age so it reads as an inference, not a lookup.
-    // Name and provenance on separate rows: a combined value clips at
-    // the card boundary for hostnames of ordinary length, hiding the
-    // provenance entirely.
-    let (attributed_name, attributed_via) = match &conn.attributed_hostname {
-        Some(att) => {
-            let source = match att.source {
-                crate::network::types::AttributionSource::CapturedDns => "Captured DNS",
-            };
-            let age = att
-                .observed_at
-                .elapsed()
-                .ok()
-                .map(format_age)
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-            (format!("~{}", att.name), format!("{}, {}", source, age))
-        }
-        None => (NONE_PLACEHOLDER.to_string(), NONE_PLACEHOLDER.to_string()),
-    };
-    details.field_styled(
-        "Attributed Name",
-        attributed_name,
-        theme::fg(theme::field_attributed_hostname()),
-    );
-    details.field_styled(
-        "Attributed Via",
-        attributed_via,
-        theme::fg(theme::field_attributed_hostname()),
     );
     details.field_styled_opt(
         "Remote MAC",
@@ -1760,6 +1730,40 @@ pub(in crate::ui) fn draw_connection_details(
         details.section("Application");
         details.field("Detected", NONE_PLACEHOLDER.to_string());
     }
+
+    // Keep attribution at the same position across application protocols.
+    details.pad_section(application_start, APPLICATION_CARD_ROWS - 2);
+
+    // Hostname inferred from a DNS response observed on the wire, with
+    // its provenance and age so it reads as an inference, not a lookup.
+    // Name and provenance on separate rows: a combined value clips at
+    // the card boundary for hostnames of ordinary length, hiding the
+    // provenance entirely.
+    let (attributed_name, attributed_via) = match &conn.attributed_hostname {
+        Some(att) => {
+            let source = match att.source {
+                crate::network::types::AttributionSource::CapturedDns => "Captured DNS",
+            };
+            let age = att
+                .observed_at
+                .elapsed()
+                .ok()
+                .map(format_age)
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+            (format!("~{}", att.name), format!("{}, {}", source, age))
+        }
+        None => (NONE_PLACEHOLDER.to_string(), NONE_PLACEHOLDER.to_string()),
+    };
+    details.field_styled(
+        "Attributed Name",
+        attributed_name,
+        theme::fg(theme::field_attributed_hostname()),
+    );
+    details.field_styled(
+        "Attributed Via",
+        attributed_via,
+        theme::fg(theme::field_attributed_hostname()),
+    );
 
     // Short application records keep their whitespace inside the card instead
     // of pulling Transport Health and Traffic Statistics upward. All current
