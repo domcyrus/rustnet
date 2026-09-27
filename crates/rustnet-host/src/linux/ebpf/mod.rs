@@ -40,6 +40,11 @@ pub(super) struct ProcessInfo {
     /// `bpf_ktime_get_ns` reading: nanoseconds on a **monotonic** clock, not
     /// wall-clock time.
     pub(super) timestamp: u64,
+    pub(super) executable: Option<std::path::PathBuf>,
+    /// Task birth times use CLOCK_BOOTTIME, matching /proc stat starttime.
+    pub(super) start_boottime: u64,
+    pub(super) parent_start_boottime: u64,
+    pub(super) parent: Option<crate::ProcessAncestor>,
     pub(super) socket_cgroup: Option<crate::SocketCgroup>,
 }
 

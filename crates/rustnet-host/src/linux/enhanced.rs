@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use super::ebpf::{EbpfSocketTracker, snapshot_task_file_owners};
 use crate::linux::ebpf::SocketMatch;
-use crate::linux::process::{refine_truncated_name, resolve_executable, resolve_parent_pid};
+use crate::linux::process::{refine_truncated_name, retained_lineage};
 use rustnet_core::network::types::ProtocolState;
 
 /// Enhanced process lookup that combines eBPF (fast path) with procfs (fallback)
@@ -172,53 +172,25 @@ impl EnhancedLinuxProcessLookup {
         self.procfs_lookup.get_process_attribution(conn)
     }
 
-    /// Turn a socket-map hit into a rich attribution.
-    ///
-    /// The TGID, credentials, and match quality the kernel recorded are
-    /// carried through unchanged. The process name, parent PID, and
-    /// executable path are resolved in user space.
+    /// Use the identity observed by BPF, including after exit or exec. Looking
+    /// up the current holder of a retained PID could attribute an old socket
+    /// to a different executable or a recycled process ID.
     fn attribution_from_ebpf(&self, matched: SocketMatch) -> ProcessAttribution {
         let SocketMatch { info, quality } = matched;
-
-        // eBPF captures the group leader's short comm at socket creation.
-        // /proc/<tgid>/comm is the current main-process name and wins when
-        // the process is still alive. Short-lived tools (curl, dig) have
-        // already exited by the time we look, so the eBPF comm is the
-        // fallback rather than the other way round.
-        let name = self
-            .procfs_lookup
-            .get_process_name_by_pid(info.pid)
-            .unwrap_or_else(|| info.comm.clone());
-
-        // Resolve the executable now, while the process is most likely
-        // still around. Failure is not an attribution failure. A
-        // comm-truncated name is recovered from the executable's file name.
-        let executable = resolve_executable(info.pid);
-        let name = refine_truncated_name(name, executable.as_deref());
-        let ppid = resolve_parent_pid(info.pid);
-
+        let lineage = retained_lineage(&info);
+        let parent_pid = info.parent.as_ref().map(|parent| parent.pid);
+        let name = refine_truncated_name(info.comm, info.executable.as_deref());
         debug!(
-            "eBPF attribution: TGID {}, PPID {:?}, TID {}, UID {}, GID {}, eBPF comm {}, resolved {}, exe {:?}, {} match, observed {}ns (monotonic)",
-            info.pid,
-            ppid,
-            info.tid,
-            info.uid,
-            info.gid,
-            info.comm,
-            name,
-            executable,
-            quality,
-            info.timestamp
+            "eBPF attribution: TGID {}, PPID {:?}, TID {}, observed {}ns (monotonic)",
+            info.pid, parent_pid, info.tid, info.timestamp
         );
-
         let mut attribution = ProcessAttribution::new(info.pid, name, quality)
             .with_credentials(info.uid, info.gid)
-            .with_executable(executable);
+            .with_executable(info.executable)
+            .with_lineage(lineage);
         attribution.socket_cgroup = info.socket_cgroup;
-        if let Some(ppid) = ppid {
-            attribution = attribution
-                .with_parent_pid(ppid)
-                .with_lineage(self.procfs_lookup.lineage_for(info.pid, ppid));
+        if let Some(ppid) = parent_pid {
+            attribution = attribution.with_parent_pid(ppid);
         }
         attribution
     }
@@ -410,6 +382,38 @@ mod tests {
     use crate::MatchQuality;
     use crate::test_support::tcp_connection;
     use std::path::PathBuf;
+
+    #[test]
+    fn retained_identity_does_not_enrich_a_reused_pid() {
+        let lookup = EnhancedLinuxProcessLookup::new().unwrap();
+        let parent = crate::ProcessAncestor {
+            pid: unsafe { libc::getppid() } as u32,
+            name: "old-parent".into(),
+            executable: Some("/old/parent".into()),
+            started_at_unix_ms: Some(1),
+        };
+        let info = crate::linux::ebpf::ProcessInfo {
+            // The PID is live, but the recorded generation is deliberately old.
+            pid: std::process::id(),
+            tid: 1,
+            uid: 123,
+            gid: 456,
+            comm: "old-process".into(),
+            timestamp: 1,
+            executable: Some("/old/executable".into()),
+            start_boottime: 1,
+            parent_start_boottime: 1,
+            parent: Some(parent.clone()),
+            socket_cgroup: None,
+        };
+        let got = lookup.attribution_from_ebpf(SocketMatch {
+            info,
+            quality: MatchQuality::ExactTuple,
+        });
+        assert_eq!(got.name, "old-process");
+        assert_eq!(got.executable, Some("/old/executable".into()));
+        assert_eq!(got.lineage.unwrap().ancestors, vec![parent]);
+    }
 
     /// A result carrying everything only eBPF can observe, so a cache round
     /// trip that drops any of it is visible.

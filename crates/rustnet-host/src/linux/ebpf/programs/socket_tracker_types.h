@@ -14,7 +14,8 @@
 #define IPPROTO_ICMPV6 58
 
 #define CONN_KEY_SIZE 40
-#define CONN_INFO_SIZE 296
+#define EXE_PATH_LEN 256
+#define CONN_INFO_SIZE 848
 
 /*
  * Map ABI shared with maps_libbpf.rs. Explicit trailing padding keeps the
@@ -41,6 +42,15 @@ struct conn_info
     __u64 timestamp;
     char cgroup_name[CGROUP_NAME_LEN];
     char cgroup_parent[CGROUP_NAME_LEN];
+    char executable[EXE_PATH_LEN];
+    char parent_executable[EXE_PATH_LEN];
+    __u64 start_boottime;
+    __u64 parent_start_boottime;
+    __u32 parent_tgid;
+    /* Right-aligned paths: start offset plus one, zero means unavailable. */
+    __u16 executable_offset;
+    __u16 parent_executable_offset;
+    char parent_comm[TASK_COMM_LEN];
 } __attribute__((aligned(8)));
 
 _Static_assert(sizeof(struct conn_key) == CONN_KEY_SIZE,

@@ -125,6 +125,53 @@ fn process_start_unix_ms(start_ticks: u64) -> Option<u64> {
     boot_time_unix_ms()?.checked_add(since_boot_ms)
 }
 
+#[cfg(feature = "ebpf")]
+pub(super) fn boottime_start_unix_ms(start_ns: u64) -> Option<u64> {
+    (start_ns != 0).then_some(())?;
+    boot_time_unix_ms()?.checked_add(start_ns / 1_000_000)
+}
+
+/// Retain the observed parent even after it exits. Only extend its ancestry
+/// through procfs while both task generations still match the snapshot.
+#[cfg(feature = "ebpf")]
+pub(super) fn retained_lineage(info: &super::ebpf::ProcessInfo) -> Option<ProcessLineage> {
+    let parent = info.parent.clone()?;
+    let same_generation = || {
+        process_generation_matches(info.pid, info.start_boottime)
+            && process_generation_matches(parent.pid, info.parent_start_boottime)
+    };
+    if same_generation()
+        && let Some(mut lineage) = resolve_process_lineage(info.pid, parent.pid)
+        && same_generation()
+    {
+        // Keep the parent's identity as observed, even if it subsequently execs.
+        if let Some(last) = lineage.ancestors.last_mut() {
+            *last = parent;
+        }
+        return Some(lineage);
+    }
+    Some(ProcessLineage {
+        truncated: parent.pid != 1,
+        ancestors: vec![parent],
+    })
+}
+
+#[cfg(feature = "ebpf")]
+fn process_generation_matches(pid: u32, start_ns: u64) -> bool {
+    let Some(ticks) = clock_ticks_per_second() else {
+        return false;
+    };
+    let Some(expected) = (u128::from(start_ns) * u128::from(ticks)).checked_div(1_000_000_000)
+    else {
+        return false;
+    };
+    start_ns != 0
+        && fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| parse_proc_stat(&stat))
+            .is_some_and(|stat| u128::from(stat.start_ticks) == expected)
+}
+
 fn resolve_process_ancestor(pid: u32) -> Option<(ProcessAncestor, u32)> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let stat = parse_proc_stat(&stat)?;
@@ -202,11 +249,7 @@ impl StartupSocketOwners {
         (self.owners, self.shared)
     }
 }
-/// Map of PID to process name
-#[cfg(feature = "ebpf")]
-type PidNameMap = HashMap<u32, String>;
-#[cfg(not(feature = "ebpf"))]
-type PidNameMap = ();
+
 /// Map of connection key to (PID, process name)
 type ConnectionProcessMap = HashMap<ConnectionKey, (u32, String)>;
 
@@ -334,9 +377,6 @@ pub(super) struct LinuxProcessLookup {
     // attributable. The live cache always wins; the snapshot only fills
     // holes, so a reused 4-tuple visible to the rescan is never shadowed.
     startup_snapshot: HashMap<ConnectionKey, SnapshotOwner>,
-    // PID -> process_name, for resolving eBPF thread names to main process names.
-    #[cfg(feature = "ebpf")]
-    pid_names: RwLock<HashMap<u32, String>>,
     // Memo: TGID -> lineage, so many connections of one process walk /proc
     // once per refresh instead of once each. Failures are memoized too.
     lineages: RwLock<HashMap<u32, Option<ProcessLineage>>>,
@@ -355,14 +395,11 @@ impl LinuxProcessLookup {
 
     fn new_with_startup_socket_owners(owners: StartupSocketOwners) -> Result<Self> {
         // Populate the cache immediately so it is ready before packet capture starts.
-        let (process_map, _pid_names, socket_snapshot, shared_inodes) =
-            Self::build_process_map(owners)?;
+        let (process_map, socket_snapshot, shared_inodes) = Self::build_process_map(owners)?;
 
         Ok(Self {
             startup_snapshot: build_startup_snapshot(&socket_snapshot, &shared_inodes),
             cache: RwLock::new(process_map),
-            #[cfg(feature = "ebpf")]
-            pid_names: RwLock::new(_pid_names),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(socket_snapshot),
         })
@@ -375,38 +412,9 @@ impl LinuxProcessLookup {
         Self {
             startup_snapshot: HashMap::new(),
             cache: RwLock::new(lookup),
-            #[cfg(feature = "ebpf")]
-            pid_names: RwLock::new(HashMap::new()),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::default()),
         }
-    }
-
-    /// Get process name by PID. Tries the cached procfs scan first, then
-    /// falls back to reading `/proc/<pid>/comm` directly: the cache only
-    /// refreshes every few seconds, so a freshly started process (exactly
-    /// the case for short-lived tools like curl/dig) is often missing
-    /// from it while still being perfectly readable from /proc. One tiny
-    /// file read; the result is cached so repeated lookups stay cheap.
-    /// Returns None if the process has already exited and was never scanned.
-    #[cfg(feature = "ebpf")]
-    pub(super) fn get_process_name_by_pid(&self, pid: u32) -> Option<String> {
-        if let Some(name) = self
-            .pid_names
-            .read()
-            .expect("pid_names lock poisoned")
-            .get(&pid)
-            .cloned()
-        {
-            return Some(name);
-        }
-
-        let name = read_comm(pid)?;
-        self.pid_names
-            .write()
-            .expect("pid_names lock poisoned")
-            .insert(pid, name.clone());
-        Some(name)
     }
 
     /// Match a connection against the cached procfs socket table.
@@ -506,19 +514,14 @@ impl LinuxProcessLookup {
         }
     }
 
-    /// Build connection -> process mapping and PID -> name mapping
+    /// Build the connection map and socket inventory.
     fn build_process_map(
         startup_owners: StartupSocketOwners,
-    ) -> Result<(
-        ConnectionProcessMap,
-        PidNameMap,
-        SocketSnapshot,
-        HashSet<u64>,
-    )> {
+    ) -> Result<(ConnectionProcessMap, SocketSnapshot, HashSet<u64>)> {
         let mut process_map = HashMap::new();
         let mut sockets = Vec::new();
 
-        let (inode_to_process, pid_names, shared_inodes) = Self::build_inode_map(startup_owners)?;
+        let (inode_to_process, shared_inodes) = Self::build_inode_map(startup_owners)?;
 
         for (path, protocol) in PROC_NET_TABLES {
             Self::parse_and_map(
@@ -530,27 +533,13 @@ impl LinuxProcessLookup {
             )?;
         }
 
-        Ok((
-            process_map,
-            pid_names,
-            SocketSnapshot::new(sockets),
-            shared_inodes,
-        ))
+        Ok((process_map, SocketSnapshot::new(sockets), shared_inodes))
     }
 
-    /// Build inode -> (pid, process_name) mapping and PID -> process_name mapping
+    /// Build inode -> (pid, process_name) mapping.
     fn build_inode_map(
         mut startup_owners: StartupSocketOwners,
-    ) -> Result<(InodeProcessMap, PidNameMap, HashSet<u64>)> {
-        #[cfg(feature = "ebpf")]
-        let mut pid_names = startup_owners
-            .owners
-            .values()
-            .map(|owner| (owner.pid, owner.name.clone()))
-            .collect::<HashMap<_, _>>();
-        #[cfg(not(feature = "ebpf"))]
-        let pid_names = ();
-
+    ) -> Result<(InodeProcessMap, HashSet<u64>)> {
         for entry in fs::read_dir("/proc")? {
             let entry = entry?;
             let path = entry.path();
@@ -567,9 +556,6 @@ impl LinuxProcessLookup {
                 let Some(process_name) = read_comm_in(&path) else {
                     continue;
                 };
-
-                #[cfg(feature = "ebpf")]
-                pid_names.insert(pid, process_name.clone());
 
                 let uid = fs::metadata(&path).ok().map(|metadata| metadata.uid());
 
@@ -595,7 +581,7 @@ impl LinuxProcessLookup {
         }
 
         let (inode_map, shared_inodes) = startup_owners.into_parts();
-        Ok((inode_map, pid_names, shared_inodes))
+        Ok((inode_map, shared_inodes))
     }
 
     /// Parse /proc/net file and map connections to processes
@@ -690,7 +676,7 @@ impl ProcessLookup for LinuxProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
-        let (process_map, _pid_names, socket_snapshot, _shared_inodes) =
+        let (process_map, socket_snapshot, _shared_inodes) =
             Self::build_process_map(StartupSocketOwners::default())?;
 
         *self.cache.write().expect("process cache lock poisoned") = process_map;
@@ -699,10 +685,6 @@ impl ProcessLookup for LinuxProcessLookup {
             .write()
             .expect("socket snapshot lock poisoned") = socket_snapshot;
 
-        #[cfg(feature = "ebpf")]
-        {
-            *self.pid_names.write().expect("pid_names lock poisoned") = _pid_names;
-        }
         self.lineages
             .write()
             .expect("lineages lock poisoned")
@@ -865,8 +847,6 @@ mod tests {
         LinuxProcessLookup {
             startup_snapshot: startup,
             cache: RwLock::new(ConnectionProcessMap::new()),
-            #[cfg(feature = "ebpf")]
-            pid_names: RwLock::new(HashMap::new()),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::new(inventory)),
         }
@@ -1036,8 +1016,6 @@ mod tests {
         let lookup = LinuxProcessLookup {
             startup_snapshot: startup,
             cache: RwLock::new(ConnectionProcessMap::new()),
-            #[cfg(feature = "ebpf")]
-            pid_names: RwLock::new(HashMap::new()),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::new(vec![host_socket(
                 "192.168.1.10:44444",
@@ -1084,8 +1062,6 @@ mod tests {
         let lookup = LinuxProcessLookup {
             startup_snapshot: snapshot,
             cache: RwLock::new(live),
-            #[cfg(feature = "ebpf")]
-            pid_names: RwLock::new(HashMap::new()),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::default()),
         };
