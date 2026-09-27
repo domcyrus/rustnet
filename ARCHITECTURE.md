@@ -290,6 +290,8 @@ The same backend publishes a socket snapshot every 5 seconds for the Host tab. T
 - In development builds, also snapshots the executable and immediate parent (PID, name, executable, and birth time) at socket observation, retaining them after exit or exec. Procfs extends the parent chain only while task birth times still match.
 - **Limitations:**
   - Names originate from the 16-byte kernel `comm` field; a retained executable basename can recover truncation. Executable snapshots are bounded to 255 path bytes and 32 directory/mount steps; incomplete paths remain unknown. Scripts identify the running interpreter. Ancestors beyond the immediate parent remain best effort.
+- Development builds can additionally correlate TCP/UDP packets with socket cookies in the visible cgroup v2 hierarchy. This optional observer requires effective `CAP_NET_ADMIN` in addition to the normal eBPF permissions; ordinary file-capability installs keep using tracing/procfs. Every hook permits traffic.
+- Cookie matches are labeled `socket-cookie` and are used only when tracing and procfs do not identify an owner. They preserve the creator or last observed connect/send actor, including receive-only UDP processes after exit. Descriptor transfer, sockets predating attachment, map eviction, and overlapping network-namespace tuples limit this evidence. Socket release removes live cookie ownership while tuple records remain available for delayed enrichment.
 - **Capability requirements:**
   - Modern Linux (5.8+): `CAP_NET_RAW` (packet capture), `CAP_BPF`, `CAP_PERFMON` (eBPF)
   - Legacy Linux (pre-5.8): eBPF requires broad `CAP_SYS_ADMIN`; RustNet packages do not grant it automatically and fall back to procfs instead

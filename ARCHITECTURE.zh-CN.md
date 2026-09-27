@@ -282,6 +282,8 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 - 开发版本还在观察 socket 时保存可执行文件和直接父进程（PID、名称、可执行文件和启动时间），在退出或 exec 后继续保留。只有进程启动时间仍匹配时，才通过 procfs 扩展父进程链。
 - **局限性：**
   - 进程名来源于内核 16 字节的 `comm` 字段，可使用保留的可执行文件名恢复截断。可执行路径最多保留 255 字节，最多遍历 32 个目录或挂载点；不完整路径保持未知。脚本显示运行中的解释器。直接父进程之外的祖先信息仍尽力提供。
+- 开发版本还可在可见的 cgroup v2 层级中通过 socket cookie 关联 TCP/UDP 数据包。该可选观察器在常规 eBPF 权限之外需要有效的 `CAP_NET_ADMIN`；普通文件 capabilities 安装仍使用追踪/procfs。所有钩子都允许流量通过。
+- Cookie 匹配标记为 `socket-cookie`，仅在追踪和 procfs 无法确定所有者时使用。它保留创建者或最近观察到的 connect/send 操作者，包括退出后的仅接收 UDP 进程。文件描述符转移、附加前存在的 socket、映射淘汰以及网络命名空间中重复的连接元组都会限制该证据。Socket 释放时删除活动 cookie 所有权，但保留元组记录以供延迟富化。
 - **Linux capabilities 需求：**
   - 现代 Linux（5.8+）：`CAP_NET_RAW`（包捕获）、`CAP_BPF`、`CAP_PERFMON`（eBPF）
 	  - 旧版 Linux（pre-5.8）：eBPF 需要宽泛的 `CAP_SYS_ADMIN`；RustNet 安装包不会自动授予它，并会回退到 procfs

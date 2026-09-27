@@ -134,6 +134,15 @@ impl EnhancedLinuxProcessLookup {
                 );
 
                 if let Some(result) = self.try_ebpf_lookup(conn) {
+                    if result.quality == crate::MatchQuality::SocketCookie {
+                        // A descriptor can be transferred after the observed
+                        // create/connect/send. Preserve procfs ownership when
+                        // available before falling back to that earlier actor.
+                        return self
+                            .procfs_lookup
+                            .get_process_attribution(conn)
+                            .or(Some(result));
+                    }
                     debug!(
                         "Enhanced lookup: eBPF hit for PID {} ({}, {} match)",
                         result.tgid, result.name, result.quality

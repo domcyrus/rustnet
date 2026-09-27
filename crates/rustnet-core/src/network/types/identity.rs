@@ -22,6 +22,9 @@ pub enum MatchQuality {
     /// Attribution is tied to the observed flow without relaxation, either by
     /// an exact 4-tuple match or by per-packet process metadata.
     ExactTuple,
+    /// Packet tuple correlated with a socket cookie. Identifies its creator or
+    /// last observed connect/send actor, which may differ after descriptor transfer.
+    SocketCookie,
     /// Matched only after zeroing the local address, i.e. the socket was
     /// recorded while bound to a wildcard address.
     WildcardLocalAddress,
@@ -40,7 +43,7 @@ pub enum MatchQuality {
 }
 
 impl MatchQuality {
-    /// Whether the connection's exact 4-tuple was found, with no relaxation.
+    /// Whether attribution identifies the flow without tuple or ownership inference.
     pub fn is_exact(self) -> bool {
         matches!(self, Self::ExactTuple | Self::ProcfsExact)
     }
@@ -54,6 +57,7 @@ impl MatchQuality {
     pub fn as_token(self) -> &'static str {
         match self {
             Self::ExactTuple => "exact-tuple",
+            Self::SocketCookie => "socket-cookie",
             Self::WildcardLocalAddress => "wildcard-local-address",
             Self::ListenerSocket => "listener-socket",
             Self::ProcfsExact => "procfs-exact",
@@ -68,6 +72,7 @@ static_names! {
     /// Human-readable label, for display to a person.
     MatchQuality {
         ExactTuple => "exact tuple",
+        SocketCookie => "socket cookie",
         WildcardLocalAddress => "wildcard local address",
         ListenerSocket => "listener socket",
         ProcfsExact => "procfs exact",
@@ -346,6 +351,7 @@ mod tests {
     fn match_quality_export_tokens_are_stable_and_whitespace_free() {
         let all = [
             (MatchQuality::ExactTuple, "exact-tuple"),
+            (MatchQuality::SocketCookie, "socket-cookie"),
             (MatchQuality::WildcardLocalAddress, "wildcard-local-address"),
             (MatchQuality::ListenerSocket, "listener-socket"),
             (MatchQuality::ProcfsExact, "procfs-exact"),
@@ -364,6 +370,7 @@ mod tests {
         assert!(MatchQuality::ProcfsExact.is_exact());
         assert!(!MatchQuality::ProcfsRelaxed.is_exact());
         assert!(!MatchQuality::StartupSnapshot.is_exact());
+        assert!(!MatchQuality::SocketCookie.is_exact());
         assert!(!MatchQuality::Unspecified.is_exact());
     }
 

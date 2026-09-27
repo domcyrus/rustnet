@@ -56,7 +56,7 @@ fn compile_ebpf_programs() {
     let vmlinux_include_path =
         get_vmlinux_header(vmlinux_arch).expect("Failed to locate bundled vmlinux.h");
 
-    for program in ["fentry", "kprobe", "task_file"] {
+    for program in ["fentry", "kprobe", "task_file", "cookie"] {
         let src = format!("src/linux/ebpf/programs/socket_tracker_{program}.bpf.c");
         let out = out_dir.join(format!("socket_tracker_{program}.skel.rs"));
 

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Optional socket-cookie attribution (Linux)**: supplement tracing/procfs with
+  cgroup v2 packet correlation, retaining receive-only UDP owners after exit.
+  Requires existing `CAP_NET_ADMIN`; inferred matches are labeled `socket-cookie`
+  and all traffic is permitted (#642)
 - **Retained Linux process identity**: eBPF preserves bounded executable paths
   and immediate-parent metadata after exit or exec, and checks task birth times
   before extending ancestry through procfs (#640)
