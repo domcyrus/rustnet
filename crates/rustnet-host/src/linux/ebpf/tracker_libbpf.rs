@@ -245,6 +245,14 @@ mod integration_tests {
         assert!(info.tid > 0);
         assert!(info.timestamp > 0);
         assert!(!info.comm.is_empty());
+        assert!(info.start_boottime > 0);
+        if ids_are_comparable(info) {
+            assert_eq!(info.executable, std::env::current_exe().ok());
+            assert_eq!(
+                info.parent.as_ref().map(|parent| parent.pid),
+                Some(unsafe { libc::getppid() } as u32)
+            );
+        }
 
         // The socket belongs to this test process, so a hit is either the
         // exact tuple or the zero-source retry. Nothing else may be reported.
@@ -413,6 +421,10 @@ mod integration_tests {
         let Ok(server) = std::env::var("RUSTNET_TEST_FLOW_SERVER") else {
             return;
         };
+        use std::os::unix::process::CommandExt;
+        // A failed exec must not replace the identity observed on the send.
+        let error = std::process::Command::new("/rustnet-nonexistent-executable").exec();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         if let Some(path) = std::env::var_os("RUSTNET_TEST_FLOW_CGROUP") {
             std::fs::write(
                 std::path::Path::new(&path).join("cgroup.procs"),
@@ -430,6 +442,9 @@ mod integration_tests {
             let socket = TcpStream::connect(server).unwrap();
             println!("FLOW_SOURCE={}", socket.local_addr().unwrap());
         }
+        // A successful exec after the send must not rewrite retained identity.
+        let error = std::process::Command::new("/bin/true").exec();
+        panic!("exec /bin/true failed: {error}");
     }
 
     fn test_exited_process(
@@ -488,6 +503,11 @@ mod integration_tests {
         );
         if parent_tgid == std::process::id() {
             assert_eq!(matched.info.pid, pid);
+            assert_eq!(matched.info.executable, std::env::current_exe().ok());
+            let parent = matched.info.parent.as_ref().expect("retained parent");
+            assert_eq!(parent.pid, parent_tgid);
+            assert_eq!(parent.executable, std::env::current_exe().ok());
+            assert!(parent.started_at_unix_ms.is_some());
         }
         assert!(matched.info.pid > 0);
         assert_ne!(matched.info.pid, parent_tgid);
@@ -610,6 +630,67 @@ mod integration_tests {
                         parent: parent.into(),
                     })
                 );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires root or CAP_BPF+CAP_PERFMON and a compatible Linux kernel"]
+    fn retained_identity_rejects_incomplete_paths() {
+        struct TestDir(std::path::PathBuf);
+        impl Drop for TestDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root =
+            TestDir(std::env::temp_dir().join(format!("rustnet-identity-{}", std::process::id())));
+        let own_exe = std::env::current_exe().unwrap();
+        for backend in [
+            AttributionBackend::EbpfFentry,
+            AttributionBackend::EbpfKprobe,
+        ] {
+            let mut tracker = LibbpfSocketTracker::new_for_backend(backend).unwrap();
+            for (relative, complete) in [
+                ("nested/bin".to_string(), true),
+                ("d/".repeat(34), false),
+                (format!("{}/bin", "x".repeat(240)), false),
+            ] {
+                let dir = root.0.join(relative);
+                std::fs::create_dir_all(&dir).unwrap();
+                let exe = dir.join("client");
+                std::fs::copy(&own_exe, &exe).unwrap();
+                let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+                let server = listener.local_addr().unwrap();
+                let output = std::process::Command::new(&exe)
+                    .args([
+                        "--ignored",
+                        "--exact",
+                        "linux::ebpf::tracker_libbpf::integration_tests::short_lived_socket_child",
+                        "--nocapture",
+                    ])
+                    .env("RUSTNET_TEST_FLOW_SERVER", server.to_string())
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{output:?}");
+                let stdout = String::from_utf8(output.stdout).unwrap();
+                let source: std::net::SocketAddr = stdout
+                    .lines()
+                    .find_map(|line| line.strip_prefix("FLOW_SOURCE="))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                let matched = lookup_with_retry(
+                    &mut tracker,
+                    source.ip(),
+                    server.ip(),
+                    source.port(),
+                    server.port(),
+                    true,
+                );
+                assert_eq!(matched.info.executable, complete.then_some(exe.clone()));
+                assert!(matched.info.parent.is_some());
+                std::fs::remove_file(exe).unwrap();
             }
         }
     }

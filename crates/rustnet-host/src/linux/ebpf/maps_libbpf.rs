@@ -6,7 +6,8 @@ use libbpf_rs::MapCore;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 pub(super) const CONN_KEY_SIZE: usize = 40;
-pub(super) const CONN_INFO_SIZE: usize = 296;
+pub(super) const CONN_INFO_SIZE: usize = 848;
+const EXE_PATH_LEN: usize = 256;
 const CGROUP_NAME_LEN: usize = 128;
 
 /// Connection key matching `socket_tracker_types.h`.
@@ -34,6 +35,14 @@ struct ConnInfo {
     pub timestamp: u64,
     pub cgroup_name: [u8; CGROUP_NAME_LEN],
     pub cgroup_parent: [u8; CGROUP_NAME_LEN],
+    executable: [u8; EXE_PATH_LEN],
+    parent_executable: [u8; EXE_PATH_LEN],
+    start_boottime: u64,
+    parent_start_boottime: u64,
+    parent_tgid: u32,
+    executable_offset: u16,
+    parent_executable_offset: u16,
+    parent_comm: [u8; TASK_COMM_LEN],
 }
 
 const _: () = assert!(std::mem::size_of::<ConnKey>() == CONN_KEY_SIZE);
@@ -171,6 +180,17 @@ impl ConnInfo {
     }
 }
 
+fn decode_executable(bytes: &[u8], offset: u16) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let start = usize::from(offset.checked_sub(1)?);
+    let bytes = bytes.get(start..)?;
+    if bytes.first() != Some(&b'/') {
+        return None;
+    }
+    let end = bytes.iter().position(|byte| *byte == 0)?;
+    Some(std::ffi::OsStr::from_bytes(&bytes[..end]).into())
+}
+
 impl From<ConnInfo> for ProcessInfo {
     fn from(info: ConnInfo) -> Self {
         Self {
@@ -180,6 +200,24 @@ impl From<ConnInfo> for ProcessInfo {
             gid: info.gid,
             comm: decode_comm(&info.comm),
             timestamp: info.timestamp,
+            executable: decode_executable(&info.executable, info.executable_offset),
+            start_boottime: info.start_boottime,
+            parent_start_boottime: info.parent_start_boottime,
+            parent: (info.parent_tgid != 0 && info.parent_tgid != info.tgid).then(|| {
+                let executable =
+                    decode_executable(&info.parent_executable, info.parent_executable_offset);
+                crate::ProcessAncestor {
+                    pid: info.parent_tgid,
+                    name: crate::linux::process::refine_truncated_name(
+                        decode_comm(&info.parent_comm),
+                        executable.as_deref(),
+                    ),
+                    executable,
+                    started_at_unix_ms: crate::linux::process::boottime_start_unix_ms(
+                        info.parent_start_boottime,
+                    ),
+                }
+            }),
             socket_cgroup: if info.cgroup_name[0] != 0 && info.cgroup_parent[0] != 0 {
                 Some(crate::SocketCgroup {
                     name: decode_comm(&info.cgroup_name),
@@ -299,6 +337,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn executable_paths_require_complete_absolute_terminated_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        assert!(decode_executable(b"/partial\0", 0).is_none());
+        assert!(decode_executable(b"/path", 1).is_none());
+        assert!(decode_executable(b"relative\0", 1).is_none());
+        assert!(decode_executable(b"/path\0", 99).is_none());
+        let path = decode_executable(b"\0\0/usr/bin/\xff\0", 3).unwrap();
+        assert_eq!(path.as_os_str().as_bytes(), b"/usr/bin/\xff");
+    }
+
+    #[test]
     fn c_abi_sizes_and_alignment_are_stable() {
         assert_eq!(std::mem::size_of::<ConnKey>(), CONN_KEY_SIZE);
         assert_eq!(std::mem::align_of::<ConnKey>(), 4);
@@ -324,6 +373,14 @@ mod tests {
             timestamp: 14,
             cgroup_name: [0; CGROUP_NAME_LEN],
             cgroup_parent: [0; CGROUP_NAME_LEN],
+            executable: [0; EXE_PATH_LEN],
+            parent_executable: [0; EXE_PATH_LEN],
+            start_boottime: 0,
+            parent_start_boottime: 0,
+            parent_tgid: 0,
+            executable_offset: 0,
+            parent_executable_offset: 0,
+            parent_comm: [0; TASK_COMM_LEN],
         };
 
         let converted = ProcessInfo::from(raw);

@@ -35,8 +35,84 @@ struct task_struct___local
 {
     struct task_struct___local *group_leader;
     char comm[TASK_COMM_LEN];
+    struct task_struct___local *real_parent;
+    struct mm_struct *mm;
+    __u64 start_boottime;
+    int tgid;
     struct css_set___local *cgroups;
 } __attribute__((preserve_access_index));
+
+/* Metadata exceeds the BPF stack. A nested probe must leave the outer
+ * probe's per-CPU scratch untouched. Tracing programs cannot migrate. */
+struct identity_scratch
+{
+    __u32 busy;
+    struct conn_info info;
+    /* The verifier bounds offset and read length independently. Reserve
+     * their maximum combined span after the paths; runtime checks below
+     * still keep every read strictly inside its own path array. */
+    char path_read_padding[EXE_PATH_LEN];
+};
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct identity_scratch);
+} identity_buffer SEC(".maps");
+
+/* Resolve mm->exe_file while the task is alive. Walk across mount roots,
+ * preserving raw filename bytes. Incomplete or overlong paths stay unknown.
+ * Unlike exec filename arguments, this identifies the running interpreter
+ * for scripts. No process-lifecycle cache is needed. */
+static __noinline __u16 snapshot_executable(struct task_struct___local *task,
+                                           char *out)
+{
+    struct file *exe = BPF_CORE_READ(task, mm, exe_file);
+    if (!exe)
+        return 0;
+    struct dentry *dentry = BPF_CORE_READ(exe, f_path.dentry);
+    struct vfsmount *vfsmount = BPF_CORE_READ(exe, f_path.mnt);
+    __u32 offset = EXE_PATH_LEN - 1;
+    out[offset] = 0;
+
+    for (int depth = 0; depth < 32; depth++)
+    {
+        if (!dentry || !vfsmount)
+            return 0;
+        struct dentry *root = BPF_CORE_READ(vfsmount, mnt_root);
+        struct dentry *parent = BPF_CORE_READ(dentry, d_parent);
+        if (dentry == root)
+        {
+            struct mount *mount = (void *)vfsmount -
+                bpf_core_field_offset(struct mount, mnt);
+            struct mount *up = BPF_CORE_READ(mount, mnt_parent);
+            if (!up)
+                return 0;
+            if (up == mount)
+                return offset < EXE_PATH_LEN - 1 ? offset + 1 : 0;
+            dentry = BPF_CORE_READ(mount, mnt_mountpoint);
+            vfsmount = (void *)up + bpf_core_field_offset(struct mount, mnt);
+            continue;
+        }
+        if (!parent || parent == dentry)
+            return 0;
+        __u32 len = BPF_CORE_READ(dentry, d_name.len);
+        const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
+        if (!len || len >= EXE_PATH_LEN || len + 1 > offset)
+            return 0;
+        offset = (offset - len) & (EXE_PATH_LEN - 1);
+        if (offset >= EXE_PATH_LEN || offset + len >= EXE_PATH_LEN)
+            return 0;
+        if (bpf_probe_read_kernel(out + offset, len, name))
+            return 0;
+        offset--;
+        out[offset & (EXE_PATH_LEN - 1)] = '/';
+        dentry = parent;
+    }
+    return 0;
+}
 
 static __always_inline void get_process_info(struct conn_info *info)
 {
@@ -51,6 +127,14 @@ static __always_inline void get_process_info(struct conn_info *info)
 
     struct task_struct___local *task =
         (struct task_struct___local *)bpf_get_current_task();
+    struct task_struct___local *leader = BPF_CORE_READ(task, group_leader);
+    info->start_boottime = BPF_CORE_READ(leader, start_boottime);
+    info->executable_offset = snapshot_executable(leader, info->executable);
+    struct task_struct___local *parent_task = BPF_CORE_READ(leader, real_parent, group_leader);
+    info->parent_tgid = BPF_CORE_READ(parent_task, tgid);
+    info->parent_start_boottime = BPF_CORE_READ(parent_task, start_boottime);
+    BPF_CORE_READ_STR_INTO(&info->parent_comm, parent_task, comm);
+    info->parent_executable_offset = snapshot_executable(parent_task, info->parent_executable);
     long err = BPF_CORE_READ_STR_INTO(&info->comm, task, group_leader, comm);
     if (err <= 0 || info->comm[0] == '\0')
     {
@@ -82,9 +166,16 @@ static __always_inline void get_process_info(struct conn_info *info)
 
 static __always_inline int store_connection(struct conn_key *key)
 {
-    struct conn_info info = {};
-    get_process_info(&info);
-    return bpf_map_update_elem(&socket_map, key, &info, BPF_ANY);
+    __u32 zero = 0;
+    struct identity_scratch *scratch = bpf_map_lookup_elem(&identity_buffer, &zero);
+    if (!scratch || scratch->busy)
+        return 0;
+    scratch->busy = 1;
+    __builtin_memset(&scratch->info, 0, sizeof(scratch->info));
+    get_process_info(&scratch->info);
+    int result = bpf_map_update_elem(&socket_map, key, &scratch->info, BPF_ANY);
+    scratch->busy = 0;
+    return result;
 }
 
 static __always_inline void fill_socket_ports(struct sock *sk,

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Retained Linux process identity**: eBPF preserves bounded executable paths
+  and immediate-parent metadata after exit or exec, and checks task birth times
+  before extending ancestry through procfs (#640)
 - **Generic container attribution (Linux)**: identify Docker, Podman and LXC
   from socket/process cgroups without daemon sockets. Show runtime, ID and
   available names in Details, `container:` / `runtime:` filters, headless JSON,

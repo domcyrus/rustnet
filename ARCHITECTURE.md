@@ -286,9 +286,10 @@ The same backend publishes a socket snapshot every 5 seconds for the Host tab. T
 - Captures socket creation events with process context
 - On Linux 5.11+, runs a one-shot task-file iterator after attaching the live probes to capture owners of sockets that predate RustNet, including other users' sockets in file-capability mode
 - Provides lower overhead than procfs scanning
-- Records the group leader's TGID, the acting TID, and credentials; the name, executable path, and PPID are enriched in user space via procfs
+- Records the group leader's TGID, the acting TID, credentials, and process name
+- In development builds, also snapshots the executable and immediate parent (PID, name, executable, and birth time) at socket observation, retaining them after exit or exec. Procfs extends the parent chain only while task birth times still match.
 - **Limitations:**
-  - Names originate from the 16-character kernel `comm` field; RustNet re-resolves them via `/proc/<tgid>/comm` and recovers truncated names from the executable's file name, but processes that exit before enrichment keep the short eBPF-recorded name
+  - Names originate from the 16-byte kernel `comm` field; a retained executable basename can recover truncation. Executable snapshots are bounded to 255 path bytes and 32 directory/mount steps; incomplete paths remain unknown. Scripts identify the running interpreter. Ancestors beyond the immediate parent remain best effort.
 - **Capability requirements:**
   - Modern Linux (5.8+): `CAP_NET_RAW` (packet capture), `CAP_BPF`, `CAP_PERFMON` (eBPF)
   - Legacy Linux (pre-5.8): eBPF requires broad `CAP_SYS_ADMIN`; RustNet packages do not grant it automatically and fall back to procfs instead

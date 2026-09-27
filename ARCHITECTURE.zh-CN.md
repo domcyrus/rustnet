@@ -278,9 +278,10 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 - 捕获带进程上下文的 socket 创建事件
 - 在 Linux 5.11 及更高版本上，先附加实时探针，再运行一次性的 task-file 迭代器，以捕获 RustNet 启动前已存在的 socket 所有者；使用文件 capabilities 运行时也包括其他用户的 socket
 - 比 procfs 扫描开销更低
-- 记录进程组组长的 TGID、当前线程的 TID 以及凭据；进程名、可执行路径和 PPID 在用户态通过 procfs 富化
+- 记录进程组组长的 TGID、当前线程的 TID、凭据和进程名
+- 开发版本还在观察 socket 时保存可执行文件和直接父进程（PID、名称、可执行文件和启动时间），在退出或 exec 后继续保留。只有进程启动时间仍匹配时，才通过 procfs 扩展父进程链。
 - **局限性：**
-  - 进程名来源于内核 16 字符的 `comm` 字段；RustNet 会通过 `/proc/<tgid>/comm` 重新解析，并借助可执行文件名恢复被截断的名称，但在富化前就已退出的进程仍保留 eBPF 记录的短名称
+  - 进程名来源于内核 16 字节的 `comm` 字段，可使用保留的可执行文件名恢复截断。可执行路径最多保留 255 字节，最多遍历 32 个目录或挂载点；不完整路径保持未知。脚本显示运行中的解释器。直接父进程之外的祖先信息仍尽力提供。
 - **Linux capabilities 需求：**
   - 现代 Linux（5.8+）：`CAP_NET_RAW`（包捕获）、`CAP_BPF`、`CAP_PERFMON`（eBPF）
 	  - 旧版 Linux（pre-5.8）：eBPF 需要宽泛的 `CAP_SYS_ADMIN`；RustNet 安装包不会自动授予它，并会回退到 procfs
