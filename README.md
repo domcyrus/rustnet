@@ -44,6 +44,8 @@ Packet capture needs platform-specific permissions. See the [installation guide]
 
 See the [usage guide](USAGE.md), [architecture guide](ARCHITECTURE.md), and [security guide](SECURITY.md) for feature details.
 
+Development builds require trusted directories for Unix output files and create diagnostic logs exclusively.
+
 ## Screenshots
 
 <table>

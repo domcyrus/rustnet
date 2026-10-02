@@ -197,8 +197,12 @@ pub fn run() -> Result<()> {
     // entire group passes the authoritative opened-handle check.
     // Retaining these descriptors also avoids reopening paths after the UID
     // drop or granting pathname write access through the sandbox.
+    #[cfg(unix)]
+    let prepared = app::prepare_output_handles_for_invoking_uid(&config, invoking_output_uid());
+    #[cfg(not(unix))]
+    let prepared = app::prepare_output_handles(&config);
     let (output_handles, pcap_export_file) =
-        app::prepare_output_handles(&config).context("failed to prepare runtime outputs")?;
+        prepared.context("failed to prepare runtime outputs")?;
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     {
         for (label, path, file) in [
@@ -427,39 +431,30 @@ fn ensure_clean_shutdown(report: app::StopReport) -> Result<()> {
 }
 
 fn setup_logging(level: LevelFilter) -> Result<()> {
-    // The log directory is resolved relative to the current working directory.
-    // rustnet typically runs as root, so a pre-planted symlink at `logs/` (e.g.
-    // `logs -> /etc`) would let an attacker who controls the launch directory
-    // redirect root-owned writes to an arbitrary location. Refuse to use it if
-    // it is a symlink (symlink_metadata does not follow the link).
     let log_dir = Path::new("logs");
-    #[cfg(unix)]
-    if let Ok(meta) = fs::symlink_metadata(log_dir)
-        && meta.file_type().is_symlink()
-    {
-        anyhow::bail!("refusing to use log directory 'logs': it is a symlink");
-    }
-
+    #[cfg(not(unix))]
     if !log_dir.exists() {
         fs::create_dir_all(log_dir)?;
-        // Restrict the directory to the owner: the diagnostic log can contain
-        // connection metadata and (at debug/trace) DNS/SNI hostnames, and rustnet
-        // typically runs as root, so it must not be world-readable. Mirrors the
-        // 0o600 treatment of the JSON/PCAP outputs.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = fs::set_permissions(log_dir, fs::Permissions::from_mode(0o700)) {
-                warn!("Failed to set logs directory permissions: {}", e);
-            }
-        }
     }
 
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     let log_file_path = log_dir.join(format!("rustnet_{}.log", timestamp));
 
-    // The path is predictable (timestamped), so it gets the same
-    // symlink-refusing, private-mode open as the other output files.
+    #[cfg(unix)]
+    let log_file = (0..32)
+        .find_map(|suffix| {
+            let path = if suffix == 0 {
+                log_file_path.clone()
+            } else {
+                log_dir.join(format!("rustnet_{timestamp}_{suffix}.log"))
+            };
+            match app::create_private_diagnostic_file(&path, invoking_output_uid()) {
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
+                result => Some(result),
+            }
+        })
+        .ok_or_else(|| anyhow::anyhow!("could not allocate a unique diagnostic log name"))??;
+    #[cfg(not(unix))]
     let log_file = app::precreate_private_file(&log_file_path)?;
 
     // `target` names the emitting subsystem (e.g. `network::dpi::dns`); the
@@ -483,6 +478,18 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn invoking_output_uid() -> Option<u32> {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    {
+        rustnet_sandbox::privdrop::invoking_uid()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+    {
+        None
+    }
 }
 
 /// Hand an output file over to the uid-drop target.

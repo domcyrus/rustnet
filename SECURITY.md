@@ -128,6 +128,8 @@ and execution of all binaries except `/usr/sbin/lsof`.
 
 All three flags work normally within the sandbox.
 
+**Unreleased:** On Unix, existing explicit output files must belong to the effective user or a valid sudo caller. Output paths are opened relative to validated directory descriptors. Directories with unsafe ownership or permissions are rejected. Automatic diagnostic logs are created only as new files in a validated `logs/` directory. Use trusted private launch and output directories; changing permissions on an existing file cannot revoke descriptors another process already holds.
+
 ### Security Benefits
 
 If an attacker exploits a vulnerability in DPI/packet parsing:

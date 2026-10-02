@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Reject Unix output files owned by unrelated users before changing or writing them, anchor opens to validated directories, and create diagnostic logs exclusively
+
 ### Added
 - **Traffic surge visibility**: held auto scales, shared/independent and log modes,
   scale lock with overflow markers, rounded traffic waves, and two-second rate averages

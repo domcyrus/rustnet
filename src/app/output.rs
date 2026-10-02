@@ -97,25 +97,44 @@ fn validate_output_paths_with_stdout(
 /// A failed open or overlapping descriptor leaves existing contents intact.
 /// JSON logging appends; capture files and their sidecar start empty.
 pub fn prepare_output_handles(config: &Config) -> io::Result<(AppOutputHandles, Option<fs::File>)> {
-    prepare_output_handles_with_stdout(config, stdout_file_identity)
+    prepare_output_handles_with_owner(config, None, stdout_file_identity)
 }
 
+/// Accept existing files owned by the confirmed invoking user for explicit
+/// output paths. Automatic diagnostic logs use a separate exclusive opener.
+pub fn prepare_output_handles_for_invoking_uid(
+    config: &Config,
+    invoking_uid: Option<u32>,
+) -> io::Result<(AppOutputHandles, Option<fs::File>)> {
+    prepare_output_handles_with_owner(config, invoking_uid, stdout_file_identity)
+}
+
+#[cfg(test)]
 fn prepare_output_handles_with_stdout(
     config: &Config,
     stdout_identity: impl FnOnce() -> io::Result<Option<(u64, u64)>>,
 ) -> io::Result<(AppOutputHandles, Option<fs::File>)> {
+    prepare_output_handles_with_owner(config, None, stdout_identity)
+}
+
+fn prepare_output_handles_with_owner(
+    config: &Config,
+    invoking_uid: Option<u32>,
+    stdout_identity: impl FnOnce() -> io::Result<Option<(u64, u64)>>,
+) -> io::Result<(AppOutputHandles, Option<fs::File>)> {
     let mut opened: Vec<OpenedOutput> = Vec::new();
     for (kind, path) in output_paths(config) {
-        let file = open_private(&path, kind == OutputKind::JsonLog, false).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "failed to open {} output '{}': {error}",
-                    kind.label(),
-                    path.display()
-                ),
-            )
-        })?;
+        let file = open_private_with_owner(&path, kind == OutputKind::JsonLog, false, invoking_uid)
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to open {} output '{}': {error}",
+                        kind.label(),
+                        path.display()
+                    ),
+                )
+            })?;
         let identity = opened_file_identity(&file)?;
         if let Some(other) = opened.iter().find(|other| other.identity == identity) {
             return Err(io::Error::new(
@@ -292,25 +311,57 @@ pub fn open_private_append_file(path: impl AsRef<Path>) -> io::Result<fs::File> 
     open_private(path, true, false)
 }
 
+/// Create a new diagnostic file in a validated logs directory.
+#[cfg(unix)]
+pub fn create_private_diagnostic_file(
+    path: impl AsRef<Path>,
+    invoking_uid: Option<u32>,
+) -> io::Result<fs::File> {
+    super::unix_output::create_diagnostic(path.as_ref(), invoking_uid)
+}
+
 #[cfg(target_os = "windows")]
 fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io::Result<fs::File> {
     super::windows_output::open_private(path, append, truncate)
 }
 
+#[cfg(target_os = "windows")]
+fn open_private_with_owner(
+    path: &Path,
+    append: bool,
+    truncate: bool,
+    _invoking_uid: Option<u32>,
+) -> io::Result<fs::File> {
+    open_private(path, append, truncate)
+}
+
 #[cfg(not(target_os = "windows"))]
 fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io::Result<fs::File> {
+    open_private_with_owner(path.as_ref(), append, truncate, None)
+}
+
+#[cfg(unix)]
+fn open_private_with_owner(
+    path: &Path,
+    append: bool,
+    truncate: bool,
+    invoking_uid: Option<u32>,
+) -> io::Result<fs::File> {
+    super::unix_output::open_private(path, append, truncate, invoking_uid)
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn open_private_with_owner(
+    path: &Path,
+    append: bool,
+    truncate: bool,
+    _invoking_uid: Option<u32>,
+) -> io::Result<fs::File> {
     let path = path.as_ref();
     let mut options = fs::OpenOptions::new();
     options.create(true).write(true);
     if append {
         options.append(true);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .mode(0o600);
     }
     let file = options.open(path)?;
     let metadata = file.metadata()?;
@@ -319,18 +370,6 @@ fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io::Res
             io::ErrorKind::InvalidInput,
             format!("output path is not a regular file: {}", path.display()),
         ));
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        if metadata.nlink() != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("output file has multiple hard links: {}", path.display()),
-            ));
-        }
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
 
     if truncate {

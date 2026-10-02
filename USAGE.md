@@ -413,7 +413,7 @@ Enable logging with the specified level. Logging is **disabled by default**.
 - `debug` - Detailed debugging information
 - `trace` - Very verbose output (includes packet-level details)
 
-Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`
+Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`. Development builds add a numeric suffix if that name already exists.
 
 #### `--kubernetes <MODE>` (optional feature) <a id="--kubernetes-mode-optional-feature"></a>
 
@@ -1393,7 +1393,7 @@ Observed Network Health, Observed TCP States, and Application Distribution use t
 
 ## Logging
 
-Logging is **disabled by default**. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`.
+Logging is **disabled by default**. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`. Development builds add a numeric suffix when that name already exists and require a trusted launch directory on Unix.
 
 ### Log File Contents
 
