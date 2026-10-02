@@ -269,7 +269,8 @@ struct PanicWriter;
 
 impl Write for PanicWriter {
     fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-        panic!("injected writer panic")
+        // Exercise unwinding without panic-hook backtrace latency.
+        std::panic::resume_unwind(Box::new("injected writer panic"));
     }
 
     fn flush(&mut self) -> io::Result<()> {
