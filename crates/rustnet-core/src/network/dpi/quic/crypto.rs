@@ -40,6 +40,19 @@ fn try_decrypt_initial_with_secret(
     version: u32,
     layout: PacketLayout,
 ) -> Option<Vec<u8>> {
+    let PacketLayout {
+        pn_offset,
+        packet_length: packet_payload_length,
+    } = layout;
+
+    // Bound all reads to this packet before cryptographic work. Length is an
+    // untrusted 62-bit varint and its sum can overflow on 32-bit targets.
+    let ciphertext_end = pn_offset.checked_add(packet_payload_length)?;
+    let packet = packet.get(..ciphertext_end)?;
+    let header_rest = packet.get(1..pn_offset)?;
+    let sample_offset = pn_offset.checked_add(4)?;
+    let sample = packet.get(sample_offset..sample_offset.checked_add(16)?)?;
+
     // Derive key and IV for packet protection
     let Some(InitialKeys {
         key,
@@ -51,20 +64,7 @@ fn try_decrypt_initial_with_secret(
         return None;
     };
 
-    let PacketLayout {
-        pn_offset,
-        packet_length: packet_payload_length,
-    } = layout;
-
-    // Sample is taken 4 bytes after the packet number offset
-    let sample_offset = pn_offset + 4;
-    if sample_offset + 16 > packet.len() {
-        debug!("QUIC: Not enough data for header protection sample");
-        return None;
-    }
-
     // Remove header protection to get packet number
-    let sample = &packet[sample_offset..sample_offset + 16];
     let mask = aes_ecb_encrypt(&hp_key, sample)?;
 
     // Unmask the first byte to get packet number length
@@ -91,7 +91,7 @@ fn try_decrypt_initial_with_secret(
     // Create AAD (authenticated header up to and including packet number)
     let mut aad = Vec::new();
     aad.push(first_byte); // Unmasked first byte
-    aad.extend_from_slice(&packet[1..pn_offset]); // Rest of header
+    aad.extend_from_slice(header_rest);
     for i in 0..pn_length {
         aad.push(packet[pn_offset + i] ^ mask[1 + i]); // Unmasked packet number
     }
@@ -104,18 +104,13 @@ fn try_decrypt_initial_with_secret(
     // the bounds check below and panics on the slice). Reject instead.
     let ciphertext_len = packet_payload_length.checked_sub(pn_length)?;
 
-    if ciphertext_offset + ciphertext_len > packet.len() {
-        debug!("QUIC: Ciphertext extends beyond packet");
-        return None;
-    }
-
     // The ciphertext includes the authentication tag (last 16 bytes)
     if ciphertext_len < 16 {
         debug!("QUIC: Ciphertext too short for auth tag");
         return None;
     }
 
-    let mut plaintext = packet[ciphertext_offset..ciphertext_offset + ciphertext_len].to_vec();
+    let mut plaintext = packet[ciphertext_offset..ciphertext_end].to_vec();
 
     match aead_key.open_in_place(nonce, Aad::from(&aad), &mut plaintext) {
         Ok(decrypted) => {
@@ -247,6 +242,22 @@ impl hkdf::KeyType for ArbitraryOutputLen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_ciphertext_length_is_rejected_without_overflow() {
+        assert!(
+            try_decrypt_initial_with_secret(
+                &[0; 64],
+                &[0; 32],
+                1,
+                PacketLayout {
+                    pn_offset: 8,
+                    packet_length: usize::MAX
+                },
+            )
+            .is_none()
+        );
+    }
 
     use super::super::packet::parse_long_header;
 

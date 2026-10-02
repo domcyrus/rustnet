@@ -365,15 +365,67 @@ impl Connection {
 
     /// Cheap clone for read-only snapshots (UI, historic archive).
     ///
-    /// Identical to `clone()` except the rate-tracker sample buffer is
-    /// dropped, so the live connection stays the unique owner of its
-    /// samples and the next per-packet rate update avoids a copy-on-write
-    /// deep copy. Consumers must read the cached `current_*_rate_bps`
-    /// fields rather than recompute rates from samples.
+    /// Omits rate samples and QUIC handshake buffers. Only the live connection
+    /// owns inspection bytes; snapshots retain extracted protocol metadata.
+    /// Keeping rate samples exclusive also avoids a copy-on-write deep copy.
+    /// Consumers must read the cached `current_*_rate_bps` fields rather than
+    /// recompute rates from samples.
     pub fn snapshot_clone(&self) -> Self {
+        let dpi_info = self.dpi_info.as_ref().map(|dpi| DpiInfo {
+            application: match &dpi.application {
+                ApplicationProtocol::Quic(info) => {
+                    ApplicationProtocol::Quic(Box::new(info.metadata_clone()))
+                }
+                other => other.clone(),
+            },
+        });
+        // Explicit fields prevent even a temporary clone of CRYPTO buffers.
         Self {
+            protocol: self.protocol,
+            local_addr: self.local_addr,
+            remote_addr: self.remote_addr,
+            local_addr_kind: self.local_addr_kind,
+            remote_addr_kind: self.remote_addr_kind,
+            remote_is_gateway: self.remote_is_gateway,
+            observed_vlan_ids: self.observed_vlan_ids.clone(),
+            protocol_state: self.protocol_state.clone(),
+            pid: self.pid,
+            process_ppid: self.process_ppid,
+            process_name: self.process_name.clone(),
+            executable: self.executable.clone(),
+            process_uid: self.process_uid,
+            process_gid: self.process_gid,
+            attribution_quality: self.attribution_quality,
+            process_lineage: self.process_lineage.clone(),
+            container_info: self.container_info.clone(),
+            #[cfg(feature = "kubernetes")]
+            k8s_info: self.k8s_info.clone(),
+            connection_direction: self.connection_direction,
+            bytes_sent: self.bytes_sent,
+            bytes_received: self.bytes_received,
+            packets_sent: self.packets_sent,
+            packets_received: self.packets_received,
+            created_at: self.created_at,
+            last_activity: self.last_activity,
+            terminal_since: self.terminal_since,
+            service_name: self.service_name.clone(),
+            dpi_info,
             rate_tracker: self.rate_tracker.clone_without_samples(),
-            ..self.clone()
+            current_incoming_rate_bps: self.current_incoming_rate_bps,
+            current_outgoing_rate_bps: self.current_outgoing_rate_bps,
+            tcp_analytics: self.tcp_analytics.clone(),
+            protocol_health: self.protocol_health,
+            initial_rtt: self.initial_rtt,
+            dns_response_time: self.dns_response_time,
+            llmnr_response_time: self.llmnr_response_time,
+            netbios_response_time: self.netbios_response_time,
+            icmp_echo_rtt: self.icmp_echo_rtt,
+            stun_rtt: self.stun_rtt,
+            ntp_rtt: self.ntp_rtt,
+            geoip_info: self.geoip_info.clone(),
+            attributed_hostname: self.attributed_hostname.clone(),
+            is_historic: self.is_historic,
+            closed_at: self.closed_at,
         }
     }
 
@@ -808,6 +860,59 @@ mod tests {
         // The snapshot must not share the sample buffer with the original.
         assert_eq!(Arc::strong_count(&conn.rate_tracker.samples), 1);
         assert!(snap.rate_tracker.samples.is_empty());
+    }
+
+    #[test]
+    fn snapshot_keeps_quic_metadata_without_handshake_bytes() {
+        let mut conn = conn(
+            Protocol::Udp,
+            "192.0.2.1:45000",
+            "192.0.2.2:443",
+            ProtocolState::Udp,
+        );
+        let mut info = QuicInfo::new(1);
+        info.connection_id = vec![1, 2, 3];
+        info.has_crypto_frame = true;
+        info.tls_info = Some(crate::network::types::TlsInfo::with_sni(
+            "example.org".into(),
+        ));
+        info.ensure_reassembler();
+        info.crypto_reassembler
+            .as_mut()
+            .unwrap()
+            .add_fragment(0, vec![1, 2, 3])
+            .unwrap();
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Quic(Box::new(info)),
+        });
+
+        let snapshot = conn.snapshot_clone();
+        let ApplicationProtocol::Quic(snapshot_info) =
+            &snapshot.dpi_info.as_ref().unwrap().application
+        else {
+            panic!("expected QUIC metadata");
+        };
+        assert!(snapshot_info.crypto_reassembler.is_none());
+        assert_eq!(snapshot_info.connection_id, [1, 2, 3]);
+        assert_eq!(
+            snapshot_info.tls_info.as_ref().unwrap().sni.as_deref(),
+            Some("example.org")
+        );
+        assert!(snapshot_info.has_crypto_frame);
+
+        let ApplicationProtocol::Quic(live_info) = &conn.dpi_info.as_ref().unwrap().application
+        else {
+            panic!("expected live QUIC state");
+        };
+        assert_eq!(
+            live_info
+                .crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .get_contiguous_data()
+                .unwrap(),
+            [1, 2, 3]
+        );
     }
 
     /// The snapshot provider clones every connection on every tick, so process

@@ -64,6 +64,36 @@ const RFC9001_RETRY: &str =
     "ff000000010008f067a5502a4262b5746f6b656e04a265ba2eff4d829058fb3f0f2496ba";
 
 #[test]
+fn protected_initial_cannot_exhaust_fragment_metadata() {
+    let mut frames = Vec::new();
+    for offset in 0..1024u16 {
+        frames.push(0x06); // CRYPTO
+        frames.extend_from_slice(&(0x4000 | (offset * 2)).to_be_bytes());
+        frames.extend_from_slice(&[1, 0xff]); // One byte at a distinct offset.
+    }
+    let packet = protect_client_initial(b"testdcid", 0, &frames);
+    let info = parse_quic_packet(&packet).unwrap();
+    assert_eq!(
+        info.crypto_reassembler.unwrap().get_fragments().count(),
+        256
+    );
+}
+
+#[test]
+fn hostile_initial_lengths_do_not_panic() {
+    for length in [u32::MAX as u64, u32::MAX as u64 + 1, (1u64 << 62) - 1] {
+        // A nonempty DCID reaches Initial decryption as well as header parsing.
+        let mut packet = vec![0xc0, 0, 0, 0, 1, 8];
+        packet.extend_from_slice(b"testdcid");
+        packet.extend_from_slice(&[0, 0]); // Empty SCID and token.
+        packet.extend_from_slice(&(length | (3u64 << 62)).to_be_bytes());
+        packet.extend_from_slice(&[0; 64]);
+        let info = parse_quic_packet(&packet).unwrap();
+        assert!(info.tls_info.is_none());
+    }
+}
+
+#[test]
 fn test_rfc9001_a1_initial_key_derivation() {
     let dcid = from_hex("8394c8f03e515708");
     let client_secret = derive_client_initial_secret(&dcid, 1).expect("client secret");
@@ -183,33 +213,50 @@ fn protect_client_initial(dcid: &[u8], packet_number: u32, frames: &[u8]) -> Vec
     packet
 }
 
-/// A large ClientHello (e.g. with post-quantum key shares) is split
-/// across multiple Initial packets that are coalesced into one datagram.
-/// The CRYPTO fragments of every coalesced packet must be merged before
-/// extracting the SNI - neither packet alone contains the full hostname.
+/// CRYPTO frames must assemble across coalesced Initial packets, including
+/// reverse order and an SNI that completes before the remaining TLS metadata.
 #[test]
 fn test_coalesced_initials_with_split_crypto_yield_sni() {
     let client_hello = from_hex(RFC9001_CLIENT_HELLO);
+    let sni_end = client_hello
+        .windows(11)
+        .position(|bytes| bytes == b"example.com")
+        .unwrap()
+        + 11;
+    for split in [60, sni_end] {
+        for reverse in [false, true] {
+            let (part1, part2) = client_hello.split_at(split);
+            let mut frames1 = vec![0x06, 0x00];
+            frames1.extend_from_slice(&(0x4000u16 | part1.len() as u16).to_be_bytes());
+            frames1.extend_from_slice(part1);
+            let mut frames2 = vec![0x06];
+            frames2.extend_from_slice(&(0x4000u16 | split as u16).to_be_bytes());
+            frames2.extend_from_slice(&(0x4000u16 | part2.len() as u16).to_be_bytes());
+            frames2.extend_from_slice(part2);
 
-    // Split inside the SNI hostname so packet 1 alone cannot yield it
-    let split = 60;
-    let (part1, part2) = client_hello.split_at(split);
-
-    let mut frames1 = vec![0x06, 0x00, part1.len() as u8]; // CRYPTO, offset 0
-    frames1.extend_from_slice(part1);
-    let mut frames2 = vec![0x06, split as u8]; // CRYPTO, offset 60
-    frames2.extend_from_slice(&(0x4000u16 | part2.len() as u16).to_be_bytes());
-    frames2.extend_from_slice(part2);
-
-    let dcid = from_hex("8394c8f03e515708");
-    let mut datagram = protect_client_initial(&dcid, 0, &frames1);
-    datagram.extend_from_slice(&protect_client_initial(&dcid, 1, &frames2));
-
-    let info = parse_quic_packet(&datagram).expect("coalesced datagram should parse");
-    assert_eq!(info.packet_type, QuicPacketType::Initial);
-    let tls = info
-        .tls_info
-        .expect("merged CRYPTO fragments should yield TLS info");
-    assert_eq!(tls.sni.as_deref(), Some("example.com"));
-    assert_eq!(tls.alpn, vec!["alpn".to_string()]);
+            let dcid = from_hex("8394c8f03e515708");
+            let first = protect_client_initial(&dcid, 0, &frames1);
+            let second = protect_client_initial(&dcid, 1, &frames2);
+            let datagram = if reverse {
+                [second, first].concat()
+            } else {
+                [first, second].concat()
+            };
+            let info = parse_quic_packet(&datagram).expect("coalesced datagram should parse");
+            assert_eq!(info.packet_type, QuicPacketType::Initial);
+            let tls = info
+                .tls_info
+                .expect("merged CRYPTO frames should yield TLS info");
+            assert_eq!(tls.sni.as_deref(), Some("example.com"));
+            assert_eq!(tls.alpn, vec!["alpn".to_string()]);
+            assert_eq!(tls.version, Some(TlsVersion::Tls13));
+            assert!(
+                info.crypto_reassembler
+                    .unwrap()
+                    .get_fragments()
+                    .next()
+                    .is_none()
+            );
+        }
+    }
 }

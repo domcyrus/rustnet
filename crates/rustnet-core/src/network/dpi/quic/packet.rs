@@ -6,7 +6,6 @@ use std::ops::Range;
 
 use super::crypto::decrypt_client_initial_packet;
 use super::tls::try_extract_tls_from_reassembler;
-use crate::network::dpi::tls_common::is_partial_sni;
 
 // QUIC v1 Initial salt (from RFC 9001)
 pub(super) const INITIAL_SALT_V1: &[u8] = &[
@@ -146,25 +145,23 @@ fn merge_quic_packet_info(existing: Option<QuicInfo>, new: QuicInfo) -> QuicInfo
                     existing.crypto_reassembler = Some(new_reassembler);
                 }
                 (Some(existing_reassembler), Some(new_reassembler)) => {
-                    for (&frag_offset, data) in new_reassembler.get_fragments() {
-                        if let Err(e) = existing_reassembler.add_fragment(frag_offset, data.clone())
-                        {
-                            warn!("QUIC: Failed to merge coalesced CRYPTO fragment: {}", e);
+                    if !existing_reassembler.extraction_finished() {
+                        if new_reassembler.extraction_finished() {
+                            existing_reassembler
+                                .finish_extraction(new_reassembler.get_cached_tls_info().cloned());
+                        } else {
+                            for (frag_offset, data) in new_reassembler.get_fragments() {
+                                if let Err(e) =
+                                    existing_reassembler.add_fragment(frag_offset, data.to_vec())
+                                {
+                                    warn!("QUIC: Failed to merge coalesced CRYPTO fragment: {}", e);
+                                }
+                            }
                         }
                     }
-
-                    // Re-extract if the merged fragments can improve on what we have
-                    let sni_missing_or_partial = existing
-                        .tls_info
-                        .as_ref()
-                        .and_then(|tls| tls.sni.as_ref())
-                        .is_none_or(|s| is_partial_sni(s));
-                    if sni_missing_or_partial
-                        && let Some(tls_info) =
-                            try_extract_tls_from_reassembler(existing_reassembler, false)
-                    {
-                        existing.tls_info = Some(tls_info);
-                    }
+                    // A complete SNI alone is not a complete ClientHello.
+                    let extracted = try_extract_tls_from_reassembler(existing_reassembler, false);
+                    merge_tls_info(&mut existing.tls_info, &extracted);
                 }
                 _ => {}
             }
@@ -313,11 +310,14 @@ pub(super) fn parse_long_header(payload: &[u8]) -> Option<LongHeader> {
         // Can't parse packet length, assume rest of datagram
         return Some(header);
     };
+    let Ok(packet_length) = usize::try_from(packet_length) else {
+        return Some(header);
+    };
 
     // Now offset points to the packet number field
     header.layout = Some(PacketLayout {
         pn_offset: offset,
-        packet_length: packet_length as usize,
+        packet_length,
     });
     Some(header)
 }
@@ -350,10 +350,9 @@ pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<Qu
 
     // Total packet size = header (pn_offset) + packet_length (includes pkt num + payload).
     // Use checked_add so an adversarial varint length can't overflow usize.
-    let total_packet_size = layout
-        .pn_offset
-        .checked_add(layout.packet_length)
-        .unwrap_or(payload.len());
+    let Some(total_packet_size) = layout.pn_offset.checked_add(layout.packet_length) else {
+        return (Some(quic_info), payload.len());
+    };
 
     debug!(
         "QUIC: Long header packet - header_len={}, packet_length={}, total={}",
@@ -596,7 +595,7 @@ fn scan_packet_frames(
                     crypto_offset, crypto_length
                 );
 
-                let crypto_len = crypto_length as usize;
+                let crypto_len = usize::try_from(crypto_length).ok()?;
                 let available = (payload.len() - offset).min(crypto_len);
 
                 if available > 0 {
@@ -615,7 +614,7 @@ fn scan_packet_frames(
             0x07 => {
                 // NEW_TOKEN frame
                 let token_length = read_varint(payload, &mut offset)?;
-                offset = offset.checked_add(token_length as usize)?;
+                offset = offset.checked_add(usize::try_from(token_length).ok()?)?;
                 if offset > payload.len() {
                     break;
                 }
@@ -633,7 +632,7 @@ fn scan_packet_frames(
                 }
 
                 let stream_data_len = if has_length {
-                    read_varint(payload, &mut offset)? as usize
+                    usize::try_from(read_varint(payload, &mut offset)?).ok()?
                 } else {
                     payload.len() - offset
                 };
@@ -689,7 +688,7 @@ fn scan_packet_frames(
 
                 let reason_length = read_varint(payload, &mut offset)?;
 
-                let reason_len = reason_length as usize;
+                let reason_len = usize::try_from(reason_length).ok()?;
                 let reason_end = offset.checked_add(reason_len)?;
                 let reason = if reason_length > 0 && reason_end <= payload.len() {
                     let reason_bytes = &payload[offset..reason_end];
@@ -898,6 +897,31 @@ pub(in crate::network::dpi) fn is_quic_packet(payload: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_frame_lengths_do_not_wrap_into_following_frames() {
+        for length in [u32::MAX as u64, 1u64 << 32, (1u64 << 62) - 1] {
+            // NEW_TOKEN, STREAM with explicit length, and both close variants.
+            for prefix in [&[0x07][..], &[0x0a, 0], &[0x1c, 0, 0], &[0x1d, 0]] {
+                let mut bytes = prefix.to_vec();
+                bytes.extend_from_slice(&(length | (3u64 << 62)).to_be_bytes());
+                // A truncated length must not turn these bytes into a CRYPTO frame.
+                bytes.extend_from_slice(&[0x06, 0, 1, 0x01]);
+                let mut info = QuicInfo::new(1);
+                info.ensure_reassembler();
+                let mut found_crypto = false;
+                let _ = scan_packet_frames(&bytes, &mut info, &mut found_crypto);
+                assert!(!found_crypto);
+                assert!(
+                    info.crypto_reassembler
+                        .unwrap()
+                        .get_fragments()
+                        .next()
+                        .is_none()
+                );
+            }
+        }
+    }
 
     /// A malformed Initial packet whose token_length varint decodes to a
     /// value far larger than the payload must not push `offset` past
