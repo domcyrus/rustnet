@@ -11,34 +11,44 @@ expression: output
                                                                                                                                             
                                                                                                                                             
 ▎ proc → 203.0.113.7:4433 [DNS_RESPONSE] · click a field to copy ───────────────────────────────────────────────────────────────────────────
-Connection                                                            Application: DNS                                                     ▐
-Protocol              UDP                                             DNS Query             example.com                                    ▐
-Status                Active (last seen <T> ago)                       DNS Type              A                                              ▐
-Local Address         192.168.1.10:50000                              DNS Response IPs      93.184.216.34, 93.184.216.35                   ▐
-Remote Address        203.0.113.7:4433                                DNS Answer            -                                              ▐
-Scope                 DOCUMENTATION                                   Transaction ID        0x1234                                         ▐
-State                 DNS_RESPONSE                                                                                                         ▐
-Process               proc                                                                                                                 ▐
-PID                   4242                                                                                                                 ▐
-Service               -                                               Attributed Name       -                                              ▐
-Observed VLANs        -                                               Attributed Via        -                                              ▐
-                                                                                                                                           ▐
-Network Context                                                       Transport Health                                                     ▐
-Local Hostname        -                                               DNS Response Time     -                                              ▐
-Local MAC             -                                               Last Response Code    NOERROR                                        ▐
-Remote Hostname       -                                               Request Retries (R)   -                                              ▐
-Remote MAC            -                                               Request Timeouts (T)  -                                              ▐
+Connection                                                            Application: DNS                                                      
+Protocol              UDP                                             DNS Query             example.com                                     
+Status                Active (last seen <T> ago)                       DNS Type              A                                               
+Local Address         192.168.1.10:50000                              DNS Response IPs      93.184.216.34, 93.184.216.35                    
+Remote Address        203.0.113.7:4433                                DNS Answer            -                                               
+Scope                 DOCUMENTATION                                   Transaction ID        0x1234                                          
+State                 DNS_RESPONSE                                                                                                          
+Process               proc                                                                                                                  
+PID                   4242                                                                                                                  
+Service               -                                               Attributed Name       -                                               
+Observed VLANs        -                                               Attributed Via        -                                               
+                                                                                                                                            
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               DNS Response Time     -                                               
+Local MAC             -                                               Last Response Code    NOERROR                                         
+Remote Hostname       -                                               Request Retries (R)   -                                               
+Remote MAC            -                                               Request Timeouts (T)  -                                               
 Country               -                                                                                                                     
 City                  -                                               Timed by pairing query and response IDs                               
 ASN                   -                                                                                                                     
                                                                                                                                             
 Attribution                                                                                                                                 
+PID                   4242                                                                                                                  
+PPID                  -                                                                                                                     
+Process Tree          -                                                                                                                     
+Executable            -                                                                                                                     
+User                  -                                                                                                                     
+Match                 -                                                                                                                     
                                                                                                                                             
-▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
+▎ Traffic Statistics · smoothed · independent B/s · linear · auto ──────────────────────────────────────────────────────────────────────────
+↓ RX Now -           →                             peak           -   ↑ TX Now -           →                             peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
- j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back                                                                h help  q quit
+Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ j/k connection  s scale  z log  l lock  c copy remote addr  esc back                                                        h help  q quit

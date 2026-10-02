@@ -7,13 +7,10 @@ expression: output
 Connection   Network   Process   Application   Health   Traffic                 
 ────────────────────────────────────────────────────────━━━━━━━─────────────────
 ▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────
-▎Traffic Statistics ────────────────────────────────────────────────────────────
-Bytes Sent            12.21 KB                                                  
-Bytes Received        234.38 KB                                                 
-Packets Sent          12                                                        
-Packets Received      234                                                       
-Current Rate (In)     3.05 MB/s                                                 
-Current Rate (Out)    927.73 KB/s                                               
+▎ Traffic Statistics · smoothed · independent B/s · linear · auto ──────────────
+↓ RX Now 3.05 MB/s   →peak   3.05 MB/s  ↑ TX Now 927.73 KB/s →peak 927.73 KB/s  
+Total 234.38 KB  ·  234 packets         Total 12.21 KB  ·  12 packets           
+Collecting traffic history...           Collecting traffic history...           
                                                                                 
                                                                                 
                                                                                 
@@ -25,4 +22,7 @@ Current Rate (Out)    927.73 KB/s
                                                                                 
                                                                                 
                                                                                 
- v/V section  j/k prev/next  c copy remote addr  esc back        h help  q quit
+                                                                                
+                                                                                
+                                                                                
+ v/V section/page  j/k connection  s scale  z log  l lock        h help  q quit

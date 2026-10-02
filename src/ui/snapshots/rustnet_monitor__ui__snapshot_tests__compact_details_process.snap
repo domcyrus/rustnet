@@ -7,7 +7,7 @@ expression: output
 Connection   Network   Process   Application   Health   Traffic                 
 ───────────────────────━━━━━━━──────────────────────────────────────────────────
 ▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────
-▎Attribution ───────────────────────────────────────────────────────────────────
+▎ Attribution ──────────────────────────────────────────────────────────────────
 PID                   2001                                                      
 PPID                  -                                                         
 Process Tree          -                                                         
@@ -25,4 +25,4 @@ Match                 -
                                                                                 
                                                                                 
                                                                                 
- v/V section  j/k prev/next  c copy remote addr  esc back        h help  q quit
+ v/V section/page  j/k connection  c copy remote addr            h help  q quit

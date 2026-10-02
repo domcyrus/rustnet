@@ -9,6 +9,20 @@ use log::{error, info};
 use crate::{app, network, ui};
 use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
 
+// Keep sampling independent from animation. Only visible scrolling graphs need
+// a 20 fps heartbeat; settled bars retain the lower terminal repaint cost.
+fn redraw_interval(loading: bool, state: &ui::UiState) -> Duration {
+    if loading {
+        Duration::from_millis(100)
+    } else if (state.graph_animation_visible.get() || state.bar_animations.is_active())
+        && !state.show_help
+    {
+        Duration::from_millis(50)
+    } else {
+        Duration::from_millis(500)
+    }
+}
+
 pub(crate) fn run<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
     app: &app::App,
@@ -18,16 +32,6 @@ where
     <B as ratatui::prelude::Backend>::Error: Send + Sync + 'static,
 {
     let tick_rate = Duration::from_millis(200);
-    // Idle redraw ceiling. Terminal emulators repaint whenever output
-    // arrives (iTerm2's renderer repaints the window on any content
-    // change), so the draw cadence directly sets the terminal's CPU
-    // cost. Input and data changes redraw immediately; graph animation
-    // and the live sidebar counters advance at this heartbeat.
-    let redraw_interval = Duration::from_millis(500);
-    // Full-size traffic waves scroll between 500ms samples in smaller
-    // increments. The one-row Overview waves keep the lower idle repaint rate
-    // because their four-dot vertical resolution makes faster motion flicker.
-    let wave_redraw_interval = Duration::from_millis(200);
     let mut last_tick = std::time::Instant::now();
     let mut last_draw = std::time::Instant::now();
     let mut needs_redraw = true; // first frame
@@ -104,13 +108,7 @@ where
         // terminal repaint) on every 200ms tick even with nothing going on.
         // The startup splash animates faster than the idle heartbeat, so
         // it gets a shorter redraw interval for its ~1s lifetime.
-        let idle_redraw = if app.is_loading() {
-            Duration::from_millis(100)
-        } else if matches!(ui_state.selected_tab, 1 | 3) {
-            wave_redraw_interval
-        } else {
-            redraw_interval
-        };
+        let idle_redraw = redraw_interval(app.is_loading(), &ui_state);
         if needs_redraw || last_draw.elapsed() >= idle_redraw {
             terminal.draw(|f| {
                 let grouped = if ui_state.grouping_enabled {
@@ -139,7 +137,7 @@ where
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::from_secs(0))
-            .min(idle_redraw.saturating_sub(last_draw.elapsed()));
+            .min(redraw_interval(app.is_loading(), &ui_state).saturating_sub(last_draw.elapsed()));
 
         if let Some((_, time)) = &ui_state.clipboard_message
             && time.elapsed().as_secs() >= 3
@@ -423,4 +421,46 @@ where
     } // end loop
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changing_bars_use_fast_redraws_only_until_they_settle() {
+        let state = ui::UiState::default();
+        let start = std::time::Instant::now();
+        state.bar_animations.begin_frame(start);
+        state
+            .bar_animations
+            .spans("bar", 0.2, 20, ratatui::style::Color::Reset);
+        state.bar_animations.finish_frame();
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(500));
+        state.bar_animations.begin_frame(start);
+        state
+            .bar_animations
+            .spans("bar", 0.8, 20, ratatui::style::Color::Reset);
+        state.bar_animations.finish_frame();
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(50));
+        state
+            .bar_animations
+            .begin_frame(start + Duration::from_millis(300));
+        state
+            .bar_animations
+            .spans("bar", 0.8, 20, ratatui::style::Color::Reset);
+        state.bar_animations.finish_frame();
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn help_and_loading_override_the_graph_animation_heartbeat() {
+        let mut state = ui::UiState::default();
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(500));
+        state.graph_animation_visible.set(true);
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(50));
+        state.show_help = true;
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(500));
+        assert_eq!(redraw_interval(true, &state), Duration::from_millis(100));
+    }
 }

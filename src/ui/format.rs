@@ -88,45 +88,83 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Char-safe truncation to `width` cells, ending in "…" when cut. Trailing
-/// whitespace on the kept prefix is dropped so the ellipsis never floats
-/// after a space.
+/// Terminal display width, using the same Unicode rules as the renderer.
+pub(super) fn cell_width(s: &str) -> usize {
+    use ratatui::buffer::CellWidth;
+    usize::from(s.cell_width())
+}
+
+/// Truncate at grapheme boundaries, reserving one cell for the ellipsis.
 pub(super) fn truncate_with_ellipsis(s: &str, width: usize) -> String {
-    if s.chars().count() <= width {
+    if width == 0 {
+        return String::new();
+    }
+    if cell_width(s) <= width {
         return s.to_string();
     }
-    if width <= 1 {
-        return "…".to_string();
+    let span = ratatui::text::Span::raw(s);
+    let mut kept = String::new();
+    let mut used = 0;
+    for grapheme in span.styled_graphemes(ratatui::style::Style::default()) {
+        let cells = cell_width(grapheme.symbol);
+        if used + cells > width - 1 {
+            break;
+        }
+        kept.push_str(grapheme.symbol);
+        used += cells;
     }
-    let kept: String = s.chars().take(width - 1).collect();
     format!("{}…", kept.trim_end())
 }
 
-/// Truncation to `max` chars that keeps the *end* of the string,
-/// prefixing "…" when cut. Like [`truncate_with_ellipsis`] it counts
-/// chars, not display cells, so a run of wide characters can still
-/// overflow a fixed-width column by a few cells.
-///
-/// The tail is the informative half of a filesystem path (the basename
-/// says what the binary is, the leading directories only say where it
-/// lives), so a path that has to lose characters loses them from the
-/// front.
-pub(super) fn ellipsize_left(s: &str, max: usize) -> String {
-    let len = s.chars().count();
-    if len <= max {
+/// Keep the end of a path without splitting wide or combining graphemes.
+pub(super) fn ellipsize_left(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if cell_width(s) <= width {
         return s.to_string();
     }
-    if max <= 1 {
-        return "…".to_string();
+    let span = ratatui::text::Span::raw(s);
+    let graphemes: Vec<_> = span
+        .styled_graphemes(ratatui::style::Style::default())
+        .collect();
+    let mut used = 0;
+    let mut start = graphemes.len();
+    for grapheme in graphemes.iter().rev() {
+        let cells = cell_width(grapheme.symbol);
+        if used + cells > width - 1 {
+            break;
+        }
+        start -= 1;
+        used += cells;
     }
-    let tail: String = s.chars().skip(len - (max - 1)).collect();
-    format!("…{tail}")
+    let mut result = String::from("…");
+    for grapheme in &graphemes[start..] {
+        result.push_str(grapheme.symbol);
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ellipsize_left, format_countdown};
     use std::time::Duration;
+
+    #[test]
+    fn truncation_respects_cells_and_keeps_graphemes_whole() {
+        use super::{cell_width, truncate_with_ellipsis};
+        assert_eq!(truncate_with_ellipsis("日本語-server", 6), "日本…");
+        assert_eq!(truncate_with_ellipsis("e\u{301}clair", 3), "e\u{301}c…");
+        assert_eq!(truncate_with_ellipsis("👩‍💻server", 3), "👩‍💻…");
+        assert_eq!(ellipsize_left("prefix-e\u{301}", 2), "…e\u{301}");
+        assert_eq!(ellipsize_left("prefix-👩‍💻", 3), "…👩‍💻");
+        for text in ["日本語-server", "e\u{301}clair", "👩‍💻server", "ｶﾞ-data"] {
+            for width in 0..20 {
+                assert!(cell_width(&truncate_with_ellipsis(text, width)) <= width);
+                assert!(cell_width(&ellipsize_left(text, width)) <= width);
+            }
+        }
+    }
 
     #[test]
     fn countdown_buckets_round_down() {
@@ -157,15 +195,13 @@ mod tests {
     #[test]
     fn hopeless_budgets_collapse_to_the_ellipsis() {
         assert_eq!(ellipsize_left("/usr/bin/curl", 1), "…");
-        assert_eq!(ellipsize_left("/usr/bin/curl", 0), "…");
+        assert_eq!(ellipsize_left("/usr/bin/curl", 0), "");
     }
 
     #[test]
     fn multibyte_input_is_cut_on_char_boundaries() {
-        // Counting bytes here would slice mid-codepoint and panic. The
-        // budget is in chars, so the wide-character result is 6 chars
-        // wide, not 6 cells.
-        assert_eq!(ellipsize_left("/日本語/データ/ファイル", 6), "…/ファイル");
+        // Wide characters consume two terminal cells.
+        assert_eq!(ellipsize_left("/日本語/データ/ファイル", 6), "…イル");
         assert_eq!(ellipsize_left("ααββγγ", 3), "…γγ");
     }
 }

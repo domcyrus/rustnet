@@ -1,5 +1,5 @@
 ---
 source: src/ui/mod.rs
-expression: output
+expression: status_bar_output(&ui_state)
 ---
- j/k prev/next  c copy remote addr  esc back                                                             h help  q quit
+ j/k connection  s scale  z log  l lock  c copy remote addr  esc back                                    h help  q quit

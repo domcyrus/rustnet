@@ -86,6 +86,7 @@ rustnet
 
 - [安装](INSTALL.zh-CN.md)：平台支持、权限配置与故障排查
 - [使用](USAGE.zh-CN.md)：操作、过滤、自动化与抓包导出
+- [终端布局与外观（开发版本）](TUI.zh-CN.md)
 - [安全](SECURITY.zh-CN.md)：沙箱与权限管理
 - [架构](ARCHITECTURE.zh-CN.md)：各平台后端与性能
 - [Kubernetes 与容器](KUBERNETES.zh-CN.md)：归属识别与抓包导出

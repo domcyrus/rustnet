@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Color,
     text::{Line, Span},
-    widgets::{Cell, Paragraph, Row},
+    widgets::{Cell, Paragraph, Row, Wrap},
 };
 use rustnet_host::{HostSocket, HostSocketState, HostTcpState};
 
@@ -18,7 +18,10 @@ use crate::ui::{
     ClickableRegions, Component, ComponentContext, DnsSort, Effect, HandlerContext, HostView,
     format::format_rtt_compact,
     section_header, section_title, theme, try_handle_pane_scroll, try_handle_pane_wheel,
-    widgets::{glow_bar, scrollbar::render_scrolled_table},
+    widgets::{
+        glow_bar,
+        scrollbar::{draw_scrolled_text, render_scrolled_table},
+    },
 };
 
 use super::interfaces::draw_interface_stats;
@@ -105,7 +108,7 @@ fn draw_dns_analytics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> 
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(chunks[0]);
         draw_dns_outcomes(f, summary[0], &snapshot, false);
-        draw_dns_latency(f, summary[1], &snapshot);
+        draw_dns_latency(f, summary[1], &snapshot, &ctx.ui_state.bar_animations);
     } else {
         draw_dns_outcomes(f, chunks[0], &snapshot, true);
     }
@@ -215,7 +218,12 @@ fn draw_dns_outcomes(
     }
 }
 
-fn draw_dns_latency(f: &mut Frame, area: Rect, snapshot: &DnsAnalyticsSnapshot) {
+fn draw_dns_latency(
+    f: &mut Frame,
+    area: Rect,
+    snapshot: &DnsAnalyticsSnapshot,
+    animation: &glow_bar::BarAnimations,
+) {
     let inner = section_header(f, area, section_title(" Response Time (matched txid)"));
     if inner.height == 0 {
         return;
@@ -269,7 +277,12 @@ fn draw_dns_latency(f: &mut Frame, area: Rect, snapshot: &DnsAnalyticsSnapshot) 
             format!("{bucket_label:<9}"),
             theme::fg(theme::muted()),
         )];
-        spans.extend(glow_bar::themed_spans(fraction, bar_width, theme::accent()));
+        spans.extend(animation.spans(
+            format!("host/dns/{bucket_label}"),
+            fraction,
+            bar_width,
+            theme::accent(),
+        ));
         spans.push(Span::styled(
             format!(" {:>3}%", (fraction * 100.0).round() as usize),
             theme::fg(theme::muted()),
@@ -355,7 +368,14 @@ fn draw_dns_questions(
     });
     let (header, widths) = if show_full {
         (
-            Row::new(["Question", "Type", "Lookups", "NXDOMAIN", "Failures", "p95"]),
+            Row::new([
+                Cell::from("Question"),
+                Cell::from("Type"),
+                right_header("Lookups"),
+                right_header("NXDOMAIN"),
+                right_header("Failures"),
+                right_header("p95"),
+            ]),
             vec![
                 Constraint::Min(24),
                 Constraint::Length(9),
@@ -367,7 +387,12 @@ fn draw_dns_questions(
         )
     } else {
         (
-            Row::new(["Question", "Lookups", "NX", "Fail"]),
+            Row::new([
+                Cell::from("Question"),
+                right_header("Lookups"),
+                right_header("NX"),
+                right_header("Fail"),
+            ]),
             vec![
                 Constraint::Min(20),
                 Constraint::Length(8),
@@ -400,13 +425,110 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         .collect();
     endpoints.sort_by_key(|socket| (socket.protocol, socket.local_addr, socket.remote_addr));
 
+    let endpoint_width = endpoints
+        .iter()
+        .map(|s| s.local_addr.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(22);
+    let peer_width = endpoints
+        .iter()
+        .filter_map(|s| s.remote_addr)
+        .map(|a| a.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(18);
+    let process_width = endpoints
+        .iter()
+        .filter_map(|s| s.owner.as_ref())
+        .map(|o| crate::ui::format::cell_width(&o.name))
+        .max()
+        .unwrap_or(0)
+        .max(20);
+    let service_width = endpoints
+        .iter()
+        .map(|s| {
+            ctx.app
+                .get_service_name(s.local_addr.port(), s.protocol)
+                .unwrap_or("-")
+                .len()
+        })
+        .max()
+        .unwrap_or(0)
+        .max(14);
+    let pid_width = endpoints
+        .iter()
+        .filter_map(|s| s.owner.as_ref())
+        .map(|o| o.pid.to_string().len())
+        .max()
+        .unwrap_or(0)
+        .max(8);
+    let required_width =
+        7 + 10 + endpoint_width + peer_width + service_width + pid_width + process_width + 8;
+    if area.width < 120 || area.height < 12 || usize::from(area.width) < required_width {
+        let inner = section_header(f, area, section_title("Host Socket States and Endpoints"));
+        let mut lines = socket_summary_lines(&snapshot.sockets, ctx.connections);
+        lines.push(Line::default());
+        lines.push(Line::from(section_title(format!(
+            "Listening and Bound Endpoints · {} rows",
+            endpoints.len()
+        ))));
+        for socket in endpoints {
+            let state = match socket.state {
+                HostSocketState::Tcp(state) => state.to_string(),
+                HostSocketState::UdpBound => "BOUND".to_string(),
+            };
+            lines.push(Line::from(section_title(format!(
+                "{} {state}",
+                socket.protocol
+            ))));
+            lines.push(Line::from(format!("Local: {}", socket.local_addr)));
+            lines.push(Line::from(format!(
+                "Peer: {}",
+                socket
+                    .remote_addr
+                    .map_or_else(|| "-".to_string(), |a| a.to_string())
+            )));
+            lines.push(Line::from(format!(
+                "Service: {}",
+                ctx.app
+                    .get_service_name(socket.local_addr.port(), socket.protocol)
+                    .unwrap_or("-")
+            )));
+            lines.push(Line::from(socket.owner.as_ref().map_or_else(
+                || "Process: -".to_string(),
+                |o| format!("Process: {} (PID {})", o.name, o.pid),
+            )));
+            lines.push(Line::default());
+        }
+        if lines.last().is_some_and(|line| line.width() == 0) {
+            lines.pop();
+        }
+        draw_scrolled_text(
+            f,
+            inner,
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            &ctx.ui_state.host_sockets_scroll,
+        );
+        return Ok(());
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .spacing(1)
         .constraints([Constraint::Length(5), Constraint::Min(5)])
         .split(area);
     draw_socket_summary(f, chunks[0], &snapshot.sockets, ctx.connections);
-    draw_endpoint_table(f, chunks[1], ctx, &endpoints);
+    let widths = [
+        Constraint::Length(7),
+        Constraint::Length(10),
+        Constraint::Min(endpoint_width as u16),
+        Constraint::Min(peer_width as u16),
+        Constraint::Length(service_width as u16),
+        Constraint::Length(pid_width as u16),
+        Constraint::Length(process_width as u16),
+    ];
+    draw_endpoint_table(f, chunks[1], ctx, &endpoints, &widths);
     Ok(())
 }
 
@@ -417,6 +539,16 @@ fn draw_socket_summary(
     connections: &[crate::network::types::Connection],
 ) {
     let inner = section_header(f, area, section_title(" Host Socket States"));
+    f.render_widget(
+        Paragraph::new(socket_summary_lines(sockets, connections)).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn socket_summary_lines(
+    sockets: &[HostSocket],
+    connections: &[crate::network::types::Connection],
+) -> Vec<Line<'static>> {
     let tcp_total = sockets
         .iter()
         .filter(|socket| matches!(socket.state, HostSocketState::Tcp(_)))
@@ -460,35 +592,29 @@ fn draw_socket_summary(
         label("   UDP BOUND "),
         value(udp_bound),
     ]);
-    f.render_widget(
-        Paragraph::new(state_line),
-        Rect::new(inner.x, inner.y, inner.width, 1),
-    );
+    let rtts: Vec<Duration> = connections
+        .iter()
+        .filter_map(|conn| conn.current_rtt())
+        .collect();
+    let rtt_line = if rtts.is_empty() {
+        Line::from(vec![label("Observed RTT  "), Span::raw("no samples")])
+    } else {
+        let average = rtts.iter().sum::<Duration>() / u32::try_from(rtts.len()).unwrap_or(1);
+        let maximum = rtts.iter().max().copied().unwrap_or_default();
+        Line::from(vec![
+            label("Observed RTT  "),
+            Span::styled(format!("{} samples", rtts.len()), theme::fg(theme::text())),
+            label("   average "),
+            Span::styled(format_rtt_compact(average), theme::fg(theme::ok())),
+            label("   max "),
+            Span::styled(format_rtt_compact(maximum), theme::fg(theme::warn())),
+        ])
+    };
+    vec![state_line, rtt_line]
+}
 
-    if inner.height > 1 {
-        let rtts: Vec<Duration> = connections
-            .iter()
-            .filter_map(|conn| conn.current_rtt())
-            .collect();
-        let rtt_line = if rtts.is_empty() {
-            Line::from(vec![label("Observed RTT  "), Span::raw("no samples")])
-        } else {
-            let average = rtts.iter().sum::<Duration>() / u32::try_from(rtts.len()).unwrap_or(1);
-            let maximum = rtts.iter().max().copied().unwrap_or_default();
-            Line::from(vec![
-                label("Observed RTT  "),
-                Span::styled(format!("{} samples", rtts.len()), theme::fg(theme::text())),
-                label("   average "),
-                Span::styled(format_rtt_compact(average), theme::fg(theme::ok())),
-                label("   max "),
-                Span::styled(format_rtt_compact(maximum), theme::fg(theme::warn())),
-            ])
-        };
-        f.render_widget(
-            Paragraph::new(rtt_line),
-            Rect::new(inner.x, inner.y + 1, inner.width, 1),
-        );
-    }
+fn right_header(text: &'static str) -> Cell<'static> {
+    Cell::from(Line::from(text).right_aligned())
 }
 
 fn label(text: &'static str) -> Span<'static> {
@@ -504,6 +630,7 @@ fn draw_endpoint_table(
     area: Rect,
     ctx: &ComponentContext<'_>,
     endpoints: &[&HostSocket],
+    widths: &[Constraint; 7],
 ) {
     let inner = section_header(
         f,
@@ -547,28 +674,20 @@ fn draw_endpoint_table(
         })
         .collect();
     let header = Row::new([
-        "Proto",
-        "State",
-        "Local endpoint",
-        "Peer",
-        "Service",
-        "PID",
-        "Process",
+        Cell::from("Proto"),
+        Cell::from("State"),
+        Cell::from("Local endpoint"),
+        Cell::from("Peer"),
+        Cell::from("Service"),
+        right_header("PID"),
+        Cell::from("Process"),
     ]);
     render_scrolled_table(
         f,
         inner,
         header,
         rows,
-        &[
-            Constraint::Length(7),
-            Constraint::Length(10),
-            Constraint::Min(22),
-            Constraint::Min(18),
-            Constraint::Length(14),
-            Constraint::Length(8),
-            Constraint::Length(20),
-        ],
+        widths,
         &ctx.ui_state.host_sockets_scroll,
     );
 }

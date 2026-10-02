@@ -120,6 +120,7 @@ pub fn run() -> Result<()> {
         // Color theme: CLI --theme > config file > muted default. Warnings go
         // to stderr here, before the terminal enters raw mode.
         let user_config = config::load();
+        ui::set_popup_shadow(user_config.popup_shadow);
         let theme_name = matches
             .get_one::<String>("theme")
             .map(String::as_str)

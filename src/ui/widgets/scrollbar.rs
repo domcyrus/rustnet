@@ -1,6 +1,5 @@
 //! Shared vertical scrollbar for panes whose content can overflow:
-//! the Overview connection table, the Details info panes, the Help
-//! overlay, and the Interfaces table.
+//! the Overview connection table, the Help overlay, and Host tables.
 
 use ratatui::{
     Frame,
@@ -102,6 +101,7 @@ pub(in crate::ui) fn render_scrolled_table(
     let total_rows = rows.len();
     let viewport = inner.height.saturating_sub(1) as usize;
     let max_scroll = (total_rows as u16).saturating_sub(viewport as u16);
+    scroll.record_viewport(viewport as u16);
     let scroll = scroll.clamp_for_render(max_scroll) as usize;
 
     let table = Table::new(rows.into_iter().skip(scroll), widths.iter().copied())

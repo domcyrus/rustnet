@@ -236,12 +236,55 @@ fn draw_activity(
         draw_capture(f, &snapshot, &basis, state, area);
         return;
     }
+    // Keep room for the browser and capture context before adding dashboard panels.
+    let dashboard = !state.section_navigation
+        && state.activity_view == ActivityView::Applications
+        && area.height >= 34;
+    let panels = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(if dashboard { 1 } else { 0 }),
+        Constraint::Length(if dashboard { 9 } else { 0 }),
+    ])
+    .split(area);
+    if dashboard {
+        let summaries = Layout::horizontal([Constraint::Percentage(50); 2])
+            .spacing(2)
+            .split(panels[2]);
+        draw_application_share(
+            f,
+            &snapshot,
+            state.activity_direction,
+            summaries[0],
+            &state.bar_animations,
+        );
+        draw_interface_share(
+            f,
+            app,
+            state.activity_direction,
+            summaries[1],
+            &state.bar_animations,
+        );
+    }
+    let main = Layout::vertical([
+        Constraint::Length(
+            if state.activity_is_details() || state.activity_view == ActivityView::Processes {
+                0
+            } else if state.section_navigation {
+                2
+            } else {
+                1
+            },
+        ),
+        Constraint::Min(0),
+    ])
+    .split(panels[0]);
+    draw_summary(f, &snapshot, &basis, state, main[0]);
     let columns = Layout::horizontal([
         Constraint::Min(0),
         Constraint::Length(if state.section_navigation { 0 } else { 36 }),
     ])
-    .spacing(if state.section_navigation { 0 } else { 3 })
-    .split(area);
+    .spacing(if state.section_navigation { 0 } else { 2 })
+    .split(main[1]);
     if !state.section_navigation {
         draw_capture(f, &snapshot, &basis, state, columns[1]);
     }
@@ -249,19 +292,158 @@ fn draw_activity(
         draw_process_details(f, &snapshot, &basis, state, columns[0]);
         return;
     }
-    let main = Layout::vertical([
-        Constraint::Length(if state.activity_view == ActivityView::Processes {
-            0
-        } else if state.section_navigation {
-            2
-        } else {
-            1
-        }),
-        Constraint::Min(0),
-    ])
-    .split(columns[0]);
-    draw_summary(f, &snapshot, &basis, state, main[0]);
-    draw_process_table(f, &snapshot, state, main[1], regions);
+    draw_process_table(f, &snapshot, state, columns[0], regions);
+}
+
+/// The summaries use the same 60-second window as the table's share column.
+/// Live rates retain fixed slots while bar lengths follow accumulated traffic.
+fn draw_application_share(
+    f: &mut Frame,
+    snapshot: &ProcessActivitySnapshot,
+    direction: ActivityDirection,
+    area: Rect,
+    animation: &glow_bar::BarAnimations,
+) {
+    let inner = section_header(
+        f,
+        area,
+        section_title(format!(
+            "Application share · {} · 60s",
+            direction.rate_label()
+        )),
+    );
+    let inner = Rect::new(
+        inner.x + 2,
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height,
+    );
+    let mut applications: Vec<_> = snapshot
+        .applications
+        .iter()
+        .filter(|application| window_bytes(application, direction) > 0)
+        .collect();
+    applications.sort_by(|a, b| {
+        window_bytes(b, direction)
+            .cmp(&window_bytes(a, direction))
+            .then_with(|| a.identity.name.cmp(&b.identity.name))
+    });
+    if applications.is_empty() {
+        draw_placeholder(f, inner, "No application traffic in the last 60s");
+        return;
+    }
+    let name_width = (inner.width / 3).min(24);
+    let bar_width = inner.width.saturating_sub(name_width + 9);
+    let rows = applications
+        .into_iter()
+        .take(usize::from(inner.height))
+        .map(|application| {
+            let share = window_share(application, direction);
+            Row::new(vec![
+                Cell::from(truncate_with_ellipsis(
+                    &application.identity.name,
+                    usize::from(name_width),
+                ))
+                .style(theme::fg(if application.identity.attributed {
+                    theme::text()
+                } else {
+                    theme::warn()
+                })),
+                Cell::from(Line::from(animation.spans(
+                    format!("activity/share/{direction:?}/{:?}", application.identity),
+                    share / 100.0,
+                    usize::from(bar_width),
+                    direction_color(direction),
+                ))),
+                right_cell(format!("{share:.1}%")).style(theme::fg(direction_color(direction))),
+            ])
+        });
+    f.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(name_width),
+                Constraint::Length(bar_width),
+                Constraint::Length(7),
+            ],
+        )
+        .column_spacing(1),
+        inner,
+    );
+}
+
+fn draw_interface_share(
+    f: &mut Frame,
+    app: &App,
+    direction: ActivityDirection,
+    area: Rect,
+    animation: &glow_bar::BarAnimations,
+) {
+    let inner = section_header(
+        f,
+        area,
+        section_title(format!(
+            "Interfaces · {} share 60s · live rates",
+            direction.rate_label()
+        )),
+    );
+    let inner = Rect::new(
+        inner.x + 2,
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height,
+    );
+    let windows = app.get_interface_traffic_windows();
+    let mut rates: Vec<_> = app.get_interface_rates().into_iter().collect();
+    if rates.is_empty() {
+        draw_placeholder(f, inner, "Waiting for interface counters...");
+        return;
+    }
+    let bytes = |name: &String| {
+        windows
+            .get(name)
+            .map_or(0, |window| direction.pick(window.tx_bytes, window.rx_bytes))
+    };
+    rates.sort_by(|a, b| bytes(&b.0).cmp(&bytes(&a.0)).then_with(|| a.0.cmp(&b.0)));
+    let total: f64 = rates.iter().map(|(name, _)| bytes(name) as f64).sum();
+    let name_width = 12;
+    let bar_width = inner.width.saturating_sub(name_width + 33);
+    let rows = rates
+        .into_iter()
+        .take(usize::from(inner.height))
+        .map(|(name, rate)| {
+            let fraction = if total == 0.0 {
+                0.0
+            } else {
+                bytes(&name) as f64 / total
+            };
+            Row::new(vec![
+                Cell::from(truncate_with_ellipsis(&name, usize::from(name_width))),
+                Cell::from(Line::from(animation.spans(
+                    format!("activity/interface/{direction:?}/{name}"),
+                    fraction,
+                    usize::from(bar_width),
+                    direction_color(direction),
+                ))),
+                Cell::from(summary_rate("TX", rate.tx_bytes_per_sec as f64))
+                    .style(theme::fg(theme::tx())),
+                Cell::from(summary_rate("RX", rate.rx_bytes_per_sec as f64))
+                    .style(theme::fg(theme::rx())),
+            ])
+        });
+    f.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(name_width),
+                Constraint::Length(bar_width),
+                Constraint::Length(15),
+                Constraint::Length(15),
+            ],
+        )
+        .column_spacing(1),
+        inner,
+    );
 }
 
 fn coverage_text(fraction: Option<f64>, exact: bool) -> String {
@@ -269,6 +451,20 @@ fn coverage_text(fraction: Option<f64>, exact: bool) -> String {
         || "n/a".to_string(),
         |f| format!("{}{:.1}%", if exact { "" } else { "~" }, f * 100.0),
     )
+}
+
+/// Fixed numeric and unit slots keep both directions anchored as rates cross
+/// digit and unit boundaries, including the idle placeholder.
+fn summary_rate(label: &str, rate: f64) -> String {
+    let formatted = format_rate(rate);
+    let (value, unit) = formatted.split_once(' ').unwrap_or((&formatted, ""));
+    // Very large GB/s values use scientific notation instead of widening the slot.
+    if value.len() > 7 {
+        let value = format!("{:.1e}", rate / 1024.0_f64.powi(3));
+        format!("{label} {value:>7} {unit:<4}")
+    } else {
+        format!("{label} {value:>7} {unit:<4}")
+    }
 }
 
 fn draw_summary(
@@ -280,12 +476,12 @@ fn draw_summary(
 ) {
     let mut rates = Line::from(vec![
         Span::styled(
-            format!("TX {}", format_rate(snapshot.current_tx_bps)),
+            summary_rate("TX", snapshot.current_tx_bps),
             theme::bold_fg(theme::tx()),
         ),
         Span::raw("   "),
         Span::styled(
-            format!("RX {}", format_rate(snapshot.current_rx_bps)),
+            summary_rate("RX", snapshot.current_rx_bps),
             theme::bold_fg(theme::rx()),
         ),
     ]);
@@ -340,17 +536,31 @@ fn draw_capture(
     state.activity_capture_area.set(area);
     let inner = section_header(f, area, section_title(" Capture"));
     let mut lines = vec![heading("Coverage · last 60s"), field("Basis", &basis.label)];
+    let mut bars = Vec::new();
     for direction in [ActivityDirection::Egress, ActivityDirection::Ingress] {
         let captured = snapshot_window_bytes(snapshot, direction);
         let interface = interface_window_bytes(basis, direction);
-        lines.push(Line::styled(
+        let fraction = coverage_fraction(captured, interface);
+        let mut coverage = vec![Span::styled(
             format!(
-                "{} {}",
-                direction.rate_label(),
-                coverage_text(coverage_fraction(captured, interface), basis.exact)
+                "{:<12}",
+                format!(
+                    "{} {}",
+                    direction.rate_label(),
+                    coverage_text(fraction, basis.exact)
+                )
             ),
             theme::bold_fg(direction_color(direction)),
-        ));
+        )];
+        if let Some(fraction) = fraction {
+            bars.push((lines.len(), direction, fraction));
+            coverage.extend(glow_bar::themed_spans(
+                fraction,
+                usize::from(inner.width.saturating_sub(14)),
+                direction_color(direction),
+            ));
+        }
+        lines.push(Line::from(coverage));
         lines.push(field("Captured", format_bytes(captured)));
         lines.push(field("Interface", format_bytes(interface)));
     }
@@ -371,6 +581,31 @@ fn draw_capture(
             format_bytes(retained.saturating_sub(attributed)),
         ));
         lines.push(field("Retained", format_bytes(retained)));
+    }
+    let text_width = inner.width.saturating_sub(2).max(1);
+    let wrapped_rows = |lines: &[Line<'_>]| {
+        Paragraph::new(lines.to_vec())
+            .wrap(Wrap { trim: false })
+            .line_count(text_width)
+    };
+    let offset = usize::from(
+        state.activity_capture_scroll.clamp_for_render(
+            u16::try_from(wrapped_rows(&lines))
+                .unwrap_or(u16::MAX)
+                .saturating_sub(inner.height),
+        ),
+    );
+    for (index, direction, fraction) in bars {
+        let row = wrapped_rows(&lines[..index]);
+        if (offset..offset + usize::from(inner.height)).contains(&row) {
+            lines[index].spans.truncate(1);
+            lines[index].spans.extend(state.bar_animations.spans(
+                format!("activity/coverage/{direction:?}/{}", basis.label),
+                fraction,
+                usize::from(inner.width.saturating_sub(14)),
+                direction_color(direction),
+            ));
+        }
     }
     draw_scrolled_text(
         f,
@@ -605,6 +840,9 @@ fn sort_processes(
             ActivitySort::CurrentTx => {
                 current_rate(a, direction).total_cmp(&current_rate(b, direction))
             }
+            ActivitySort::AverageTx => direction
+                .pick(a.average_tx_bps, a.average_rx_bps)
+                .total_cmp(&direction.pick(b.average_tx_bps, b.average_rx_bps)),
             ActivitySort::PeakTx => peak_rate(a, direction).total_cmp(&peak_rate(b, direction)),
             ActivitySort::Connections => a.total_connections.cmp(&b.total_connections),
             ActivitySort::Destinations => a.unique_destinations.cmp(&b.unique_destinations),
@@ -724,7 +962,11 @@ fn draw_process_table(
     let normal = width >= 65;
     let mut headers = vec![
         Cell::from(if members { "Process" } else { "Application" }),
-        right_cell(format!("{}/s", direction.rate_label())),
+        right_cell(if state.activity_sort == ActivitySort::AverageTx {
+            "2s Avg/s".to_string()
+        } else {
+            format!("{}/s", direction.rate_label())
+        }),
     ];
     let mut widths = vec![Constraint::Min(1), Constraint::Length(10)];
     if normal {
@@ -774,8 +1016,15 @@ fn draw_process_table(
                 } else {
                     theme::fg(theme::warn())
                 }),
-                right_cell(format_rate_compact(current_rate(process, direction), "-"))
-                    .style(theme::fg(direction_color(direction))),
+                right_cell(format_rate_compact(
+                    if state.activity_sort == ActivitySort::AverageTx {
+                        direction.pick(process.average_tx_bps, process.average_rx_bps)
+                    } else {
+                        current_rate(process, direction)
+                    },
+                    "-",
+                ))
+                .style(theme::fg(direction_color(direction))),
             ];
             if normal {
                 cells.push(right_cell(format!(
@@ -791,7 +1040,8 @@ fn draw_process_table(
                 )));
             }
             if medium {
-                cells.push(Cell::from(Line::from(glow_bar::themed_spans(
+                cells.push(Cell::from(Line::from(state.bar_animations.spans(
+                    format!("activity/table/{direction:?}/{:?}", process.identity),
                     window_share(process, direction) / 100.0,
                     12,
                     direction_color(direction),
@@ -843,6 +1093,8 @@ mod tests {
             },
             current_tx_bps: tx as f64,
             current_rx_bps: rx as f64,
+            average_tx_bps: tx as f64,
+            average_rx_bps: rx as f64,
             window_tx_bytes: tx,
             window_rx_bytes: rx,
             peak_tx_bps: tx as f64,
@@ -859,6 +1111,154 @@ mod tests {
             window_rx_share: 0.0,
             retained_tx_share: 0.0,
             retained_rx_share: 0.0,
+        }
+    }
+
+    #[test]
+    fn average_sort_uses_the_selected_direction_instead_of_current_rate() {
+        let mut burst = activity("burst", 10000, 100, 1);
+        let mut steady = activity("steady", 1000, 200, 2);
+        burst.average_tx_bps = 100.0;
+        burst.average_rx_bps = 1000.0;
+        steady.average_tx_bps = 500.0;
+        steady.average_rx_bps = 500.0;
+        for (direction, expected) in [
+            (ActivityDirection::Egress, "steady"),
+            (ActivityDirection::Ingress, "burst"),
+        ] {
+            let sorted = sort_processes(
+                vec![burst.clone(), steady.clone()],
+                ActivitySort::AverageTx,
+                false,
+                direction,
+            );
+            assert_eq!(sorted[0].identity.name, expected);
+        }
+    }
+
+    #[test]
+    fn live_summary_keeps_labels_numbers_and_units_anchored() {
+        use crate::ui::test_support::render;
+        assert_eq!(
+            summary_rate("TX", 100_000.0 * 1024.0_f64.powi(3)),
+            "TX   1.0e5 GB/s"
+        );
+        assert_eq!(summary_rate("RX", f64::MAX).len(), 15);
+        let basis = InterfaceBasis {
+            label: "eth0".into(),
+            tx_window_bytes: 1,
+            rx_window_bytes: 1,
+            exact: true,
+        };
+        let state = UiState {
+            filter_query: "firefox".into(),
+            ..Default::default()
+        };
+        let rates = [
+            0.0,
+            1.0,
+            9.0,
+            99.0,
+            1023.0,
+            1024.0,
+            999.99 * 1024.0,
+            1024.0_f64.powi(2),
+            999.99 * 1024.0_f64.powi(3),
+        ];
+        for width in [50, 80, 150] {
+            for &tx in &rates {
+                for &rx in &rates {
+                    let snapshot = ProcessActivitySnapshot {
+                        current_tx_bps: tx,
+                        current_rx_bps: rx,
+                        ..Default::default()
+                    };
+                    let output = render(width, 2, |f| {
+                        draw_summary(f, &snapshot, &basis, &state, f.area())
+                    });
+                    let row = output.lines().next().unwrap();
+                    assert_eq!(&row[0..3], "TX ");
+                    assert_eq!(&row[18..21], "RX ");
+                    assert_eq!(
+                        &row[34..],
+                        format!("· all traffic{}", " ".repeat(usize::from(width) - 47))
+                    );
+                    for (rate, value_start, unit_start) in [(tx, 3, 11), (rx, 21, 29)] {
+                        let formatted = format_rate(rate);
+                        let (value, unit) = formatted.split_once(' ').unwrap_or((&formatted, ""));
+                        assert_eq!(row[value_start..value_start + 7].trim(), value);
+                        assert_eq!(row[unit_start..unit_start + 4].trim(), unit);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interface_bars_follow_window_traffic_while_live_rates_keep_their_columns() {
+        use crate::network::interface_stats::{InterfaceRates, InterfaceTrafficWindow};
+        use crate::ui::test_support::{render_buffer, test_app};
+        let app = test_app();
+        for (name, tx, rx) in [("接口", 75, 25), ("eth0", 25, 75)] {
+            app.set_interface_rates_for_test(name, InterfaceRates::default());
+            app.set_interface_traffic_window_for_test(
+                name,
+                InterfaceTrafficWindow {
+                    tx_bytes: tx,
+                    rx_bytes: rx,
+                },
+            );
+        }
+        for width in [59, 74, 100] {
+            let before = render_buffer(width, 4, |f| {
+                draw_interface_share(
+                    f,
+                    &app,
+                    ActivityDirection::Egress,
+                    f.area(),
+                    &glow_bar::BarAnimations::default(),
+                )
+            });
+            app.set_interface_rates_for_test(
+                "接口",
+                InterfaceRates {
+                    tx_bytes_per_sec: 9_999_999,
+                    rx_bytes_per_sec: 1_024,
+                },
+            );
+            let after = render_buffer(width, 4, |f| {
+                draw_interface_share(
+                    f,
+                    &app,
+                    ActivityDirection::Egress,
+                    f.area(),
+                    &glow_bar::BarAnimations::default(),
+                )
+            });
+            assert_eq!(after[(2, 1)].symbol(), "接");
+            assert_eq!(after[(4, 1)].symbol(), "口");
+            for x in 0..width - 31 {
+                assert_eq!(before[(x, 1)], after[(x, 1)]);
+            }
+            for buffer in [&before, &after] {
+                assert_eq!(buffer[(width - 31, 1)].symbol(), "T");
+                assert_eq!(buffer[(width - 15, 1)].symbol(), "R");
+            }
+            let rx: String = (width - 15..width)
+                .map(|x| after[(x, 1)].symbol())
+                .collect();
+            assert_eq!(rx, "RX    1.00 KB/s");
+            let ingress = render_buffer(width, 4, |f| {
+                draw_interface_share(
+                    f,
+                    &app,
+                    ActivityDirection::Ingress,
+                    f.area(),
+                    &glow_bar::BarAnimations::default(),
+                )
+            });
+            assert_eq!(ingress[(2, 1)].symbol(), "e");
+            app.set_interface_rates_for_test("接口", InterfaceRates::default());
         }
     }
 

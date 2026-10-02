@@ -15,7 +15,7 @@ SERVFAIL 1   REFUSED 0   other 0                                             50-
                                                                                                                                             
                                                                                                                                             
 ▎ Question Names (60s)  sort: lookups ──────────────────────────────────────────────────────────────────────────────────────────────────────
-Question                                                                               Type      Lookups   NXDOMAIN   Failures  p95         
+Question                                                                               Type        Lookups   NXDOMAIN  Failures        p95  
 api.example.com                                                                        A                 1          0         0       12ms  
 cdn.example.com                                                                        A                 1          0         0       25ms  
 missing.example.com                                                                    AAAA              1          1         0       84ms  

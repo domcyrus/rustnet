@@ -251,11 +251,15 @@ const CONNECTION_DISPLAY: &[HelpRow] = &[
 ];
 
 const DETAILS_KEYS: &[HelpRow] = &[
+    ("s", "Toggle independent/shared scales in traffic charts"),
+    (
+        "z / l",
+        "Toggle log scale / lock current bounds in traffic charts",
+    ),
     ("↑/k, ↓/j", "Show the previous or next connection"),
     ("g, G", "Show the first or last connection"),
     ("Page Up/Down", "Move through connections by one page"),
     ("Ctrl+B/F", "Move through connections by one page"),
-    ("Ctrl+D/U", "Scroll the connection information panes"),
     ("c", "Copy the remote address"),
     ("Esc", "Return to Overview"),
 ];
@@ -311,6 +315,10 @@ const ACTIVITY_KEYS: &[HelpRow] = &[
 ];
 
 const ACTIVITY_CONCEPTS: &[HelpRow] = &[
+    (
+        "2s Avg TX/RX",
+        "Sort and show averaged rates with s for steadier ordering",
+    ),
     (
         "Applications",
         "Traffic grouped by process name; PIDs are inside details",
@@ -403,6 +411,21 @@ const DNS_CONCEPTS: &[HelpRow] = &[
 ];
 
 const GRAPH_KEYS: &[HelpRow] = &[
+    ("s", "Toggle independent/shared scales in the traffic view"),
+    ("z / l", "Toggle log scale / lock current traffic bounds"),
+    (
+        "Traffic fill",
+        "Smoothed wave; raw current/peak readings; ▲ above scale",
+    ),
+    (
+        "2s avg",
+        "Time-weighted rate over up to two seconds of observations",
+    ),
+    (
+        "j/k, ↑/↓",
+        "Scroll TCP states when the Health panel overflows",
+    ),
+    ("PgUp/PgDn", "Scroll TCP states by one page"),
     ("Esc", "Return to Overview"),
     (
         "Live view",
@@ -475,7 +498,15 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
         .collect::<Vec<_>>();
 
     if ui_state.section_navigation {
-        push_section(&mut lines, "Sections", &[crate::ui::sections::SECTION_HELP]);
+        let hint = if context == HelpContext::Details {
+            (
+                crate::ui::sections::SECTION_KEYS,
+                "Next/previous information page or section; click a section to select it",
+            )
+        } else {
+            crate::ui::sections::SECTION_HELP
+        };
+        push_section(&mut lines, "Sections", &[hint]);
     }
     match context {
         HelpContext::Overview => {
@@ -550,6 +581,21 @@ fn overlay_area(area: Rect, width: u16, content_rows: usize) -> Rect {
     )
 }
 
+fn help_shadow(
+    block: ratatui::widgets::Block<'_>,
+    enabled: bool,
+    no_color: bool,
+) -> ratatui::widgets::Block<'_> {
+    if enabled && !no_color {
+        block.shadow(
+            ratatui::widgets::Shadow::overlay()
+                .style(theme::fg(theme::faint()).add_modifier(ratatui::style::Modifier::DIM)),
+        )
+    } else {
+        block
+    }
+}
+
 pub(in crate::ui) fn draw_help_overlay(
     f: &mut Frame,
     ui_state: &UiState,
@@ -583,6 +629,11 @@ pub(in crate::ui) fn draw_help_overlay(
 
     let base_block =
         panel_block(format!(" Help · {} ", context.title())).padding(Padding::horizontal(1));
+    let base_block = help_shadow(
+        base_block,
+        crate::ui::POPUP_SHADOW.load(std::sync::atomic::Ordering::Relaxed),
+        crate::ui::NO_COLOR.load(std::sync::atomic::Ordering::Relaxed),
+    );
     let inner = base_block.inner(popup);
     let max_scroll = u16::try_from(content_rows)
         .unwrap_or(u16::MAX)
@@ -629,6 +680,34 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn optional_shadow_preserves_text_and_respects_no_color() {
+        use crate::ui::test_support::render_buffer;
+        use ratatui::{
+            layout::Rect,
+            style::Modifier,
+            widgets::{Block, Paragraph},
+        };
+        let render = |enabled, no_color| {
+            render_buffer(20, 10, |f| {
+                f.render_widget(
+                    Paragraph::new(vec![Line::from("abcdefghijklmnopqrst"); 10]),
+                    f.area(),
+                );
+                f.render_widget(
+                    super::help_shadow(Block::bordered(), enabled, no_color),
+                    Rect::new(2, 2, 10, 4),
+                );
+            })
+        };
+        let plain = render(false, false);
+        let shadow = render(true, false);
+        assert_eq!(plain[(12, 4)].symbol(), shadow[(12, 4)].symbol());
+        assert!(!plain[(12, 4)].modifier.contains(Modifier::DIM));
+        assert!(shadow[(12, 4)].modifier.contains(Modifier::DIM));
+        assert_eq!(plain, render(true, true));
     }
 
     #[test]
