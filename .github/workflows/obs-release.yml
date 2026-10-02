@@ -72,7 +72,6 @@ jobs:
       - name: Vendor dependencies
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          PACKAGE_NAME="rustnet"
           RELEASE_TAG="v${VERSION}"
           
           mkdir -p build-vendor

@@ -191,13 +191,6 @@ impl DnsResolver {
         }
     }
 
-    /// Create and start a DNS resolver with the given configuration.
-    pub(crate) fn new(config: DnsResolverConfig) -> anyhow::Result<Self> {
-        let resolver = Self::new_deferred(config);
-        resolver.start()?;
-        Ok(resolver)
-    }
-
     /// Create a DNS resolver that will not spawn background threads until
     /// [`DnsResolver::start`] is called.
     ///
@@ -205,24 +198,6 @@ impl DnsResolver {
     /// apply a process sandbox before starting general worker threads.
     pub fn with_defaults_deferred() -> Self {
         Self::new_deferred(DnsResolverConfig::default())
-    }
-
-    /// Create and start a DNS resolver with default configuration.
-    ///
-    /// This compatibility constructor logs a worker startup failure and returns
-    /// the inactive resolver so callers can retry [`Self::start`]. Call
-    /// [`Self::try_with_defaults`] when startup failure must be propagated.
-    pub fn with_defaults() -> Self {
-        let resolver = Self::with_defaults_deferred();
-        if let Err(error) = resolver.start() {
-            log::error!("Failed to start DNS resolver: {error}");
-        }
-        resolver
-    }
-
-    /// Create and start a DNS resolver, propagating worker startup failure.
-    pub fn try_with_defaults() -> anyhow::Result<Self> {
-        Self::new(DnsResolverConfig::default())
     }
 
     /// Start the background resolver and cache-cleanup threads.
@@ -532,7 +507,8 @@ mod tests {
             resolver_threads: 1,
             ..Default::default()
         };
-        let resolver = DnsResolver::new(config).unwrap();
+        let resolver = DnsResolver::new_deferred(config);
+        resolver.start().unwrap();
 
         // Loopback should not be queued
         resolver.request_resolution("127.0.0.1".parse().unwrap());

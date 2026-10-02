@@ -139,64 +139,15 @@ impl ParsedPacket {
     }
 }
 
-/// Configuration for packet parsing
-///
-/// # Example
-///
-/// ```rust,ignore
-/// // Create parser with custom DPI limit
-/// let config = ParserConfig {
-///     enable_dpi: true,
-///     dpi_packet_limit: 5,  // Only inspect first 5 packets per connection
-/// };
-/// let parser = PacketParser::with_config(config);
-///
-/// // In connection tracking code:
-/// if config.should_perform_dpi(connection.packet_count) {
-///     // Perform DPI on this packet
-/// }
-/// ```
+/// Configuration for packet parsing.
 #[derive(Clone)]
 pub struct ParserConfig {
     pub enable_dpi: bool,
-    /// Maximum number of packets per connection to inspect with DPI
-    /// Use `should_perform_dpi()` method to check if DPI should be applied
-    pub dpi_packet_limit: usize,
 }
 
 impl Default for ParserConfig {
     fn default() -> Self {
-        let config = Self {
-            enable_dpi: true,
-            dpi_packet_limit: 10, // Only inspect first 10 packets
-        };
-
-        log::trace!(
-            "ParserConfig: DPI {} (limit: {} packets per connection)",
-            if config.enable_dpi {
-                "enabled"
-            } else {
-                "disabled"
-            },
-            config.dpi_packet_limit
-        );
-
-        config
-    }
-}
-
-impl ParserConfig {
-    /// Check if DPI should be performed based on packet count
-    pub fn should_perform_dpi(&self, packet_count: usize) -> bool {
-        let should_dpi = self.enable_dpi && packet_count < self.dpi_packet_limit;
-        if !should_dpi && self.enable_dpi {
-            log::trace!(
-                "DPI skipped: packet {} exceeds limit {}",
-                packet_count,
-                self.dpi_packet_limit
-            );
-        }
-        should_dpi
+        Self { enable_dpi: true }
     }
 }
 
@@ -1198,7 +1149,6 @@ mod tests {
     fn test_parser_default_config() {
         let config = ParserConfig::default();
         assert!(config.enable_dpi, "DPI should be enabled by default");
-        assert_eq!(config.dpi_packet_limit, 10);
     }
 
     #[test]

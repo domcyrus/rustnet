@@ -345,15 +345,6 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     Ok((cap, device_name, linktype.0))
 }
 
-/// Validate that the specified interface exists (if provided)
-/// This is useful for failing fast before starting capture threads
-pub fn validate_interface(interface_name: &Option<String>) -> Result<()> {
-    if let Some(name) = interface_name {
-        find_capture_device(&Some(name.clone()))?;
-    }
-    Ok(())
-}
-
 /// Resolve a Windows interface alias ("Ethernet", "Wi-Fi") to the
 /// `\Device\NPF_{GUID}` name Npcap registers the adapter under, via the
 /// interface table's Alias and InterfaceGuid columns. `None` when no

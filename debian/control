@@ -7,7 +7,6 @@ Build-Depends: debhelper-compat (= 13),
                rustc-1.88,
                libpcap-dev,
                libelf-dev,
-               elfutils,
                zlib1g-dev,
                clang,
                llvm,
@@ -23,8 +22,7 @@ Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends},
          ${misc:Depends},
          libpcap0.8,
-         libelf1,
-         elfutils
+         libelf1
 Recommends: libcap2-bin
 Description: Cross-platform network monitoring terminal UI tool
  RustNet provides real-time visibility into network connections with

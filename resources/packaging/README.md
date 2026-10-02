@@ -24,7 +24,7 @@ and dark backgrounds, and the desktop icon at 16, 24, 32, 48, 64 and 256 pixels.
 Rendering can differ across renderer versions; use the pinned version.
 
 - Linux: 256px PNG plus scalable SVG, installed by DEB, RPM, PPA, COPR and OBS.
-- macOS: 1024px PNG, ICNS with standard/Retina sizes, and a 900x450 DMG
+- macOS: ICNS with standard/Retina sizes, and a 900x450 DMG
   background matching the positions in `.github/workflows/release.yml`.
 - Windows: ICO with 16/24/32/48/64/128/256px images, used by the MSI shortcut
   and Installed Apps entry. The CLI executable does not embed an icon.
@@ -48,7 +48,7 @@ Rendering can differ across renderer versions; use the pinned version.
 并检查浅色、深色背景及小尺寸显示。
 
 - Linux：256 像素 PNG 和可缩放 SVG，由 DEB、RPM、PPA、COPR 和 OBS 安装。
-- macOS：1024 像素 PNG、包含标准及 Retina 尺寸的 ICNS，以及与发布流程图标位置
+- macOS：包含标准及 Retina 尺寸的 ICNS，以及与发布流程图标位置
   对应的 900×450 DMG 背景。
 - Windows：ICO 包含 16/24/32/48/64/128/256 像素尺寸，用于 MSI 快捷方式和
   已安装应用列表；命令行程序本身不嵌入图标。
@@ -69,7 +69,7 @@ Python 3.10+ と指定バージョンの `resvg-py`（Rust SVG レンダラー�
 生成物をまとめてコミットし、明暗の背景と小さいサイズで表示を確認してください。
 
 - Linux：256px PNG と SVG を DEB、RPM、PPA、COPR、OBS に同梱します。
-- macOS：1024px PNG、標準・Retina サイズを含む ICNS、リリース処理のアイコン配置に
+- macOS：標準・Retina サイズを含む ICNS、リリース処理のアイコン配置に
   合わせた 900×450 の DMG 背景を生成します。
 - Windows：ICO は 16/24/32/48/64/128/256px を含み、MSI のショートカットと
   インストール済みアプリ一覧で使います。CLI 実行ファイルには埋め込みません。

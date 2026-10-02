@@ -2504,7 +2504,6 @@ mod path_shortening_tests {
             mode: SandboxMode::BestEffort,
             block_network: false,
             read_paths: vec![],
-            write_paths: vec![],
             drop_uid: None,
         })
         .expect("best-effort sandbox must apply without error");

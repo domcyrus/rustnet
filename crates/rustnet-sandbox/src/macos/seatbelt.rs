@@ -154,8 +154,8 @@ fn build_sbpl_network_profile(config: &SandboxConfig, allow_dns_resolution: bool
 /// Build the complete SBPL profile string based on configuration.
 ///
 /// The configured read paths (e.g. GeoIP databases, possibly under /Users)
-/// get `literal` + `subpath` read allows; the configured write paths get
-/// `literal` allows, plus `subpath` when the path is a directory (log dirs).
+/// get `literal` + `subpath` read allows. Output descriptors are opened
+/// before sandboxing; the profile grants no pathname write exceptions.
 fn build_sbpl_profile(config: &SandboxConfig, allow_dns_resolution: bool) -> String {
     let mut profile = String::from(SBPL_PROFILE_BASE);
 
@@ -173,29 +173,6 @@ fn build_sbpl_profile(config: &SandboxConfig, allow_dns_resolution: bool) -> Str
             "\n;; Allow reads from configured read paths (e.g. GeoIP databases)\n\
              (allow file-read-data\n{})\n",
             read_rules.join("\n")
-        );
-    }
-
-    let write_rules: Vec<String> = config
-        .write_paths
-        .iter()
-        .map(|p| {
-            let path = sbpl_path(p);
-            // Directories (e.g. the logs dir) cover their subtree; files get
-            // an exact-path rule.
-            if Path::new(&resolve_to_absolute(p)).is_dir() {
-                format!("    (literal \"{path}\")\n    (subpath \"{path}\")")
-            } else {
-                format!("    (literal \"{path}\")")
-            }
-        })
-        .collect();
-    if !write_rules.is_empty() {
-        let _ = write!(
-            profile,
-            "\n;; Allow writes to configured output paths (log files, exports)\n\
-             (allow file-write*\n{})\n",
-            write_rules.join("\n")
         );
     }
 
@@ -316,38 +293,27 @@ mod tests {
     use crate::SandboxMode;
     use std::path::PathBuf;
 
-    fn config(read: &[&str], write: &[&str], block_network: bool) -> SandboxConfig {
+    fn config(read: &[&str], block_network: bool) -> SandboxConfig {
         SandboxConfig {
             mode: SandboxMode::BestEffort,
             block_network,
             read_paths: read.iter().map(PathBuf::from).collect(),
-            write_paths: write.iter().map(PathBuf::from).collect(),
             drop_uid: None,
         }
     }
 
     #[test]
     fn test_profile_includes_configured_paths() {
-        let profile = build_sbpl_profile(
-            &config(
-                &["/usr/share/GeoIP"],
-                &["/private/var/rustnet/events.jsonl"],
-                true,
-            ),
-            false,
-        );
+        let profile = build_sbpl_profile(&config(&["/usr/share/GeoIP"], true), false);
         assert!(profile.contains(r#"(subpath "/usr/share/GeoIP")"#));
         assert!(profile.contains(r#"(literal "/usr/share/GeoIP")"#));
-        assert!(profile.contains(r#"(literal "/private/var/rustnet/events.jsonl")"#));
-        // A nonexistent file path must not get a subpath rule
-        assert!(!profile.contains(r#"(subpath "/private/var/rustnet/events.jsonl")"#));
     }
 
     #[test]
     fn test_profile_without_paths_has_no_empty_allow_sections() {
-        let profile = build_sbpl_profile(&config(&[], &[], true), false);
+        let profile = build_sbpl_profile(&config(&[], true), false);
         assert!(!profile.contains("(allow file-read-data\n)"));
-        assert!(!profile.contains("(allow file-write*\n)"));
+        assert!(!profile.contains("(allow file-write*"));
         // The deny sections must still be present
         assert!(profile.contains("deny file-read-data"));
         assert!(profile.contains("deny file-write*"));
@@ -358,7 +324,7 @@ mod tests {
         // Both with and without network blocking, the base profile must deny
         // reads of the system credential stores rustnet never needs.
         for block_network in [true, false] {
-            let profile = build_sbpl_profile(&config(&[], &[], block_network), false);
+            let profile = build_sbpl_profile(&config(&[], block_network), false);
             for store in ["/Library/Keychains", "/private/var/db/dslocal", "/etc/ssh"] {
                 assert!(
                     profile.contains(store),
@@ -371,13 +337,10 @@ mod tests {
     #[test]
     fn test_profile_network_deny_toggle() {
         assert_eq!(
-            build_sbpl_network_profile(&config(&[], &[], true), false),
+            build_sbpl_network_profile(&config(&[], true), false),
             SBPL_NETWORK_DENY
         );
-        assert_eq!(
-            build_sbpl_network_profile(&config(&[], &[], false), false),
-            ""
-        );
+        assert_eq!(build_sbpl_network_profile(&config(&[], false), false), "");
     }
 
     #[test]
@@ -399,28 +362,23 @@ mod tests {
     (remote udp "*:53"))
 "#;
         assert_eq!(
-            build_sbpl_network_profile(&config(&[], &[], true), true),
+            build_sbpl_network_profile(&config(&[], true), true),
             expected
         );
-        assert_eq!(
-            build_sbpl_network_profile(&config(&[], &[], false), true),
-            ""
-        );
+        assert_eq!(build_sbpl_network_profile(&config(&[], false), true), "");
     }
 
     #[test]
     fn test_profile_includes_process_exec_deny() {
-        let profile = build_sbpl_profile(&config(&[], &[], false), false);
+        let profile = build_sbpl_profile(&config(&[], false), false);
         assert!(profile.contains("(deny process-exec)"));
         assert!(profile.contains(r#"(literal "/usr/sbin/lsof")"#));
     }
 
     #[test]
     fn test_profile_is_valid_cstring_and_escaped() {
-        let profile = build_sbpl_profile(
-            &config(&[], &[r#"/private/tmp/path"with\special"#], true),
-            false,
-        );
+        let profile =
+            build_sbpl_profile(&config(&[r#"/private/tmp/path"with\special"#], true), false);
         CString::new(profile.clone()).expect("profile must not contain null bytes");
         assert!(profile.contains(r#"/private/tmp/path\"with\\special"#));
     }

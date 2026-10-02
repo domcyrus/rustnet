@@ -79,7 +79,11 @@ fn main() -> anyhow::Result<()> {
         }
 
         tracker.cleanup(SystemTime::now());
-        let mut connections = tracker.snapshot();
+        let mut connections: Vec<_> = tracker
+            .connections()
+            .iter()
+            .map(|entry| entry.value().snapshot_clone())
+            .collect();
         connections.sort_by_key(|c| std::cmp::Reverse(c.bytes_sent + c.bytes_received));
 
         let interfaces = stats_provider

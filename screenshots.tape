@@ -8,18 +8,16 @@
 #   cargo build --release
 #   sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' target/release/rustnet
 #
-# Walks every tab and emits PNGs under assets/screenshots/.
+# Captures the four README views and emits PNGs under assets/screenshots/.
 # Sized larger than demo.tape (1600x1000, FontSize 16) for crisper README
 # rendering. The GIF Output is a throwaway and is deleted by the script.
 #
 # Beats and outputs:
 #   1. Overview                      -> assets/screenshots/overview.png
-#   2. Filter mode (/port:443)       -> assets/screenshots/filter.png
-#   3. Process grouping (a, Space)   -> assets/screenshots/grouping.png
-#   4. Details from a grouped child  -> assets/screenshots/details.png
+#   2. Details from a grouped child  -> assets/screenshots/details.png
 #      (shows the continuity strip + "grouped by process" badge)
-#   5. Graph (4)                     -> assets/screenshots/graph.png
-#   6. Activity (3)                  -> assets/screenshots/interfaces.png
+#   3. Graph (4)                     -> assets/screenshots/graph.png
+#   4. Activity (3)                  -> assets/screenshots/interfaces.png
 #
 # The font is pinned deliberately. The traffic graphs are drawn with Unicode
 # Braille (U+2800..U+28FF), and VHS's default family is plain "JetBrains Mono",
@@ -61,17 +59,7 @@ Sleep 500ms
 Screenshot "assets/screenshots/overview.png"
 Sleep 500ms
 
-# 2. Filter mode
-Type "/"
-Sleep 400ms
-Type "port:443"
-Sleep 1500ms
-Screenshot "assets/screenshots/filter.png"
-Sleep 500ms
-Escape
-Sleep 800ms
-
-# 3. Process grouping: expand the selected group and step onto a child.
+# Prepare Details: expand the selected process group and step onto a child.
 Type "a"
 Sleep 1500ms
 Space
@@ -80,10 +68,7 @@ Down
 Sleep 400ms
 Down
 Sleep 1000ms
-Screenshot "assets/screenshots/grouping.png"
-Sleep 500ms
-
-# 4. Details from the grouped child: continuity strip + grouped badge.
+# 2. Details from the grouped child: continuity strip + grouped badge.
 Enter
 Sleep 2500ms
 Screenshot "assets/screenshots/details.png"
@@ -93,13 +78,13 @@ Sleep 800ms
 Type "a"
 Sleep 800ms
 
-# 5. Graph
+# 3. Graph
 Type "4"
 Sleep 2500ms
 Screenshot "assets/screenshots/graph.png"
 Sleep 500ms
 
-# 6. Activity
+# 4. Activity
 Type "3"
 Sleep 2500ms
 Screenshot "assets/screenshots/interfaces.png"

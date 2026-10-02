@@ -18,8 +18,7 @@
 #     column hiding keeps the table clean at the narrower cell count, and
 #     the sidebar toggle beat shows columns flowing back in
 #   - navigations should read as zooming/expanding, not screen replacement
-#   - filtering is left to the README screenshots; the GIF shows fewer
-#     things for longer
+#   - the GIF shows fewer things for longer
 #
 # Storyboard (~28s, 6 beats):
 #   1. Reveal Overview with live traffic, let it breathe.

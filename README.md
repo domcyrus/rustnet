@@ -93,6 +93,8 @@ Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See th
 - [Changelog](CHANGELOG.md): releases and upcoming changes
 - [Contributing](CONTRIBUTING.md): how to contribute
 
+The `rustnet` binary is the supported product. Workspace crate APIs are internal and may change without compatibility shims.
+
 RustNet uses [ratatui](https://github.com/ratatui-org/ratatui) for its terminal UI and [libpcap](https://www.tcpdump.org/)/[Npcap](https://npcap.com/) for packet capture. See [CONTRIBUTORS.md](CONTRIBUTORS.md) for project contributors.
 
 Licensed under [Apache License 2.0](LICENSE).

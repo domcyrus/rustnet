@@ -48,7 +48,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::SystemTime;
 
 /// TCP state reported by the host operating system's socket table.
 ///
@@ -147,7 +146,6 @@ impl SocketOwner {
 
 /// One socket returned by the host operating system.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub struct HostSocket {
     pub protocol: Protocol,
     pub local_addr: SocketAddr,
@@ -162,46 +160,16 @@ pub struct HostSocket {
     pub native_id: Option<u64>,
 }
 
-impl HostSocket {
-    pub fn new(protocol: Protocol, local_addr: SocketAddr, state: HostSocketState) -> Self {
-        Self {
-            protocol,
-            local_addr,
-            remote_addr: None,
-            state,
-            owner: None,
-            native_id: None,
-        }
-    }
-
-    pub fn with_remote_addr(mut self, remote_addr: SocketAddr) -> Self {
-        self.remote_addr = Some(remote_addr);
-        self
-    }
-
-    pub fn with_owner(mut self, owner: SocketOwner) -> Self {
-        self.owner = Some(owner);
-        self
-    }
-
-    pub fn with_native_id(mut self, native_id: u64) -> Self {
-        self.native_id = Some(native_id);
-        self
-    }
-}
-
 /// Point-in-time host socket inventory.
 #[derive(Debug, Clone, Default)]
 pub struct SocketSnapshot {
     pub sockets: Arc<[HostSocket]>,
-    pub collected_at: Option<SystemTime>,
 }
 
 impl SocketSnapshot {
     pub(crate) fn new(sockets: Vec<HostSocket>) -> Self {
         Self {
             sockets: sockets.into(),
-            collected_at: Some(SystemTime::now()),
         }
     }
 }

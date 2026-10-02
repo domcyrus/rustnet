@@ -136,7 +136,7 @@ impl App {
             loop_interval,
             move || {
                 let start = Instant::now();
-                let total_connections = tracker.len();
+                let total_connections = tracker.connections().len();
 
                 let snapshot_data = build_connection_snapshot(
                     &tracker,

@@ -93,6 +93,8 @@ rustnet
 - [更新日志](CHANGELOG.md)：已发布和即将发布的变更
 - [参与贡献](CONTRIBUTING.zh-CN.md)：贡献指南
 
+受支持的产品是 `rustnet` 可执行程序。工作区 crate 的 API 属于内部接口，变更时不保证兼容，也不保留兼容层。
+
 RustNet 使用 [ratatui](https://github.com/ratatui-org/ratatui) 构建终端界面，使用 [libpcap](https://www.tcpdump.org/)/[Npcap](https://npcap.com/) 抓包。项目贡献者见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
 本项目采用 [Apache License 2.0](LICENSE) 许可证。

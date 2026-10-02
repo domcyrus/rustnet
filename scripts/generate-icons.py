@@ -85,7 +85,6 @@ def main() -> None:
     sizes = sorted(set(ICO_SIZES) | {size for _, size in ICNS_SIZES})
     rendered = {size: png(desktop, size) for size in sizes}
     write(f"{PACKAGING}/linux/graphics/rustnet.png", rendered[256])
-    write(f"{PACKAGING}/macos/graphics/rustnet.png", rendered[1024])
     write(f"{PACKAGING}/windows/graphics/rustnet.ico", ico(rendered))
     write(f"{PACKAGING}/macos/graphics/rustnet.icns", icns(rendered))
 

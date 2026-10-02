@@ -10,12 +10,6 @@ use serde::Serialize;
 
 use super::HeadlessExit;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WriterCompletion {
-    Written,
-    BrokenPipe,
-}
-
 #[derive(Debug, Clone)]
 enum WriterStatus {
     Finished,
@@ -128,7 +122,7 @@ impl<T: Serialize + Send + 'static> AsyncOutput<T> {
 
     /// Replace any pending live value with the terminal value and seal further
     /// offers. The deadline covers terminal serialization, writing, and flushing.
-    pub(super) fn finish(mut self, terminal: T, deadline: Duration) -> Result<WriterCompletion> {
+    pub(super) fn finish(mut self, terminal: T, deadline: Duration) -> Result<()> {
         self.replace_pending(OutputRecord {
             value: terminal,
             terminal: true,
@@ -152,8 +146,7 @@ impl<T: Serialize + Send + 'static> AsyncOutput<T> {
         };
         self.join_finished_worker()?;
         match status {
-            WriterStatus::Finished => Ok(WriterCompletion::Written),
-            WriterStatus::BrokenPipe => Ok(WriterCompletion::BrokenPipe),
+            WriterStatus::Finished | WriterStatus::BrokenPipe => Ok(()),
             WriterStatus::Failed(error) => anyhow::bail!("headless output failed: {error}"),
         }
     }

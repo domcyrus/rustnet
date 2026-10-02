@@ -35,6 +35,7 @@ use crate::network::{
 use super::capture::{CaptureStatus, PreparedCapture};
 use super::enrichment::PreparedProcessEnrichment;
 use super::logging::{JsonLineWriter, log_pcap_connection};
+#[cfg(test)]
 use super::output::precreate_private_file;
 use super::runtime::{InitStatus, RuntimeSupervisor, StopReport, WorkerStartupPermit};
 use super::sampling::build_connection_snapshot;
@@ -237,24 +238,16 @@ fn build_geoip_resolver(config: &Config) -> Option<Arc<GeoIpResolver>> {
 }
 
 impl App {
-    /// Create an application instance with default output handles. Tests only:
-    /// production goes through [`new_with_output_handles`](Self::new_with_output_handles).
+    /// Create a test application with default output handles.
     #[cfg(test)]
     pub(crate) fn new(config: Config) -> Result<Self> {
-        Self::new_with_output_handles(config, AppOutputHandles::default())
-    }
-
-    pub fn new_with_output_handles(
-        config: Config,
-        output_handles: AppOutputHandles,
-    ) -> Result<Self> {
         let pcap_export_file = config
             .pcap_export_file
             .as_deref()
             .map(precreate_private_file)
             .transpose()
             .map_err(|error| anyhow::anyhow!("failed to open PCAP output: {error}"))?;
-        Self::new_with_preopened_pcap(config, output_handles, pcap_export_file)
+        Self::new_with_preopened_pcap(config, AppOutputHandles::default(), pcap_export_file)
     }
 
     /// Construct an application using a classic-PCAP descriptor opened during
@@ -1012,7 +1005,7 @@ impl App {
                 drop(published);
                 self.stats
                     .connections_tracked
-                    .store(self.tracker.len() as u64, Ordering::Relaxed);
+                    .store(self.tracker.connections().len() as u64, Ordering::Relaxed);
 
                 // Connections not yet cleaned up still need their sidecar record.
                 // Read the tracker only after all producers and enrichment workers

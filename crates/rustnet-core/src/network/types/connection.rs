@@ -66,17 +66,6 @@ impl AppProtocolDistribution {
         }
     }
 
-    /// Calculate distribution from a list of connections
-    pub fn from_connections(connections: &[Connection]) -> Self {
-        let mut dist = Self::default();
-
-        for conn in connections {
-            dist.record_connection(conn);
-        }
-
-        dist
-    }
-
     /// Get total connection count
     pub fn total(&self) -> usize {
         self.https_count

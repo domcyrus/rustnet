@@ -16,7 +16,7 @@ use crate::app::{App, StopReport};
 mod output;
 mod schema;
 
-use output::{AsyncOutput, WriterCompletion};
+use output::AsyncOutput;
 use schema::{RuntimePhase, SnapshotEnvelope};
 
 #[cfg(test)]
@@ -90,17 +90,6 @@ pub enum HeadlessExit {
     BrokenPipe,
 }
 
-impl HeadlessExit {
-    /// Stable machine-readable token for the termination reason.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ShutdownRequested => "shutdown_requested",
-            Self::DurationElapsed => "duration_elapsed",
-            Self::BrokenPipe => "broken_pipe",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 enum TerminationReason {
     ShutdownRequested,
@@ -132,15 +121,6 @@ impl TerminationReason {
     }
 }
 
-/// Completed run information. Callers should inspect the stop report before
-/// choosing their process exit status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[must_use = "inspect the shutdown report before exiting"]
-pub struct HeadlessRunOutcome {
-    pub exit: HeadlessExit,
-    pub stop_report: StopReport,
-}
-
 /// Run the headless output loop and always attempt bounded application
 /// shutdown before returning.
 ///
@@ -153,7 +133,7 @@ pub fn run<W: Write + Send + 'static>(
     writer: W,
     options: &HeadlessOptions,
     shutdown_requested: &AtomicBool,
-) -> Result<HeadlessRunOutcome> {
+) -> Result<StopReport> {
     run_with_writer_deadline(
         app,
         writer,
@@ -169,7 +149,7 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
     options: &HeadlessOptions,
     shutdown_requested: &AtomicBool,
     writer_deadline: Duration,
-) -> Result<HeadlessRunOutcome> {
+) -> Result<StopReport> {
     let mut output = match AsyncOutput::spawn(writer) {
         Ok(output) => output,
         Err(error) => {
@@ -240,14 +220,8 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
         return Err(failure.error);
     }
 
-    let exit = successful_exit.expect("successful monitor result has an exit reason");
-    match terminal_result? {
-        WriterCompletion::Written => Ok(HeadlessRunOutcome { exit, stop_report }),
-        WriterCompletion::BrokenPipe => Ok(HeadlessRunOutcome {
-            exit: HeadlessExit::BrokenPipe,
-            stop_report,
-        }),
-    }
+    terminal_result?;
+    Ok(stop_report)
 }
 
 fn stream_json_lines(

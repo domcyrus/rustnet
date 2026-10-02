@@ -234,6 +234,7 @@ impl StartupSocketOwners {
         }
     }
 
+    #[cfg(feature = "ebpf")]
     pub(super) fn len(&self) -> usize {
         self.owners.len()
     }
@@ -819,14 +820,14 @@ mod tests {
     /// An established TCP socket row as the refreshed inventory would list
     /// it after the uid drop: tuple and inode visible, owner or not.
     fn host_socket(local: &str, remote: &str, inode: u64) -> HostSocket {
-        let mut socket = HostSocket::new(
-            Protocol::Tcp,
-            local.parse().unwrap(),
-            HostSocketState::Tcp(HostTcpState::Established),
-        );
-        socket.remote_addr = Some(remote.parse().unwrap());
-        socket.native_id = Some(inode);
-        socket
+        HostSocket {
+            protocol: Protocol::Tcp,
+            local_addr: local.parse().unwrap(),
+            remote_addr: Some(remote.parse().unwrap()),
+            state: HostSocketState::Tcp(HostTcpState::Established),
+            owner: None,
+            native_id: Some(inode),
+        }
     }
 
     fn snapshot_lookup(

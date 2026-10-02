@@ -68,7 +68,7 @@ fn set_no_new_privs() -> std::io::Result<()> {
 /// are compiled out; PR_SET_NO_NEW_PRIVS and the root uid drop still run.
 pub(crate) fn apply(
     config: &SandboxConfig,
-    allow_dns_resolution: bool,
+    _allow_dns_resolution: bool,
 ) -> anyhow::Result<SandboxReport> {
     #[cfg(feature = "landlock")]
     use anyhow::Context;
@@ -208,7 +208,7 @@ pub(crate) fn apply(
     }
 
     #[cfg(feature = "landlock")]
-    match landlock::apply_landlock(config, allow_dns_resolution) {
+    match landlock::apply_landlock(config, _allow_dns_resolution) {
         Ok(ll_result) => {
             result.fs_restricted = ll_result.fs_applied;
             result.net_restricted = ll_result.net_applied;
