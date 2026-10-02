@@ -13,13 +13,6 @@ pub struct ServiceLookup {
 }
 
 impl ServiceLookup {
-    /// Create an empty service lookup
-    pub fn new() -> Self {
-        Self {
-            services: HashMap::new(),
-        }
-    }
-
     pub fn from_embedded() -> Result<Self> {
         let mut services = HashMap::new();
 
@@ -70,7 +63,9 @@ impl ServiceLookup {
 
     /// Create with common well-known services
     pub fn with_defaults() -> Self {
-        let mut lookup = Self::new();
+        let mut lookup = Self {
+            services: HashMap::new(),
+        };
 
         // Common TCP services
         lookup.add_service(20, Protocol::Tcp, "ftp-data");
@@ -122,12 +117,6 @@ impl ServiceLookup {
     /// Look up a service name by port and protocol
     pub fn lookup(&self, port: u16, protocol: Protocol) -> Option<&str> {
         self.services.get(&(port, protocol)).map(|s| s.as_str())
-    }
-}
-
-impl Default for ServiceLookup {
-    fn default() -> Self {
-        Self::with_defaults()
     }
 }
 

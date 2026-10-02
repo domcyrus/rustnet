@@ -70,9 +70,6 @@ WORKDIR /app
 # Copy the binary from builder stage
 COPY --from=builder /app/target/release/rustnet /usr/local/bin/rustnet
 
-# Copy the services asset for reference (the binary already embeds it at build time)
-COPY --from=builder /app/crates/rustnet-core/assets/services ./assets/services
-
 # Create logs directory
 RUN mkdir -p /app/logs && chown rustnet:rustnet /app/logs
 

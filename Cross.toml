@@ -1,9 +1,11 @@
+# eBPF skeleton generation links libelf and zlib on the build host as well
+# as on the target. Install both development-library architectures explicitly.
 [target.aarch64-unknown-linux-gnu]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:edge"
 pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
     "apt-get update -y",
-    "apt-get install -y libelf-dev:arm64 zlib1g-dev:arm64 libpcap-dev:arm64 gcc-aarch64-linux-gnu protobuf-compiler libseccomp-dev:arm64 libbpf-dev clang llvm"
+    "apt-get install -y libelf-dev zlib1g-dev libelf-dev:arm64 zlib1g-dev:arm64 libpcap-dev:arm64 gcc-aarch64-linux-gnu clang llvm"
 ]
 
 [target.armv7-unknown-linux-gnueabihf]
@@ -11,11 +13,5 @@ image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:edge"
 pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
     "apt-get update -y",
-    "apt-get install -y libelf-dev:armhf zlib1g-dev:armhf libpcap-dev:armhf gcc-arm-linux-gnueabihf protobuf-compiler libseccomp-dev:armhf libbpf-dev clang llvm"
+    "apt-get install -y libelf-dev zlib1g-dev libelf-dev:armhf zlib1g-dev:armhf libpcap-dev:armhf gcc-arm-linux-gnueabihf clang llvm"
 ]
-
-[target.x86_64-unknown-freebsd]
-# FreeBSD cross-compilation uses a Linux container with FreeBSD sysroot
-# The sysroot should already contain libpcap
-# No pre-build steps needed as we can't run FreeBSD package manager in Linux container
-

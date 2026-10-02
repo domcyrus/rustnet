@@ -3,10 +3,9 @@ description: >-
   Stage a built rustnet binary with the services asset, README and LICENSE in
   the release-archive layout and pack it as tar.gz or zip.
 
-# The staging layout is a cross-job contract: package-installers, package-macos
-# and package-windows in release.yml (and the Homebrew formula) unpack
-# rustnet-<version>-<target>/{rustnet[.exe],assets/services,README.md,LICENSE},
-# so every release build must produce it through this action.
+# Installers unpack the binary from the versioned staging directory.
+# Keep assets/services for the AUR binary package's installation recipe,
+# although RustNet embeds the database and never reads the packaged copy.
 
 inputs:
   binary:

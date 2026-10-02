@@ -247,17 +247,6 @@ impl DetailsSection {
             .position(|section| *section == self)
             .unwrap_or(0)
     }
-
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Connection => "Connection",
-            Self::Network => "Network",
-            Self::Process => "Process",
-            Self::Application => "Application",
-            Self::Health => "Health",
-            Self::Traffic => "Traffic",
-        }
-    }
 }
 
 /// Sort modes for the process activity view.

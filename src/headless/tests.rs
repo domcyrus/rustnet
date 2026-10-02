@@ -99,7 +99,7 @@ pub(super) fn object_keys(value: &Value) -> Vec<&str> {
 fn json_writes_one_final_versioned_snapshot() {
     let mut app = app_with_connections();
     let output = SharedWriter::default();
-    let outcome = run(
+    let stop_report = run(
         &mut app,
         output.clone(),
         &HeadlessOptions {
@@ -111,7 +111,7 @@ fn json_writes_one_final_versioned_snapshot() {
     )
     .unwrap();
 
-    assert_eq!(outcome.exit, HeadlessExit::DurationElapsed);
+    assert_eq!(stop_report.timed_out_workers, 0);
     let output = output.bytes();
     assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
     let value: Value = serde_json::from_slice(&output).unwrap();
@@ -138,7 +138,7 @@ fn json_writes_one_final_versioned_snapshot() {
 fn jsonl_emits_an_initial_snapshot_and_applies_filter() {
     let mut app = app_with_connections();
     let output = SharedWriter::default();
-    let outcome = run(
+    let stop_report = run(
         &mut app,
         output.clone(),
         &HeadlessOptions {
@@ -150,7 +150,7 @@ fn jsonl_emits_an_initial_snapshot_and_applies_filter() {
     )
     .unwrap();
 
-    assert_eq!(outcome.exit, HeadlessExit::DurationElapsed);
+    assert_eq!(stop_report.timed_out_workers, 0);
     let output = output.bytes();
     let records: Vec<Value> = output
         .split(|byte| *byte == b'\n')
@@ -186,7 +186,7 @@ impl Write for BrokenPipeWriter {
 #[test]
 fn broken_pipe_is_a_clean_exit() {
     let mut app = app_with_connections();
-    let outcome = run(
+    let stop_report = run(
         &mut app,
         BrokenPipeWriter,
         &HeadlessOptions {
@@ -198,8 +198,7 @@ fn broken_pipe_is_a_clean_exit() {
     )
     .unwrap();
 
-    assert_eq!(outcome.exit, HeadlessExit::BrokenPipe);
-    assert_eq!(outcome.stop_report.timed_out_workers, 0);
+    assert_eq!(stop_report.timed_out_workers, 0);
 }
 
 struct FlushBrokenPipeWriter(Vec<u8>);
@@ -218,7 +217,7 @@ impl Write for FlushBrokenPipeWriter {
 #[test]
 fn broken_pipe_while_flushing_is_a_clean_exit() {
     let mut app = app_with_connections();
-    let outcome = run(
+    let stop_report = run(
         &mut app,
         FlushBrokenPipeWriter(Vec::new()),
         &HeadlessOptions {
@@ -230,8 +229,7 @@ fn broken_pipe_while_flushing_is_a_clean_exit() {
     )
     .unwrap();
 
-    assert_eq!(outcome.exit, HeadlessExit::BrokenPipe);
-    assert_eq!(outcome.stop_report.timed_out_workers, 0);
+    assert_eq!(stop_report.timed_out_workers, 0);
 }
 
 #[derive(Default)]
@@ -434,10 +432,7 @@ fn superseded_snapshots_are_dropped_without_serialization_and_terminal_is_writte
     }
 
     release.send(()).unwrap();
-    assert_eq!(
-        completion.join().unwrap().unwrap(),
-        WriterCompletion::Written
-    );
+    completion.join().unwrap().unwrap();
     finished.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(*serialized.lock().unwrap(), [1, 19]);
     assert_eq!(dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 19);
@@ -763,7 +758,7 @@ fn unexpected_critical_worker_exit_stops_an_indefinite_run() {
 fn shared_shutdown_condition_ends_json_mode() {
     let mut app = app_with_connections();
     let output = SharedWriter::default();
-    let outcome = run(
+    let stop_report = run(
         &mut app,
         output.clone(),
         &HeadlessOptions {
@@ -775,10 +770,11 @@ fn shared_shutdown_condition_ends_json_mode() {
     )
     .unwrap();
 
-    assert_eq!(outcome.exit, HeadlessExit::ShutdownRequested);
+    assert_eq!(stop_report.timed_out_workers, 0);
     let output = output.bytes();
     let value: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(value["runtime"]["status"], "stopped");
+    assert_eq!(value["runtime"]["termination_reason"], "shutdown_requested");
 }
 
 #[test]

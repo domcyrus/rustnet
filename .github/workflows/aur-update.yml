@@ -41,7 +41,6 @@ jobs:
       - name: Download release assets and calculate checksums
         id: checksums
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           TAG="${{ steps.version.outputs.tag }}"
 
           # Define asset names

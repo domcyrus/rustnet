@@ -33,8 +33,9 @@ Everything lives under the [`network`] module.
 
 ## Status
 
-The public API is currently `0.x` and may change between minor versions while
-the workspace split stabilizes.
+This is an internal RustNet crate. Its API follows workspace needs and may
+change without compatibility shims. The supported product is the `rustnet`
+binary.
 
 ## License
 

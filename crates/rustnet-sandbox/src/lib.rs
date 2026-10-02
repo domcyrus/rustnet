@@ -133,9 +133,6 @@ pub struct SandboxConfig {
     pub block_network: bool,
     /// Paths that need read access after sandboxing (e.g., GeoIP databases)
     pub read_paths: Vec<PathBuf>,
-    /// Paths that need write access after sandboxing (e.g., log files,
-    /// PCAP exports). Directories grant their whole subtree.
-    pub write_paths: Vec<PathBuf>,
     /// When running as root: the identity to drop to after initialization
     /// (`None` = not root, or drop disabled via `--no-uid-drop`)
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]

@@ -31,9 +31,9 @@ programs, and pre-create output files first, apply the sandbox on the main
 thread, and only then spawn the worker threads that should inherit the
 restrictions. See the crate docs for the full ordering contract.
 
-RustNet retains its securely opened output descriptors across this transition
-and passes an empty `write_paths` list. It does not reopen output paths after
-sandboxing. Other library callers can explicitly configure path exceptions.
+RustNet retains its securely opened output descriptors across this transition.
+The sandbox grants no pathname write exceptions; outputs are not reopened
+after sandboxing.
 
 The crate deliberately depends on no other rustnet crate: callers pass in
 paths and an optional drop target, nothing else.

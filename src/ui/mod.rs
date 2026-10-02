@@ -2757,13 +2757,14 @@ mod snapshot_tests {
         let app = test_app();
         let endpoint = "[2001:db8:1234:5678:abcd:1234:5678:abcd]:65535";
         app.set_socket_snapshot_for_test(SocketSnapshot {
-            sockets: Arc::from([HostSocket::new(
-                Protocol::Tcp,
-                endpoint.parse().unwrap(),
-                HostSocketState::Tcp(HostTcpState::Listen),
-            )
-            .with_owner(SocketOwner::new(123456, "日本語-server", Some(1000)))]),
-            collected_at: Some(SystemTime::UNIX_EPOCH),
+            sockets: Arc::from([HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: endpoint.parse().unwrap(),
+                remote_addr: None,
+                state: HostSocketState::Tcp(HostTcpState::Listen),
+                owner: Some(SocketOwner::new(123456, "日本語-server", Some(1000))),
+                native_id: None,
+            }]),
         });
         for width in [50, 80, 100, 140] {
             let mut state = UiState {
@@ -2900,29 +2901,31 @@ mod snapshot_tests {
         app.set_connections_snapshot_for_test(connections);
         app.set_socket_snapshot_for_test(SocketSnapshot {
             sockets: Arc::from([
-                HostSocket::new(
-                    Protocol::Tcp,
-                    "0.0.0.0:8080".parse().unwrap(),
-                    HostSocketState::Tcp(HostTcpState::Listen),
-                )
-                .with_owner(SocketOwner::new(4242, "web-server", Some(1000)))
-                .with_native_id(123),
-                HostSocket::new(
-                    Protocol::Tcp,
-                    "192.0.2.10:49152".parse().unwrap(),
-                    HostSocketState::Tcp(HostTcpState::Established),
-                )
-                .with_remote_addr("198.51.100.20:443".parse().unwrap())
-                .with_native_id(124),
-                HostSocket::new(
-                    Protocol::Udp,
-                    "127.0.0.1:53".parse().unwrap(),
-                    HostSocketState::UdpBound,
-                )
-                .with_owner(SocketOwner::new(53, "resolver", Some(0)))
-                .with_native_id(125),
+                HostSocket {
+                    protocol: Protocol::Tcp,
+                    local_addr: "0.0.0.0:8080".parse().unwrap(),
+                    remote_addr: None,
+                    state: HostSocketState::Tcp(HostTcpState::Listen),
+                    owner: Some(SocketOwner::new(4242, "web-server", Some(1000))),
+                    native_id: Some(123),
+                },
+                HostSocket {
+                    protocol: Protocol::Tcp,
+                    local_addr: "192.0.2.10:49152".parse().unwrap(),
+                    remote_addr: Some("198.51.100.20:443".parse().unwrap()),
+                    state: HostSocketState::Tcp(HostTcpState::Established),
+                    owner: None,
+                    native_id: Some(124),
+                },
+                HostSocket {
+                    protocol: Protocol::Udp,
+                    local_addr: "127.0.0.1:53".parse().unwrap(),
+                    remote_addr: None,
+                    state: HostSocketState::UdpBound,
+                    owner: Some(SocketOwner::new(53, "resolver", Some(0))),
+                    native_id: Some(125),
+                },
             ]),
-            collected_at: Some(SystemTime::UNIX_EPOCH),
         });
 
         let mut ui_state = UiState {
@@ -4296,9 +4299,17 @@ mod snapshot_tests {
         state.set_selected_by_index(&connections, 0);
         let selected = state.selected_connection_key.clone();
         for section in DetailsSection::ALL {
+            let title = match section {
+                DetailsSection::Connection => "Connection",
+                DetailsSection::Network => "Network",
+                DetailsSection::Process => "Process",
+                DetailsSection::Application => "Application",
+                DetailsSection::Health => "Health",
+                DetailsSection::Traffic => "Traffic",
+            };
             let (output, regions) = render_app_frame(&app, &mut state, &connections, None, 80, 24);
             assert_eq!(state.details_section, section);
-            assert!(output.contains(section.title()));
+            assert!(output.contains(title));
             assert!(output.contains(sections::SECTION_KEYS));
             assert_eq!(state.selected_connection_key, selected);
             assert!(
@@ -4306,7 +4317,7 @@ mod snapshot_tests {
                 "section should fit: {output}"
             );
             insta::with_settings!({filters => time_filters()}, {
-                insta::assert_snapshot!(format!("compact_details_{}", section.title().to_lowercase()), output);
+                insta::assert_snapshot!(format!("compact_details_{}", title.to_lowercase()), output);
             });
             let mut ctx = HandlerContext {
                 app: &app,

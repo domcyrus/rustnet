@@ -881,7 +881,6 @@ impl App {
         let oui_lookup = self.oui_lookup.clone();
         let parser_config = ParserConfig {
             enable_dpi: self.config.enable_dpi,
-            ..Default::default()
         };
 
         self.runtime
@@ -1644,7 +1643,7 @@ mod prepared_pcap_tests {
 #[cfg(test)]
 mod packet_worker_tests {
     use super::*;
-    use crate::app::{AppOutputHandles, Config};
+    use crate::app::Config;
 
     fn udp_frame(marker: u8) -> Vec<u8> {
         // Ethernet/IPv4 UDP from loopback to 198.51.100.10, with a valid
@@ -1698,7 +1697,7 @@ mod packet_worker_tests {
             filter_localhost: false,
             ..Config::default()
         };
-        let mut app = App::new_with_output_handles(config, AppOutputHandles::default()).unwrap();
+        let mut app = App::new(config).unwrap();
         *app.linktype.write().unwrap() = Some(1);
         let batch_count = PROCESSOR_BATCH_GROUP_LIMIT * 2 + 1;
         let (packet_tx, packet_rx) = channel::bounded(batch_count);
@@ -1769,7 +1768,7 @@ mod packet_worker_tests {
         assert_eq!(report.timed_out_workers, 0);
         assert_eq!(report.panicked_workers, 0);
         assert_eq!(committer.state.lock().unwrap().next_sequence, 3);
-        assert_eq!(app.tracker.len(), 1);
+        assert_eq!(app.tracker.connections().len(), 1);
         assert_eq!(app.tracker.historic_len(), 3);
         assert_eq!(
             app.stats.packets_processed.load(Ordering::Relaxed),
@@ -1796,7 +1795,7 @@ mod packet_worker_tests {
             filter_localhost: false,
             ..Config::default()
         };
-        let mut app = App::new_with_output_handles(config, AppOutputHandles::default()).unwrap();
+        let mut app = App::new(config).unwrap();
         *app.linktype.write().unwrap() = Some(1);
         let batch_count = PROCESSOR_BATCH_GROUP_LIMIT * 3 + 1;
         let (packet_tx, packet_rx) = channel::bounded(batch_count);

@@ -31,7 +31,8 @@
 //!     }
 //! }
 //! tracker.cleanup(SystemTime::now()); // expire idle/closed connections
-//! for conn in tracker.snapshot() {
+//! for entry in tracker.connections().iter() {
+//!     let conn = entry.value();
 //!     println!("{} {} -> {}", conn.protocol, conn.local_addr, conn.remote_addr);
 //! }
 //! ```
@@ -1058,22 +1059,6 @@ impl ConnectionTracker {
         removed
     }
 
-    /// A point-in-time copy of the active connections.
-    ///
-    /// Note: this is a full clone, including each connection's rate-sample
-    /// buffer; the buffer is shared via `Arc`, so the *next* per-packet
-    /// update on a live connection pays a copy-on-write deep copy. Callers
-    /// that only need the cached `current_*_rate_bps` fields (any read-only
-    /// view) should prefer [`Connection::snapshot_clone`] over the entries of
-    /// [`connections`](Self::connections) to keep the packet path allocation-
-    /// free.
-    pub fn snapshot(&self) -> Vec<Connection> {
-        self.connections
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect()
-    }
-
     /// Inspect the active and historic maps as one consistent retained view.
     ///
     /// Cleanup cannot move a connection between the maps while `inspect` is
@@ -1088,16 +1073,6 @@ impl ConnectionTracker {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         inspect(&self.connections, &self.historic)
-    }
-
-    /// Number of active connections.
-    pub fn len(&self) -> usize {
-        self.connections.len()
-    }
-
-    /// `true` if there are no active connections.
-    pub fn is_empty(&self) -> bool {
-        self.connections.is_empty()
     }
 
     /// Number of historic (recently-closed) connections.
@@ -2199,12 +2174,12 @@ mod tests {
         let first = tracker.ingest(&p);
         assert!(first.created, "first packet should create a connection");
         assert!(!first.dropped);
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
 
         let second = tracker.ingest(&p);
         assert!(!second.created, "second packet should update, not create");
         assert_eq!(second.key, first.key);
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
     }
 
     #[test]
@@ -2212,7 +2187,7 @@ mod tests {
         let tracker = ConnectionTracker::new();
         tracker.ingest(&parse(&udp_frame(40000, 53)));
         tracker.ingest(&parse(&udp_frame(40001, 53)));
-        assert_eq!(tracker.len(), 2);
+        assert_eq!(tracker.connections().len(), 2);
     }
 
     #[test]
@@ -2271,7 +2246,7 @@ mod tests {
         assert!(!replacement.dropped);
         assert!(replacement.archived.is_some());
         assert_eq!(tracker.active_count.load(Ordering::Relaxed), 1);
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
         assert_eq!(tracker.historic_len(), 1);
 
         let update = tracker.ingest_at(
@@ -2324,7 +2299,7 @@ mod tests {
         let b = tracker.ingest(&parse(&udp_frame(40001, 53)));
         assert!(b.dropped, "new connection beyond the limit must be dropped");
         assert!(!b.created);
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
 
         // The existing flow still updates despite the limit.
         let a2 = tracker.ingest(&parse(&udp_frame(40000, 53)));
@@ -2342,14 +2317,14 @@ mod tests {
 
         // Expire everything; the limit accounting must follow the removals.
         tracker.cleanup(SystemTime::now() + Duration::from_secs(86_400));
-        assert_eq!(tracker.len(), 0);
+        assert_eq!(tracker.connections().len(), 0);
 
         let c = tracker.ingest(&parse(&udp_frame(40002, 53)));
         assert!(
             c.created && !c.dropped,
             "slot freed by cleanup must be reusable"
         );
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
     }
 
     #[test]
@@ -2368,7 +2343,7 @@ mod tests {
     fn cleanup_archives_to_historic() {
         let tracker = ConnectionTracker::new();
         tracker.ingest(&parse(&udp_frame(40000, 53)));
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
 
         for mut entry in tracker.connections().iter_mut() {
             entry.current_incoming_rate_bps = 2048.0;
@@ -2381,7 +2356,7 @@ mod tests {
 
         assert_eq!(removed.len(), 1, "the idle connection should be removed");
         assert!(!removed[0].is_historic, "returned form is the original");
-        assert_eq!(tracker.len(), 0);
+        assert_eq!(tracker.connections().len(), 0);
         assert_eq!(
             tracker.historic_len(),
             1,
@@ -2410,7 +2385,7 @@ mod tests {
                 .cleanup(started + Duration::from_secs(61))
                 .is_empty()
         );
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
     }
 
     #[test]
@@ -2448,7 +2423,7 @@ mod tests {
         let outcome = tracker.ingest_at(&tcp_packet(true, false, false, false, true), started);
         assert!(outcome.created);
         assert!(outcome.archived.is_some());
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
         assert_eq!(tracker.historic_len(), 1);
 
         let active = tracker.connections().iter().next().unwrap();
@@ -2495,7 +2470,7 @@ mod tests {
         );
         assert!(outcome.ignored_late);
         assert!(!outcome.created);
-        assert!(tracker.is_empty());
+        assert!(tracker.connections().is_empty());
         assert_eq!(tracker.historic_len(), 1);
     }
 
@@ -2512,7 +2487,7 @@ mod tests {
 
         assert!(!outcome.ignored_late);
         assert!(outcome.created);
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
         assert_eq!(tracker.historic_len(), 1);
     }
 
@@ -2529,7 +2504,7 @@ mod tests {
         );
         assert!(!outcome.ignored_late);
         assert!(outcome.created);
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
         assert_eq!(tracker.historic_len(), 1);
     }
 
@@ -2575,7 +2550,7 @@ mod tests {
         );
         assert_eq!(historic_after.last_activity, historic_before.last_activity);
         assert_eq!(historic_after.closed_at, historic_before.closed_at);
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
     }
 
     #[test]
@@ -2617,7 +2592,7 @@ mod tests {
         assert_eq!(reader.join().unwrap(), 1);
         assert_eq!(cleanup_done_rx.recv().unwrap(), 1);
         cleanup.join().unwrap();
-        assert_eq!(tracker.len(), 0);
+        assert_eq!(tracker.connections().len(), 0);
         assert_eq!(tracker.historic_len(), 1);
     }
 
@@ -2654,7 +2629,7 @@ mod tests {
             rst.local_addr.set_port(port);
             tracker.ingest_at(&rst, start + Duration::from_secs(1));
         }
-        assert_eq!(tracker.len(), 2);
+        assert_eq!(tracker.connections().len(), 2);
 
         let closed_at = start + Duration::from_secs(86_400);
         let removed = tracker.cleanup(closed_at);
@@ -2669,7 +2644,10 @@ mod tests {
                 "delayed teardown for port {port} must hit a tombstone"
             );
         }
-        assert!(tracker.is_empty(), "no phantom connections may be created");
+        assert!(
+            tracker.connections().is_empty(),
+            "no phantom connections may be created"
+        );
     }
 
     #[test]
@@ -2682,7 +2660,7 @@ mod tests {
         let tracker = ConnectionTracker::new();
         let capture_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         tracker.ingest_at(&parse(&udp_frame(40000, 53)), capture_time);
-        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.connections().len(), 1);
 
         // One day after the capture time the UDP flow is well past its timeout.
         let removed = tracker.cleanup(capture_time + Duration::from_secs(86_400));
@@ -2691,7 +2669,7 @@ mod tests {
             1,
             "flow stamped at capture time should expire"
         );
-        assert_eq!(tracker.len(), 0);
+        assert_eq!(tracker.connections().len(), 0);
     }
 
     /// A connection opened right after a captured DNS response to one of the
@@ -2806,7 +2784,7 @@ mod tests {
         );
 
         tracker.clear();
-        assert!(tracker.is_empty());
+        assert!(tracker.connections().is_empty());
         assert_eq!(tracker.historic_len(), 0);
         assert_eq!(
             tracker.dns_analytics_snapshot_at(dns_at + Duration::from_millis(15)),

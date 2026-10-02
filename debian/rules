@@ -8,9 +8,6 @@ export CARGO = /usr/bin/cargo-1.88
 export RUSTC = /usr/bin/rustc-1.88
 export RUSTDOC = /usr/bin/rustdoc-1.88
 
-# eBPF is enabled by default, no need for explicit feature flag
-export CARGO_BUILD_FLAGS = --release
-
 # Set asset directory for completions and manpage generation
 export RUSTNET_ASSET_DIR = $(CURDIR)/debian/tmp/assets
 
@@ -32,7 +29,7 @@ override_dh_auto_build:
 	# Build with cargo-1.88 using vendored dependencies
 	$(CARGO) build --release --frozen
 
-# The services file, desktop entry and icon are installed by dh_install from
+# The desktop entry and icons are installed by dh_install from
 # debian/install; this only installs the binary, README and the generated
 # completions and manpage.
 override_dh_auto_install:

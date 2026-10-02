@@ -156,14 +156,6 @@ pub(super) fn apply_landlock(
 
     let read_access = AccessFs::from_read(abi);
 
-    // Write paths get only what output files need: create regular files,
-    // read/write/truncate them, and list their directories.
-    let write_access = AccessFs::WriteFile
-        | AccessFs::ReadFile
-        | AccessFs::ReadDir
-        | AccessFs::MakeReg
-        | AccessFs::Truncate;
-
     // Start building the ruleset. `Ruleset::default()` uses the crate's
     // best-effort compatibility, so requesting rights newer than the running
     // kernel supports silently drops them instead of erroring.
@@ -283,41 +275,6 @@ pub(super) fn apply_landlock(
             )?;
         } else {
             record_missing_path(config.mode, path, &mut path_rule_failures)?;
-        }
-    }
-
-    for path in &config.write_paths {
-        if path.exists() {
-            add_policy_path_rule(
-                &mut ruleset_created,
-                path,
-                write_access,
-                config.mode,
-                &mut path_rule_failures,
-            )?;
-        } else {
-            // For paths that don't exist yet, fall back to the parent directory.
-            // Landlock requires an open FD (PathFd) to create rules, so non-existent
-            // paths can't be directly referenced. This grants write access to the
-            // entire parent directory, which is broader than ideal, so callers should
-            // pre-create output files before applying the sandbox when possible.
-            record_missing_path(config.mode, path, &mut path_rule_failures)?;
-            if let Some(parent) = path.parent()
-                && parent.exists()
-            {
-                log::warn!(
-                    "Write path {:?} does not exist; granting write to parent {:?}",
-                    path,
-                    parent
-                );
-                add_policy_path_rule(
-                    &mut ruleset_created,
-                    parent,
-                    write_access,
-                    config.mode,
-                    &mut path_rule_failures,
-                )?;
-            }
         }
     }
 
@@ -465,7 +422,6 @@ mod tests {
             mode: SandboxMode::Disabled,
             block_network: true,
             read_paths: vec![],
-            write_paths: vec![],
             drop_uid: None,
         };
         let result = apply_landlock(&config, true).unwrap();
@@ -485,7 +441,6 @@ mod tests {
             mode: SandboxMode::BestEffort,
             block_network: true,
             read_paths: vec![],
-            write_paths: vec![],
             drop_uid: None,
         };
         let result = apply_landlock(&config, true).expect("best-effort must not error");

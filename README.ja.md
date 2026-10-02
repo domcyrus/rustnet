@@ -95,6 +95,8 @@ macOS で PKTAP を使用するには `sudo` が必要です。BPF へのアク�
 - [変更履歴](CHANGELOG.md): リリース済みおよび今後の変更
 - [貢献](CONTRIBUTING.md): コントリビューションガイド
 
+サポート対象の製品は `rustnet` バイナリです。ワークスペース内の crate の API は内部用であり、互換性を維持するための処理を残さずに変更される場合があります。
+
 RustNet のターミナル UI には [ratatui](https://github.com/ratatui-org/ratatui)、パケットキャプチャには [libpcap](https://www.tcpdump.org/)/[Npcap](https://npcap.com/) を使用しています。貢献者は [CONTRIBUTORS.md](CONTRIBUTORS.md) を参照してください。
 
 ライセンスは [Apache License 2.0](LICENSE) です。

@@ -51,7 +51,6 @@ permissions:
 
 env:
   RUST_BACKTRACE: 1
-  RUSTNET_ASSET_DIR: assets
   RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
@@ -264,19 +263,13 @@ jobs:
           VERSION="$RELEASE_TAG"
           mkdir -p installers
 
-          # Extract binary and assets from the build archive into the layout
+          # Extract the binary from the build archive into the layout
           # cargo deb --no-build and cargo generate-rpm expect.
           unpack() {
             local target="$1"
             tar -xzf "artifacts/build-$target/rustnet-$VERSION-$target.tar.gz"
             mkdir -p "target/$target/release"
             cp "rustnet-$VERSION-$target/rustnet" "target/$target/release/"
-
-            # Ensure services file exists for packaging
-            mkdir -p crates/rustnet-core/assets
-            if [ -f "rustnet-$VERSION-$target/assets/services" ]; then
-              cp "rustnet-$VERSION-$target/assets/services" crates/rustnet-core/assets/
-            fi
           }
 
           # Clean up for next iteration
@@ -359,12 +352,11 @@ jobs:
           sed -i'.bak' -e "s/0\.0\.0/${VERSION}/g" -e "s/fffffff/${GITHUB_SHA:0:7}/g" resources/packaging/macos/Info.plist
 
           # Create app bundle
-          mkdir -p "Rustnet.app/Contents/"{MacOS,Resources/assets}
+          mkdir -p "Rustnet.app/Contents/"{MacOS,Resources}
           cp resources/packaging/macos/Info.plist "Rustnet.app/Contents/"
           cp resources/packaging/macos/graphics/rustnet.icns "Rustnet.app/Contents/Resources/"
           cp "rustnet-${RELEASE_TAG}-${{ matrix.target }}/rustnet" "Rustnet.app/Contents/MacOS/"
           cp resources/packaging/macos/wrapper.sh "Rustnet.app/Contents/MacOS/"
-          cp "rustnet-${RELEASE_TAG}-${{ matrix.target }}/assets/services" "Rustnet.app/Contents/Resources/assets/"
           chmod +x "Rustnet.app/Contents/MacOS/"{rustnet,wrapper.sh}
 
       - name: Code sign and notarize app bundle
@@ -379,7 +371,6 @@ jobs:
           if [ -z "$APPLE_CERTIFICATE_P12" ]; then
             echo "⚠️  Code signing secrets not configured. DMG will be unsigned."
             echo "⚠️  Users will need to use 'Open Anyway' in System Settings > Privacy & Security"
-            echo "SKIP_SIGNING=true" >> "$GITHUB_ENV"
             exit 0
           fi
 
@@ -498,7 +489,7 @@ jobs:
       - name: Package for Windows
         shell: powershell
         run: |
-          # Extract binary and assets
+          # Extract the binary
           Write-Host "Extracting artifact..."
           Expand-Archive -LiteralPath "artifacts\rustnet-$env:RELEASE_TAG-${{ matrix.target }}.zip" -DestinationPath . -Force
 
@@ -508,15 +499,6 @@ jobs:
           # Copy binary
           Copy-Item -Path "rustnet-$env:RELEASE_TAG-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\" -Force
           Write-Host "Binary copied to target directory"
-
-          # Copy services file if it exists
-          New-Item -ItemType Directory -Path "assets" -Force
-          if (Test-Path "rustnet-$env:RELEASE_TAG-${{ matrix.target }}\assets\services") {
-            Copy-Item -Path "rustnet-$env:RELEASE_TAG-${{ matrix.target }}\assets\services" -Destination "assets\" -Force
-            Write-Host "Services file copied successfully"
-          } else {
-            Write-Host "Warning: No services file found"
-          }
 
           # Setup WiX configuration (cargo-wix expects main.wxs in wix/ directory)
           Write-Host "Setting up WiX configuration..."

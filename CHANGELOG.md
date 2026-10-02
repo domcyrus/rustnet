@@ -233,6 +233,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshot" match quality (#575)
 
 ### Removed
+- Unused screenshots, the macOS PNG export, duplicate PPA setup notes,
+  obsolete manual build/debug tools, and redundant services copies in local
+  installers and Docker. Release archives retain services for the AUR package.
+- Unused internal APIs, ineffective DPI packet limits, and sandbox pathname
+  write exceptions. Capture outputs continue using descriptors opened before
+  sandboxing
 - **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and
   Launchpad rejects new uploads for it, so the PPA build matrix and install
   docs drop it. Already-published questing packages stay in the PPA archive

@@ -346,10 +346,6 @@ pub fn run() -> Result<()> {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
             read_paths,
-            // Every runtime output is already open and retained. No pathname
-            // write grants are needed, which also avoids a rename/swap window
-            // between the secure open and sandbox rule construction.
-            write_paths: Vec::new(),
             ..SandboxConfig::default()
         };
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
@@ -405,7 +401,7 @@ fn run_headless(matches: &clap::ArgMatches, app: &mut app::App) -> Result<()> {
             .map(|seconds| Duration::from_secs(*seconds)),
         filter_query: matches.get_one::<String>("filter").cloned(),
     };
-    let outcome = match crate::headless::run(app, io::stdout(), &options, &SHUTDOWN_REQUESTED) {
+    let stop_report = match crate::headless::run(app, io::stdout(), &options, &SHUTDOWN_REQUESTED) {
         Ok(outcome) => outcome,
         Err(error) => {
             let stop_report = app.stop();
@@ -415,7 +411,7 @@ fn run_headless(matches: &clap::ArgMatches, app: &mut app::App) -> Result<()> {
             return Err(error);
         }
     };
-    ensure_clean_shutdown(outcome.stop_report)
+    ensure_clean_shutdown(stop_report)
 }
 
 fn ensure_clean_shutdown(report: app::StopReport) -> Result<()> {

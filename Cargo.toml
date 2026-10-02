@@ -200,11 +200,6 @@ assets = [
         "644",
     ],
     [
-        "crates/rustnet-core/assets/services",
-        "usr/share/rustnet-monitor/",
-        "644",
-    ],
-    [
         "resources/packaging/linux/graphics/rustnet.png",
         "usr/share/icons/hicolor/256x256/apps/",
         "644",
@@ -226,7 +221,6 @@ conf-files = []
 assets = [
     { source = "target/release/rustnet", dest = "/usr/bin/rustnet", mode = "755" },
     { source = "README.md", dest = "/usr/share/doc/rustnet-monitor/README.md", mode = "644" },
-    { source = "crates/rustnet-core/assets/services", dest = "/usr/share/rustnet-monitor/services", mode = "644" },
     { source = "resources/packaging/linux/graphics/rustnet.png", dest = "/usr/share/icons/hicolor/256x256/apps/rustnet.png", mode = "644" },
     { source = "resources/packaging/linux/graphics/rustnet.svg", dest = "/usr/share/icons/hicolor/scalable/apps/rustnet.svg", mode = "644" },
     { source = "resources/packaging/linux/rustnet.desktop", dest = "/usr/share/applications/rustnet.desktop", mode = "644" },
