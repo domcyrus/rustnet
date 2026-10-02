@@ -1,6 +1,6 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::collections::{BTreeMap, VecDeque};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SshConnectionState {
@@ -1055,6 +1055,22 @@ impl QuicInfo {
             idle_timeout: None,
         }
     }
+    /// Clone displayable metadata without retaining CRYPTO handshake bytes.
+    pub(crate) fn metadata_clone(&self) -> Self {
+        Self {
+            version_string: self.version_string.clone(),
+            packet_type: self.packet_type,
+            connection_id: self.connection_id.clone(),
+            connection_id_hex: self.connection_id_hex.clone(),
+            connection_state: self.connection_state,
+            tls_info: self.tls_info.clone(),
+            has_crypto_frame: self.has_crypto_frame,
+            crypto_reassembler: None,
+            connection_close: self.connection_close.clone(),
+            idle_timeout: self.idle_timeout,
+        }
+    }
+
     /// Initialize reassembler if needed
     pub fn ensure_reassembler(&mut self) {
         if self.crypto_reassembler.is_none() {
@@ -1139,30 +1155,14 @@ fn quic_version_to_string(version: u32) -> Option<Cow<'static, str>> {
     }
 }
 
-/// Tracks CRYPTO frame fragments for reassembly
-/// This is part of the QuicInfo data model, even though it's used by DPI
+/// Retains only the Initial CRYPTO stream needed to inspect a ClientHello.
+/// Adjacent fragments share one range, so retransmission and packet boundaries
+/// do not consume additional metadata slots.
 #[derive(Debug, Clone)]
 pub struct CryptoFrameReassembler {
-    /// Fragments indexed by offset - using BTreeMap for ordered iteration
-    fragments: BTreeMap<u64, Vec<u8>>,
-
-    /// Highest contiguous byte we've reassembled from offset 0
-    contiguous_offset: u64,
-
-    /// Whether we've successfully extracted complete TLS info
-    has_complete_tls_info: bool,
-
-    /// Cached TLS info once we've extracted it
+    fragments: BTreeMap<u64, VecDeque<u8>>,
+    extraction_finished: bool,
     cached_tls_info: Option<TlsInfo>,
-
-    /// Maximum total size we'll buffer (prevent memory exhaustion)
-    max_buffer_size: usize,
-
-    /// Current total buffered size
-    current_buffer_size: usize,
-
-    /// Timestamp of last update (for cleanup of stale fragments)
-    last_update: Instant,
 }
 
 impl Default for CryptoFrameReassembler {
@@ -1172,116 +1172,147 @@ impl Default for CryptoFrameReassembler {
 }
 
 impl CryptoFrameReassembler {
+    /// Inspection window, including the four-byte TLS handshake header.
+    pub const MAX_BUFFER_SIZE: usize = 64 * 1024;
+    // Bound metadata for sparse, attacker-controlled offsets. This limits
+    // disjoint ranges, not the number of frames making up a ClientHello.
+    const MAX_RANGES: usize = 256;
+
     pub fn new() -> Self {
         Self {
             fragments: BTreeMap::new(),
-            contiguous_offset: 0,
-            has_complete_tls_info: false,
+            extraction_finished: false,
             cached_tls_info: None,
-            max_buffer_size: 64 * 1024, // 64KB max buffer
-            current_buffer_size: 0,
-            last_update: Instant::now(),
         }
     }
 
-    /// Add a new CRYPTO frame fragment
-    pub fn add_fragment(&mut self, offset: u64, data: Vec<u8>) -> Result<(), &'static str> {
-        if self.current_buffer_size + data.len() > self.max_buffer_size {
-            return Err("Fragment would exceed maximum buffer size");
+    /// Add CRYPTO bytes, keeping the first observed value on overlap.
+    /// Offsets outside the inspection window are rejected; a crossing frame
+    /// contributes its in-window prefix so early metadata can still be read.
+    pub fn add_fragment(&mut self, offset: u64, mut data: Vec<u8>) -> Result<(), &'static str> {
+        if self.extraction_finished || data.is_empty() {
+            return Ok(());
         }
-
-        self.last_update = Instant::now();
-
+        offset
+            .checked_add(data.len() as u64)
+            .ok_or("Fragment offset overflow")?;
+        if offset >= Self::MAX_BUFFER_SIZE as u64 {
+            return Err("Fragment offset exceeds inspection window");
+        }
+        data.truncate(Self::MAX_BUFFER_SIZE - offset as usize);
         let data_end = offset + data.len() as u64;
 
-        // Overlapping fragments keep the existing data (first write wins).
-        for (&frag_offset, frag_data) in &self.fragments {
-            let frag_end = frag_offset + frag_data.len() as u64;
-
-            if offset == frag_offset && data_end == frag_end {
-                return Ok(());
-            }
-
-            if offset < frag_end && data_end > frag_offset {
-                return Ok(());
-            }
+        // Start at the preceding range only if it overlaps or touches us.
+        // All stored ranges are disjoint and non-adjacent.
+        let first_offset = self
+            .fragments
+            .range(..=offset)
+            .next_back()
+            .filter(|(start, bytes)| **start + bytes.len() as u64 >= offset)
+            .map_or(offset, |(&start, _)| start);
+        let affected: Vec<u64> = self
+            .fragments
+            .range(first_offset..=data_end)
+            .map(|(&start, _)| start)
+            .collect();
+        if self.fragments.len() - affected.len() >= Self::MAX_RANGES {
+            return Err("Fragment would exceed maximum disjoint ranges");
         }
 
-        self.current_buffer_size += data.len();
-        self.fragments.insert(offset, data);
+        if let Some(&first) = affected.first()
+            && first <= offset
+            && first + self.fragments[&first].len() as u64 >= data_end
+        {
+            // Retransmission, including when the inspection window is full.
+            return Ok(());
+        }
 
-        self.update_contiguous_offset();
-
+        let merged_start = first_offset;
+        let merged_end = affected.last().map_or(data_end, |last| {
+            data_end.max(*last + self.fragments[last].len() as u64)
+        });
+        // Reuse the largest existing range. VecDeque can prepend as well as
+        // append without copying the whole range for reverse-order fragments.
+        // When bridging ranges, moving only the smaller ranges also avoids
+        // repeatedly copying an already large assembled prefix.
+        let base = affected
+            .iter()
+            .max_by_key(|start| self.fragments[start].len());
+        let mut merged = if let Some(&base_start) = base {
+            let mut bytes = self.fragments.remove(&base_start).expect("range exists");
+            let base_end = base_start + bytes.len() as u64;
+            for position in (merged_start..base_start).rev() {
+                let value = position
+                    .checked_sub(offset)
+                    .and_then(|index| data.get(index as usize))
+                    .copied()
+                    .unwrap_or(0);
+                bytes.push_front(value);
+            }
+            for position in base_end..merged_end {
+                let value = position
+                    .checked_sub(offset)
+                    .and_then(|index| data.get(index as usize))
+                    .copied()
+                    .unwrap_or(0);
+                bytes.push_back(value);
+            }
+            bytes
+        } else {
+            // Copy only the retained prefix so an oversized input Vec cannot
+            // leave a large spare allocation in the persistent reassembler.
+            VecDeque::from(data.as_slice().to_vec())
+        };
+        for start in affected {
+            if let Some(existing) = self.fragments.remove(&start) {
+                let start_index = (start - merged_start) as usize;
+                for (index, byte) in existing.into_iter().enumerate() {
+                    merged[start_index + index] = byte;
+                }
+            }
+        }
+        self.fragments.insert(merged_start, merged);
         Ok(())
     }
 
-    /// Update the highest contiguous offset we've seen
-    fn update_contiguous_offset(&mut self) {
-        let mut current = self.contiguous_offset;
-
-        for (&offset, data) in &self.fragments {
-            if offset <= current {
-                let fragment_end = offset + data.len() as u64;
-                if fragment_end > current {
-                    current = fragment_end;
-                }
-            } else if offset > current {
-                break;
-            }
-        }
-
-        self.contiguous_offset = current;
-    }
-
-    /// Get all contiguous data from offset 0
+    /// Get all contiguous data from offset zero. Copy once when inspecting,
+    /// rather than shifting buffered bytes on every reverse-order fragment.
     pub fn get_contiguous_data(&self) -> Option<Vec<u8>> {
-        if self.contiguous_offset == 0 {
-            return None;
-        }
-
-        let mut result = Vec::with_capacity(self.contiguous_offset as usize);
-        let mut current_offset = 0u64;
-
-        for (&offset, data) in &self.fragments {
-            if offset <= current_offset {
-                let skip = (current_offset - offset) as usize;
-                if skip < data.len() {
-                    result.extend_from_slice(&data[skip..]);
-                    current_offset = offset + data.len() as u64;
-                }
-            }
-
-            if current_offset >= self.contiguous_offset {
-                break;
-            }
-        }
-
-        if result.is_empty() {
-            None
-        } else {
-            Some(result)
-        }
+        self.fragments
+            .get(&0)
+            .map(|bytes| bytes.iter().copied().collect())
     }
 
-    /// Mark as having complete TLS info
+    /// Finish inspection and release all retained handshake bytes. The marker
+    /// prevents later retransmissions from starting another buffer.
+    pub fn finish_extraction(&mut self, tls_info: Option<TlsInfo>) {
+        self.extraction_finished = true;
+        self.cached_tls_info = tls_info;
+        self.fragments.clear();
+    }
+
+    /// Cache metadata only after the complete ClientHello has been inspected.
     pub fn set_complete_tls_info(&mut self, tls_info: TlsInfo) {
-        self.has_complete_tls_info = true;
-        self.cached_tls_info = Some(tls_info);
+        self.finish_extraction(Some(tls_info));
     }
 
-    /// Get cached TLS info if complete
+    pub fn extraction_finished(&self) -> bool {
+        self.extraction_finished
+    }
+
     pub fn get_cached_tls_info(&self) -> Option<&TlsInfo> {
-        if self.has_complete_tls_info {
-            self.cached_tls_info.as_ref()
-        } else {
-            None
-        }
+        self.cached_tls_info.as_ref()
     }
 
-    /// Get a reference to the fragments for merging purposes
-    /// Returns an immutable reference to the internal fragments map
-    pub fn get_fragments(&self) -> &BTreeMap<u64, Vec<u8>> {
-        &self.fragments
+    /// Borrow received bytes in stream order. A deque can expose two slices;
+    /// each is returned with its actual stream offset, without copying data.
+    pub fn get_fragments(&self) -> impl Iterator<Item = (u64, &[u8])> {
+        self.fragments.iter().flat_map(|(&offset, bytes)| {
+            let (first, second) = bytes.as_slices();
+            [(offset, first), (offset + first.len() as u64, second)]
+                .into_iter()
+                .filter(|(_, bytes)| !bytes.is_empty())
+        })
     }
 }
 
@@ -1304,6 +1335,169 @@ impl TlsInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crypto_reassembly_bounds_fragment_metadata() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        for offset in 0..256 {
+            reassembler.add_fragment(offset * 2, vec![1]).unwrap();
+        }
+        assert!(reassembler.add_fragment(512, vec![1]).is_err());
+        assert_eq!(reassembler.fragments.len(), 256);
+    }
+
+    #[test]
+    fn crypto_reassembly_coalesces_more_than_256_frames_in_either_order() {
+        for reverse in [false, true] {
+            let mut reassembler = CryptoFrameReassembler::new();
+            for index in 0..65536u64 {
+                let offset = if reverse { 65535 - index } else { index };
+                reassembler
+                    .add_fragment(offset, vec![offset as u8])
+                    .unwrap();
+            }
+            assert_eq!(reassembler.fragments.len(), 1);
+            let expected: Vec<u8> = (0..65536).map(|offset| offset as u8).collect();
+            assert_eq!(reassembler.get_contiguous_data(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn crypto_reassembly_preserves_overlap_and_fills_gaps() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler.add_fragment(2, b"cd".to_vec()).unwrap();
+        reassembler.add_fragment(6, b"gh".to_vec()).unwrap();
+        reassembler.add_fragment(0, b"abXXefYYij".to_vec()).unwrap();
+        reassembler.add_fragment(8, b"ZZkl".to_vec()).unwrap();
+        assert_eq!(
+            reassembler.get_contiguous_data(),
+            Some(b"abcdefghijkl".to_vec())
+        );
+        assert_eq!(reassembler.fragments.len(), 1);
+    }
+
+    #[test]
+    fn crypto_reassembly_accepts_retransmissions_and_bridges_at_capacity() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        for offset in 0..256 {
+            reassembler.add_fragment(offset * 2, vec![1]).unwrap();
+        }
+        reassembler.add_fragment(0, vec![9]).unwrap();
+        reassembler.add_fragment(1, vec![2]).unwrap();
+        assert_eq!(reassembler.fragments.len(), 255);
+        reassembler.add_fragment(512, vec![3]).unwrap();
+        assert_eq!(reassembler.fragments.len(), 256);
+        assert_eq!(reassembler.get_contiguous_data(), Some(vec![1, 2, 1]));
+    }
+
+    #[test]
+    fn crypto_reassembly_bounds_sparse_offsets_and_crossing_frames() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        assert!(reassembler.add_fragment(65536, vec![1]).is_err());
+        assert!(reassembler.fragments.is_empty());
+        reassembler.add_fragment(65535, vec![1, 2, 3]).unwrap();
+        assert_eq!(reassembler.fragments[&65535], vec![1]);
+        reassembler.add_fragment(0, vec![2; 65536]).unwrap();
+        reassembler.add_fragment(0, vec![3; 65536]).unwrap();
+        assert_eq!(reassembler.get_contiguous_data().unwrap().len(), 65536);
+        assert_eq!(reassembler.get_contiguous_data().unwrap()[65535], 1);
+        assert_eq!(reassembler.get_contiguous_data().unwrap()[0], 2);
+    }
+
+    #[test]
+    fn crypto_reassembly_does_not_retain_oversized_input_capacity() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        let mut bytes = Vec::with_capacity(1024 * 1024);
+        bytes.push(1);
+        reassembler.add_fragment(65535, bytes).unwrap();
+        assert_eq!(reassembler.fragments[&65535].capacity(), 1);
+        reassembler.add_fragment(0, vec![2; 1024 * 1024]).unwrap();
+        assert!(
+            reassembler.fragments[&0].capacity() <= 2 * CryptoFrameReassembler::MAX_BUFFER_SIZE
+        );
+        assert_eq!(
+            reassembler.get_contiguous_data().unwrap().len(),
+            CryptoFrameReassembler::MAX_BUFFER_SIZE
+        );
+    }
+
+    #[test]
+    fn crypto_reassembly_fragment_iterator_preserves_wrapped_stream_offsets() {
+        let mut bytes = VecDeque::with_capacity(8);
+        bytes.extend(0..6);
+        for _ in 0..4 {
+            bytes.pop_front();
+        }
+        bytes.extend(6..10);
+        assert!(!bytes.as_slices().1.is_empty());
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler.fragments.insert(5, bytes);
+        let fragments: Vec<_> = reassembler.get_fragments().collect();
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(fragments[0].0, 5);
+        assert_eq!(fragments[1].0, 5 + fragments[0].1.len() as u64);
+        let flattened: Vec<_> = fragments
+            .into_iter()
+            .flat_map(|(_, bytes)| bytes.iter().copied())
+            .collect();
+        assert_eq!(flattened, (4..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn crypto_reassembly_matches_first_observed_bytes_across_mixed_overlaps() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        let mut expected = [None; 1024];
+        let mut state = 1u32;
+        for _ in 0..2000 {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let start = state as usize % expected.len();
+            let len = (state as usize / 1024 % 100 + 1).min(expected.len() - start);
+            let value = (state >> 24) as u8;
+            reassembler
+                .add_fragment(start as u64, vec![value; len])
+                .unwrap();
+            for byte in &mut expected[start..start + len] {
+                byte.get_or_insert(value);
+            }
+        }
+        let mut actual = [None; 1024];
+        for (offset, bytes) in reassembler.get_fragments() {
+            for (index, &byte) in bytes.iter().enumerate() {
+                assert!(actual[offset as usize + index].replace(byte).is_none());
+            }
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn crypto_reassembly_releases_bytes_and_ignores_later_retransmissions() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler.add_fragment(0, vec![1; 4096]).unwrap();
+        reassembler.set_complete_tls_info(TlsInfo::with_sni("example.com".into()));
+        reassembler.add_fragment(0, vec![1; 4096]).unwrap();
+        assert!(reassembler.fragments.is_empty());
+        assert!(reassembler.get_contiguous_data().is_none());
+        assert_eq!(
+            reassembler.get_cached_tls_info().unwrap().sni.as_deref(),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn crypto_reassembly_ignores_empty_fragments() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        for offset in 0..1024 {
+            reassembler.add_fragment(offset, Vec::new()).unwrap();
+        }
+        assert!(reassembler.fragments.is_empty());
+    }
+
+    #[test]
+    fn crypto_reassembly_rejects_offset_overflow() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        assert!(reassembler.add_fragment(u64::MAX, vec![1]).is_err());
+        assert!(reassembler.fragments.is_empty());
+    }
 
     /// The Details tab renders these values directly; pinning them here keeps
     /// the debug-formatting leaks (`V2`, `KeyExchange`, `Http11`) from coming

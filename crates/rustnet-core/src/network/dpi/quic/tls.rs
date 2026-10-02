@@ -15,30 +15,14 @@ fn is_complete_sni(sni: &Option<String>) -> bool {
 }
 
 /// Try to extract TLS info from contiguous reassembled data
-fn try_extract_from_contiguous(
-    reassembler: &CryptoFrameReassembler,
-    allow_partial: bool,
-) -> Option<TlsInfo> {
-    let reassembled = reassembler.get_contiguous_data()?;
-
+fn try_extract_from_contiguous(reassembled: &[u8], allow_partial: bool) -> Option<TlsInfo> {
     debug!(
         "QUIC: Attempting to parse {} bytes of contiguous crypto data (allow_partial={})",
         reassembled.len(),
         allow_partial
     );
 
-    // Only attempt to parse if we have enough data for a reasonable ClientHello
-    // Use lower threshold (50 bytes) when allowing partial extraction
-    let threshold = if allow_partial { 50 } else { 100 };
-    if reassembled.len() < threshold {
-        debug!(
-            "QUIC: Only {} contiguous bytes available, waiting for more data before parsing",
-            reassembled.len()
-        );
-        return None;
-    }
-
-    let tls_info = parse_partial_tls_handshake(&reassembled, allow_partial)?;
+    let tls_info = parse_partial_tls_handshake(reassembled, allow_partial)?;
 
     if tls_info.sni.is_none() && tls_info.alpn.is_empty() {
         return None;
@@ -59,7 +43,7 @@ fn try_extract_from_fragments(
 ) -> Option<TlsInfo> {
     debug!("QUIC: Trying to parse individual crypto fragments with proper TLS headers");
 
-    for (&offset, fragment_data) in reassembler.get_fragments() {
+    for (offset, fragment_data) in reassembler.get_fragments() {
         debug!(
             "QUIC: Trying fragment at offset {} with {} bytes",
             offset,
@@ -105,19 +89,26 @@ fn try_extract_from_fragments(
 }
 
 /// Try greedy SNI extraction from all fragments and contiguous data
-fn try_extract_greedy_from_reassembler(reassembler: &CryptoFrameReassembler) -> Option<TlsInfo> {
+fn try_extract_greedy_from_reassembler(
+    reassembler: &CryptoFrameReassembler,
+    contiguous: Option<&[u8]>,
+    allow_partial: bool,
+) -> Option<TlsInfo> {
     debug!("QUIC: Attempting greedy SNI extraction as final fallback");
 
-    for fragment_data in reassembler.get_fragments().values() {
-        if let Some(sni) = scan_for_sni_extension(fragment_data, true, SniScanStrictness::Lenient) {
+    for (_, fragment_data) in reassembler.get_fragments() {
+        if let Some(sni) =
+            scan_for_sni_extension(fragment_data, allow_partial, SniScanStrictness::Lenient)
+        {
             debug!("QUIC: Greedy extraction succeeded from fragment");
             return Some(TlsInfo::with_sni(sni));
         }
     }
 
     // Also try on contiguous data if available
-    if let Some(contiguous) = reassembler.get_contiguous_data()
-        && let Some(sni) = scan_for_sni_extension(&contiguous, true, SniScanStrictness::Lenient)
+    if let Some(contiguous) = contiguous
+        && let Some(sni) =
+            scan_for_sni_extension(contiguous, allow_partial, SniScanStrictness::Lenient)
     {
         debug!("QUIC: Greedy extraction succeeded from contiguous data");
         return Some(TlsInfo::with_sni(sni));
@@ -138,39 +129,64 @@ pub fn try_extract_tls_from_reassembler(
     reassembler: &mut CryptoFrameReassembler,
     allow_partial: bool,
 ) -> Option<TlsInfo> {
-    if let Some(tls_info) = reassembler.get_cached_tls_info() {
-        if is_complete_sni(&tls_info.sni) {
-            return Some(tls_info.clone());
-        }
-        debug!("QUIC: Cached SNI is partial, attempting to find complete SNI");
+    if reassembler.extraction_finished() {
+        return reassembler.get_cached_tls_info().cloned();
     }
 
-    for strategy in [try_extract_from_contiguous, try_extract_from_fragments] {
-        if let Some(tls_info) = strategy(reassembler, allow_partial) {
-            if is_complete_sni(&tls_info.sni) {
-                reassembler.set_complete_tls_info(tls_info.clone());
-            }
-            return Some(tls_info);
+    let contiguous = reassembler.get_contiguous_data();
+    if let Some(data) = &contiguous
+        && data.len() >= 4
+        && data[0] == 0x01
+    {
+        let handshake_end = 4 + u32::from_be_bytes([0, data[1], data[2], data[3]]) as usize;
+        // A complete SNI can precede ALPN and supported_versions. Only stop
+        // when the declared ClientHello is assembled, or the bounded
+        // inspection window has been filled for an oversized ClientHello.
+        let inspected_end = handshake_end.min(CryptoFrameReassembler::MAX_BUFFER_SIZE);
+        if data.len() >= inspected_end {
+            let tls_info = if handshake_end <= CryptoFrameReassembler::MAX_BUFFER_SIZE {
+                parse_partial_tls_handshake(&data[..inspected_end], allow_partial)
+            } else {
+                extract_provisional_tls(reassembler, contiguous.as_deref(), allow_partial)
+            };
+            reassembler.finish_extraction(tls_info.clone());
+            return tls_info;
         }
+    }
+
+    extract_provisional_tls(reassembler, contiguous.as_deref(), allow_partial)
+}
+
+fn extract_provisional_tls(
+    reassembler: &CryptoFrameReassembler,
+    contiguous: Option<&[u8]>,
+    allow_partial: bool,
+) -> Option<TlsInfo> {
+    if let Some(tls_info) = contiguous
+        .and_then(|data| try_extract_from_contiguous(data, allow_partial))
+        .or_else(|| try_extract_from_fragments(reassembler, allow_partial))
+    {
+        // Provisional metadata must not discard bytes needed by later
+        // fragments, even when this fragment contains the entire SNI.
+        return Some(tls_info);
     }
 
     // Fragment reconstruction needs a reasonable amount of data.
-    let total_fragment_size: usize = reassembler.get_fragments().values().map(|v| v.len()).sum();
+    let total_fragment_size: usize = reassembler.get_fragments().map(|(_, v)| v.len()).sum();
     if total_fragment_size >= 100 {
         debug!(
             "QUIC: Have {} total bytes in fragments, attempting reconstruction",
             total_fragment_size
         );
-        if let Some(sni) = try_reconstruct_sni_from_fragments(reassembler) {
+        if let Some(sni) = try_reconstruct_sni_from_fragments(reassembler)
+            && (allow_partial || !is_partial_sni(&sni))
+        {
             let sni_is_complete = !is_partial_sni(&sni);
             let tls_info = TlsInfo::with_sni(sni);
             debug!(
                 "QUIC: Reconstructed SNI from fragmented data (complete={})",
                 sni_is_complete
             );
-            if sni_is_complete {
-                reassembler.set_complete_tls_info(tls_info.clone());
-            }
             return Some(tls_info);
         }
     } else {
@@ -181,8 +197,9 @@ pub fn try_extract_tls_from_reassembler(
     }
 
     // Greedy fallback.
-    if let Some(tls_info) = try_extract_greedy_from_reassembler(reassembler) {
-        reassembler.set_complete_tls_info(tls_info.clone());
+    if let Some(tls_info) =
+        try_extract_greedy_from_reassembler(reassembler, contiguous, allow_partial)
+    {
         return Some(tls_info);
     }
 
@@ -308,6 +325,84 @@ pub(super) fn scan_for_sni_extension(
 mod tests {
     use super::*;
     use crate::network::dpi::tls_common::test_fixtures::build_sni_extension;
+
+    #[test]
+    fn full_client_hello_releases_bytes_only_after_late_metadata_is_parsed() {
+        use crate::network::dpi::tls_common::test_fixtures::{RFC9001_CLIENT_HELLO, from_hex};
+        use crate::network::types::TlsVersion;
+        let hello = from_hex(RFC9001_CLIENT_HELLO);
+        let split = hello
+            .windows(11)
+            .position(|bytes| bytes == b"example.com")
+            .unwrap()
+            + 11;
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler
+            .add_fragment(0, hello[..split].to_vec())
+            .unwrap();
+        let provisional = try_extract_tls_from_reassembler(&mut reassembler, false).unwrap();
+        assert_eq!(provisional.sni.as_deref(), Some("example.com"));
+        assert!(provisional.alpn.is_empty());
+        assert!(!reassembler.extraction_finished());
+        reassembler
+            .add_fragment(split as u64, hello[split..].to_vec())
+            .unwrap();
+        let complete = try_extract_tls_from_reassembler(&mut reassembler, false).unwrap();
+        assert_eq!(complete.sni.as_deref(), Some("example.com"));
+        assert_eq!(complete.alpn, vec!["alpn"]);
+        assert_eq!(complete.version, Some(TlsVersion::Tls13));
+        assert!(reassembler.extraction_finished());
+        assert!(reassembler.get_fragments().next().is_none());
+        reassembler.add_fragment(0, hello).unwrap();
+        assert!(reassembler.get_fragments().next().is_none());
+        assert_eq!(
+            try_extract_tls_from_reassembler(&mut reassembler, false)
+                .unwrap()
+                .alpn,
+            vec!["alpn"]
+        );
+    }
+
+    #[test]
+    fn client_hello_without_sni_finishes_and_releases_bytes() {
+        use crate::network::dpi::tls_common::test_fixtures::build_client_hello;
+        let hello = build_client_hello(&[0, 16, 0, 5, 0, 3, 2, b'h', b'3']);
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler.add_fragment(0, hello).unwrap();
+        let info = try_extract_tls_from_reassembler(&mut reassembler, false).unwrap();
+        assert!(info.sni.is_none());
+        assert_eq!(info.alpn, vec!["h3"]);
+        assert!(reassembler.extraction_finished());
+        assert!(reassembler.get_fragments().next().is_none());
+    }
+
+    #[test]
+    fn oversized_client_hello_stops_at_the_inspection_window() {
+        use crate::network::dpi::tls_common::test_fixtures::build_client_hello;
+        let mut hello = build_client_hello(&build_sni_extension("example.com"));
+        hello[1..4].copy_from_slice(&[1, 0, 1]);
+        hello.resize(CryptoFrameReassembler::MAX_BUFFER_SIZE + 10, 0);
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler.add_fragment(0, hello).unwrap();
+        let info = try_extract_tls_from_reassembler(&mut reassembler, false).unwrap();
+        assert_eq!(info.sni.as_deref(), Some("example.com"));
+        assert!(reassembler.extraction_finished());
+        assert!(reassembler.get_fragments().next().is_none());
+    }
+
+    #[test]
+    fn partial_salvage_is_not_cached_as_complete() {
+        let mut fragment = build_sni_extension("example.com");
+        fragment.truncate(fragment.len() - 3);
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler.add_fragment(10, fragment).unwrap();
+        assert!(try_extract_tls_from_reassembler(&mut reassembler, false).is_none());
+        let partial = try_extract_tls_from_reassembler(&mut reassembler, true).unwrap();
+        assert_eq!(partial.sni.as_deref(), Some("example.[PARTIAL]"));
+        assert!(!reassembler.extraction_finished());
+        assert!(reassembler.get_cached_tls_info().is_none());
+        assert!(reassembler.get_fragments().next().is_some());
+    }
 
     #[test]
     fn test_greedy_sni_extraction_complete() {

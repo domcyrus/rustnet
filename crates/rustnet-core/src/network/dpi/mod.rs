@@ -30,6 +30,8 @@ mod wireguard;
 pub(crate) use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
 pub(crate) use quic::try_extract_tls_from_reassembler;
 pub(crate) use tls_common::is_partial_sni;
+#[cfg(test)]
+pub(crate) use tls_common::test_fixtures;
 
 // Well-known port numbers used for DPI protocol detection.
 const PORT_SSH: u16 = 22;

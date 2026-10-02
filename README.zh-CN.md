@@ -84,6 +84,7 @@ rustnet
 
 ## 文档
 
+- [QUIC 检查](QUIC.zh-CN.md)：握手存储及库兼容性（未发布）。
 - [安装](INSTALL.zh-CN.md)：平台支持、权限配置与故障排查
 - [使用](USAGE.zh-CN.md)：操作、过滤、自动化与抓包导出
 - [终端布局与外观（开发版本）](TUI.zh-CN.md)

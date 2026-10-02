@@ -118,17 +118,13 @@ pub(super) fn try_reconstruct_sni_from_fragments(
 ) -> Option<String> {
     debug!("QUIC: Attempting SNI reconstruction from fragments");
 
-    let fragments = reassembler.get_fragments();
-    let mut sorted_offsets: Vec<_> = fragments.keys().collect();
-    sorted_offsets.sort();
-
     // First try: look for SNI extension patterns in individual fragments and reconstruct
     // IMPORTANT: Only look in fragments that include the beginning of the ClientHello
     // Otherwise we might find partial SNI data that's cut off at fragment boundaries
-    for &offset in &sorted_offsets {
+    for (offset, data) in reassembler.get_fragments() {
         // Skip fragments that don't start near the beginning of the ClientHello
         // The SNI extension typically appears after ~70-150 bytes in the ClientHello
-        if *offset > 200 {
+        if offset > 200 {
             debug!(
                 "QUIC: Skipping fragment at offset {} - too far from ClientHello start",
                 offset
@@ -136,23 +132,21 @@ pub(super) fn try_reconstruct_sni_from_fragments(
             continue;
         }
 
-        if let Some(data) = fragments.get(offset) {
-            debug!(
-                "QUIC: Scanning fragment at offset {} ({} bytes) for SNI patterns",
-                offset,
-                data.len()
-            );
+        debug!(
+            "QUIC: Scanning fragment at offset {} ({} bytes) for SNI patterns",
+            offset,
+            data.len()
+        );
 
-            // Look for SNI extension header patterns in this fragment
-            // Be more restrictive to avoid false positives from encrypted data
-            if let Some(sni) = scan_for_sni_extension(data, true, SniScanStrictness::Moderate) {
-                if is_partial_sni(&sni) {
-                    debug!("QUIC: Found partial SNI in fragment: {}", sni);
-                } else {
-                    debug!("QUIC: Found complete SNI in fragment: {}", sni);
-                }
-                return Some(sni);
+        // Look for SNI extension header patterns in this fragment
+        // Be more restrictive to avoid false positives from encrypted data
+        if let Some(sni) = scan_for_sni_extension(data, true, SniScanStrictness::Moderate) {
+            if is_partial_sni(&sni) {
+                debug!("QUIC: Found partial SNI in fragment: {}", sni);
+            } else {
+                debug!("QUIC: Found complete SNI in fragment: {}", sni);
             }
+            return Some(sni);
         }
     }
 
@@ -161,12 +155,15 @@ pub(super) fn try_reconstruct_sni_from_fragments(
 
     // Check if we have fragments that include the ClientHello beginning
     // We need at least one fragment starting at or very close to offset 0
-    let has_beginning = sorted_offsets.iter().any(|&offset| *offset <= 10);
+    let has_beginning = reassembler
+        .get_fragments()
+        .next()
+        .is_some_and(|(offset, _)| offset <= 10);
 
     if !has_beginning {
         debug!(
             "QUIC: No fragment near offset 0 (first at {:?}) - missing ClientHello beginning, skipping SNI extraction",
-            sorted_offsets.first()
+            reassembler.get_fragments().next().map(|(offset, _)| offset)
         );
         return None;
     }
@@ -175,46 +172,44 @@ pub(super) fn try_reconstruct_sni_from_fragments(
     let mut expected_offset = 0u64;
     let mut has_significant_gaps = false;
 
-    for &offset in &sorted_offsets {
-        if let Some(data) = fragments.get(offset) {
-            debug!(
-                "QUIC: Processing fragment at offset {} ({} bytes), expected offset was {}",
-                offset,
-                data.len(),
-                expected_offset
-            );
+    for (offset, data) in reassembler.get_fragments() {
+        debug!(
+            "QUIC: Processing fragment at offset {} ({} bytes), expected offset was {}",
+            offset,
+            data.len(),
+            expected_offset
+        );
 
-            // If there's a gap, be more careful about continuing
-            if *offset > expected_offset {
-                let gap_size = *offset - expected_offset;
-                debug!("QUIC: Gap detected of {} bytes between fragments", gap_size);
+        // If there's a gap, be more careful about continuing
+        if offset > expected_offset {
+            let gap_size = offset - expected_offset;
+            debug!("QUIC: Gap detected of {} bytes between fragments", gap_size);
 
-                // Gaps in the first 100 bytes are critical as they likely contain SNI
-                // The SNI extension typically appears between bytes 70-200 of the ClientHello
-                if expected_offset < 100 && gap_size > 50 {
-                    has_significant_gaps = true;
-                    debug!("QUIC: Gap in critical ClientHello region - SNI might be incomplete");
-                }
-
-                // Large gaps anywhere might indicate missing data
-                if gap_size > 300 {
-                    has_significant_gaps = true;
-                    debug!(
-                        "QUIC: Large gap detected ({} bytes) - data might be incomplete",
-                        gap_size
-                    );
-                }
-
-                // For smaller gaps, add minimal padding to maintain data alignment
-                if gap_size <= 100 && !all_data.is_empty() {
-                    all_data.resize(all_data.len() + gap_size as usize, 0);
-                    debug!("QUIC: Added {} bytes of padding for small gap", gap_size);
-                }
+            // Gaps in the first 100 bytes are critical as they likely contain SNI
+            // The SNI extension typically appears between bytes 70-200 of the ClientHello
+            if expected_offset < 100 && gap_size > 50 {
+                has_significant_gaps = true;
+                debug!("QUIC: Gap in critical ClientHello region - SNI might be incomplete");
             }
 
-            all_data.extend_from_slice(data);
-            expected_offset = *offset + data.len() as u64;
+            // Large gaps anywhere might indicate missing data
+            if gap_size > 300 {
+                has_significant_gaps = true;
+                debug!(
+                    "QUIC: Large gap detected ({} bytes) - data might be incomplete",
+                    gap_size
+                );
+            }
+
+            // For smaller gaps, add minimal padding to maintain data alignment
+            if gap_size <= 100 && !all_data.is_empty() {
+                all_data.resize(all_data.len() + gap_size as usize, 0);
+                debug!("QUIC: Added {} bytes of padding for small gap", gap_size);
+            }
         }
+
+        all_data.extend_from_slice(data);
+        expected_offset = offset + data.len() as u64;
     }
 
     if all_data.len() < 10 {

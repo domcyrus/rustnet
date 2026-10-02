@@ -84,6 +84,7 @@ Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See th
 
 ## Documentation
 
+- [QUIC inspection](QUIC.md): handshake storage and library compatibility (unreleased).
 - [Installation](INSTALL.md): platforms, permissions, and troubleshooting
 - [Usage](USAGE.md): controls, filtering, automation, and capture exports
 - [Terminal layout and appearance (development)](TUI.md)

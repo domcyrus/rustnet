@@ -163,6 +163,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Traffic graph stability**: remove hollow outlines and preserve the scroll position
   across sample arrivals; interpolate before rasterizing to prevent contour wobble
 - Keep Activity summary TX/RX labels, numbers, and units aligned as live rates change
+- **QUIC handshake storage**: coalesce bounded CRYPTO ranges in either arrival
+  order, keep assembling through ClientHello for ALPN, and release bytes after
+  extraction. UI/history snapshots retain metadata only. Library consumers must
+  adapt `get_fragments()` from a map reference to an `(offset, slice)` iterator
+- **32-bit parser validation**: test QUIC and SNMP length boundaries in debug
+  and release CI; constrain SNMP nested fields to their declared containers
 - **Short Kubernetes flows**: retain cgroup v2 pod/container identity with eBPF
   socket records after process exit, match both endpoint orientations, and
   evict old records when the map fills.

@@ -742,83 +742,32 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
 
     set_if_absent(&mut old_info.version_string, &new_info.version_string);
 
-    // The CRYPTO reassembler persists across packets so fragmented TLS
-    // handshakes can still yield the SNI.
+    // Keep assembling the ClientHello even after its SNI is available: ALPN
+    // and supported_versions can arrive in later fragments.
     if let Some(new_reassembler) = &new_info.crypto_reassembler {
         if old_info.crypto_reassembler.is_none() {
-            // First time seeing crypto frames, initialize the connection-level reassembler
             old_info.crypto_reassembler = Some(new_reassembler.clone());
-            debug!(
-                "QUIC: Initialized crypto reassembler for connection with Connection ID: {:?}",
-                old_info.connection_id_hex
-            );
-        } else if let Some(old_reassembler) = &mut old_info.crypto_reassembler {
-            // Handles out-of-order CRYPTO frames across packets.
-            for (&offset, data) in new_reassembler.get_fragments() {
-                match old_reassembler.add_fragment(offset, data.clone()) {
-                    Ok(_) => {
-                        debug!(
-                            "QUIC: Merged CRYPTO fragment at offset {} for connection {}",
-                            offset,
-                            old_info.connection_id_hex.as_deref().unwrap_or("unknown")
-                        );
-                    }
-                    Err(e) => {
+        } else if let Some(old_reassembler) = &mut old_info.crypto_reassembler
+            && !old_reassembler.extraction_finished()
+        {
+            if new_reassembler.extraction_finished() {
+                old_reassembler.finish_extraction(new_reassembler.get_cached_tls_info().cloned());
+            } else {
+                for (offset, data) in new_reassembler.get_fragments() {
+                    if let Err(e) = old_reassembler.add_fragment(offset, data.to_vec()) {
                         warn!("QUIC: Failed to merge CRYPTO fragment: {}", e);
                     }
                 }
+                let extracted = try_extract_tls_from_reassembler(old_reassembler, false)
+                    .or_else(|| try_extract_tls_from_reassembler(old_reassembler, true));
+                merge_tls_info(&mut old_info.tls_info, &extracted);
             }
-
-            // If current SNI is partial or missing, try re-extracting from merged reassembler
-            let should_retry = match &old_info.tls_info {
-                None => true,
-                Some(tls) => {
-                    tls.sni.is_none() || tls.sni.as_ref().is_some_and(|s| is_partial_sni(s))
-                }
-            };
-
-            if should_retry {
-                debug!(
-                    "QUIC: SNI is partial or missing, attempting re-extraction from merged fragments"
-                );
-                // First try without partial extraction to get complete SNI
-                if let Some(new_tls) = try_extract_tls_from_reassembler(old_reassembler, false) {
-                    debug!(
-                        "QUIC: Re-extraction succeeded with complete SNI: {:?}",
-                        new_tls.sni
-                    );
-                    old_info.tls_info = Some(new_tls);
-                } else {
-                    // If complete extraction failed, allow partial as fallback
-                    if let Some(new_tls) = try_extract_tls_from_reassembler(old_reassembler, true) {
-                        debug!(
-                            "QUIC: Re-extraction returned partial SNI as fallback: {:?}",
-                            new_tls.sni
-                        );
-                        old_info.tls_info = Some(new_tls);
-                    }
-                }
-            }
-
-            // Update cached TLS info if new reassembler has it and it's better
-            if let Some(tls_info) = new_reassembler.get_cached_tls_info() {
-                let new_is_complete = tls_info.sni.as_ref().is_some_and(|s| !is_partial_sni(s));
-                let should_update = match &old_info.tls_info {
-                    None => true,
-                    Some(old_tls) => {
-                        let old_is_partial =
-                            old_tls.sni.as_ref().is_some_and(|s| is_partial_sni(s));
-                        old_tls.sni.is_none() || (old_is_partial && new_is_complete)
-                    }
-                };
-                if should_update {
-                    old_info.tls_info = Some(tls_info.clone());
-                    debug!(
-                        "QUIC: Updated TLS info from reassembler - SNI: {:?}, ALPN: {:?}",
-                        tls_info.sni, tls_info.alpn
-                    );
-                }
-            }
+        }
+        if let Some(reassembler) = &old_info.crypto_reassembler {
+            merge_tls_info(
+                &mut old_info.tls_info,
+                &reassembler.get_cached_tls_info().cloned(),
+            );
         }
     }
 
@@ -870,6 +819,15 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
             "QUIC: Updated connection state to {:?} due to CONNECTION_CLOSE frame",
             old_info.connection_state
         );
+    }
+
+    if matches!(
+        old_info.connection_state,
+        QuicConnectionState::Draining | QuicConnectionState::Closed
+    ) && let Some(reassembler) = &mut old_info.crypto_reassembler
+        && !reassembler.extraction_finished()
+    {
+        reassembler.finish_extraction(old_info.tls_info.clone());
     }
 
     overwrite_if_present(&mut old_info.idle_timeout, &new_info.idle_timeout);
@@ -1003,6 +961,121 @@ mod tests {
     use super::*;
     use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState, TlsVersion};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn quic_merge_assembles_late_metadata_after_complete_sni() {
+        use crate::network::dpi::test_fixtures::{RFC9001_CLIENT_HELLO, from_hex};
+        let hello = from_hex(RFC9001_CLIENT_HELLO);
+        let split = hello
+            .windows(11)
+            .position(|bytes| bytes == b"example.com")
+            .unwrap()
+            + 11;
+        let mut old = QuicInfo::new(1);
+        old.ensure_reassembler();
+        let reassembler = old.crypto_reassembler.as_mut().unwrap();
+        reassembler
+            .add_fragment(0, hello[..split].to_vec())
+            .unwrap();
+        old.tls_info = try_extract_tls_from_reassembler(reassembler, false);
+        assert_eq!(
+            old.tls_info.as_ref().unwrap().sni.as_deref(),
+            Some("example.com")
+        );
+        assert!(old.tls_info.as_ref().unwrap().alpn.is_empty());
+        let mut new = QuicInfo::new(1);
+        new.ensure_reassembler();
+        new.crypto_reassembler
+            .as_mut()
+            .unwrap()
+            .add_fragment(split as u64, hello[split..].to_vec())
+            .unwrap();
+        merge_quic_info(&mut old, &new);
+        assert_eq!(old.tls_info.as_ref().unwrap().alpn, vec!["alpn"]);
+        assert_eq!(
+            old.tls_info.as_ref().unwrap().version,
+            Some(TlsVersion::Tls13)
+        );
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .get_fragments()
+                .next()
+                .is_none()
+        );
+        merge_quic_info(&mut old, &new);
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .get_fragments()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn quic_merge_complete_packet_releases_old_partial_handshake() {
+        use crate::network::dpi::test_fixtures::{RFC9001_CLIENT_HELLO, from_hex};
+        let hello = from_hex(RFC9001_CLIENT_HELLO);
+        let mut old = QuicInfo::new(1);
+        old.ensure_reassembler();
+        old.crypto_reassembler
+            .as_mut()
+            .unwrap()
+            .add_fragment(0, hello[..20].to_vec())
+            .unwrap();
+        let mut new = QuicInfo::new(1);
+        new.ensure_reassembler();
+        let reassembler = new.crypto_reassembler.as_mut().unwrap();
+        reassembler.add_fragment(0, hello).unwrap();
+        new.tls_info = try_extract_tls_from_reassembler(reassembler, false);
+        merge_quic_info(&mut old, &new);
+        assert_eq!(old.tls_info.as_ref().unwrap().alpn, vec!["alpn"]);
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .extraction_finished()
+        );
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .get_fragments()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn quic_merge_close_releases_incomplete_handshake() {
+        let mut old = QuicInfo::new(1);
+        old.ensure_reassembler();
+        old.crypto_reassembler
+            .as_mut()
+            .unwrap()
+            .add_fragment(0, vec![1; 20])
+            .unwrap();
+        let mut closed = QuicInfo::new(1);
+        closed.connection_state = QuicConnectionState::Closed;
+        merge_quic_info(&mut old, &closed);
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .extraction_finished()
+        );
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .get_fragments()
+                .next()
+                .is_none()
+        );
+    }
 
     fn create_test_connection() -> Connection {
         Connection::new(

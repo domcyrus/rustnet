@@ -40,9 +40,7 @@ pub(super) fn analyze_snmp(payload: &[u8]) -> Option<SnmpInfo> {
     let (seq_len, mut offset) = parse_ber_length(&payload[1..])?;
     offset += 1; // Account for SEQUENCE tag
 
-    if offset + seq_len > payload.len() {
-        return None;
-    }
+    let payload = payload.get(..offset.checked_add(seq_len)?)?;
 
     let (version_bytes, offset) = read_tlv(payload, offset, BER_INTEGER)?;
     let version = parse_version(version_bytes)?;
@@ -146,16 +144,16 @@ fn v3_pdu_type(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
 
     match *payload.get(offset)? {
         BER_SEQUENCE => {
-            // Plaintext ScopedPDU: enter the SEQUENCE, then skip
-            // contextEngineID and contextName.
-            let mut offset = offset + 1;
-            let (_, len_bytes) = parse_ber_length(&payload[offset..])?;
-            offset += len_bytes;
-            let offset = skip_tlv(payload, offset, BER_OCTET_STRING)?; // contextEngineID
-            let offset = skip_tlv(payload, offset, BER_OCTET_STRING)?; // contextName
-            pdu_type_at(payload, offset)
+            // Scope nested reads to the declared SEQUENCE, including its length.
+            let (scoped, _) = read_tlv(payload, offset, BER_SEQUENCE)?;
+            let offset = skip_tlv(scoped, 0, BER_OCTET_STRING)?; // contextEngineID
+            let offset = skip_tlv(scoped, offset, BER_OCTET_STRING)?; // contextName
+            pdu_type_at(scoped, offset)
         }
-        BER_OCTET_STRING => Some(SnmpPduType::Encrypted),
+        BER_OCTET_STRING => {
+            read_tlv(payload, offset, BER_OCTET_STRING)?;
+            Some(SnmpPduType::Encrypted)
+        }
         _ => None,
     }
 }
@@ -181,6 +179,53 @@ fn skip_tlv(payload: &[u8], offset: usize, expected_tag: u8) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_sequence_lengths_are_rejected() {
+        let mut packet = vec![0x30, 0x84, 0xff, 0xff, 0xff, 0xff];
+        packet.extend_from_slice(&[0x02, 1, 1, 0x04, 0, 0xa0]);
+        assert!(analyze_snmp(&packet).is_none());
+    }
+
+    #[test]
+    fn sequence_cannot_borrow_fields_from_trailing_bytes() {
+        let packet = [0x30, 3, 0x02, 1, 1, 0x04, 0, 0xa0, 0, 0];
+        assert!(analyze_snmp(&packet).is_none());
+    }
+
+    #[test]
+    fn nested_v3_lengths_cannot_escape_their_container() {
+        // Empty global/security fields followed by a ScopedPDU whose length
+        // cannot cover the two context fields and the PDU tag after it.
+        for length in [0, 1, 4, 6, 0xff] {
+            let body = [0x30, 0, 0x04, 0, 0x30, length, 0x04, 0, 0x04, 0, 0xa0];
+            assert!(v3_pdu_type(&body, 0).is_none());
+        }
+        let valid = [0x30, 0, 0x04, 0, 0x30, 5, 0x04, 0, 0x04, 0, 0xa0];
+        assert_eq!(v3_pdu_type(&valid, 0), Some(SnmpPduType::GetRequest));
+        for suffix in [
+            &[0x04][..],
+            &[0x04, 1],
+            &[0x04, 0x84, 0xff, 0xff, 0xff, 0xff],
+            &[0x30, 0x84, 0xff, 0xff, 0xff, 0xff],
+        ] {
+            let mut body = vec![0x30, 0, 0x04, 0];
+            body.extend_from_slice(suffix);
+            assert!(v3_pdu_type(&body, 0).is_none());
+        }
+    }
+
+    #[test]
+    fn ber_lengths_and_tlv_offsets_are_bounded() {
+        assert_eq!(
+            parse_ber_length(&[0x84, 0xff, 0xff, 0xff, 0xff]),
+            Some((u32::MAX as usize, 5))
+        );
+        for bytes in [&[0x80][..], &[0x84, 0xff], &[0x85, 0, 0, 0, 0, 1]] {
+            assert!(parse_ber_length(bytes).is_none());
+        }
+        assert!(read_tlv(&[BER_INTEGER, 1, 3], usize::MAX, BER_INTEGER).is_none());
+    }
 
     /// Build a community-based (v1 / v2c) SNMP message: `version` is the
     /// INTEGER value (0 = v1, 1 = v2c), `pdu_tag` the PDU's context-specific
