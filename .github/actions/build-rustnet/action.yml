@@ -66,6 +66,10 @@ runs:
         if ($LASTEXITCODE -ne 0) {
           throw "Windows import validator regression tests failed"
         }
+        python -B scripts/windows-npcap/test_verify.py
+        if ($LASTEXITCODE -ne 0) {
+          throw "Npcap runtime validator regression tests failed"
+        }
         $imports | python -B "${{ github.action_path }}/verify_windows_imports.py"
         if ($LASTEXITCODE -ne 0) {
           throw "Npcap imports are not safely delay-loaded"
