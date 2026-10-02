@@ -4,9 +4,127 @@
 //! remainder is a quiet dotted track. Under NO_COLOR the block-vs-dot
 //! glyph contrast keeps the bar legible on its own.
 
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    time::{Duration, Instant},
+};
+
 use ratatui::{style::Color, text::Span};
 
 use crate::ui::theme;
+
+const TRANSITION: Duration = Duration::from_millis(250);
+
+/// Per-view bar transitions keyed by metric identity, never by row position.
+/// New or resized bars show their actual value immediately. Only subsequent
+/// changes animate; entries disappear as soon as their bars leave the view.
+#[derive(Debug)]
+pub(crate) struct BarAnimations {
+    entries: RefCell<HashMap<String, BarTransition>>,
+    now: Cell<Instant>,
+    active: Cell<bool>,
+}
+
+#[derive(Debug)]
+struct BarTransition {
+    from: f64,
+    target: f64,
+    started: Instant,
+    width: usize,
+    seen: bool,
+}
+
+impl BarTransition {
+    fn value(&self, now: Instant) -> f64 {
+        let t = (now.saturating_duration_since(self.started).as_secs_f64()
+            / TRANSITION.as_secs_f64())
+        .clamp(0.0, 1.0);
+        let eased = t * t * (3.0 - 2.0 * t);
+        self.from + (self.target - self.from) * eased
+    }
+}
+
+impl Default for BarAnimations {
+    fn default() -> Self {
+        Self {
+            entries: RefCell::default(),
+            now: Cell::new(Instant::now()),
+            active: Cell::new(false),
+        }
+    }
+}
+
+impl BarAnimations {
+    pub(crate) fn begin_frame(&self, now: Instant) {
+        self.now.set(now);
+        self.active.set(false);
+        for entry in self.entries.borrow_mut().values_mut() {
+            entry.seen = false;
+        }
+    }
+
+    pub(crate) fn finish_frame(&self) {
+        self.entries.borrow_mut().retain(|_, entry| entry.seen);
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.get()
+    }
+
+    fn fraction(&self, key: String, target: f64, width: usize) -> f64 {
+        let target = if target.is_finite() {
+            target.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if width == 0 {
+            return target;
+        }
+        let now = self.now.get();
+        let mut entries = self.entries.borrow_mut();
+        let entry = entries.entry(key).or_insert(BarTransition {
+            from: target,
+            target,
+            started: now,
+            width,
+            seen: true,
+        });
+        entry.seen = true;
+        if entry.width != width {
+            *entry = BarTransition {
+                from: target,
+                target,
+                started: now,
+                width,
+                seen: true,
+            };
+        } else if entry.target != target {
+            entry.from = entry.value(now);
+            entry.target = target;
+            entry.started = now;
+        }
+        let value = entry.value(now);
+        if (value - target).abs() * width as f64 >= 0.0625 {
+            self.active.set(true);
+            value
+        } else {
+            // Snap the last half-eighth-cell so completed bars stop redrawing.
+            entry.from = target;
+            target
+        }
+    }
+
+    pub(crate) fn spans(
+        &self,
+        key: impl Into<String>,
+        fraction: f64,
+        width: usize,
+        color: Color,
+    ) -> Vec<Span<'static>> {
+        themed_spans(self.fraction(key.into(), fraction, width), width, color)
+    }
+}
 
 /// Partial-cell tip glyphs; index i renders (i + 1)/8 of a cell.
 const EIGHTHS: [&str; 7] = [
@@ -102,6 +220,73 @@ mod tests {
     use super::*;
     use crate::ui::test_support::spans_text;
     use ratatui::style::Color;
+
+    #[test]
+    fn transitions_retarget_from_the_displayed_value_and_settle() {
+        let animation = BarAnimations::default();
+        let start = Instant::now();
+        animation.begin_frame(start);
+        assert_eq!(animation.fraction("rx".into(), 0.2, 100), 0.2);
+        assert!(!animation.is_active());
+        assert_eq!(animation.fraction("rx".into(), 0.8, 100), 0.2);
+        assert!(animation.is_active());
+        animation.finish_frame();
+        animation.begin_frame(start + TRANSITION / 2);
+        let middle = animation.fraction("rx".into(), 0.8, 100);
+        assert!((middle - 0.5).abs() < 1e-9);
+        assert_eq!(animation.fraction("rx".into(), 0.0, 100), middle);
+        animation.finish_frame();
+        animation.begin_frame(start + TRANSITION);
+        let falling = animation.fraction("rx".into(), 0.0, 100);
+        assert!(falling > 0.0 && falling < middle);
+        animation.finish_frame();
+        animation.begin_frame(start + TRANSITION * 2);
+        assert_eq!(animation.fraction("rx".into(), 0.0, 100), 0.0);
+        assert!(!animation.is_active());
+    }
+
+    #[test]
+    fn identities_survive_reordering_and_hidden_entries_are_removed() {
+        let animation = BarAnimations::default();
+        let start = Instant::now();
+        animation.begin_frame(start);
+        animation.fraction("firefox/tx".into(), 0.2, 20);
+        animation.fraction("ssh/tx".into(), 0.8, 20);
+        animation.finish_frame();
+        animation.begin_frame(start + TRANSITION);
+        assert_eq!(animation.fraction("ssh/tx".into(), 0.1, 20), 0.8);
+        assert_eq!(animation.fraction("firefox/tx".into(), 0.9, 20), 0.2);
+        // Switching direction creates an independent metric immediately.
+        assert_eq!(animation.fraction("firefox/rx".into(), 0.6, 20), 0.6);
+        animation.finish_frame();
+        animation.begin_frame(start + TRANSITION * 2);
+        animation.fraction("firefox/rx".into(), 0.6, 20);
+        animation.finish_frame();
+        assert_eq!(animation.entries.borrow().len(), 1);
+        assert!(!animation.is_active());
+        animation.begin_frame(start + TRANSITION * 3);
+        animation.finish_frame();
+        assert!(animation.entries.borrow().is_empty());
+    }
+
+    #[test]
+    fn resizing_and_subpixel_changes_do_not_keep_the_ui_animating() {
+        let animation = BarAnimations::default();
+        let now = Instant::now();
+        animation.begin_frame(now);
+        animation.fraction("rx".into(), 0.2, 20);
+        assert_eq!(animation.fraction("rx".into(), 0.201, 20), 0.201);
+        assert!(!animation.is_active());
+        animation.finish_frame();
+        animation.begin_frame(now);
+        assert_eq!(animation.fraction("rx".into(), 0.8, 40), 0.8);
+        assert!(!animation.is_active());
+        animation.finish_frame();
+        animation.begin_frame(now);
+        animation.fraction("invisible".into(), 1.0, 0);
+        animation.finish_frame();
+        assert!(animation.entries.borrow().is_empty());
+    }
 
     fn rendered_width(spans: &[Span<'_>]) -> usize {
         spans.iter().map(|s| s.content.chars().count()).sum()

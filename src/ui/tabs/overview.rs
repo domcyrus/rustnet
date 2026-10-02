@@ -406,6 +406,7 @@ fn draw_overview(
             ctx.app,
             area,
             Some(&ctx.ui_state.system_scroll),
+            ctx.ui_state,
         );
     }
     let show_system_panel =
@@ -457,7 +458,15 @@ fn draw_overview(
         } else {
             ConnectionCounts::from_connections(ctx.connections)
         };
-        draw_stats_panel(f, connection_counts, ctx.stats, ctx.app, chunks[1], None)?;
+        draw_stats_panel(
+            f,
+            connection_counts,
+            ctx.stats,
+            ctx.app,
+            chunks[1],
+            None,
+            ctx.ui_state,
+        )?;
     }
 
     Ok(())
@@ -899,6 +908,7 @@ fn draw_stats_panel(
     app: &App,
     area: Rect,
     scroll: Option<&PaneScroll>,
+    state: &UiState,
 ) -> Result<()> {
     // Borderless: a single quiet vertical rule separates the sidebar
     // from the connections table, and the section header names it:
@@ -1346,7 +1356,7 @@ fn draw_stats_panel(
     f.render_widget(network_stats, chunks[2]);
     render_section_separator(f, chunks[3]);
 
-    draw_interface_stats_with_graph(f, app, chunks[4])?;
+    draw_interface_stats_with_graph(f, app, chunks[4], state)?;
     render_section_separator(f, chunks[5]);
 
     let security_stats = Paragraph::new(security_lines).style(Style::default());
@@ -1450,7 +1460,12 @@ fn draw_mini_wave_row(
     );
 }
 
-fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
+fn draw_interface_stats_with_graph(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    state: &UiState,
+) -> Result<()> {
     // Heading + sparklines (3 lines) + interface details (remaining).
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -1483,6 +1498,12 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         ])
         .split(sections[0]);
 
+    state.graph_animation_visible.set(
+        traffic_history.has_enough_data()
+            && sparkline_rows[..2]
+                .iter()
+                .any(|area| area.height > 0 && area.width > 3),
+    );
     let rx_rates = traffic_history.get_rx_sparkline_data(usize::MAX);
     draw_mini_wave_row(
         f,

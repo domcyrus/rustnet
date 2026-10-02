@@ -86,6 +86,7 @@ Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See th
 
 - [Installation](INSTALL.md): platforms, permissions, and troubleshooting
 - [Usage](USAGE.md): controls, filtering, automation, and capture exports
+- [Terminal layout and appearance (development)](TUI.md)
 - [Security](SECURITY.md): sandboxing and privilege management
 - [Architecture](ARCHITECTURE.md): platform backends and performance
 - [Kubernetes and containers](KUBERNETES.md): attribution and capture exports

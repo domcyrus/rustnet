@@ -15,7 +15,7 @@ Response time  p50 45ms   p95 220ms   max 220ms
                                                                                 
                                                                                 
 ▎ Question Names (60s)  sort: lookups ──────────────────────────────────────────
-Question                                                 Lookups  NX    Fail    
+Question                                                  Lookups    NX   Fail  
 api.example.com                                                 1     0      0  
 cdn.example.com                                                 1     0      0  
 missing.example.com                                             1     1      0  

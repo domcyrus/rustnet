@@ -1,7 +1,7 @@
 //! User configuration file loading.
 //!
 //! rustnet reads an optional TOML file for settings that do not fit the
-//! command line, currently the color theme:
+//! command line, including the color theme and optional popup shadow:
 //!
 //! ```toml
 //! # ~/.config/rustnet/config.toml
@@ -30,6 +30,7 @@ use serde::Deserialize;
 #[serde(default)]
 struct RawConfig {
     theme: RawTheme,
+    ui: RawUi,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -40,11 +41,18 @@ struct RawTheme {
     overrides: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawUi {
+    popup_shadow: bool,
+}
+
 /// Parsed user configuration. Override values are validated later by
 /// `ThemeSpec::set_token`, not here.
 #[derive(Debug, Default, PartialEq)]
 pub struct UserConfig {
     pub theme: Option<String>,
+    pub popup_shadow: bool,
     pub overrides: Vec<(String, String)>,
 }
 
@@ -117,6 +125,7 @@ fn parse(contents: &str) -> Result<UserConfig, String> {
     })?;
     Ok(UserConfig {
         theme: raw.theme.name,
+        popup_shadow: raw.ui.popup_shadow,
         overrides: raw.theme.overrides.into_iter().collect(),
     })
 }
@@ -218,6 +227,14 @@ mod tests {
         // An empty home field is not a usable answer.
         assert_eq!(passwd_home(passwd, "noshell"), None);
         assert_eq!(passwd_home(passwd, "absent"), None);
+    }
+
+    #[test]
+    fn popup_shadow_is_opt_in_and_validated() {
+        assert!(!parse("").unwrap().popup_shadow);
+        assert!(parse("[ui]\npopup_shadow = true").unwrap().popup_shadow);
+        assert!(!parse("[ui]\npopup_shadow = false").unwrap().popup_shadow);
+        assert!(parse("[ui]\npopup_shadow = 'yes'").is_err());
     }
 
     #[test]

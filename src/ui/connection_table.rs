@@ -284,7 +284,7 @@ fn endpoint_display(
         AddrKind::Unicast => {
             if is_gateway {
                 let with_marker = format!("{addr} (gw)");
-                if with_marker.chars().count() <= max_width {
+                if crate::ui::format::cell_width(&with_marker) <= max_width {
                     return with_marker;
                 }
             }
@@ -311,9 +311,9 @@ fn remote_display(
         let port = conn.remote_addr.port();
         let fit = |name: &str| -> String {
             let full = format!("{name}:{port}");
-            if full.chars().count() > max_width {
+            if crate::ui::format::cell_width(&full) > max_width {
                 let port_str = format!(":{port}");
-                let budget = max_width.saturating_sub(port_str.chars().count());
+                let budget = max_width.saturating_sub(crate::ui::format::cell_width(&port_str));
                 format!("{}{port_str}", truncate_with_ellipsis(name, budget))
             } else {
                 full
@@ -665,7 +665,7 @@ fn process_style(conn: &Connection, paint: CellPaint) -> Style {
 fn application_cell<'a>(conn: &Connection, width: u16, paint: CellPaint) -> Cell<'a> {
     let proto = conn.protocol.as_str();
     let mut spans = vec![Span::styled(proto, paint.style(theme::muted()))];
-    let mut used = proto.chars().count();
+    let mut used = crate::ui::format::cell_width(proto);
     if let Some(dpi) = &conn.dpi_info {
         let budget = (width as usize).saturating_sub(used + 1);
         let app = if width >= APP_WIDTH_FULL {
@@ -673,7 +673,7 @@ fn application_cell<'a>(conn: &Connection, width: u16, paint: CellPaint) -> Cell
         } else {
             truncate_with_ellipsis(dpi.application.sort_key(), budget)
         };
-        used += 1 + app.chars().count();
+        used += 1 + crate::ui::format::cell_width(&app);
         spans.push(Span::styled("·", paint.style(theme::muted())));
         spans.push(Span::styled(app, paint.style(dpi_color(&dpi.application))));
     }
@@ -1116,7 +1116,7 @@ mod tests {
         let ui_state = UiState::default();
 
         let full = conn.remote_addr.to_string();
-        let full_len = full.chars().count();
+        let full_len = crate::ui::format::cell_width(&full);
 
         // Enough width: the raw address is shown verbatim.
         assert_eq!(remote_display(&conn, &ui_state, None, full_len), full);

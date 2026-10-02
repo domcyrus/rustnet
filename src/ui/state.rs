@@ -219,7 +219,7 @@ pub enum GraphSection {
     Distribution,
 }
 
-/// Selected Details card, shown alone in compact layouts.
+/// Selected Details card when the complete dashboard does not fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DetailsSection {
     #[default]
@@ -267,6 +267,7 @@ pub enum ActivitySort {
     RetainedTx,
     WindowTx,
     CurrentTx,
+    AverageTx,
     PeakTx,
     Connections,
     Destinations,
@@ -278,7 +279,8 @@ impl ActivitySort {
         match self {
             Self::RetainedTx => Self::WindowTx,
             Self::WindowTx => Self::CurrentTx,
-            Self::CurrentTx => Self::PeakTx,
+            Self::CurrentTx => Self::AverageTx,
+            Self::AverageTx => Self::PeakTx,
             Self::PeakTx => Self::Connections,
             Self::Connections => Self::Destinations,
             Self::Destinations => Self::Process,
@@ -300,6 +302,10 @@ impl ActivitySort {
                 ActivityDirection::Egress => "TX Rate",
                 ActivityDirection::Ingress => "RX Rate",
             },
+            Self::AverageTx => match direction {
+                ActivityDirection::Egress => "2s Avg TX",
+                ActivityDirection::Ingress => "2s Avg RX",
+            },
             Self::PeakTx => match direction {
                 ActivityDirection::Egress => "Peak TX",
                 ActivityDirection::Ingress => "Peak RX",
@@ -312,7 +318,7 @@ impl ActivitySort {
 }
 
 /// Scroll state for a pane that only learns its content and viewport
-/// size at render time (Details info panes, Help overlay, Host tables).
+/// size at render time (Help overlay, Host tables, Overview system data).
 /// Event handlers mutate `offset`; the draw path reports the
 /// real maximum through [`Self::clamp_for_render`] (a `Cell`, because
 /// drawing only holds `&UiState`), so the next scroll input clamps
@@ -591,9 +597,10 @@ pub struct UiState {
     pub scroll_offset: usize,
     /// Scroll offset for grouped connection list (persisted for stable scrolling)
     pub grouped_scroll_offset: usize,
-    /// Scroll state for the Details info panes (reset when the selection changes)
-    pub details_scroll: PaneScroll,
     pub details_section: DetailsSection,
+    /// Page within the selected card, clamped by the rendered viewport.
+    pub details_page: Cell<usize>,
+    pub details_page_count: Cell<usize>,
     pub details_compact: Cell<bool>,
     /// Scroll state for the contextual help overlay.
     pub help_scroll: PaneScroll,
@@ -603,8 +610,18 @@ pub struct UiState {
     pub host_sockets_scroll: PaneScroll,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
+    /// Use one vertical scale for both traffic directions in Graph and Details.
+    pub traffic_shared_scale: bool,
+    pub traffic_log_scale: bool,
+    /// Fixed bounds captured from the last displayed traffic chart.
+    pub traffic_locked_scale: Option<(f64, f64)>,
+    pub traffic_displayed_scale: Cell<(f64, f64)>,
+    pub graph_states_scroll: PaneScroll,
     /// Whether the last Graph frame showed only the selected section.
     pub graph_compact: Cell<bool>,
+    /// A scrolling graph was rendered in the current frame.
+    pub graph_animation_visible: Cell<bool>,
+    pub(crate) bar_animations: super::widgets::glow_bar::BarAnimations,
     /// Scroll state for the Host tab's DNS question table.
     pub dns_questions_scroll: PaneScroll,
     /// Active Host tab subview.
@@ -658,14 +675,22 @@ impl Default for UiState {
             visible_rows: 10,
             scroll_offset: 0,
             grouped_scroll_offset: 0,
-            details_scroll: PaneScroll::default(),
             details_section: DetailsSection::default(),
+            details_page: Cell::new(0),
+            details_page_count: Cell::new(1),
             details_compact: Cell::new(false),
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
             graph_section: GraphSection::default(),
+            traffic_shared_scale: false,
+            traffic_log_scale: false,
+            traffic_locked_scale: None,
+            traffic_displayed_scale: Cell::new((1024.0, 1024.0)),
+            graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),
+            graph_animation_visible: Cell::new(false),
+            bar_animations: Default::default(),
             dns_questions_scroll: PaneScroll::default(),
             host_view: HostView::default(),
             dns_sort: DnsSort::default(),
@@ -758,12 +783,12 @@ impl UiState {
         self.filter_mode
     }
 
-    /// Set the selected connection key, resetting the Details pane
-    /// scroll when the selection actually changes so a newly selected
-    /// record always starts at the top.
+    /// Set the selected connection key, starting the current Details section
+    /// on its first page when the connection actually changes.
     pub fn set_connection_key(&mut self, key: Option<String>) {
         if self.selected_connection_key != key {
-            self.details_scroll.reset();
+            self.details_page.set(0);
+            self.details_page_count.set(1);
             self.selected_connection_index_hint.set(None);
             self.selected_grouped_index_hint.set(None);
         }
@@ -1226,6 +1251,63 @@ pub fn compute_grouped_rows<'a>(
     rows
 }
 
+impl UiState {
+    pub(crate) fn handle_traffic_chart_key(&mut self, key: char) -> bool {
+        match key {
+            's' => self.traffic_shared_scale = !self.traffic_shared_scale,
+            'z' => self.traffic_log_scale = !self.traffic_log_scale,
+            'l' => {
+                self.traffic_locked_scale = if self.traffic_locked_scale.is_some() {
+                    None
+                } else {
+                    Some(self.traffic_displayed_scale.get())
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub(crate) fn traffic_scale_label(&self) -> String {
+        format!(
+            "{} B/s · {} · {}",
+            if self.traffic_shared_scale {
+                "shared"
+            } else {
+                "independent"
+            },
+            if self.traffic_log_scale {
+                "log"
+            } else {
+                "linear"
+            },
+            if self.traffic_locked_scale.is_some() {
+                "locked"
+            } else {
+                "auto"
+            },
+        )
+    }
+
+    pub(crate) fn traffic_ceilings(
+        &self,
+        rx: &[u64],
+        tx: &[u64],
+        scales: (f64, f64),
+    ) -> (f64, f64) {
+        let (rx, tx) = self
+            .traffic_locked_scale
+            .unwrap_or_else(|| super::widgets::braille_graph::rate_ceilings(rx, tx, scales, false));
+        let ceilings = if self.traffic_shared_scale {
+            (rx.max(tx), rx.max(tx))
+        } else {
+            (rx, tx)
+        };
+        self.traffic_displayed_scale.set(ceilings);
+        ceilings
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1394,21 +1476,16 @@ mod tests {
     }
 
     #[test]
-    fn details_scroll_resets_when_selection_changes() {
+    fn details_page_resets_only_when_connection_changes() {
         let mut ui = UiState::default();
-        ui.details_scroll.clamp_for_render(20);
-        ui.details_scroll.scroll_down(7);
-
-        // Same key: scroll position survives (e.g. periodic refresh).
         ui.set_connection_key(Some("a".to_string()));
-        ui.details_scroll.clamp_for_render(20);
-        ui.details_scroll.scroll_down(7);
+        ui.details_page.set(2);
+        ui.details_page_count.set(3);
         ui.set_connection_key(Some("a".to_string()));
-        assert_eq!(ui.details_scroll.clamp_for_render(20), 7);
-
-        // New key: the new record starts at the top.
+        assert_eq!(ui.details_page.get(), 2);
         ui.set_connection_key(Some("b".to_string()));
-        assert_eq!(ui.details_scroll.clamp_for_render(20), 0);
+        assert_eq!(ui.details_page.get(), 0);
+        assert_eq!(ui.details_page_count.get(), 1);
     }
 
     #[test]

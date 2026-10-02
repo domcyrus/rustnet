@@ -11,34 +11,44 @@ expression: output
                                                                                                                                             
                                                                                                                                             
 ▎ ? → [fe80::2]:0 [ICMP_OTHER] · click a field to copy ─────────────────────────────────────────────────────────────────────────────────────
-Connection                                                            Application: ICMPv6                                                  ▐
-Protocol              ICMP                                            Message               Neighbor Advertisement                         ▐
-Status                Active (last seen <T> ago)                       Echo ID               -                                              ▐
-Local Address         [fe80::1]:0                                     Sequence              -                                              ▐
-Remote Address        [fe80::2]:0                                     NDP Neighbor          fe80::2 at b8:27:eb:12:34:56 (Raspberry Pi Fou ▐
-Scope                 LINK-LOCAL                                                                                                           ▐
-State                 ICMP_OTHER                                                                                                           ▐
-Process               -                                                                                                                    ▐
-PID                   -                                                                                                                    ▐
-Service               -                                               Attributed Name       -                                              ▐
-Observed VLANs        -                                               Attributed Via        -                                              ▐
-                                                                                                                                           ▐
-Network Context                                                       Transport Health                                                     ▐
-Local Hostname        -                                               No transport metrics for this protocol                               ▐
-Local MAC             -                                                                                                                    ▐
-Remote Hostname       -                                                                                                                    ▐
-Remote MAC            -                                                                                                                    ▐
+Connection                                                            Application: ICMPv6                                                   
+Protocol              ICMP                                            Message               Neighbor Advertisement                          
+Status                Active (last seen <T> ago)                       Echo ID               -                                               
+Local Address         [fe80::1]:0                                     Sequence              -                                               
+Remote Address        [fe80::2]:0                                     NDP Neighbor          fe80::2 at b8:27:eb:12:34:56 (Raspberry Pi Fou  
+Scope                 LINK-LOCAL                                                                                                            
+State                 ICMP_OTHER                                                                                                            
+Process               -                                                                                                                     
+PID                   -                                                                                                                     
+Service               -                                               Attributed Name       -                                               
+Observed VLANs        -                                               Attributed Via        -                                               
+                                                                                                                                            
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               No transport metrics for this protocol                                
+Local MAC             -                                                                                                                     
+Remote Hostname       -                                                                                                                     
+Remote MAC            -                                                                                                                     
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
                                                                                                                                             
 Attribution                                                                                                                                 
+PID                   -                                                                                                                     
+PPID                  -                                                                                                                     
+Process Tree          -                                                                                                                     
+Executable            -                                                                                                                     
+User                  -                                                                                                                     
+Match                 -                                                                                                                     
                                                                                                                                             
-▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
+▎ Traffic Statistics · smoothed · independent B/s · linear · auto ──────────────────────────────────────────────────────────────────────────
+↓ RX Now -           →                             peak           -   ↑ TX Now -           →                             peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
- j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back                                                                h help  q quit
+Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ j/k connection  s scale  z log  l lock  c copy remote addr  esc back                                                        h help  q quit

@@ -153,6 +153,8 @@ pub struct ProcessActivity {
     pub identity: ProcessIdentity,
     pub current_tx_bps: f64,
     pub current_rx_bps: f64,
+    pub average_tx_bps: f64,
+    pub average_rx_bps: f64,
     pub window_tx_bytes: u64,
     pub window_rx_bytes: u64,
     pub peak_tx_bps: f64,
@@ -467,6 +469,44 @@ impl ProcessHistory {
         }
     }
 
+    /// Integrate counter deltas over the most recent two seconds, including
+    /// idle time after the last observation. Ignore the initial zero-duration
+    /// baseline so retained bytes do not become a fabricated startup rate.
+    fn recent_average(&self, now: SystemTime) -> (f64, f64) {
+        let Some(first) = self.samples.front() else {
+            return (0.0, 0.0);
+        };
+        let duration = now
+            .duration_since(first.timestamp)
+            .unwrap_or_default()
+            .as_secs_f64()
+            .min(2.0);
+        if duration <= 0.0 {
+            return (0.0, 0.0);
+        }
+        let mut rates = (0.0, 0.0);
+        for (older, newer) in self.samples.iter().zip(self.samples.iter().skip(1)).rev() {
+            let age = now
+                .duration_since(newer.timestamp)
+                .unwrap_or_default()
+                .as_secs_f64();
+            if age >= 2.0 {
+                break;
+            }
+            let elapsed = newer
+                .timestamp
+                .duration_since(older.timestamp)
+                .unwrap_or_default()
+                .as_secs_f64();
+            if elapsed > 0.0 {
+                let fraction = elapsed.min(2.0 - age) / elapsed;
+                rates.0 += newer.tx_bytes.saturating_sub(older.tx_bytes) as f64 * fraction;
+                rates.1 += newer.rx_bytes.saturating_sub(older.rx_bytes) as f64 * fraction;
+            }
+        }
+        (rates.0 / duration, rates.1 / duration)
+    }
+
     fn window_bytes(&self, now: SystemTime, window: Duration) -> (u64, u64) {
         if self.samples.back().is_some_and(|sample| {
             now.duration_since(sample.timestamp).unwrap_or_default() >= window
@@ -674,10 +714,13 @@ impl ProcessActivityTracker {
             let destination_count = aggregate.destinations.len();
             let top_tx_destination = aggregate.top_peer(true);
             let top_rx_destination = aggregate.top_peer(false);
+            let (average_tx_bps, average_rx_bps) = history.recent_average(now);
             processes.push(ProcessActivity {
                 identity: identity.clone(),
                 current_tx_bps: history.current_tx_bps,
                 current_rx_bps: history.current_rx_bps,
+                average_tx_bps,
+                average_rx_bps,
                 window_tx_bytes,
                 window_rx_bytes,
                 peak_tx_bps: history.peak_tx_bps,
@@ -767,6 +810,8 @@ impl ProcessActivityTracker {
                     let (summary, combined) = entry.get_mut();
                     summary.current_tx_bps += process.current_tx_bps;
                     summary.current_rx_bps += process.current_rx_bps;
+                    summary.average_tx_bps += process.average_tx_bps;
+                    summary.average_rx_bps += process.average_rx_bps;
                     summary.window_tx_bytes = summary
                         .window_tx_bytes
                         .saturating_add(process.window_tx_bytes);
@@ -870,6 +915,33 @@ mod tests {
         conn.pid = pid;
         conn.process_name = name.map(str::to_string);
         conn
+    }
+
+    #[test]
+    fn recent_average_preserves_bursts_and_expires_during_idle_time() {
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let mut history = ProcessHistory::default();
+        let window = Duration::from_secs(60);
+        history.sample(start, 1_000_000, 2_000_000, window, true);
+        assert_eq!(history.recent_average(start), (0.0, 0.0));
+        history.sample(start + Duration::from_millis(500), 1000, 500, window, true);
+        assert_eq!(
+            history.recent_average(start + Duration::from_millis(500)),
+            (2000.0, 1000.0)
+        );
+        history.sample(start + Duration::from_secs(2), 0, 0, window, false);
+        assert_eq!(
+            history.recent_average(start + Duration::from_secs(2)),
+            (500.0, 250.0)
+        );
+        assert_eq!(
+            history.recent_average(start + Duration::from_millis(2250)),
+            (250.0, 125.0)
+        );
+        assert_eq!(
+            history.recent_average(start + Duration::from_secs(3)),
+            (0.0, 0.0)
+        );
     }
 
     #[test]

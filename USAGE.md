@@ -8,6 +8,7 @@ This guide covers detailed usage of RustNet, including command-line options, key
 
 ## Table of Contents
 
+- [Terminal layout and appearance (development)](TUI.md)
 - [Running RustNet](#running-rustnet)
 - [Command-line Options](#command-line-options)
 - [Headless Mode](#headless-mode)
@@ -479,11 +480,15 @@ information retains its section dividers and scrolls with `j` / `k`,
 Page Up/Down, or the mouse wheel. Escape returns to Connections without changing the selected connection or filter.
 Wider terminals retain the connection table and System sidebar, toggled with `i`.
 
-Details shows one section below 100 columns or 24 content rows (27 terminal
-rows without an open filter or expanded error banner). Choose Connection,
-Network, Process, Application, Health, or Traffic. `j` / `k` switch connections;
-Ctrl+D/U or the mouse wheel scrolls the information. Larger terminals retain
-the full dashboard and scroll its information panes together.
+Details switches to section pages below 100 columns or whenever its complete
+information dashboard and traffic plots do not fit. Choose Connection, Network,
+Process, Application, Health, or Traffic with `v` / Shift+`v` or a section click.
+Long sections on very short terminals have numbered pages, reached with the same
+keys. `j` / `k` and the mouse wheel switch connections. The selected section
+survives connection changes and resizing. Larger terminals show all cards and
+traffic plots together, without an information scrollbar. The dashboard spans
+the terminal's full width. Its RX/TX panel sits above the footer, using about one
+third of the content height, capped at 18 rows including the heading and statistics.
 
 Graph shows Traffic, Health, or Distribution below 100 columns or 32 content
 rows (35 terminal rows without an open filter or expanded error banner).
@@ -575,9 +580,16 @@ RustNet has full mouse support. Mouse capture is enabled automatically — all i
 | Action | Effect |
 |--------|--------|
 | **Scroll wheel** | Show the previous/next connection, skipping group headers |
+| **Click** a connection in the top strip | Select that connection |
 | **Click** on any field line | Copy the field value to the system clipboard |
 
-Use `Ctrl+D` / `Ctrl+U` to scroll long connection information panes.
+In development builds, `v` / Shift+`v` moves through information pages and
+sections when the complete dashboard does not fit; clicking a section opens its
+first page. Details uses no information scrollbar. `j` / `k`, up/down arrows,
+Page Up/Down (or Ctrl+B/F), and the mouse wheel navigate connections, skipping
+group headers. `g` / `G` select the first/last connection. Changing connections
+preserves the section and opens its first page. The Traffic section keeps its
+RX/TX plots when space permits, otherwise it displays paged statistics.
 
 Clicking a field copies just the value (not the label). For example, clicking the "Remote Address: 142.250.80.46:443" line copies `142.250.80.46:443` to your clipboard. A confirmation message appears in the status bar for 3 seconds.
 

@@ -13,7 +13,7 @@ Observed RTT  1 samples   average 24ms   max 24ms
                                                                                                                                             
                                                                                                                                             
 ▎ Listening and Bound Endpoints  2 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
-Proto   State      Local endpoint                        Peer                                 Service        PID      Process               
+Proto   State      Local endpoint                        Peer                                 Service             PID Process               
 TCP     LISTEN     0.0.0.0:8080                          -                                    webcache           4242 web-server            
 UDP     BOUND      127.0.0.1:53                          -                                    domain               53 resolver              
                                                                                                                                             

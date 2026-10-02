@@ -22,6 +22,7 @@ expression: output
     │   Esc                   Back one level; from applications return to Overview           ▐ │    
     │                                                                                        ▐ │    
     │ ▎ Activity Concepts                                                                    ▐ │    
+    │   2s Avg TX/RX     Sort and show averaged rates with s for steadier ordering             │    
     │   Applications     Traffic grouped by process name; PIDs are inside details              │    
     │   Scope            All captured traffic; Overview filters do not apply                   │    
     │   Attribution      Mapped share of retained traffic, not the 60s window                  │    
@@ -29,5 +30,4 @@ expression: output
     │   Interfaces       Browse interface counters in Host (5)                                 │    
     │   60s coverage     Captured connection traffic divided by interface traffic              │    
     │   Retained         Active traffic plus recently closed connections                       │    
-    │   Unknown          Traffic that could not be attributed to a process                     │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯

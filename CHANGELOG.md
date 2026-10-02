@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Traffic surge visibility**: held auto scales, shared/independent and log modes,
+  scale lock with overflow markers, rounded traffic waves, and two-second rate averages
+  in Graph/Details and Activity sorting
 - **Retained Linux process identity**: eBPF preserves bounded executable paths
   and immediate-parent metadata after exit or exec, and checks task birth times
   before extending ancestry through procfs (#640)
@@ -59,6 +62,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- Restore gradient traffic waves with three-sample smoothing and independent RX/TX
+  scales by default; `s` switches Graph and wide Details to a shared scale.
+  Current rates and peak labels retain raw measurements. Details gains taller
+  plots, aligned totals, and clear messages when no live history is available.
+- Smooth scrolling in Overview, Graph, and Details at 20 fps, preserving the
+  500 ms sampling interval. Activity, DNS, and Graph bars animate value changes
+  over 250 ms; numeric readings update immediately and settled bars redraw slowly.
+- Restore Activity's application and interface traffic-share charts on roomy
+  terminals, plus capture coverage bars, while keeping the table and drill-down.
+  Share charts use 60-second totals and live interface rates stay in fixed columns.
+- Improve TUI readability with wrapped Host records on narrow terminals,
+  Unicode cell-aware truncation, consistent headings and gutters, and labeled
+  RX/TX chart scales. TCP state rows can scroll; Help shadows are opt-in
+  through `[ui] popup_shadow = true`
 - Move DNS-inferred hostnames from Remote to App and their Details metadata
   into the Application card, retaining the `~` marker and SNI / Host precedence (#638)
 - **Documentation accuracy**: Align English, Chinese, and Japanese feature
@@ -143,6 +160,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Traffic graph stability**: remove hollow outlines and preserve the scroll position
+  across sample arrivals; interpolate before rasterizing to prevent contour wobble
+- Keep Activity summary TX/RX labels, numbers, and units aligned as live rates change
 - **Short Kubernetes flows**: retain cgroup v2 pod/container identity with eBPF
   socket records after process exit, match both endpoint orientations, and
   evict old records when the map fills.
@@ -152,8 +172,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   languages; link v1.6.0 docs and add release checks for availability notes (#620)
 - **Connection viewport**: paging, scrollbars, and mouse targets track the current
   layout immediately after resizing, including filters and two-row capture errors.
-- **Details Mouse Navigation**: the scroll wheel now selects the previous or
-  next connection, matching Overview. Use `Ctrl+D` / `Ctrl+U` to scroll long records
+- **Details information pages**: replace overflowing information scrollbars with
+  sections and numbered pages reached with v/V. Keep j/k, paging, and the wheel
+  for connection navigation; retain Traffic plots when they fit
+- **Details layout**: use the terminal's full width and anchor RX/TX plots
+  above the footer with a proportional height capped at 18 rows
+- **TUI alignment**: align Activity pane headings, expand Host interface columns,
+  and size Graph process names and rows to the available space
 - **Required UID Drop**: abort startup before packet-processing workers when a
   requested root UID/GID drop fails, including in best-effort mode
 - **Windows Connection History**: connections that reuse a tuple with the

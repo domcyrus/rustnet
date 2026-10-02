@@ -6,7 +6,7 @@ expression: output
 ──────────────────────────────────────────────────━━━━━━━───────────────────────
 Traffic   Health   Distribution                                                 
 ━━━━━━━─────────────────────────────────────────────────────────────────────────
-▎ Traffic Over Time (60s) ──────────────────────────────────────────────────────
+▎ Traffic Over Time · 60s · smoothed · independent B/s · linear · auto ─────────
 Waiting for traffic data...                                                     
                                                                                 
                                                                                 
@@ -25,4 +25,4 @@ Waiting for connection data...
                                                                                 
                                                                                 
                                                                                 
- v/V section  esc back                                           h help  q quit
+ v/V section  s scale  z log  l lock  esc back                   h help  q quit

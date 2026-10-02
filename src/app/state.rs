@@ -583,6 +583,17 @@ impl App {
             .map(|history| ConnRateHistorySnapshot {
                 rx: history.rx.iter().copied().collect(),
                 tx: history.tx.iter().copied().collect(),
+                plot_rx: history.smoothed_rx.iter().copied().collect(),
+                plot_tx: history.smoothed_tx.iter().copied().collect(),
+                recent_average: crate::network::types::recent_rate_average(
+                    history
+                        .timestamps
+                        .iter()
+                        .zip(&history.rx)
+                        .zip(&history.tx)
+                        .map(|((&time, &rx), &tx)| (time, rx, tx)),
+                    std::time::Duration::from_secs(2),
+                ),
                 rx_graph_ceiling: history.rx_scale.ceiling(),
                 tx_graph_ceiling: history.tx_scale.ceiling(),
             })
@@ -848,6 +859,23 @@ impl App {
     ) {
         self.interface_traffic_windows
             .insert(name.to_string(), window);
+    }
+
+    /// Supply a connection history with deterministic 500 ms timestamps.
+    #[cfg(test)]
+    pub(crate) fn set_connection_rates_for_test(&self, conn: &Connection, rates: &[(u64, u64)]) {
+        let mut history = super::types::ConnRateHistory::default();
+        for &(rx, tx) in rates {
+            history.push_for_generation(conn.created_at, rx, tx, 120);
+        }
+        let now = std::time::Instant::now();
+        for (index, time) in history.timestamps.iter_mut().enumerate() {
+            *time = now - Duration::from_millis((rates.len() - 1 - index) as u64 * 500);
+        }
+        self.conn_rate_history
+            .write()
+            .unwrap()
+            .insert(conn.key(), history);
     }
 
     /// Override the traffic history ring. Tests only.

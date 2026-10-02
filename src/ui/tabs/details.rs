@@ -43,19 +43,18 @@ use crate::network::types::{
     WindowSample,
 };
 use crate::ui::{
-    ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER,
+    ClickAction, ClickableRegions, Component, ComponentContext, DetailsSection, Effect, GroupedRow,
+    HandlerContext, NONE_PLACEHOLDER,
     connection_table::{
         SELECTION_BAR, build_header, cleanup_remaining, column_constraints, connection_row,
         select_columns, stale_window,
     },
-    dpi_color, fade_scroll_edges,
+    dpi_color,
     format::{ellipsize_left, format_bytes, format_countdown, format_rate, format_rtt_compact},
     non_dpi_app_color, section_header, section_title, state_color, theme,
     try_handle_connection_nav,
     widgets::badge::{chip, pill},
     widgets::braille_graph,
-    widgets::scrollbar::draw_scrollbar,
 };
 
 /// Padded width for detail labels so values line up vertically.
@@ -68,18 +67,10 @@ pub(in crate::ui) const DETAIL_LABEL_WIDTH: usize = 22;
 /// per side is the readable floor.
 const DETAILS_SPLIT_MIN_WIDTH: u16 = 100;
 
-/// Rows scrolled per Ctrl+D / Ctrl+U press in the info panes. A fixed
-/// step rather than a half page: the pane height isn't known in the
-/// key handler, and a small constant feels consistent across sizes.
-const DETAILS_SCROLL_STEP: u16 = 5;
-
-/// Cap on the info/traffic content width. On ultra-wide terminals an
-/// uncapped 50/50 pane split pushes the right pane (and the traffic
-/// wave panels) hundreds of cells away from the left column, making
-/// related fields read as scattered. ~140 keeps both info columns and
-/// the RX/TX waves adjacent; the continuity strip above stays full
-/// width to mirror the Overview table.
-const DETAILS_MAX_CONTENT_WIDTH: u16 = 140;
+/// Dashboard traffic includes its heading and two statistic rows. Keep enough
+/// plot rows to read the wave without letting it dominate a tall terminal.
+const DASHBOARD_TRAFFIC_MIN_ROWS: u16 = 7;
+const DASHBOARD_TRAFFIC_MAX_ROWS: u16 = 18;
 
 /// Rows reserved for the Application card before the Transport Health card.
 /// The current protocol decoders expose at most seven application fields. The
@@ -109,16 +100,12 @@ impl Component for DetailsTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        // Ctrl+D / Ctrl+U scroll the info panes when the record is
-        // taller than the pane (j/k etc. stay reserved for flipping
-        // between connections).
         match (key.code, key.modifiers) {
-            (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                ctx.ui_state.details_scroll.scroll_down(DETAILS_SCROLL_STEP);
-                return Some(Vec::new());
-            }
-            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                ctx.ui_state.details_scroll.scroll_up(DETAILS_SCROLL_STEP);
+            (KeyCode::Char(control), KeyModifiers::NONE)
+                if (!ctx.ui_state.details_compact.get()
+                    || ctx.ui_state.details_section == DetailsSection::Traffic)
+                    && ctx.ui_state.handle_traffic_chart_key(control) =>
+            {
                 return Some(Vec::new());
             }
             _ => {}
@@ -141,8 +128,6 @@ impl Component for DetailsTab {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
-        // Reuse keyboard navigation so grouped mode skips group headers
-        // and changing connections resets the info panes' scroll position.
         let code = match mouse.kind {
             MouseEventKind::ScrollUp => KeyCode::Up,
             MouseEventKind::ScrollDown => KeyCode::Down,
@@ -550,33 +535,29 @@ fn process_tree_value(lineage: &ProcessLineage, owner_name: &str, max_width: usi
     };
 
     let full = render(0, lineage.truncated);
-    if full.chars().count() <= max_width {
+    if crate::ui::format::cell_width(&full) <= max_width {
         return full;
     }
 
     for start in 1..names.len() {
         let candidate = render(start, true);
-        if candidate.chars().count() <= max_width {
+        if crate::ui::format::cell_width(&candidate) <= max_width {
             return candidate;
         }
     }
 
-    if owner_name.chars().count() <= max_width {
+    if crate::ui::format::cell_width(owner_name) <= max_width {
         return owner_name.to_string();
     }
     if max_width == 0 {
         return String::new();
     }
-    let prefix: String = owner_name
-        .chars()
-        .take(max_width.saturating_sub(1))
-        .collect();
-    format!("{prefix}…")
+    crate::ui::format::truncate_with_ellipsis(owner_name, max_width)
 }
 
-/// Rendered width of a span run, in characters.
+/// Rendered width of a span run, in terminal cells.
 fn span_cells(spans: &[Span<'_>]) -> usize {
-    spans.iter().map(|s| s.content.chars().count()).sum()
+    spans.iter().map(Span::width).sum()
 }
 
 /// Drop header-band badges right to left until they fit `room` cells,
@@ -599,7 +580,7 @@ fn fit_badges(mut badges: Vec<Vec<Span<'static>>>, room: usize) -> Vec<Vec<Span<
 
 /// Component-aware middle ellipsis: `/nix/store/…/bin/hello`.
 fn fit_path_middle(display: &str, max_width: usize) -> String {
-    let width = |s: &str| s.chars().count();
+    let width = crate::ui::format::cell_width;
     if width(display) <= max_width {
         return display.to_string();
     }
@@ -731,9 +712,8 @@ fn line_is_blank(line: &Line<'_>) -> bool {
 
 /// Register one click-to-copy region per non-empty field row in a Details
 /// pane. `inner` is the pane's *content* rect (the panes are borderless,
-/// so callers pass the area the text actually renders into); `scroll` is
-/// the pane's current scroll offset, so regions land on the rows the
-/// fields actually occupy on screen.
+/// so callers pass the area the text actually renders into). Paginated
+/// sections pass only the visible page's fields.
 /// `skip_placeholder_values` mirrors the existing connection-info
 /// behavior of skipping NONE_PLACEHOLDER / empty values.
 fn register_detail_clicks(
@@ -741,18 +721,13 @@ fn register_detail_clicks(
     inner: Rect,
     fields: &[Option<(String, String)>],
     skip_placeholder_values: bool,
-    scroll: u16,
 ) {
     for (line_idx, entry) in fields.iter().enumerate() {
         if let Some((label, value)) = entry {
             if skip_placeholder_values && (value == NONE_PLACEHOLDER || value.is_empty()) {
                 continue;
             }
-            // Rows scrolled off the top have no on-screen position.
-            let Some(visible_idx) = (line_idx as u16).checked_sub(scroll) else {
-                continue;
-            };
-            let row_y = inner.y + visible_idx;
+            let row_y = inner.y + line_idx as u16;
             if row_y >= inner.y + inner.height {
                 break;
             }
@@ -927,8 +902,19 @@ fn draw_connection_strip(
     }
 }
 
-pub(in crate::ui) fn compact_layout(area: Rect) -> bool {
-    area.width < DETAILS_SPLIT_MIN_WIDTH || area.height < 24
+pub(in crate::ui) fn sectioned_layout(area: Rect, conn: Option<&Connection>) -> bool {
+    // Connection (11), Network (9), and Attribution (8) have fixed rows.
+    // Optional identity cards add a separator, heading, and their fields.
+    let mut metadata_rows = 28;
+    if conn.is_some_and(|conn| conn.container_info.is_some()) {
+        metadata_rows += 6;
+    }
+    #[cfg(feature = "kubernetes")]
+    if conn.is_some_and(|conn| conn.k8s_info.is_some()) {
+        metadata_rows += 7;
+    }
+    let dashboard_rows = STRIP_HEIGHT + 1 + metadata_rows + 1 + DASHBOARD_TRAFFIC_MIN_ROWS;
+    area.width < DETAILS_SPLIT_MIN_WIDTH || area.height < dashboard_rows
 }
 
 fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
@@ -988,25 +974,37 @@ fn draw_detail_section(
     f: &mut Frame,
     area: Rect,
     mut details: DetailsBuilder<'_>,
-    scroll: &crate::ui::PaneScroll,
+    state: &crate::ui::UiState,
     skip_placeholder_values: bool,
     click_regions: &mut ClickableRegions,
 ) {
-    let heading = details.lines.remove(0);
+    let mut heading = details.lines.remove(0);
     details.fields.remove(0);
+    let rows = usize::from(area.height.saturating_sub(1).max(1));
+    let pages = details.lines.len().div_ceil(rows).max(1);
+    let page = state.details_page.get().min(pages - 1);
+    state.details_page_count.set(pages);
+    state.details_page.set(page);
+    if pages > 1 {
+        heading.spans.push(Span::styled(
+            format!(" · page {}/{}", page + 1, pages),
+            theme::fg(theme::muted()),
+        ));
+    }
     let inner = section_header(f, area, heading);
-    let (text_area, offset) = crate::ui::widgets::scrollbar::draw_scrolled_text(
-        f,
-        inner,
-        Paragraph::new(details.lines),
-        scroll,
-    );
+    let offset = page * rows;
+    let lines = details
+        .lines
+        .into_iter()
+        .skip(offset)
+        .take(rows)
+        .collect::<Vec<_>>();
+    f.render_widget(Paragraph::new(lines), inner);
     register_detail_clicks(
         click_regions,
-        text_area,
-        &details.fields,
+        inner,
+        &details.fields[offset..details.fields.len().min(offset + rows)],
         skip_placeholder_values,
-        offset,
     );
 }
 
@@ -1023,24 +1021,22 @@ pub(in crate::ui) fn draw_connection_details(
     let (has_country_db, _has_asn_db, _has_city_db) = ctx.app.get_geoip_status();
 
     if connections.is_empty() {
-        // Nothing rendered: clear the recorded scroll extent so the status
-        // bar stops offering ctrl-d/u for a record that is no longer there.
-        ui_state.details_scroll.clamp_for_render(0);
+        ui_state.details_page.set(0);
+        ui_state.details_page_count.set(1);
         return Ok(());
     }
 
     let conn_idx = ui_state.get_selected_index(connections).unwrap_or(0);
     let conn = &connections[conn_idx];
 
-    // Top: the continuity strip (same grid as Overview). The Traffic
-    // section is placed directly below the info panes (not pinned to
-    // the bottom of the screen), so the tab reads top-down without a
-    // void in the middle.
-    let compact = compact_layout(area);
+    // Keep the continuity strip and information cards at the top, with a
+    // bounded Traffic section anchored above the footer on the dashboard.
+    let compact = ui_state.details_compact.get();
+    let show_strip = area.width >= DETAILS_SPLIT_MIN_WIDTH && area.height >= 24;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if compact { 0 } else { STRIP_HEIGHT }),
+            Constraint::Length(if show_strip { STRIP_HEIGHT } else { 0 }),
             Constraint::Min(0),
         ])
         .split(area);
@@ -1051,7 +1047,7 @@ pub(in crate::ui) fn draw_connection_details(
         chunks[0].width,
         chunks[0].height.saturating_sub(1), // trailing blank separator row
     );
-    if !compact {
+    if show_strip {
         draw_connection_strip(
             f,
             ctx,
@@ -1065,9 +1061,9 @@ pub(in crate::ui) fn draw_connection_details(
 
     // The Executable row shortens its path to the value column, so the pane
     // width must be known while the lines are built. Mirrors the layout
-    // derivation further down: content-width cap, scrollbar gutter, and the
+    // derivation further down: outer gutter and the
     // two-column split with its spacing.
-    let info_width = body.width.min(DETAILS_MAX_CONTENT_WIDTH);
+    let info_width = body.width;
     let pane_width = if !compact && info_width >= DETAILS_SPLIT_MIN_WIDTH {
         info_width.saturating_sub(4) / 2
     } else {
@@ -1240,8 +1236,8 @@ pub(in crate::ui) fn draw_connection_details(
     );
     // MAC rows always render, with a placeholder when
     // unresolved, so the cards below keep static positions while navigating,
-    // for every protocol including ARP. The details pane scrolls, so the
-    // fixed rows cannot make content unreachable on short terminals.
+    // for every protocol including ARP. Section pages keep all rows reachable
+    // on short terminals.
     details.field_styled_opt(
         "Local MAC",
         local_mac.map(format_mac),
@@ -1957,7 +1953,7 @@ pub(in crate::ui) fn draw_connection_details(
     // Badges after the title: the connection state as a solid pill in the
     // state's own color, then quiet chips for the live rates and the
     // measured RTT. They repeat values the cards below carry, so the band
-    // answers "how is this flow doing" before anything is scrolled.
+    // answers "how is this flow doing" on every information page.
     // Historic and idle records have no live rates and, once historic, no
     // state color left: they keep the pill on the muted tier and drop the
     // rate chip rather than show a chip full of placeholders.
@@ -2000,10 +1996,14 @@ pub(in crate::ui) fn draw_connection_details(
     }
 
     // The band is a single row, so the badges get whatever the title and
-    // the muted hints leave. One cell goes to the "▎" tick that
+    // the muted hints leave. Two cells go to the "▎ " prefix that
     // section_header prefixes.
+    let detail_title = crate::ui::format::truncate_with_ellipsis(
+        &detail_title,
+        usize::from(body.width).saturating_sub(2 + span_cells(&suffix)),
+    );
     let room = (body.width as usize)
-        .saturating_sub(1 + detail_title.chars().count() + span_cells(&suffix));
+        .saturating_sub(2 + crate::ui::format::cell_width(&detail_title) + span_cells(&suffix));
     let badges = fit_badges(badges, room);
 
     let mut band = vec![Span::styled(detail_title, title_style)];
@@ -2013,10 +2013,6 @@ pub(in crate::ui) fn draw_connection_details(
     }
     band.extend(suffix);
     let info_area = section_header(f, body, Line::from(band));
-    let info_area = Rect {
-        width: info_area.width.min(DETAILS_MAX_CONTENT_WIDTH),
-        ..info_area
-    };
 
     // Drain the Application and Transport Health cards out
     // of the main buffers when we have enough horizontal room to show two
@@ -2027,6 +2023,15 @@ pub(in crate::ui) fn draw_connection_details(
     // readable. The right pane needs no title of its own; its content
     // starts with the bold Application and Transport Health headings.
     if compact {
+        if ui_state.details_section == DetailsSection::Traffic
+            && info_area.height >= 8
+            && info_area.width >= 72
+        {
+            ui_state.details_page.set(0);
+            ui_state.details_page_count.set(1);
+            draw_traffic(f, ctx, conn, info_area, click_regions);
+            return Ok(());
+        }
         let ranges = [
             0..network_start,
             network_start..attribution_start,
@@ -2049,7 +2054,7 @@ pub(in crate::ui) fn draw_connection_details(
             f,
             info_area,
             section,
-            &ui_state.details_scroll,
+            ui_state,
             selected != 5,
             click_regions,
         );
@@ -2081,18 +2086,9 @@ pub(in crate::ui) fn draw_connection_details(
         right_fields.remove(0);
     }
 
-    // The normal wide layout resolves to fixed-height dashboard cards, while
-    // optional feature sections can still increase the content height. Clamp
-    // the result so the Traffic section below always fits.
-    // Section header + 6 content rows: direction header, totals summary,
-    // and four graph rows in each of the two aligned traffic cards.
-    const TRAFFIC_HEIGHT: u16 = 7;
     let content_rows = details_text.len().max(right_text.len());
-    let info_h = (content_rows as u16)
-        .min(info_area.height.saturating_sub(TRAFFIC_HEIGHT + 1))
-        .max(1);
-    // Reserve the two rightmost columns of the info area (blank gap +
-    // scrollbar) and split the panes inside the remainder.
+    let info_h = content_rows as u16;
+    // Preserve the outer gutter and split the panes inside the remainder.
     let panes_area = Rect::new(
         info_area.x,
         info_area.y,
@@ -2106,45 +2102,49 @@ pub(in crate::ui) fn draw_connection_details(
         .spacing(2)
         .split(panes_area);
 
-    // Both panes share one scroll offset (Ctrl+D/U) so
-    // they stay row-aligned; the taller pane bounds it.
-    let max_scroll = (content_rows as u16).saturating_sub(info_h);
-    let scroll = ui_state.details_scroll.clamp_for_render(max_scroll);
-
-    // Fade the rows the scroll window cuts through, so a clipped card
-    // reads as "there is more" rather than as a hard edge. Styling only:
-    // the row count and every anchor below it stay put.
-    fade_scroll_edges(&mut details_text, scroll, info_h);
-    fade_scroll_edges(&mut right_text, scroll, info_h);
-
     // Card rows must stay one terminal row tall. Long hostnames, SNI values,
     // and identifiers are clipped at the pane edge instead of wrapping and
     // displacing every anchor below them. The complete value remains available
     // through click-to-copy.
-    let left_para = Paragraph::new(details_text)
-        .style(Style::default())
-        .scroll((scroll, 0));
+    let left_para = Paragraph::new(details_text).style(Style::default());
     f.render_widget(left_para, info_chunks[0]);
-    register_detail_clicks(click_regions, info_chunks[0], &detail_fields, true, scroll);
+    register_detail_clicks(click_regions, info_chunks[0], &detail_fields, true);
 
     if info_chunks.len() == 2 && !right_text.is_empty() {
-        let right_para = Paragraph::new(right_text)
-            .style(Style::default())
-            .scroll((scroll, 0));
+        let right_para = Paragraph::new(right_text).style(Style::default());
         f.render_widget(right_para, info_chunks[1]);
-        register_detail_clicks(click_regions, info_chunks[1], &right_fields, true, scroll);
+        register_detail_clicks(click_regions, info_chunks[1], &right_fields, true);
     }
 
-    // Scrollbar on the right edge of the info area, spanning the pane
-    // rows; hidden when the record fits.
-    draw_scrollbar(
-        f,
-        Rect::new(info_area.x, info_area.y, info_area.width, info_h),
-        content_rows,
-        scroll as usize,
-        info_h as usize,
+    // Prefer one third of the content height, capped for tall terminals.
+    // Metadata takes priority, including one blank row before Traffic.
+    let traffic_bottom = info_area.y + info_area.height;
+    let available = traffic_bottom.saturating_sub(panes_area.bottom().saturating_add(1));
+    if available == 0 {
+        return Ok(());
+    }
+    let traffic_height = (area.height / 3)
+        .clamp(DASHBOARD_TRAFFIC_MIN_ROWS, DASHBOARD_TRAFFIC_MAX_ROWS)
+        .min(available);
+    let traffic_full = Rect::new(
+        info_area.x,
+        traffic_bottom - traffic_height,
+        info_area.width,
+        traffic_height,
     );
+    draw_traffic(f, ctx, conn, traffic_full, click_regions);
+    Ok(())
+}
 
+fn draw_traffic(
+    f: &mut Frame,
+    ctx: &ComponentContext<'_>,
+    conn: &Connection,
+    area: Rect,
+    click_regions: &mut ClickableRegions,
+) {
+    let ui_state = ctx.ui_state;
+    let label_style = theme::fg(theme::label());
     let rx_value_style = theme::fg(theme::rx());
     let tx_value_style = theme::fg(theme::tx());
     let current_in_rate = if conn.is_historic {
@@ -2157,39 +2157,24 @@ pub(in crate::ui) fn draw_connection_details(
     } else {
         format_rate(conn.current_outgoing_rate_bps)
     };
-    // Traffic section directly under the info panes: one blank spacer
-    // row, the section header, then the stat fields with per-connection
-    // RX/TX gradient waves alongside (when there's room).
-    let traffic_top = panes_area.y + info_h + 1;
-    let traffic_bottom = info_area.y + info_area.height;
-    if traffic_top >= traffic_bottom {
-        return Ok(());
-    }
-    let traffic_full = Rect::new(
-        info_area.x,
-        traffic_top,
-        info_area.width,
-        (traffic_bottom - traffic_top).min(TRAFFIC_HEIGHT),
+    let traffic_area = section_header(
+        f,
+        area,
+        section_title(format!(
+            " Traffic Statistics · smoothed · {}",
+            ui_state.traffic_scale_label()
+        )),
     );
-    let traffic_area = section_header(f, traffic_full, section_title(" Traffic Statistics"));
 
-    // Reuse the exact dashboard rectangles rather than recomputing a
-    // percentage split. This guarantees that RX begins under Connection
-    // and TX begins under Application and Transport Health.
-    let cols = [
-        Rect::new(
-            info_chunks[0].x,
-            traffic_area.y,
-            info_chunks[0].width,
-            traffic_area.height,
-        ),
-        Rect::new(
-            info_chunks[1].x,
-            traffic_area.y,
-            info_chunks[1].width,
-            traffic_area.height,
-        ),
-    ];
+    // Match the dashboard's two columns and outer gutter.
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .spacing(2)
+        .split(Rect {
+            width: traffic_area.width.saturating_sub(2),
+            ..traffic_area
+        });
 
     let history = if conn.is_historic {
         None
@@ -2210,6 +2195,17 @@ pub(in crate::ui) fn draw_connection_details(
         .as_ref()
         .map(|history| (history.rx.as_slice(), history.tx.as_slice()))
         .unwrap_or((&fallback_rx, &fallback_tx));
+    let (plot_rx, plot_tx): (&[u64], &[u64]) = history
+        .as_ref()
+        .map(|h| (h.plot_rx.as_slice(), h.plot_tx.as_slice()))
+        .unwrap_or((rx, tx));
+    let placeholder = if conn.is_historic {
+        Some("Closed connection · no live history")
+    } else if rx.len().max(tx.len()) < 2 {
+        Some("Collecting traffic history...")
+    } else {
+        None
+    };
     let rx_graph_ceiling = history.as_ref().map_or_else(
         || fallback_rx[0].max(1024) as f64,
         |history| history.rx_graph_ceiling,
@@ -2234,6 +2230,8 @@ pub(in crate::ui) fn draw_connection_details(
         Span::styled(format!("{} packets", conn.packets_sent), tx_value_style),
     ]);
 
+    let (rx_ceiling, tx_ceiling) =
+        ui_state.traffic_ceilings(plot_rx, plot_tx, (rx_graph_ceiling, tx_graph_ceiling));
     let traffic_history = ctx.app.get_traffic_history();
     // A fallback contains no time series to advance. Driving its single
     // point with the aggregate sampling clock makes it move left, then
@@ -2244,6 +2242,13 @@ pub(in crate::ui) fn draw_connection_details(
     } else {
         0.0
     };
+    ui_state.graph_animation_visible.set(
+        history.is_some()
+            && rx.len().max(tx.len()) > 1
+            && traffic_history.has_enough_data()
+            && cols.iter().any(|area| area.height >= 4 && area.width >= 4),
+    );
+    let average = history.as_ref().and_then(|h| h.recent_average);
     let window = traffic_history.capacity();
     braille_graph::wave_panel(
         f,
@@ -2251,8 +2256,13 @@ pub(in crate::ui) fn draw_connection_details(
         rx,
         "↓ RX",
         braille_graph::WavePanelOptions::new(frac, window)
+            .with_header_color(theme::rx())
             .with_summary(rx_summary)
-            .with_max_val(rx_graph_ceiling),
+            .with_plot_samples(plot_rx)
+            .with_placeholder(placeholder)
+            .with_log_scale(ui_state.traffic_log_scale)
+            .with_average(average.map(|rates| rates.0))
+            .with_max_val(rx_ceiling),
         theme::rx_wave,
     );
     braille_graph::wave_panel(
@@ -2261,8 +2271,13 @@ pub(in crate::ui) fn draw_connection_details(
         tx,
         "↑ TX",
         braille_graph::WavePanelOptions::new(frac, window)
+            .with_header_color(theme::tx())
             .with_summary(tx_summary)
-            .with_max_val(tx_graph_ceiling),
+            .with_plot_samples(plot_tx)
+            .with_placeholder(placeholder)
+            .with_log_scale(ui_state.traffic_log_scale)
+            .with_average(average.map(|rates| rates.1))
+            .with_max_val(tx_ceiling),
         theme::tx_wave,
     );
 
@@ -2297,8 +2312,6 @@ pub(in crate::ui) fn draw_connection_details(
             },
         );
     }
-
-    Ok(())
 }
 
 #[cfg(test)]

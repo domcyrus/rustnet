@@ -40,10 +40,17 @@ impl UiState {
         }
     }
 
-    /// Keyboard and mouse selection share the same validation and scroll reset.
+    /// Keyboard and mouse selection share validation and reset the section's page.
     pub fn select_section(&mut self, index: usize) {
         let (labels, selected) = self.sections();
-        if index >= labels.len() || index == selected {
+        if index >= labels.len() {
+            return;
+        }
+        if index == selected {
+            if self.selected_tab == 1 {
+                self.details_page.set(0);
+                self.details_page_count.set(1);
+            }
             return;
         }
         match self.selected_tab {
@@ -53,7 +60,8 @@ impl UiState {
             }
             1 => {
                 self.details_section = DetailsSection::ALL[index];
-                self.details_scroll.reset();
+                self.details_page.set(0);
+                self.details_page_count.set(1);
             }
             2 => {
                 self.activity_section =
@@ -83,6 +91,17 @@ pub(super) fn handle_key(key: KeyEvent, state: &mut UiState) -> Option<Vec<Effec
         _ => return None,
     };
     let (labels, selected) = state.sections();
+    if state.selected_tab == 1 {
+        let page = state.details_page.get();
+        if forward && page.saturating_add(1) < state.details_page_count.get() {
+            state.details_page.set(page + 1);
+            return Some(Vec::new());
+        }
+        if !forward && page > 0 {
+            state.details_page.set(page - 1);
+            return Some(Vec::new());
+        }
+    }
     if !labels.is_empty() {
         let index = if forward {
             (selected + 1) % labels.len()
@@ -90,6 +109,10 @@ pub(super) fn handle_key(key: KeyEvent, state: &mut UiState) -> Option<Vec<Effec
             (selected + labels.len() - 1) % labels.len()
         };
         state.select_section(index);
+        if state.selected_tab == 1 && !forward {
+            // The next render clamps this to the last page of the new section.
+            state.details_page.set(usize::MAX);
+        }
     }
     Some(Vec::new())
 }

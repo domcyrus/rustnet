@@ -11,34 +11,44 @@ expression: output
                                                                                                                                             
                                                                                                                                             
 ▎ proc → 203.0.113.7:4433 [ESTABLISHED] · click a field to copy ────────────────────────────────────────────────────────────────────────────
-Connection                                                            Application: Redis                                                   ▐
-Protocol              TCP                                             Command               GET                                            ▐
-Status                Active (last seen <T> ago)                       Requested RESP        3                                              ▐
-Local Address         192.168.1.10:50000                              Requested DB          2                                              ▐
-Remote Address        203.0.113.7:4433                                                                                                     ▐
-Scope                 DOCUMENTATION                                                                                                        ▐
-State                 ESTABLISHED                                                                                                          ▐
-Process               proc                                                                                                                 ▐
-PID                   4242                                                                                                                 ▐
-Service               -                                               Attributed Name       -                                              ▐
-Observed VLANs        -                                               Attributed Via        -                                              ▐
-                                                                                                                                           ▐
-Network Context                                                       Transport Health                                                     ▐
-Local Hostname        -                                               Initial RTT           -                                              ▐
-Local MAC             -                                               Live RTT              -                                              ▐
-Remote Hostname       -                                               TCP Retransmits (R)   0                                              ▐
-Remote MAC            -                                               Out-of-Order (O)      0                                              ▐
+Connection                                                            Application: Redis                                                    
+Protocol              TCP                                             Command               GET                                             
+Status                Active (last seen <T> ago)                       Requested RESP        3                                               
+Local Address         192.168.1.10:50000                              Requested DB          2                                               
+Remote Address        203.0.113.7:4433                                                                                                      
+Scope                 DOCUMENTATION                                                                                                         
+State                 ESTABLISHED                                                                                                           
+Process               proc                                                                                                                  
+PID                   4242                                                                                                                  
+Service               -                                               Attributed Name       -                                               
+Observed VLANs        -                                               Attributed Via        -                                               
+                                                                                                                                            
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               Initial RTT           -                                               
+Local MAC             -                                               Live RTT              -                                               
+Remote Hostname       -                                               TCP Retransmits (R)   0                                               
+Remote MAC            -                                               Out-of-Order (O)      0                                               
 Country               -                                               Duplicate ACKs        0                                               
 City                  -                                               Fast Retransmits      0                                               
 ASN                   -                                               Window Size           -                                               
                                                                                                                                             
 Attribution                                                                                                                                 
+PID                   4242                                                                                                                  
+PPID                  -                                                                                                                     
+Process Tree          -                                                                                                                     
+Executable            -                                                                                                                     
+User                  -                                                                                                                     
+Match                 -                                                                                                                     
                                                                                                                                             
-▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
+▎ Traffic Statistics · smoothed · independent B/s · linear · auto ──────────────────────────────────────────────────────────────────────────
+↓ RX Now -           →                             peak           -   ↑ TX Now -           →                             peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
- j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back                                                                h help  q quit
+Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ j/k connection  s scale  z log  l lock  c copy remote addr  esc back                                                        h help  q quit

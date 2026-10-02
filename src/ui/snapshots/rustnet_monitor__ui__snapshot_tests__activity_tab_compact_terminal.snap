@@ -6,7 +6,7 @@ expression: output
 ─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
 Applications   Capture                                                          
 ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────
-TX 2.88 MB/s   RX 1.70 MB/s                                                     
+TX    2.88 MB/s   RX    1.70 MB/s                                               
 Coverage 60s: TX 73.1%  RX 91.8%                                                
 ▎ Applications · TX · Retained TX ↓ ───────────────────────────────────── 1-4/4 
   Application                                  TX/s   60s %   Retained   Conns  

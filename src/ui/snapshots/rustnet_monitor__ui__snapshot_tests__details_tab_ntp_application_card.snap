@@ -11,34 +11,44 @@ expression: output
                                                                                                                                             
                                                                                                                                             
 ▎ proc → 203.0.113.7:4433 [NTP] · click a field to copy ────────────────────────────────────────────────────────────────────────────────────
-Connection                                                            Application: NTP                                                     ▐
-Protocol              UDP                                             NTP Version           4                                              ▐
-Status                Active (last seen <T> ago)                       NTP Mode              Server                                         ▐
-Local Address         192.168.1.10:50000                              Stratum               2                                              ▐
-Remote Address        203.0.113.7:4433                                                                                                     ▐
-Scope                 DOCUMENTATION                                                                                                        ▐
-State                 NTP                                                                                                                  ▐
-Process               proc                                                                                                                 ▐
-PID                   4242                                                                                                                 ▐
-Service               -                                               Attributed Name       -                                              ▐
-Observed VLANs        -                                               Attributed Via        -                                              ▐
-                                                                                                                                           ▐
-Network Context                                                       Transport Health                                                     ▐
-Local Hostname        -                                               NTP RTT               -                                              ▐
-Local MAC             -                                               Request Retries (R)   -                                              ▐
-Remote Hostname       -                                               Request Timeouts (T)  -                                              ▐
-Remote MAC            -                                                                                                                    ▐
+Connection                                                            Application: NTP                                                      
+Protocol              UDP                                             NTP Version           4                                               
+Status                Active (last seen <T> ago)                       NTP Mode              Server                                          
+Local Address         192.168.1.10:50000                              Stratum               2                                               
+Remote Address        203.0.113.7:4433                                                                                                      
+Scope                 DOCUMENTATION                                                                                                         
+State                 NTP                                                                                                                   
+Process               proc                                                                                                                  
+PID                   4242                                                                                                                  
+Service               -                                               Attributed Name       -                                               
+Observed VLANs        -                                               Attributed Via        -                                               
+                                                                                                                                            
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               NTP RTT               -                                               
+Local MAC             -                                               Request Retries (R)   -                                               
+Remote Hostname       -                                               Request Timeouts (T)  -                                               
+Remote MAC            -                                                                                                                     
 Country               -                                               Paired by originate timestamp echo                                    
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
                                                                                                                                             
 Attribution                                                                                                                                 
+PID                   4242                                                                                                                  
+PPID                  -                                                                                                                     
+Process Tree          -                                                                                                                     
+Executable            -                                                                                                                     
+User                  -                                                                                                                     
+Match                 -                                                                                                                     
                                                                                                                                             
-▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
+▎ Traffic Statistics · smoothed · independent B/s · linear · auto ──────────────────────────────────────────────────────────────────────────
+↓ RX Now -           →                             peak           -   ↑ TX Now -           →                             peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
- j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back                                                                h help  q quit
+Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ j/k connection  s scale  z log  l lock  c copy remote addr  esc back                                                        h help  q quit

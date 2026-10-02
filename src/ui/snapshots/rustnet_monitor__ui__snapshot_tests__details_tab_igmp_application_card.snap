@@ -11,34 +11,44 @@ expression: output
                                                                                                                                             
                                                                                                                                             
 ▎ ? → 224.0.0.251:0 [REPORT_V2(224.0.0.251)] · click a field to copy ───────────────────────────────────────────────────────────────────────
-Connection                                                            Application: IGMP                                                    ▐
-Protocol              IGMP                                            Message               Membership Report v2                           ▐
-Status                Active (last seen <T> ago)                       Group Address         224.0.0.251                                    ▐
-Local Address         192.168.1.10:0                                                                                                       ▐
-Remote Address        224.0.0.251:0                                                                                                        ▐
-Scope                 MULTICAST                                                                                                            ▐
-State                 REPORT_V2(224.0.0.251)                                                                                               ▐
-Process               -                                                                                                                    ▐
-PID                   -                                                                                                                    ▐
-Service               -                                               Attributed Name       -                                              ▐
-Observed VLANs        -                                               Attributed Via        -                                              ▐
-                                                                                                                                           ▐
-Network Context                                                       Transport Health                                                     ▐
-Local Hostname        -                                               No transport metrics for this protocol                               ▐
-Local MAC             -                                                                                                                    ▐
-Remote Hostname       -                                                                                                                    ▐
-Remote MAC            -                                                                                                                    ▐
+Connection                                                            Application: IGMP                                                     
+Protocol              IGMP                                            Message               Membership Report v2                            
+Status                Active (last seen <T> ago)                       Group Address         224.0.0.251                                     
+Local Address         192.168.1.10:0                                                                                                        
+Remote Address        224.0.0.251:0                                                                                                         
+Scope                 MULTICAST                                                                                                             
+State                 REPORT_V2(224.0.0.251)                                                                                                
+Process               -                                                                                                                     
+PID                   -                                                                                                                     
+Service               -                                               Attributed Name       -                                               
+Observed VLANs        -                                               Attributed Via        -                                               
+                                                                                                                                            
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               No transport metrics for this protocol                                
+Local MAC             -                                                                                                                     
+Remote Hostname       -                                                                                                                     
+Remote MAC            -                                                                                                                     
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
                                                                                                                                             
 Attribution                                                                                                                                 
+PID                   -                                                                                                                     
+PPID                  -                                                                                                                     
+Process Tree          -                                                                                                                     
+Executable            -                                                                                                                     
+User                  -                                                                                                                     
+Match                 -                                                                                                                     
                                                                                                                                             
-▎ Traffic Statistics ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
+▎ Traffic Statistics · smoothed · independent B/s · linear · auto ──────────────────────────────────────────────────────────────────────────
+↓ RX Now -           →                             peak           -   ↑ TX Now -           →                             peak           -   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
- j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back                                                                h help  q quit
+Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ j/k connection  s scale  z log  l lock  c copy remote addr  esc back                                                        h help  q quit

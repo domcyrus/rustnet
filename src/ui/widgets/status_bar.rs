@@ -96,7 +96,14 @@ fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
     if ui_state.section_navigation {
         hints.insert(
             0,
-            Hint::action(crate::ui::sections::SECTION_KEYS, "section"),
+            Hint::action(
+                crate::ui::sections::SECTION_KEYS,
+                if ui_state.selected_tab == 1 {
+                    "section/page"
+                } else {
+                    "section"
+                },
+            ),
         );
     }
     hints
@@ -156,11 +163,17 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
         // Details
         1 => {
             let mut hints = Vec::new();
-            hints.push(Hint::action("j/k", "prev/next"));
-            // Ctrl+D/U only moves when the record outgrows its pane, so on a
-            // tall terminal the hint would advertise a no-op.
-            if ui_state.details_scroll.can_scroll() {
-                hints.push(Hint::action("ctrl-d/u", "scroll"));
+            hints.push(Hint::action("j/k", "connection"));
+            if !ui_state.details_compact.get()
+                || ui_state.details_section == crate::ui::DetailsSection::Traffic
+            {
+                hints.push(Hint::action("s", "scale"));
+                hints.push(Hint::mode("z", "log", ui_state.traffic_log_scale));
+                hints.push(Hint::mode(
+                    "l",
+                    "lock",
+                    ui_state.traffic_locked_scale.is_some(),
+                ));
             }
             if clipboard {
                 hints.push(Hint::action("c", "copy remote addr"));
@@ -219,9 +232,32 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             ));
             hints
         }
+        // Graph: state rows can overflow even in a wide, short dashboard.
+        3 => {
+            let mut hints = Vec::new();
+            if !ui_state.graph_compact.get()
+                || ui_state.graph_section == crate::ui::GraphSection::Traffic
+            {
+                hints.push(Hint::action("s", "scale"));
+                hints.push(Hint::mode("z", "log", ui_state.traffic_log_scale));
+                hints.push(Hint::mode(
+                    "l",
+                    "lock",
+                    ui_state.traffic_locked_scale.is_some(),
+                ));
+            }
+            if (!ui_state.graph_compact.get()
+                || ui_state.graph_section == crate::ui::GraphSection::Health)
+                && ui_state.graph_states_scroll.can_scroll()
+            {
+                hints.push(Hint::action("j/k", "states"));
+            }
+            hints.push(Hint::action("esc", "back"));
+            hints
+        }
         // Host
         4 => {
-            // Like ctrl-d/u on Details: only advertise scrolling when the
+            // Only advertise scrolling when the
             // table actually outgrew its pane.
             let scroll = match ui_state.host_view {
                 HostView::Sockets => &ui_state.host_sockets_scroll,
@@ -348,7 +384,11 @@ fn capture_error_one_line(cause: &str) -> String {
 /// a second row instead of losing its recovery hint off the right edge.
 pub(in crate::ui) fn status_bar_height(capture_error: Option<&str>, width: u16) -> u16 {
     match capture_error {
-        Some(cause) if capture_error_one_line(cause).chars().count() > width as usize => 2,
+        Some(cause)
+            if crate::ui::format::cell_width(&capture_error_one_line(cause)) > width as usize =>
+        {
+            2
+        }
         _ => 1,
     }
 }
@@ -358,7 +398,7 @@ pub(in crate::ui) fn status_bar_height(capture_error: Option<&str>, width: u16) 
 /// elided instead of the hint, which is the half the user can act on.
 fn capture_error_text(cause: &str, width: u16, height: u16) -> String {
     let single = capture_error_one_line(cause);
-    if single.chars().count() <= width as usize {
+    if crate::ui::format::cell_width(&single) <= width as usize {
         return single;
     }
     if height >= 2 {
@@ -375,8 +415,8 @@ fn capture_error_text(cause: &str, width: u16, height: u16) -> String {
         // Too narrow for both; show as much of the cause as fits.
         return single;
     }
-    let cause: String = cause.chars().take(room).collect();
-    format!(" {}… {CAPTURE_RECOVERY_HINT} ", cause.trim_end())
+    let cause = truncate_with_ellipsis(cause, room + 1);
+    format!(" {cause} {CAPTURE_RECOVERY_HINT} ")
 }
 
 pub(in crate::ui) fn draw_status_bar(
@@ -439,16 +479,17 @@ mod tests {
     }
 
     #[test]
-    fn details_advertises_pane_scrolling_only_once_the_pane_scrolls() {
-        let ui_state = UiState {
+    fn details_advertises_sections_when_the_dashboard_does_not_fit() {
+        let mut ui_state = UiState {
             selected_tab: 1,
             ..Default::default()
         };
-        assert!(!advertises(&context_hints(&ui_state, true), "ctrl-d/u"));
-
-        // A render that reports headroom turns the hint on.
-        ui_state.details_scroll.clamp_for_render(12);
-        assert!(advertises(&context_hints(&ui_state, true), "ctrl-d/u"));
+        assert!(!advertises(&context_hints(&ui_state, true), "v/V"));
+        ui_state.section_navigation = true;
+        let hints = context_hints(&ui_state, true);
+        assert_eq!(hints.first(), Some(&Hint::action("v/V", "section/page")));
+        assert!(!advertises(&hints, "pgup/dn"));
+        assert!(!advertises(&hints, "ctrl-d/u"));
     }
 
     #[test]

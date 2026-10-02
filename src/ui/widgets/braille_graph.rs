@@ -21,15 +21,19 @@ use crate::ui::{format::format_rate, theme};
 /// formatted values cross digit and unit boundaries.
 const HEADER_RATE_WIDTH: usize = 11;
 
-pub(in crate::ui) struct WavePanelOptions {
+pub(in crate::ui) struct WavePanelOptions<'a> {
     summary: Option<Line<'static>>,
     frac: f64,
     window: usize,
     max_val: Option<f64>,
     header_color: Option<Color>,
+    log_scale: bool,
+    average: Option<f64>,
+    plot_samples: Option<&'a [u64]>,
+    placeholder: Option<&'static str>,
 }
 
-impl WavePanelOptions {
+impl<'a> WavePanelOptions<'a> {
     pub(in crate::ui) fn new(frac: f64, window: usize) -> Self {
         Self {
             summary: None,
@@ -37,6 +41,10 @@ impl WavePanelOptions {
             window,
             max_val: None,
             header_color: None,
+            log_scale: false,
+            average: None,
+            plot_samples: None,
+            placeholder: None,
         }
     }
 
@@ -47,6 +55,26 @@ impl WavePanelOptions {
 
     pub(in crate::ui) fn with_header_color(mut self, color: Color) -> Self {
         self.header_color = Some(color);
+        self
+    }
+
+    pub(in crate::ui) fn with_log_scale(mut self, log_scale: bool) -> Self {
+        self.log_scale = log_scale;
+        self
+    }
+
+    pub(in crate::ui) fn with_average(mut self, average: Option<f64>) -> Self {
+        self.average = average;
+        self
+    }
+
+    pub(in crate::ui) fn with_plot_samples(mut self, samples: &'a [u64]) -> Self {
+        self.plot_samples = Some(samples);
+        self
+    }
+
+    pub(in crate::ui) fn with_placeholder(mut self, message: Option<&'static str>) -> Self {
+        self.placeholder = message;
         self
     }
 
@@ -79,13 +107,18 @@ fn ease_out_quad(t: f64) -> f64 {
     t * (2.0 - t)
 }
 
-/// Value at fractional position `pos` (in sample units), linearly
-/// interpolated between neighbors.
+/// Interpolate in sample coordinates, before mapping to terminal columns.
+/// Smoothstep rounds each interval without overshooting or changing its peaks.
+/// Its shape is fixed as it scrolls, independent of the terminal dot grid.
 fn sample_at(samples: &[u64], pos: f64) -> f64 {
+    if pos < 0.0 {
+        return 0.0;
+    }
     let last = samples.len() - 1;
     let pos = pos.clamp(0.0, last as f64);
     let i = pos as usize;
     let f = pos - i as f64;
+    let f = f * f * (3.0 - 2.0 * f);
     if i < last {
         samples[i] as f64 * (1.0 - f) + samples[i + 1] as f64 * f
     } else {
@@ -93,24 +126,17 @@ fn sample_at(samples: &[u64], pos: f64) -> f64 {
     }
 }
 
-/// 5-tap weighted moving average (1-2-3-2-1) over dot columns, for a
-/// water-like curve instead of hard per-sample steps.
-fn smooth_columns(cols: &[f64]) -> Vec<f64> {
-    const W: [f64; 5] = [1.0, 2.0, 3.0, 2.0, 1.0];
-    let n = cols.len();
-    if n == 0 {
-        return Vec::new();
+/// Round the curve before rasterizing it. The kernel is measured in sample
+/// coordinates, so its shape stays fixed while scrolling or resizing.
+fn curve_at(samples: &[u64], pos: f64) -> f64 {
+    if pos < 0.0 {
+        return 0.0;
     }
-    (0..n)
-        .map(|i| {
-            let mut sum = 0.0;
-            for (k, w) in W.iter().enumerate() {
-                let j = (i as isize + k as isize - 2).clamp(0, n as isize - 1) as usize;
-                sum += cols[j] * w;
-            }
-            sum / W.iter().sum::<f64>()
-        })
-        .collect()
+    const TAPS: [(f64, f64); 5] = [(-1.0, 1.0), (-0.5, 2.0), (0.0, 3.0), (0.5, 2.0), (1.0, 1.0)];
+    TAPS.into_iter()
+        .map(|(offset, weight)| sample_at(samples, (pos + offset).max(0.0)) * weight)
+        .sum::<f64>()
+        / 9.0
 }
 
 /// Render `samples` (oldest→newest) as a filled braille wave of
@@ -123,8 +149,8 @@ fn smooth_columns(cols: &[f64]) -> Vec<f64> {
 /// buffer is still filling, the wave grows in from the right instead
 /// of stretching (which made every new sample snap the wave back).
 ///
-/// `frac` ∈ [0, 1] is how far we are into the current sampling
-/// interval; it shifts the wave left by a sub-cell amount each frame
+/// `frac` is the continuous phase relative to the newest sampling
+/// interval (negative after an early arrival); it shifts the wave left each frame
 /// so the graph scrolls smoothly instead of stepping once per sample. A
 /// single sample stays fixed because there is no advancing series to scroll.
 ///
@@ -139,6 +165,74 @@ pub(in crate::ui) fn render(
     window: usize,
     row_color: impl Fn(f64) -> ratatui::style::Color,
 ) -> Vec<Line<'static>> {
+    render_wave(
+        samples,
+        width,
+        height,
+        WaveGeometry {
+            max_val,
+            frac,
+            window,
+            scale: WaveScale::Shaped,
+        },
+        row_color,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum WaveScale {
+    Shaped,
+    Linear,
+    Log,
+}
+
+impl WaveScale {
+    fn ratio(self, value: f64, ceiling: f64) -> f64 {
+        if ceiling <= 0.0 {
+            return 0.0;
+        }
+        let value = value.clamp(0.0, ceiling);
+        match self {
+            Self::Shaped => ease_out_quad(value / ceiling),
+            Self::Linear => value / ceiling,
+            Self::Log => value.ln_1p() / ceiling.ln_1p(),
+        }
+    }
+}
+
+/// Retain crests of the rounded curve when multiple samples share a column.
+/// The endpoints join continuously as each crest crosses a column boundary.
+fn column_peak(samples: &[u64], pos: f64, per_dot: f64) -> f64 {
+    let start = (pos - per_dot / 2.0).ceil().max(0.0) as usize;
+    let end = ((pos + per_dot / 2.0).floor() + 1.0).max(0.0) as usize;
+    let peak = (start.min(samples.len())..end.min(samples.len()))
+        .map(|i| curve_at(samples, i as f64))
+        .fold(0.0, f64::max);
+    peak.max(curve_at(samples, pos - per_dot / 2.0))
+        .max(curve_at(samples, pos + per_dot / 2.0))
+        .max(curve_at(samples, pos))
+}
+
+struct WaveGeometry {
+    max_val: f64,
+    frac: f64,
+    window: usize,
+    scale: WaveScale,
+}
+
+fn render_wave(
+    samples: &[u64],
+    width: usize,
+    height: usize,
+    geometry: WaveGeometry,
+    row_color: impl Fn(f64) -> Color,
+) -> Vec<Line<'static>> {
+    let WaveGeometry {
+        max_val,
+        frac,
+        window,
+        scale,
+    } = geometry;
     if width == 0 || height == 0 || samples.is_empty() {
         return Vec::new();
     }
@@ -155,38 +249,23 @@ pub(in crate::ui) fn render(
         0.0
     };
     let scroll = if samples.len() > 1 {
-        frac.clamp(0.0, 1.0)
+        frac.min(1.0)
     } else {
         0.0
     };
     let right = (samples.len() - 1) as f64 + scroll;
-    let cols: Vec<f64> = (0..dots_x)
-        .map(|x| {
-            let pos = right - (dots_x - 1 - x) as f64 * per_dot;
-            if pos < 0.0 {
-                0.0
-            } else {
-                sample_at(samples, pos)
-            }
-        })
-        .collect();
-    let cols = smooth_columns(&cols);
-
-    // Fill each dot column bottom-up to its eased height.
     let mut grid = vec![vec![0u8; width]; height];
-    for (x, col) in cols.iter().enumerate() {
-        let ratio = if max_val > 0.0 {
-            ease_out_quad((col / max_val).clamp(0.0, 1.0))
-        } else {
-            0.0
-        };
-        let h_dots = ratio * dots_y as f64;
-        for y_dot in 0..dots_y {
-            if (y_dot as f64) < h_dots {
-                let row = height - 1 - y_dot / 4;
-                grid[row][x / 2] |= dot_mask(x % 2, 3 - y_dot % 4);
-            }
+    let mut overflow = vec![false; width];
+    for x in 0..dots_x {
+        let pos = right - (dots_x - 1 - x) as f64 * per_dot;
+        let value = column_peak(samples, pos, per_dot);
+        let filled = (scale.ratio(value, max_val) * dots_y as f64).ceil() as usize;
+        // One contour owns the entire fill. A separate outline can leave
+        // hollow pockets when its height differs from a smoothed area.
+        for y in 0..filled.min(dots_y) {
+            grid[height - 1 - y / 4][x / 2] |= dot_mask(x % 2, 3 - y % 4);
         }
+        overflow[x / 2] |= scale != WaveScale::Shaped && value > max_val;
     }
 
     grid.into_iter()
@@ -194,7 +273,14 @@ pub(in crate::ui) fn render(
         .map(|(i, row)| {
             let text: String = row
                 .into_iter()
-                .map(|bits| char::from_u32(0x2800 + bits as u32).unwrap_or(' '))
+                .enumerate()
+                .map(|(x, bits)| {
+                    if i == 0 && overflow[x] {
+                        '▲'
+                    } else {
+                        char::from_u32(0x2800 + bits as u32).unwrap_or(' ')
+                    }
+                })
                 .collect();
             let intensity = 1.0 - i as f64 / height as f64;
             Line::from(Span::styled(text, theme::fg(row_color(intensity))))
@@ -210,11 +296,7 @@ pub(in crate::ui) fn spread_line(
     right: Span<'static>,
     width: u16,
 ) -> Line<'static> {
-    let used: usize = left
-        .iter()
-        .map(|s| s.content.chars().count())
-        .sum::<usize>()
-        + right.content.chars().count();
+    let used = left.iter().map(Span::width).sum::<usize>() + right.width();
     let gap = (width as usize).saturating_sub(used + 1);
     left.push(Span::raw(" ".repeat(gap)));
     left.push(right);
@@ -231,17 +313,39 @@ fn format_peak_rate(rate: f64) -> String {
     format!("peak {rate:>HEADER_RATE_WIDTH$}")
 }
 
+/// Keep plotted peaks visible while retaining the history scale's gradual decay.
+/// Independent scales expose each direction's shape; shared mode compares rates.
+pub(in crate::ui) fn rate_ceilings(
+    rx: &[u64],
+    tx: &[u64],
+    scales: (f64, f64),
+    shared: bool,
+) -> (f64, f64) {
+    let rx = scales
+        .0
+        .max(rx.iter().copied().max().unwrap_or(0) as f64)
+        .max(1024.0);
+    let tx = scales
+        .1
+        .max(tx.iter().copied().max().unwrap_or(0) as f64)
+        .max(1024.0);
+    if shared {
+        (rx.max(tx), rx.max(tx))
+    } else {
+        (rx, tx)
+    }
+}
+
 /// One rate direction as a complete panel: a header line (label, the
 /// current rate, a trend arrow, and the window peak), an optional summary
-/// line, then a gradient braille wave. The wave is normalized to the window
-/// peak, while row colors stay anchored to vertical height so rate changes do
-/// not recolor the entire history.
+/// line, then an area chart with a labeled bytes-per-second scale.
+/// A single continuous fill follows the curve without a separate outline.
 pub(in crate::ui) fn wave_panel(
     f: &mut Frame,
     area: Rect,
     samples: &[u64],
     label: &str,
-    options: WavePanelOptions,
+    options: WavePanelOptions<'_>,
     wave: fn(f64) -> Color,
 ) {
     if area.height < 2 || samples.is_empty() {
@@ -256,9 +360,9 @@ pub(in crate::ui) fn wave_panel(
     let value_color = options
         .header_color
         .unwrap_or_else(|| wave(0.35 + 0.65 * speed_ratio));
-    let left = vec![
+    let mut left = vec![
         Span::styled(
-            format!("{label} "),
+            format!("{label} Now "),
             theme::bold_fg(options.header_color.unwrap_or_else(|| wave(0.4))),
         ),
         Span::styled(format_header_rate(current), theme::bold_fg(value_color)),
@@ -267,6 +371,16 @@ pub(in crate::ui) fn wave_panel(
             theme::fg(theme::muted()),
         ),
     ];
+    let average_text = options
+        .average
+        .map(|avg| format!("2s avg {}", format_header_rate(avg)));
+    let inline_average = area.width >= 72;
+    if inline_average && let Some(average) = &average_text {
+        left.push(Span::styled(
+            format!("  {average}"),
+            theme::fg(theme::muted()),
+        ));
+    }
     let right = Span::styled(format_peak_rate(peak), theme::fg(theme::muted()));
     f.render_widget(
         Paragraph::new(spread_line(left, right, area.width)),
@@ -274,29 +388,117 @@ pub(in crate::ui) fn wave_panel(
     );
 
     let summary_height = u16::from(options.summary.is_some() && area.height >= 3);
+    let combine_average = !inline_average
+        && summary_height > 0
+        && options.summary.as_ref().is_some_and(|summary| {
+            average_text
+                .as_ref()
+                .is_some_and(|avg| summary.width() + avg.len() + 2 <= usize::from(area.width))
+        });
     if let Some(summary) = options.summary.filter(|_| summary_height == 1) {
+        let summary = if combine_average {
+            spread_line(
+                summary.spans,
+                Span::styled(
+                    average_text.clone().unwrap_or_default(),
+                    theme::fg(theme::muted()),
+                ),
+                area.width,
+            )
+        } else {
+            summary
+        };
         f.render_widget(
             Paragraph::new(summary),
             Rect::new(area.x, area.y + 1, area.width, 1),
         );
     }
+    let average_height = u16::from(
+        !inline_average && !combine_average && average_text.is_some() && area.height >= 5,
+    );
+    if average_height > 0 {
+        f.render_widget(
+            Paragraph::new(Line::styled(
+                average_text.unwrap_or_default(),
+                theme::fg(theme::muted()),
+            )),
+            Rect::new(area.x, area.y + 1 + summary_height, area.width, 1),
+        );
+    }
 
     let graph_area = Rect::new(
         area.x,
-        area.y + 1 + summary_height,
+        area.y + 1 + summary_height + average_height,
         area.width,
-        area.height.saturating_sub(1 + summary_height),
+        area.height
+            .saturating_sub(1 + summary_height + average_height),
     );
-    let lines = render(
-        samples,
-        graph_area.width as usize,
-        graph_area.height as usize,
-        max_val,
-        options.frac,
-        options.window,
+    if let Some(message) = options.placeholder {
+        f.render_widget(
+            Paragraph::new(Line::styled(message, theme::fg(theme::muted()))),
+            graph_area,
+        );
+        return;
+    }
+    // Plot a steadier series while keeping raw current and peak measurements
+    // in the header. Both use the same sample positions and clock.
+    let axis_width = 6.min(graph_area.width.saturating_sub(1));
+    let plot = Rect::new(
+        graph_area.x + axis_width,
+        graph_area.y,
+        graph_area.width.saturating_sub(axis_width),
+        graph_area.height,
+    );
+    let lines = render_wave(
+        options.plot_samples.unwrap_or(samples),
+        usize::from(plot.width),
+        usize::from(plot.height),
+        WaveGeometry {
+            max_val,
+            frac: options.frac,
+            window: options.window,
+            scale: if options.log_scale {
+                WaveScale::Log
+            } else {
+                WaveScale::Linear
+            },
+        },
         wave,
     );
-    f.render_widget(Paragraph::new(lines), graph_area);
+    f.render_widget(Paragraph::new(lines), plot);
+    if axis_width > 0 && graph_area.height > 0 {
+        let label_width = usize::from(axis_width - 1);
+        let ceiling = crate::ui::format::format_rate_compact(max_val, "0B");
+        let ceiling = crate::ui::format::truncate_with_ellipsis(&ceiling, label_width);
+        let midpoint_row = graph_area.height / 2;
+        let midpoint_ratio =
+            1.0 - f64::from(midpoint_row) / f64::from(graph_area.height.saturating_sub(1).max(1));
+        let midpoint_value = if options.log_scale {
+            (max_val.ln_1p() * midpoint_ratio).exp_m1()
+        } else {
+            max_val * midpoint_ratio
+        };
+        let midpoint = crate::ui::format::format_rate_compact(midpoint_value, "0B");
+        let midpoint = crate::ui::format::truncate_with_ellipsis(&midpoint, label_width);
+        let labels: Vec<_> = (0..graph_area.height)
+            .map(|row| {
+                let label = if row == 0 {
+                    ceiling.as_str()
+                } else if row + 1 == graph_area.height {
+                    "0"
+                } else if graph_area.height >= 5 && row == midpoint_row {
+                    midpoint.as_str()
+                } else {
+                    ""
+                };
+                Line::styled(format!("{label:>label_width$}│"), theme::fg(theme::muted()))
+            })
+            .collect();
+        f.render_widget(
+            Paragraph::new(labels),
+            Rect::new(graph_area.x, graph_area.y, axis_width, graph_area.height),
+        );
+    }
 }
 
 /// Least-squares slope over the last `n` samples; feeds the ↗/→/↘
@@ -336,6 +538,343 @@ pub(in crate::ui) fn trend_glyph(samples: &[u64]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plot_smoothing_keeps_raw_readings_and_fixed_totals_row() {
+        use crate::ui::test_support::render;
+        let raw = [0, 0, 9000, 0, 0, 0];
+        let smooth = [0, 0, 3000, 3000, 3000, 0];
+        let text = render(68, 10, |f| {
+            wave_panel(
+                f,
+                f.area(),
+                &raw,
+                "RX",
+                WavePanelOptions::new(0.0, 6)
+                    .with_plot_samples(&smooth)
+                    .with_max_val(4096.0)
+                    .with_average(Some(1500.0))
+                    .with_summary(Line::raw("Total 100 KB · 42 packets")),
+                theme::rx_wave,
+            )
+        });
+        let rows: Vec<_> = text.lines().collect();
+        assert!(rows[0].contains("peak") && rows[0].contains("8.79 KB/s"));
+        assert!(rows[1].contains("Total") && rows[1].contains("2s avg"));
+        assert!(
+            rows[2..]
+                .iter()
+                .filter(|row| row.chars().any(|c| ('⠁'..='⣿').contains(&c)))
+                .count()
+                >= 5
+        );
+        assert!(!text.contains('▲'));
+    }
+
+    #[test]
+    fn filled_contour_has_no_holes_at_any_scroll_phase() {
+        let samples: Vec<u64> = (0..120)
+            .map(|i| match i % 13 {
+                0 => 65536,
+                1 => 128,
+                3 => 4096,
+                7 => 0,
+                _ => 256,
+            })
+            .collect();
+        for scale in [WaveScale::Linear, WaveScale::Log, WaveScale::Shaped] {
+            for width in [8, 30, 97] {
+                for step in -5..=20 {
+                    let lines = render_wave(
+                        &samples,
+                        width,
+                        12,
+                        WaveGeometry {
+                            max_val: 65536.0,
+                            frac: f64::from(step) / 20.0,
+                            window: 120,
+                            scale,
+                        },
+                        |_| Color::Green,
+                    );
+                    let rows: Vec<Vec<u32>> = lines
+                        .iter()
+                        .map(|line| {
+                            line.spans
+                                .iter()
+                                .flat_map(|s| s.content.chars())
+                                .map(|c| u32::from(c) - 0x2800)
+                                .collect()
+                        })
+                        .collect();
+                    for x in 0..width * 2 {
+                        let mut above_fill = false;
+                        for y in 0..48 {
+                            let filled = rows[11 - y / 4][x / 2]
+                                & u32::from(dot_mask(x % 2, 3 - y % 4))
+                                != 0;
+                            assert!(
+                                !(filled && above_fill),
+                                "hole at column {x}, phase {step}, width {width}"
+                            );
+                            above_fill |= !filled;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn peak_crosses_column_boundaries_without_a_height_jump() {
+        let samples = [0, 0, 10000, 0, 0];
+        for footprint in [0.25, 0.8, 1.7, 3.0] {
+            for boundary in [2.0 - footprint / 2.0, 2.0 + footprint / 2.0] {
+                let before = column_peak(&samples, boundary - 1e-6, footprint);
+                let after = column_peak(&samples, boundary + 1e-6, footprint);
+                assert!((after - before).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn scrolling_translates_the_curve_without_reshaping_it() {
+        let samples: Vec<u64> = (0..120).map(|i| (i * 137) % 4096).collect();
+        let width = 100;
+        let per_dot = 119.0 / 199.0;
+        for scale in [WaveScale::Linear, WaveScale::Log, WaveScale::Shaped] {
+            let draw = |frac| {
+                render_wave(
+                    &samples,
+                    width,
+                    12,
+                    WaveGeometry {
+                        max_val: 4096.0,
+                        frac,
+                        window: 120,
+                        scale,
+                    },
+                    |_| Color::Green,
+                )
+            };
+            let before = draw(-0.4);
+            let after = draw(-0.4 + 2.0 * per_dot);
+            for (before, after) in before.iter().zip(&after) {
+                let before: String = before
+                    .spans
+                    .iter()
+                    .flat_map(|s| s.content.chars())
+                    .skip(1)
+                    .take(width - 3)
+                    .collect();
+                let after: String = after
+                    .spans
+                    .iter()
+                    .flat_map(|s| s.content.chars())
+                    .take(width - 3)
+                    .collect();
+                assert_eq!(before, after);
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_downsampling_keeps_bursts_visible_and_marks_overflow() {
+        let mut samples = vec![0; 120];
+        samples[37] = 8192;
+        for width in [1, 8, 30, 120] {
+            let lines = render_wave(
+                &samples,
+                width,
+                8,
+                WaveGeometry {
+                    max_val: 8192.0,
+                    frac: 0.3,
+                    window: 120,
+                    scale: WaveScale::Linear,
+                },
+                |_| Color::Green,
+            );
+            assert!(
+                lines
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .any(|span| span.content.chars().any(|c| ('⠁'..='⣿').contains(&c))),
+                "width {width}"
+            );
+            let lines = render_wave(
+                &samples,
+                width,
+                8,
+                WaveGeometry {
+                    max_val: 1024.0,
+                    frac: 0.3,
+                    window: 120,
+                    scale: WaveScale::Log,
+                },
+                |_| Color::Green,
+            );
+            assert!(lines[0].spans.iter().any(|span| span.content.contains('▲')));
+        }
+    }
+
+    #[test]
+    fn log_scale_preserves_zero_and_reveals_background_traffic() {
+        assert_eq!(WaveScale::Log.ratio(0.0, 1_000_000.0), 0.0);
+        assert_eq!(WaveScale::Log.ratio(1_000_000.0, 1_000_000.0), 1.0);
+        assert!(WaveScale::Log.ratio(1000.0, 1_000_000.0) > 0.4);
+        assert!(WaveScale::Linear.ratio(1000.0, 1_000_000.0) < 0.01);
+        let mut previous = 0.0;
+        for value in [0.0, 1.0, 100.0, 1000.0, 100_000.0, 1_000_000.0] {
+            let ratio = WaveScale::Log.ratio(value, 1_000_000.0);
+            assert!(ratio.is_finite() && ratio >= previous);
+            previous = ratio;
+        }
+    }
+
+    #[test]
+    fn surge_chart_keeps_readouts_visible_at_multiple_sizes() {
+        use crate::ui::test_support::render;
+        for (width, height) in [(48, 12), (80, 16), (140, 24)] {
+            let text = render(width, height, |f| {
+                wave_panel(
+                    f,
+                    f.area(),
+                    &[256, 8192, 512],
+                    "RX",
+                    WavePanelOptions::new(0.0, 3)
+                        .with_max_val(2048.0)
+                        .with_log_scale(true)
+                        .with_average(Some(1024.0)),
+                    theme::rx_wave,
+                )
+            });
+            assert!(
+                text.contains("Now") && text.contains("2s avg") && text.contains("peak"),
+                "{text}"
+            );
+            assert!(text.contains('▲'));
+        }
+    }
+
+    #[test]
+    fn area_chart_uses_linear_heights_and_labels_its_scale() {
+        use crate::ui::test_support::render;
+        let draw = |value| {
+            render(60, 14, |f| {
+                wave_panel(
+                    f,
+                    f.area(),
+                    &[value, value],
+                    "RX",
+                    WavePanelOptions::new(0.0, 2).with_max_val(1024.0),
+                    |_| Color::Green,
+                );
+            })
+        };
+        let quarter = draw(256);
+        let half = draw(512);
+        let filled_rows = |text: &str| {
+            text.lines()
+                .filter(|line| line.chars().any(|c| ('⠁'..='⣿').contains(&c)))
+                .count()
+        };
+        let low = filled_rows(&quarter);
+        let high = filled_rows(&half);
+        assert!(low > 0 && high > low, "{quarter}\n{half}");
+        assert!(high.abs_diff(low * 2) <= 1, "quarter={low}, half={high}");
+        assert!(quarter.contains("1K"));
+        assert!(half.contains("1K"));
+        insta::assert_snapshot!("linear_traffic_scale", half);
+    }
+
+    #[test]
+    fn independent_scales_preserve_peaks_and_shared_mode_matches_both_axes() {
+        assert_eq!(
+            rate_ceilings(&[0, 8192], &[0, 2048], (4096.0, 1024.0), false),
+            (8192.0, 2048.0)
+        );
+        assert_eq!(
+            rate_ceilings(&[0, 8192], &[0, 2048], (4096.0, 1024.0), true),
+            (8192.0, 8192.0)
+        );
+        assert_eq!(
+            rate_ceilings(&[0], &[0], (4096.0, 2048.0), false),
+            (4096.0, 2048.0)
+        );
+    }
+
+    #[test]
+    fn wave_has_a_gradient_and_keeps_raw_readouts() {
+        use crate::ui::test_support::{buffer_to_string, render_buffer};
+        let buffer = render_buffer(80, 12, |f| {
+            wave_panel(
+                f,
+                f.area(),
+                &[256, 1024, 256],
+                "RX",
+                WavePanelOptions::new(0.0, 3).with_max_val(1024.0),
+                |t| Color::Rgb(20, (80.0 + t * 175.0) as u8, 80),
+            )
+        });
+        let output = buffer_to_string(&buffer);
+        assert!(output.contains("256 B/s"));
+        assert!(output.contains("peak") && output.contains("1.00 KB/s"));
+        let colors: std::collections::HashSet<_> = buffer
+            .content
+            .iter()
+            .filter(|cell| cell.symbol().chars().any(|ch| ('⠁'..='⣿').contains(&ch)))
+            .map(|cell| cell.fg)
+            .collect();
+        assert!(colors.len() > 3);
+    }
+
+    #[test]
+    fn linear_chart_scrolls_left_without_jumping_at_the_next_sample() {
+        use crate::ui::test_support::render_buffer;
+        let mut samples = vec![0; 32];
+        samples[20] = 768;
+        let draw = |values: &[u64], frac| {
+            render_buffer(200, 8, |f| {
+                wave_panel(
+                    f,
+                    f.area(),
+                    values,
+                    "RX",
+                    WavePanelOptions::new(frac, 32).with_max_val(1024.0),
+                    theme::rx_wave,
+                );
+            })
+        };
+        let mut positions = Vec::new();
+        for frame in 0..=10 {
+            let buffer = draw(&samples, f64::from(frame) / 10.0);
+            let rightmost = (0..200)
+                .rev()
+                .find(|&x| {
+                    (2..6).any(|y| {
+                        buffer[(x, y)]
+                            .symbol()
+                            .chars()
+                            .any(|ch| ('⠁'..='⣿').contains(&ch))
+                    })
+                })
+                .expect("visible spike");
+            positions.push(rightmost);
+        }
+        assert!(positions.windows(2).all(|pair| pair[1] <= pair[0]));
+        positions.dedup();
+        assert!(positions.len() > 5, "{positions:?}");
+        let before = draw(&samples, 1.0);
+        samples.remove(0);
+        samples.push(0);
+        let after = draw(&samples, 0.0);
+        for y in 2..6 {
+            for x in 0..190 {
+                assert_eq!(before[(x, y)], after[(x, y)], "at {x},{y}");
+            }
+        }
+    }
 
     #[test]
     fn dot_mask_covers_all_braille_bits() {
@@ -409,8 +948,8 @@ mod tests {
         let before = render_plain(&old, 1.0);
         let after = render_plain(&new, 0.0);
         for (b, a) in before.iter().zip(after.iter()) {
-            // Ignore the last 3 cells: the column smoother's 2-dot
-            // reach plus the revealed sample touch only those.
+            // Ignore the last 3 cells where the newly revealed sample
+            // changes the right edge of the visible curve.
             let cut = b.chars().count() - 3;
             let b_body: String = b.chars().take(cut).collect();
             let a_body: String = a.chars().take(cut).collect();
