@@ -17,9 +17,14 @@ mod sampling;
 mod scratch_dir;
 mod state;
 mod types;
+#[cfg(unix)]
+mod unix_output;
 #[cfg(target_os = "windows")]
 mod windows_output;
 
+#[cfg(unix)]
+pub(crate) use output::create_private_diagnostic_file;
+pub(crate) use output::prepare_output_handles_for_invoking_uid;
 pub use output::{
     open_private_append_file, precreate_private_file, prepare_output_handles, validate_output_paths,
 };

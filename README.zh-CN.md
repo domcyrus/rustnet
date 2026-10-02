@@ -44,6 +44,8 @@ brew install rustnet
 
 功能详情见[使用指南](USAGE.zh-CN.md)、[架构指南](ARCHITECTURE.zh-CN.md)和[安全指南](SECURITY.zh-CN.md)。
 
+开发版在 Unix 上要求输出目录可信，并以独占方式创建诊断日志。
+
 ## 截图
 
 <table>

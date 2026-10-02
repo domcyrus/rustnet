@@ -66,15 +66,36 @@ pub fn resolve_drop_target() -> Option<DropTarget> {
     ))
 }
 
+/// The sudo caller, when both UID and GID are valid. Unlike the runtime drop
+/// target, an absent sudo identity never falls back to `nobody` here.
+pub fn invoking_uid() -> Option<libc::uid_t> {
+    if unsafe { libc::geteuid() } != 0 {
+        return None;
+    }
+    parse_sudo_target(
+        std::env::var("SUDO_UID").ok().as_deref(),
+        std::env::var("SUDO_GID").ok().as_deref(),
+    )
+    .map(|target| target.uid)
+}
+
+fn parse_sudo_target(sudo_uid: Option<&str>, sudo_gid: Option<&str>) -> Option<DropTarget> {
+    let parse = |value: Option<&str>| {
+        value
+            .and_then(|text| text.parse::<u32>().ok())
+            .filter(|&id| id != 0)
+    };
+    Some(DropTarget {
+        uid: parse(sudo_uid)?,
+        gid: parse(sudo_gid)?,
+    })
+}
+
 /// Pick the target from SUDO_UID/SUDO_GID; both must parse to a nonzero id,
 /// otherwise fall back to `nobody`. Split out from `resolve_drop_target` for
 /// testability (no process-global env manipulation in tests).
 fn target_from_env(sudo_uid: Option<&str>, sudo_gid: Option<&str>) -> DropTarget {
-    let parse = |v: Option<&str>| v.and_then(|s| s.parse::<u32>().ok()).filter(|&id| id != 0);
-    match (parse(sudo_uid), parse(sudo_gid)) {
-        (Some(uid), Some(gid)) => DropTarget { uid, gid },
-        _ => NOBODY,
-    }
+    parse_sudo_target(sudo_uid, sudo_gid).unwrap_or(NOBODY)
 }
 
 /// Change the file's owner to the drop target.

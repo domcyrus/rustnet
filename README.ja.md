@@ -44,6 +44,8 @@ brew install rustnet
 
 機能の詳細は[使用ガイド](USAGE.md)、[アーキテクチャガイド](ARCHITECTURE.md)、[セキュリティガイド](SECURITY.md)を参照してください。
 
+開発版では、Unix の出力先に信頼できるディレクトリが必要で、診断ログは排他的に新規作成されます。
+
 ## スクリーンショット
 
 <table>

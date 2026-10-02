@@ -403,7 +403,7 @@ rustnet --bpf-filter "not port 22"
 - `debug` —— 详细的调试信息
 - `trace` —— 非常详细的输出（包含数据包级详情）
 
-日志文件创建于 `logs/` 目录，带时间戳：`rustnet_YYYY-MM-DD_HH-MM-SS.log`
+日志文件创建于 `logs/` 目录，带时间戳：`rustnet_YYYY-MM-DD_HH-MM-SS.log`。开发版在文件名已存在时添加数字后缀。
 
 #### `--kubernetes <MODE>`（可选 feature）<a id="--kubernetes-mode-optional-feature"></a>
 
@@ -1289,7 +1289,7 @@ Observed Network Health（观测到的网络健康状况）、Observed TCP State
 
 ## 日志<a id="logging"></a>
 
-日志**默认禁用**。使用 `--log-level` 选项启用时，RustNet 在 `logs/` 目录中创建带时间戳的日志文件。每个会话生成一个新日志文件，格式为 `rustnet_YYYY-MM-DD_HH-MM-SS.log`。
+日志**默认禁用**。使用 `--log-level` 选项启用时，RustNet 在 `logs/` 目录中创建带时间戳的日志文件。每个会话生成一个新日志文件，格式为 `rustnet_YYYY-MM-DD_HH-MM-SS.log`。开发版在文件名已存在时添加数字后缀；在 Unix 上还要求使用可信的启动目录。
 
 ### 日志文件内容<a id="log-file-contents"></a>
 
