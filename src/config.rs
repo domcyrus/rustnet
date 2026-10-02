@@ -1,7 +1,8 @@
 //! User configuration file loading.
 //!
 //! rustnet reads an optional TOML file for settings that do not fit the
-//! command line, including the color theme and optional popup shadow:
+//! command line, including the color theme, optional popup shadow, and
+//! initial connection view:
 //!
 //! ```toml
 //! # ~/.config/rustnet/config.toml
@@ -11,6 +12,9 @@
 //! [theme.overrides]
 //! accent = "#ff9e64"
 //! border = "darkgray"
+//!
+//! [view]
+//! group_by_process = true
 //! ```
 //!
 //! Loading never fails: a missing file yields the defaults silently, and an
@@ -24,13 +28,20 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// Raw on-disk schema. Unknown top-level and `[theme]` keys are ignored for
+/// Raw on-disk schema. Unknown keys are ignored for
 /// forward compatibility.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct RawConfig {
     theme: RawTheme,
     ui: RawUi,
+    view: RawView,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawView {
+    group_by_process: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -54,6 +65,7 @@ pub struct UserConfig {
     pub theme: Option<String>,
     pub popup_shadow: bool,
     pub overrides: Vec<(String, String)>,
+    pub group_by_process: bool,
 }
 
 /// Load the user configuration. Never panics, never fails: missing file is
@@ -127,6 +139,7 @@ fn parse(contents: &str) -> Result<UserConfig, String> {
         theme: raw.theme.name,
         popup_shadow: raw.ui.popup_shadow,
         overrides: raw.theme.overrides.into_iter().collect(),
+        group_by_process: raw.view.group_by_process,
     })
 }
 
@@ -268,6 +281,26 @@ selection_bg = "#3b4261"
     }
 
     #[test]
+    fn view_grouping_defaults_to_flat_and_accepts_booleans() {
+        for input in [
+            "",
+            "[view]",
+            "[theme]\nname = \"nord\"",
+            "[view]\ngroup_by_process = false",
+        ] {
+            assert!(!parse(input).unwrap().group_by_process);
+        }
+        let config = parse(
+            "[theme]\nname = \"nord\"\n[ui]\npopup_shadow = true\n[view]\ngroup_by_process = true",
+        )
+        .unwrap();
+        assert!(config.group_by_process);
+        assert!(config.popup_shadow);
+        assert_eq!(config.theme.as_deref(), Some("nord"));
+        assert!(parse("[view]\ngroup_by_process = \"true\"").is_err());
+    }
+
+    #[test]
     fn theme_name_without_overrides() {
         let config = parse("[theme]\nname = \"nord\"\n").unwrap();
         assert_eq!(config.theme.as_deref(), Some("nord"));
@@ -298,6 +331,9 @@ selection_bg = "#3b4261"
             r#"
 [capture]
 foo = 1
+
+[view]
+unknown = "x"
 
 [theme]
 name = "gruvbox"

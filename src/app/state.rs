@@ -827,7 +827,8 @@ impl App {
     pub(crate) fn inject_worker_panic_for_test(&mut self) {
         self.runtime
             .spawn_monitored("injected-critical-worker", || {
-                panic!("injected worker panic")
+                // Exercise unwinding without panic-hook backtrace latency.
+                std::panic::resume_unwind(Box::new("injected worker panic"));
             })
             .unwrap();
     }

@@ -115,3 +115,16 @@ popup_shadow = true
 The default is `false`. The shadow dims the cells beside Help without replacing
 underlying text. It is static and adds no animation timer. `NO_COLOR` or
 `--no-color` disables the shadow even when the setting is enabled.
+
+## Start with process grouping
+
+Add this to the optional configuration file described in the [usage guide](USAGE.md):
+
+```toml
+[view]
+group_by_process = true
+```
+
+Overview starts with collapsed process groups. The default is `false` (flat).
+`a` toggles grouping for the session, `Space` expands a group, and `r` restores
+the configured grouping preference. This setting does not affect headless output.
