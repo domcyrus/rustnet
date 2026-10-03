@@ -140,6 +140,11 @@ rustnet
 
 用于手动安装或非 Ubuntu 的 Debian 系发行版：
 
+**开发版本（尚未发布）：** GNU 发布二进制文件要求 glibc 2.35 或更高版本。
+ARM64 DEB 支持 Ubuntu 22.04+ 和 Debian 12/13；ARMv7 DEB 支持 Debian 12/13，
+并静态链接 libpcap，以确保在 time64 库迁移前后数据包时间戳的兼容性。
+这些修复不适用于 v1.6.0 的发布文件。
+
 ```bash
 # 下载适合你架构的包：
 # - Rustnet_LinuxDEB_amd64.deb（x86_64）

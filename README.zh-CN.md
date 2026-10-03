@@ -46,6 +46,8 @@ brew install rustnet
 
 开发版在 Unix 上要求输出目录可信，并以独占方式创建诊断日志。
 
+开发版还修复了 ARM DEB 与旧版 glibc 及 Debian 13 time64 库的兼容性。支持的发行版请参阅[安装指南](INSTALL.zh-CN.md#debianubuntu-deb-packages)；v1.6.0 发布文件不包含这些修复。
+
 ## 截图
 
 <table>

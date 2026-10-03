@@ -287,8 +287,7 @@ jobs:
             unpack "$target"
 
             # Create deb package
-            cargo deb --no-build --no-strip --target "$target"
-            mv "target/$target/debian"/*.deb "installers/Rustnet_LinuxDEB_$arch.deb"
+            bash scripts/package-deb.sh "$target" "installers/Rustnet_LinuxDEB_$arch.deb"
 
             cleanup "$target"
           done
