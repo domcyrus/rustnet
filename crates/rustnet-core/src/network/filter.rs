@@ -101,10 +101,10 @@ fn parse_filter_value(value: &str) -> FilterValue {
         let pattern = &value[1..value.len() - 1];
         match Regex::new(&format!("(?i){pattern}")) {
             Ok(re) => FilterValue::Regex(re),
-            Err(_) => FilterValue::Literal(value.to_string()),
+            Err(_) => FilterValue::Literal(value.to_lowercase()),
         }
     } else {
-        FilterValue::Literal(value.to_string())
+        FilterValue::Literal(value.to_lowercase())
     }
 }
 
@@ -146,67 +146,62 @@ impl ConnectionFilter {
 
         for part in parts {
             if let Some((keyword, value)) = part.split_once(':') {
-                let value = value.to_lowercase();
                 match keyword.to_lowercase().as_str() {
                     "port" => {
-                        criteria.push(FilterCriteria::Port(parse_port_match(&value)));
+                        criteria.push(FilterCriteria::Port(parse_port_match(value)));
                     }
                     "sport" | "srcport" | "source-port" => {
-                        criteria.push(FilterCriteria::SourcePort(parse_port_match(&value)));
+                        criteria.push(FilterCriteria::SourcePort(parse_port_match(value)));
                     }
                     "dport" | "dstport" | "dest-port" | "destination-port" => {
-                        criteria.push(FilterCriteria::DestinationPort(parse_port_match(&value)));
+                        criteria.push(FilterCriteria::DestinationPort(parse_port_match(value)));
                     }
                     "src" | "source" => {
-                        criteria.push(FilterCriteria::SourceIp(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::SourceIp(parse_filter_value(value)));
                     }
                     "dst" | "dest" | "destination" => {
-                        criteria.push(FilterCriteria::DestinationIp(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::DestinationIp(parse_filter_value(value)));
                     }
                     "proto" | "protocol" => {
-                        criteria.push(FilterCriteria::Protocol(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::Protocol(parse_filter_value(value)));
                     }
                     "pid" => criteria.push(FilterCriteria::Pid(value.parse().ok())),
                     "process" | "proc" => {
-                        criteria.push(FilterCriteria::Process(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::Process(parse_filter_value(value)));
                     }
                     "service" | "svc" => {
-                        criteria.push(FilterCriteria::Service(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::Service(parse_filter_value(value)));
                     }
                     "sni" | "host" | "hostname" => {
-                        criteria.push(FilterCriteria::Sni(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::Sni(parse_filter_value(value)));
                     }
                     "app" | "application" => {
-                        criteria.push(FilterCriteria::Application(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::Application(parse_filter_value(value)));
                     }
                     "state" => {
-                        criteria.push(FilterCriteria::State(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::State(parse_filter_value(value)));
                     }
                     #[cfg(feature = "kubernetes")]
                     "pod" => {
-                        criteria.push(FilterCriteria::Pod(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::Pod(parse_filter_value(value)));
                     }
                     #[cfg(feature = "kubernetes")]
                     "ns" | "namespace" => {
-                        criteria.push(FilterCriteria::Namespace(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::Namespace(parse_filter_value(value)));
                     }
                     "runtime" => {
-                        criteria.push(FilterCriteria::Runtime(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::Runtime(parse_filter_value(value)));
                     }
                     "container" | "cont" => {
-                        criteria.push(FilterCriteria::Container(parse_filter_value(&value)));
+                        criteria.push(FilterCriteria::Container(parse_filter_value(value)));
                     }
                     _ => {
                         // Unknown keyword, treat as general search
-                        criteria.push(FilterCriteria::General(parse_filter_value(
-                            &part.to_lowercase(),
-                        )));
+                        criteria.push(FilterCriteria::General(parse_filter_value(part)));
                     }
                 }
             } else {
-                criteria.push(FilterCriteria::General(parse_filter_value(
-                    &part.to_lowercase(),
-                )));
+                criteria.push(FilterCriteria::General(parse_filter_value(part)));
             }
         }
 
@@ -658,6 +653,35 @@ mod tests {
         assert!(ConnectionFilter::parse("hostname:youtube.com").matches(&conn));
         assert!(ConnectionFilter::parse("youtube").matches(&conn));
         assert!(!ConnectionFilter::parse("hostname:example.org").matches(&conn));
+    }
+
+    #[test]
+    fn regex_preserves_uppercase_escape_classes() {
+        let mut connection = conn(Protocol::Tcp, "192.168.1.100:12345", "10.0.0.1:443");
+        connection.process_name = Some("Firefox".into());
+        for query in [r"process:/^\D+$/", r"process:/^\S+$/", r"/^\D+$/"] {
+            assert!(
+                ConnectionFilter::parse(query).matches(&connection),
+                "{query}"
+            );
+        }
+        connection.process_name = Some("123".into());
+        assert!(!ConnectionFilter::parse(r"process:/^\D+$/").matches(&connection));
+        assert!(!ConnectionFilter::parse(r"port:/^\D+$/").matches(&connection));
+        assert!(ConnectionFilter::parse(r"port:/^\d+$/").matches(&connection));
+    }
+
+    #[test]
+    fn regex_preserves_explicit_case_sensitive_groups() {
+        let mut connection = conn(Protocol::Tcp, "192.168.1.100:12345", "10.0.0.1:443");
+        connection.process_name = Some("Firefox".into());
+        let filter = ConnectionFilter::parse(r"process:/^(?-i:Firefox)$/");
+        assert!(filter.matches(&connection));
+        connection.process_name = Some("firefox".into());
+        assert!(!filter.matches(&connection));
+        assert!(ConnectionFilter::parse("PROCESS:FIREFOX").matches(&connection));
+        assert!(ConnectionFilter::parse("FIREFOX").matches(&connection));
+        assert!(ConnectionFilter::parse("process:/FIREFOX/").matches(&connection));
     }
 
     #[test]

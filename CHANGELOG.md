@@ -165,6 +165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- Preserve regex syntax in connection filters, including uppercase escapes such as `\D` and explicit case-sensitive groups.
 - **Traffic graph stability**: remove hollow outlines and preserve the scroll position
   across sample arrivals; interpolate before rasterizing to prevent contour wobble
 - Keep Activity summary TX/RX labels, numbers, and units aligned as live rates change
