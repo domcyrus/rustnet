@@ -556,6 +556,7 @@ pub struct UiState {
     pub clipboard_message: Option<(String, std::time::Instant)>,
     pub filter_mode: bool,
     pub filter_query: String,
+    /// Byte offset at a UTF-8 character boundary in `filter_query`.
     pub filter_cursor_position: usize,
     pub show_port_numbers: bool,
     pub sort_column: SortColumn,
@@ -894,25 +895,31 @@ impl UiState {
 
     pub fn filter_add_char(&mut self, c: char) {
         self.filter_query.insert(self.filter_cursor_position, c);
-        self.filter_cursor_position += 1;
+        self.filter_cursor_position += c.len_utf8();
     }
 
     pub fn filter_backspace(&mut self) {
         if self.filter_cursor_position > 0 {
-            self.filter_cursor_position -= 1;
+            self.filter_cursor_left();
             self.filter_query.remove(self.filter_cursor_position);
         }
     }
 
     pub fn filter_cursor_left(&mut self) {
-        if self.filter_cursor_position > 0 {
-            self.filter_cursor_position -= 1;
+        if let Some(c) = self.filter_query[..self.filter_cursor_position]
+            .chars()
+            .next_back()
+        {
+            self.filter_cursor_position -= c.len_utf8();
         }
     }
 
     pub fn filter_cursor_right(&mut self) {
-        if self.filter_cursor_position < self.filter_query.len() {
-            self.filter_cursor_position += 1;
+        if let Some(c) = self.filter_query[self.filter_cursor_position..]
+            .chars()
+            .next()
+        {
+            self.filter_cursor_position += c.len_utf8();
         }
     }
 
@@ -1361,6 +1368,56 @@ mod tests {
         ] {
             assert_eq!(step_index(0, 1, motion), 0);
         }
+    }
+
+    #[test]
+    fn filter_unicode_insertion_keeps_cursor_at_char_boundary() {
+        let mut ui = UiState::default();
+        ui.enter_filter_mode();
+        for c in "aé中🦀".chars() {
+            ui.filter_add_char(c);
+            assert_eq!(ui.filter_cursor_position, ui.filter_query.len());
+        }
+        ui.filter_cursor_left();
+        ui.filter_add_char('ß');
+        assert_eq!(ui.filter_query, "aé中ß🦀");
+        assert_eq!(ui.filter_cursor_position, "aé中ß".len());
+    }
+
+    #[test]
+    fn filter_unicode_cursor_moves_between_char_boundaries() {
+        let mut ui = UiState {
+            filter_query: "aé中🦀".to_string(),
+            ..UiState::default()
+        };
+        ui.enter_filter_mode();
+        for expected in [6, 3, 1, 0, 0] {
+            ui.filter_cursor_left();
+            assert_eq!(ui.filter_cursor_position, expected);
+        }
+        for expected in [1, 3, 6, 10, 10] {
+            ui.filter_cursor_right();
+            assert_eq!(ui.filter_cursor_position, expected);
+        }
+    }
+
+    #[test]
+    fn filter_unicode_backspace_removes_whole_characters() {
+        let mut ui = UiState {
+            filter_query: "aé中🦀".to_string(),
+            ..UiState::default()
+        };
+        ui.enter_filter_mode();
+        ui.filter_cursor_left();
+        for expected in ["aé🦀", "a🦀", "🦀", "🦀"] {
+            ui.filter_backspace();
+            assert_eq!(ui.filter_query, expected);
+            assert!(ui.filter_query.is_char_boundary(ui.filter_cursor_position));
+        }
+        ui.filter_cursor_right();
+        ui.filter_backspace();
+        assert!(ui.filter_query.is_empty());
+        assert_eq!(ui.filter_cursor_position, 0);
     }
 
     #[test]
