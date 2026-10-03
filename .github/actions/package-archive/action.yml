@@ -44,6 +44,10 @@ runs:
           cp "crates/rustnet-core/assets/services" "$staging/assets/"
         fi
 
+        if [ "${{ inputs.target }}" = "armv7-unknown-linux-gnueabihf" ]; then
+          cp resources/packaging/linux/libpcap-LICENSE "$staging/"
+        fi
+
         cp README.md "$staging/"
         cp LICENSE "$staging/" 2>/dev/null || true
 

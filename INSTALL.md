@@ -140,6 +140,11 @@ rustnet
 
 For manual installation or non-Ubuntu Debian-based distributions:
 
+**Development builds (unreleased):** GNU release binaries require glibc 2.35
+or newer. ARM64 DEBs support Ubuntu 22.04+ and Debian 12/13; ARMv7 DEBs
+support Debian 12/13 and embed libpcap to keep its packet timestamps compatible
+across the time64 library transition. These fixes do not apply to v1.6.0 assets.
+
 ```bash
 # Download the appropriate package for your architecture:
 # - Rustnet_LinuxDEB_amd64.deb (x86_64)

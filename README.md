@@ -46,6 +46,8 @@ See the [usage guide](USAGE.md), [architecture guide](ARCHITECTURE.md), and [sec
 
 Development builds require trusted directories for Unix output files and create diagnostic logs exclusively.
 
+Development builds also fix ARM DEB compatibility with older glibc and Debian 13's time64 libraries. See the [installation guide](INSTALL.md#debianubuntu-deb-packages) for supported distributions; v1.6.0 assets do not include these fixes.
+
 ## Screenshots
 
 <table>

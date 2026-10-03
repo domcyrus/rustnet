@@ -46,6 +46,8 @@ brew install rustnet
 
 開発版では、Unix の出力先に信頼できるディレクトリが必要で、診断ログは排他的に新規作成されます。
 
+開発版では、ARM DEB と古い glibc および Debian 13 の time64 ライブラリとの互換性も修正しています。対応するディストリビューションは[インストールガイド](INSTALL.md#debianubuntu-deb-packages)を参照してください。v1.6.0 の配布物には適用されません。
+
 ## スクリーンショット
 
 <table>

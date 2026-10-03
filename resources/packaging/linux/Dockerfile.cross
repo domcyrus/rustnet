@@ -1,0 +1,43 @@
+# The distro release fixes the glibc baseline while retaining security updates.
+FROM ubuntu:22.04
+ARG DEB_ARCH
+ARG GNU_TARGET
+
+RUN dpkg --add-architecture "$DEB_ARCH" \
+    && sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list \
+    && printf 'deb [arch=%s] http://ports.ubuntu.com/ubuntu-ports jammy main universe\ndeb [arch=%s] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe\ndeb [arch=%s] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe\n' \
+        "$DEB_ARCH" "$DEB_ARCH" "$DEB_ARCH" > /etc/apt/sources.list.d/target.list \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl gcc g++ make pkg-config clang llvm flex bison \
+        gcc-${GNU_TARGET} g++-${GNU_TARGET} \
+        libelf-dev zlib1g-dev libelf-dev:${DEB_ARCH} zlib1g-dev:${DEB_ARCH} \
+    && rm -rf /var/lib/apt/lists/*
+
+# ARMv7's Rust ABI uses 32-bit time_t. Link a matching libpcap statically
+# so the same binary works with both Debian 12 and Debian 13's time64 libraries.
+# Use the same pinned source as the existing static release builds.
+RUN if [ "$DEB_ARCH" = armhf ]; then \
+      curl -fsSL --retry 3 -o /tmp/libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz \
+      && echo '37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  /tmp/libpcap.tar.gz' | sha256sum -c - \
+      && tar -xzf /tmp/libpcap.tar.gz -C /tmp \
+      && cd /tmp/libpcap-1.10.5 \
+      && CC=${GNU_TARGET}-gcc ./configure --host="$GNU_TARGET" \
+          --prefix=/usr --libdir=/usr/lib/${GNU_TARGET} \
+          --disable-shared --enable-static --disable-usb --disable-dbus \
+          --disable-bluetooth --disable-remote \
+      && make -j2 && make install \
+      && rm -rf /tmp/libpcap*; \
+    else \
+      apt-get update && apt-get install -y --no-install-recommends libpcap-dev:${DEB_ARCH} \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc \
+    AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar \
+    AR_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar \
+    PKG_CONFIG_ALLOW_CROSS=1 \
+    PKG_CONFIG_PATH=/usr/lib/${GNU_TARGET}/pkgconfig

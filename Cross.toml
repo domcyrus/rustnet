@@ -1,17 +1,9 @@
-# eBPF skeleton generation links libelf and zlib on the build host as well
-# as on the target. Install both development-library architectures explicitly.
-[target.aarch64-unknown-linux-gnu]
-image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:edge"
-pre-build = [
-    "dpkg --add-architecture $CROSS_DEB_ARCH",
-    "apt-get update -y",
-    "apt-get install -y libelf-dev zlib1g-dev libelf-dev:arm64 zlib1g-dev:arm64 libpcap-dev:arm64 gcc-aarch64-linux-gnu clang llvm"
-]
+# Keep the GNU ARM sysroot on Ubuntu 22.04 (glibc 2.35), rather than a
+# moving cross image that can silently raise the minimum runtime version.
+[target.aarch64-unknown-linux-gnu.dockerfile]
+file = "resources/packaging/linux/Dockerfile.cross"
+build-args = { DEB_ARCH = "arm64", GNU_TARGET = "aarch64-linux-gnu" }
 
-[target.armv7-unknown-linux-gnueabihf]
-image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:edge"
-pre-build = [
-    "dpkg --add-architecture $CROSS_DEB_ARCH",
-    "apt-get update -y",
-    "apt-get install -y libelf-dev zlib1g-dev libelf-dev:armhf zlib1g-dev:armhf libpcap-dev:armhf gcc-arm-linux-gnueabihf clang llvm"
-]
+[target.armv7-unknown-linux-gnueabihf.dockerfile]
+file = "resources/packaging/linux/Dockerfile.cross"
+build-args = { DEB_ARCH = "armhf", GNU_TARGET = "arm-linux-gnueabihf" }
