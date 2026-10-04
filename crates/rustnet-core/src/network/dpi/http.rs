@@ -18,8 +18,8 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
     let text = String::from_utf8_lossy(payload);
     let mut lines = text.lines();
     let first_line = lines.next()?;
-    // Requests have exactly 3 SP-delimited tokens; responses have 2 or 3
-    // since the reason phrase is optional (RFC 9112 §4).
+    // Requests have exactly 3 SP-delimited tokens; responses may include
+    // an optional, multi-word reason phrase (RFC 9112 §4).
     let mut tokens = first_line.split_whitespace();
     let (tok0, tok1) = match (tokens.next(), tokens.next()) {
         (Some(a), Some(b)) => (a, b),
@@ -30,6 +30,9 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
         // Response line: HTTP/1.1 200 OK. The reason phrase may be empty,
         // but the status code must be a 3-digit number.
         info.version = parse_http_version(tok0)?;
+        if tok1.len() != 3 || !tok1.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
         info.status_code = Some(
             tok1.parse::<u16>()
                 .ok()
@@ -40,6 +43,9 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
         // SIP and RTSP share the same verbs ("OPTIONS sip:bob@example.com
         // SIP/2.0"), so a method match alone is not HTTP.
         info.version = parse_http_version(tokens.next()?)?;
+        if tokens.next().is_some() {
+            return None;
+        }
         info.method = Some(tok0.to_string());
         info.path = Some(tok1.to_string());
     } else {
@@ -109,6 +115,21 @@ fn parse_http_version(s: &str) -> Option<HttpVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_invalid_status_code_tokens() {
+        for status in ["+200", "0200", "2000", "20", "2a0"] {
+            let payload = format!("HTTP/1.1 {status} OK\r\n\r\n");
+            assert!(analyze_http(payload.as_bytes()).is_none(), "{status}");
+        }
+    }
+
+    #[test]
+    fn rejects_extra_request_line_tokens() {
+        assert!(analyze_http(b"GET / HTTP/1.1 extra\r\n\r\n").is_none());
+        assert!(analyze_http(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n").is_some());
+        assert!(analyze_http(b"HTTP/1.1 404 Not Found\r\n\r\n").is_some());
+    }
 
     #[test]
     fn test_http_request() {
