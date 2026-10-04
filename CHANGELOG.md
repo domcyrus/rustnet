@@ -246,6 +246,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   privileged procfs scan feed a validated fallback shown as the "startup
   snapshot" match quality (#575)
 
+- Keep new releases in draft until Linux, macOS and Windows installer jobs
+  all succeed, preventing publication with missing installer assets.
+
 ### Removed
 - Unused screenshots, the macOS PNG export, duplicate PPA setup notes,
   obsolete manual build/debug tools, and redundant services copies in local
