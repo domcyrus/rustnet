@@ -135,6 +135,7 @@ jobs:
 
   # Publish the release (un-draft) after all assets are uploaded.
   # This ensures downstream jobs (Homebrew, Chocolatey) can download assets.
+  # The default success gate keeps new releases in draft if any installer fails.
   publish-release:
     name: publish-release
     runs-on: ubuntu-latest
@@ -143,7 +144,6 @@ jobs:
       - package-installers
       - package-macos
       - package-windows
-    if: always() && needs.create-release.result == 'success'
     steps:
       - name: Publish release
         env:
