@@ -100,16 +100,6 @@ impl Component for DetailsTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        match (key.code, key.modifiers) {
-            (KeyCode::Char(control), KeyModifiers::NONE)
-                if (!ctx.ui_state.details_compact.get()
-                    || ctx.ui_state.details_section == DetailsSection::Traffic)
-                    && ctx.ui_state.handle_traffic_chart_key(control) =>
-            {
-                return Some(Vec::new());
-            }
-            _ => {}
-        }
         // In grouped mode, flip through the grouped view's connection
         // sequence, skipping group headers, since a header has no record to
         // show on this tab. Falls through to the shared flat-list
@@ -927,7 +917,7 @@ fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
         ("Packets Sent", conn.packets_sent.to_string(), tx),
         ("Packets Received", conn.packets_received.to_string(), rx),
         (
-            "Current Rate (In)",
+            "Smoothed Avg (In)",
             if conn.is_historic {
                 "n/a".to_string()
             } else {
@@ -936,7 +926,7 @@ fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
             rx,
         ),
         (
-            "Current Rate (Out)",
+            "Smoothed Avg (Out)",
             if conn.is_historic {
                 "n/a".to_string()
             } else {
@@ -2160,10 +2150,7 @@ fn draw_traffic(
     let traffic_area = section_header(
         f,
         area,
-        section_title(format!(
-            " Traffic Statistics · smoothed · {}",
-            ui_state.traffic_scale_label()
-        )),
+        section_title(" Traffic Statistics · smoothed avg · 60s · B/s"),
     );
 
     // Match the dashboard's two columns and outer gutter.
@@ -2195,10 +2182,6 @@ fn draw_traffic(
         .as_ref()
         .map(|history| (history.rx.as_slice(), history.tx.as_slice()))
         .unwrap_or((&fallback_rx, &fallback_tx));
-    let (plot_rx, plot_tx): (&[u64], &[u64]) = history
-        .as_ref()
-        .map(|h| (h.plot_rx.as_slice(), h.plot_tx.as_slice()))
-        .unwrap_or((rx, tx));
     let placeholder = if conn.is_historic {
         Some("Closed connection · no live history")
     } else if rx.len().max(tx.len()) < 2 {
@@ -2231,25 +2214,17 @@ fn draw_traffic(
     ]);
 
     let (rx_ceiling, tx_ceiling) =
-        ui_state.traffic_ceilings(plot_rx, plot_tx, (rx_graph_ceiling, tx_graph_ceiling));
-    let traffic_history = ctx.app.get_traffic_history();
-    // A fallback contains no time series to advance. Driving its single
-    // point with the aggregate sampling clock makes it move left, then
-    // snap right on every tick, which is especially visible immediately
-    // after a connection becomes historic.
-    let frac = if history.is_some() {
-        traffic_history.scroll_fraction()
-    } else {
-        0.0
-    };
-    ui_state.graph_animation_visible.set(
-        history.is_some()
-            && rx.len().max(tx.len()) > 1
-            && traffic_history.has_enough_data()
-            && cols.iter().any(|area| area.height >= 4 && area.width >= 4),
-    );
+        braille_graph::rate_ceilings(rx, tx, (rx_graph_ceiling, tx_graph_ceiling));
+    // Each connection advances on its own samples, even when interface
+    // counters are unavailable. Historic and startup placeholders stay still.
+    let frac = history
+        .as_ref()
+        .map_or(0.0, |history| history.scroll_fraction);
+    ui_state
+        .graph_animation_visible
+        .set(placeholder.is_none() && cols.iter().any(|area| area.height >= 4 && area.width >= 4));
     let average = history.as_ref().and_then(|h| h.recent_average);
-    let window = traffic_history.capacity();
+    let window = crate::app::TRAFFIC_HISTORY_CAPACITY;
     braille_graph::wave_panel(
         f,
         cols[0],
@@ -2258,9 +2233,8 @@ fn draw_traffic(
         braille_graph::WavePanelOptions::new(frac, window)
             .with_header_color(theme::rx())
             .with_summary(rx_summary)
-            .with_plot_samples(plot_rx)
+            .with_time_axis(60)
             .with_placeholder(placeholder)
-            .with_log_scale(ui_state.traffic_log_scale)
             .with_average(average.map(|rates| rates.0))
             .with_max_val(rx_ceiling),
         theme::rx_wave,
@@ -2273,9 +2247,8 @@ fn draw_traffic(
         braille_graph::WavePanelOptions::new(frac, window)
             .with_header_color(theme::tx())
             .with_summary(tx_summary)
-            .with_plot_samples(plot_tx)
+            .with_time_axis(60)
             .with_placeholder(placeholder)
-            .with_log_scale(ui_state.traffic_log_scale)
             .with_average(average.map(|rates| rates.1))
             .with_max_val(tx_ceiling),
         theme::tx_wave,
@@ -2284,14 +2257,14 @@ fn draw_traffic(
     for (area, label, rate, total, packets) in [
         (
             cols[0],
-            "Current Rate (In)",
+            "Smoothed Avg (In)",
             current_in_rate,
             rx_total,
             conn.packets_received,
         ),
         (
             cols[1],
-            "Current Rate (Out)",
+            "Smoothed Avg (Out)",
             current_out_rate,
             tx_total,
             conn.packets_sent,
@@ -2324,7 +2297,7 @@ mod header_band_tests {
     fn badges() -> Vec<Vec<Span<'static>>> {
         vec![
             pill("ESTABLISHED", Color::Rgb(0x4c, 0xaf, 0x50)),
-            chip("1.20 KB/s in · 340 B/s out"),
+            chip("1.20 KiB/s in · 340 B/s out"),
             chip("RTT 34ms"),
         ]
     }
@@ -2636,7 +2609,7 @@ mod window_size_tests {
         analytics.last_window_in = sample(8, 7, true);
         assert_eq!(
             format_window_sizes(Some(&analytics)),
-            "↓ 137.50 KB · ↑ 1.00 KB"
+            "↓ 137.50 KiB · ↑ 1.00 KiB"
         );
     }
 
@@ -2662,7 +2635,7 @@ mod window_size_tests {
         analytics.last_window_in = sample(8, 0, false);
         assert_eq!(
             format_window_sizes(Some(&analytics)),
-            "↓ 62.73 KB · ↑ unknown"
+            "↓ 62.73 KiB · ↑ unknown"
         );
     }
 

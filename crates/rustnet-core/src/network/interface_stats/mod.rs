@@ -16,6 +16,8 @@ use bsd::MacOSStatsProvider;
 use linux::LinuxStatsProvider;
 #[cfg(target_os = "windows")]
 use windows::WindowsStatsProvider;
+#[cfg(target_os = "windows")]
+pub use windows::capture_interface_alias;
 
 /// Statistics for a network interface
 #[derive(Debug, Clone)]

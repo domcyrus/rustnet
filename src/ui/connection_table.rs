@@ -955,6 +955,33 @@ mod tests {
         columns.iter().find(|c| c.id == id).expect("column").width
     }
 
+    #[test]
+    fn bandwidth_column_keeps_both_rates_at_unit_boundaries() {
+        use ratatui::{buffer::Buffer, widgets::Widget};
+        for (rate, expected) in [
+            (10.0 * 1024.0_f64.powi(2), "10Mi"),
+            (999.0 * 1024.0_f64.powi(2), "999Mi"),
+            (1000.0 * 1024.0, "1.0Mi"),
+            (1000.0 * 1024.0_f64.powi(2), "1.0Gi"),
+            (1000.0 * 1024.0_f64.powi(3), "1.0Ti"),
+            (u64::MAX as f64, "16Ei"),
+        ] {
+            for paint in [CellPaint::PLAIN, CellPaint::FRESH] {
+                let area = Rect::new(0, 0, BANDWIDTH_WIDTH, 1);
+                let mut buffer = Buffer::empty(area);
+                Table::new(
+                    [Row::new([bandwidth_cell(rate, rate, paint)])],
+                    [Constraint::Length(BANDWIDTH_WIDTH)],
+                )
+                .render(area, &mut buffer);
+                let actual: String = (0..BANDWIDTH_WIDTH)
+                    .map(|x| buffer[(x, 0)].symbol())
+                    .collect();
+                assert_eq!(actual.trim(), format!("{expected}/{expected}"));
+            }
+        }
+    }
+
     fn used(columns: &[Column]) -> u16 {
         columns.iter().map(|c| c.width).sum::<u16>() + table_chrome(columns.len())
     }

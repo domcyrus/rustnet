@@ -132,7 +132,7 @@ pub struct App {
     pub(super) interface_stats: Arc<DashMap<String, InterfaceStats>>,
 
     /// Interface rates (per-second rates)
-    pub(super) interface_rates: Arc<DashMap<String, InterfaceRates>>,
+    pub(super) interface_rates: Arc<RwLock<HashMap<String, InterfaceRates>>>,
 
     /// Traffic transferred over the latest rolling 60-second interface window.
     pub(super) interface_traffic_windows: Arc<DashMap<String, InterfaceTrafficWindow>>,
@@ -336,7 +336,7 @@ impl App {
             ))),
             socket_snapshot: Arc::new(RwLock::new(SocketSnapshot::default())),
             interface_stats: Arc::new(DashMap::new()),
-            interface_rates: Arc::new(DashMap::new()),
+            interface_rates: Arc::new(RwLock::new(HashMap::new())),
             interface_traffic_windows: Arc::new(DashMap::new()),
             interface_traffic_history: Arc::new(Mutex::new(HashMap::new())),
             traffic_history: Arc::new(RwLock::new(TrafficHistory::new(TRAFFIC_HISTORY_CAPACITY))),
@@ -544,9 +544,9 @@ impl App {
     /// Get interface rates (bytes/sec)
     pub(crate) fn get_interface_rates(&self) -> HashMap<String, InterfaceRates> {
         self.interface_rates
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect()
+            .read()
+            .map(|rates| rates.clone())
+            .unwrap_or_default()
     }
 
     /// Get traffic transferred over each interface's rolling 60-second window.
@@ -576,8 +576,6 @@ impl App {
             .map(|history| ConnRateHistorySnapshot {
                 rx: history.rx.iter().copied().collect(),
                 tx: history.tx.iter().copied().collect(),
-                plot_rx: history.smoothed_rx.iter().copied().collect(),
-                plot_tx: history.smoothed_tx.iter().copied().collect(),
                 recent_average: crate::network::types::recent_rate_average(
                     history
                         .timestamps
@@ -587,9 +585,17 @@ impl App {
                         .map(|((&time, &rx), &tx)| (time, rx, tx)),
                     std::time::Duration::from_secs(2),
                 ),
+                scroll_fraction: history.scroll.fraction(),
                 rx_graph_ceiling: history.rx_scale.ceiling(),
                 tx_graph_ceiling: history.tx_scale.ceiling(),
             })
+    }
+
+    /// Interface counters matching capture, or all counters for aggregate capture.
+    pub(crate) fn get_traffic_interface(&self) -> Option<String> {
+        self.get_current_interface()
+            .or_else(|| self.config.interface.clone())
+            .filter(|name| name != "any" && !(cfg!(target_os = "macos") && name == "pktap"))
     }
 
     pub(crate) fn get_traffic_history(&self) -> TrafficHistory {
@@ -841,7 +847,10 @@ impl App {
     /// Seed an interface's rate counters. Tests only.
     #[cfg(test)]
     pub(crate) fn set_interface_rates_for_test(&self, name: &str, rates: InterfaceRates) {
-        self.interface_rates.insert(name.to_string(), rates);
+        self.interface_rates
+            .write()
+            .unwrap()
+            .insert(name.to_string(), rates);
     }
 
     /// Seed an interface's rolling traffic window. Tests only.
@@ -863,8 +872,10 @@ impl App {
             history.push_for_generation(conn.created_at, rx, tx, 120);
         }
         let now = std::time::Instant::now();
+        history.scroll = crate::network::types::GraphScroll::default();
         for (index, time) in history.timestamps.iter_mut().enumerate() {
             *time = now - Duration::from_millis((rates.len() - 1 - index) as u64 * 500);
+            history.scroll.record_at(*time);
         }
         self.conn_rate_history
             .write()
@@ -1176,6 +1187,104 @@ mod lifecycle_tests {
             ..Config::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn traffic_scope_uses_the_active_interface_and_recognizes_aggregate_capture() {
+        let mut app = app();
+        app.config.interface = Some("en0".into());
+        assert_eq!(app.get_traffic_interface().as_deref(), Some("en0"));
+        app.set_current_interface_for_test(Some("lo0".into()));
+        assert_eq!(app.get_traffic_interface().as_deref(), Some("lo0"));
+        app.set_current_interface_for_test(Some("any".into()));
+        assert_eq!(app.get_traffic_interface(), None);
+        app.set_current_interface_for_test(Some("missing".into()));
+        assert_eq!(app.get_traffic_interface().as_deref(), Some("missing"));
+    }
+
+    #[test]
+    fn sampler_records_capture_metrics_without_interface_counters() {
+        use std::time::Instant;
+        let mut app = app();
+        app.config.interface = Some("missing".into());
+        app.start_traffic_history_thread().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.get_traffic_history().has_enough_data() {
+            assert!(Instant::now() < deadline, "capture history stayed empty");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.stats
+            .packets_processed
+            .fetch_add(100, Ordering::Relaxed);
+        app.stats
+            .total_connections_created
+            .fetch_add(5, Ordering::Relaxed);
+        loop {
+            let history = app.get_traffic_history();
+            if history.get_latest_packets_per_sec() > 0 {
+                assert!(history.get_opened_sparkline_data(1)[0] > 0);
+                assert!(!history.has_enough_traffic_data());
+                assert!(history.get_raw_traffic_data().0.is_empty());
+                break;
+            }
+            assert!(Instant::now() < deadline, "packet rates stayed at zero");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn assert_aggregate_capture_samples_real_counters(capture: &str) {
+        let mut app = app();
+        app.config.interface = Some(capture.into());
+        assert_eq!(app.get_traffic_interface(), None);
+        app.set_current_interface_for_test(Some(capture.into()));
+        assert_eq!(app.get_traffic_interface(), None);
+        for name in ["eth0", "lo"] {
+            app.set_interface_rates_for_test(
+                name,
+                InterfaceRates {
+                    rx_bytes_per_sec: 1200,
+                    tx_bytes_per_sec: 2400,
+                },
+            );
+        }
+        app.start_traffic_history_thread().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !app.get_traffic_history().has_enough_data() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{capture} history stayed empty"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (rx, tx) = app.get_traffic_history().get_raw_traffic_data();
+        assert!(rx.iter().all(|&rate| rate == 2400));
+        assert!(tx.iter().all(|&rate| rate == 4800));
+
+        for name in ["eth0", "lo"] {
+            app.set_interface_rates_for_test(name, InterfaceRates::default());
+        }
+        loop {
+            let (rx, tx) = app.get_traffic_history().get_raw_traffic_data();
+            if rx.last() == Some(&0) && tx.last() == Some(&0) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{capture} failed to return to idle"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn any_samples_real_interface_counters_without_an_any_counter() {
+        assert_aggregate_capture_samples_real_counters("any");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pktap_samples_real_interface_counters_without_a_pktap_counter() {
+        assert_aggregate_capture_samples_real_counters("pktap");
     }
 
     #[test]

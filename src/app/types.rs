@@ -8,7 +8,7 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
-use crate::network::types::{Connection, GraphScale, Protocol};
+use crate::network::types::{Connection, GraphScale, GraphScroll, Protocol};
 
 /// Process detection status information for UI display
 #[derive(Debug, Clone, Default)]
@@ -304,8 +304,7 @@ pub struct ConnRateHistory {
     pub rx: VecDeque<u64>,
     pub tx: VecDeque<u64>,
     pub(super) timestamps: VecDeque<Instant>,
-    pub(super) smoothed_rx: VecDeque<u64>,
-    pub(super) smoothed_tx: VecDeque<u64>,
+    pub(super) scroll: GraphScroll,
     pub(super) rx_scale: GraphScale,
     pub(super) tx_scale: GraphScale,
     generation: Option<SystemTime>,
@@ -334,26 +333,6 @@ impl ConnRateHistory {
     }
 
     pub(super) fn push(&mut self, rx: u64, tx: u64, cap: usize) {
-        let smooth = |rates: &VecDeque<u64>, current: u64| {
-            let (sum, count) = rates
-                .iter()
-                .rev()
-                .take(2)
-                .fold((u128::from(current), 1), |(sum, count), &rate| {
-                    (sum + u128::from(rate), count + 1)
-                });
-            (sum / count) as u64
-        };
-        let smoothed_rx = smooth(&self.rx, rx);
-        let smoothed_tx = smooth(&self.tx, tx);
-        if self.smoothed_rx.len() >= cap {
-            self.smoothed_rx.pop_front();
-        }
-        if self.smoothed_tx.len() >= cap {
-            self.smoothed_tx.pop_front();
-        }
-        self.smoothed_rx.push_back(smoothed_rx);
-        self.smoothed_tx.push_back(smoothed_tx);
         if self.rx.len() >= cap {
             self.rx.pop_front();
         }
@@ -363,22 +342,23 @@ impl ConnRateHistory {
         if self.timestamps.len() >= cap {
             self.timestamps.pop_front();
         }
-        self.timestamps.push_back(Instant::now());
+        let now = Instant::now();
+        self.scroll.record_at(now);
+        self.timestamps.push_back(now);
         self.rx.push_back(rx);
         self.tx.push_back(tx);
         self.rx_scale
-            .update_peak(self.smoothed_rx.iter().copied().max().unwrap_or(0));
+            .update_peak(self.rx.iter().copied().max().unwrap_or(0));
         self.tx_scale
-            .update_peak(self.smoothed_tx.iter().copied().max().unwrap_or(0));
+            .update_peak(self.tx.iter().copied().max().unwrap_or(0));
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ConnRateHistorySnapshot {
+    pub scroll_fraction: f64,
     pub rx: Vec<u64>,
     pub tx: Vec<u64>,
-    pub plot_rx: Vec<u64>,
-    pub plot_tx: Vec<u64>,
     pub recent_average: Option<(f64, f64)>,
     pub rx_graph_ceiling: f64,
     pub tx_graph_ceiling: f64,
@@ -389,31 +369,25 @@ mod conn_rate_history_tests {
     use super::*;
     use std::time::Duration;
 
-    /// Live connection keys are tuple-only, so a replacement generation lands
-    /// on its predecessor's map entry; it must start with a fresh graph
-    /// instead of inheriting the old connection's history.
     #[test]
-    fn display_history_spreads_a_burst_without_rewriting_previous_samples() {
+    fn display_history_preserves_a_burst_without_rewriting_previous_samples() {
         let mut history = ConnRateHistory::default();
         for rx in [0, 0, 9000, 0, 0, 0] {
             history.push(rx, 0, 6);
         }
         assert_eq!(history.rx, [0, 0, 9000, 0, 0, 0]);
-        assert_eq!(history.smoothed_rx, [0, 0, 3000, 3000, 3000, 0]);
-        let before = history.smoothed_rx.clone();
+        let before = history.rx.clone();
         history.push(0, 0, 6);
         assert_eq!(
-            history
-                .smoothed_rx
-                .iter()
-                .take(5)
-                .copied()
-                .collect::<Vec<_>>(),
+            history.rx.iter().take(5).copied().collect::<Vec<_>>(),
             before.iter().skip(1).copied().collect::<Vec<_>>()
         );
         assert_eq!(history.timestamps.len(), history.rx.len());
     }
 
+    /// Live connection keys are tuple-only, so a replacement generation lands
+    /// on its predecessor's map entry; it must start with a fresh graph
+    /// instead of inheriting the old connection's history.
     #[test]
     fn replacement_generation_starts_with_fresh_rate_history() {
         let mut history = ConnRateHistory::default();

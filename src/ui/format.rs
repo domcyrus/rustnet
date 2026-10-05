@@ -1,24 +1,23 @@
 //! Human-readable formatters for byte counts, per-second rates, and
 //! ellipsis truncation, shared across the connection list, stats
-//! panel, interface table, activity tab, and graph tab. Rates render
-//! the parent module's `NONE_PLACEHOLDER` ("-") for zero/absent
-//! values so the UI reads consistently.
+//! panel, interface table, activity tab, and graph tab. Binary units use
+//! IEC labels. Observed idle rates render as zero; callers handle missing data.
 
 pub(super) fn format_rate(bytes_per_second: f64) -> String {
-    const KB_PER_SEC: f64 = 1024.0;
-    const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
-    const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
+    const KIB_PER_SEC: f64 = 1024.0;
+    const MIB_PER_SEC: f64 = KIB_PER_SEC * 1024.0;
+    const GIB_PER_SEC: f64 = MIB_PER_SEC * 1024.0;
 
-    if bytes_per_second >= GB_PER_SEC {
-        format!("{:.2} GB/s", bytes_per_second / GB_PER_SEC)
-    } else if bytes_per_second >= MB_PER_SEC {
-        format!("{:.2} MB/s", bytes_per_second / MB_PER_SEC)
-    } else if bytes_per_second >= KB_PER_SEC {
-        format!("{:.2} KB/s", bytes_per_second / KB_PER_SEC)
+    if bytes_per_second >= GIB_PER_SEC {
+        format!("{:.2} GiB/s", bytes_per_second / GIB_PER_SEC)
+    } else if bytes_per_second >= MIB_PER_SEC {
+        format!("{:.2} MiB/s", bytes_per_second / MIB_PER_SEC)
+    } else if bytes_per_second >= KIB_PER_SEC {
+        format!("{:.2} KiB/s", bytes_per_second / KIB_PER_SEC)
     } else if bytes_per_second > 0.0 {
         format!("{:.0} B/s", bytes_per_second)
     } else {
-        super::NONE_PLACEHOLDER.to_string()
+        "0 B/s".to_string()
     }
 }
 
@@ -26,21 +25,25 @@ pub(super) fn format_rate(bytes_per_second: f64) -> String {
 /// zero/absent rate renders as: the "-" placeholder in tables, "0B"
 /// in the activity bars.
 pub(super) fn format_rate_compact(bytes_per_second: f64, zero: &str) -> String {
-    const KB_PER_SEC: f64 = 1024.0;
-    const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
-    const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
-
-    if bytes_per_second >= GB_PER_SEC {
-        format!("{:.1}G", bytes_per_second / GB_PER_SEC)
-    } else if bytes_per_second >= MB_PER_SEC {
-        format!("{:.1}M", bytes_per_second / MB_PER_SEC)
-    } else if bytes_per_second >= KB_PER_SEC {
-        format!("{:.0}K", bytes_per_second / KB_PER_SEC)
-    } else if bytes_per_second > 0.0 {
-        format!("{:.0}B", bytes_per_second)
-    } else {
-        zero.to_string()
+    if bytes_per_second <= 0.0 || !bytes_per_second.is_finite() {
+        return zero.to_string();
     }
+    // Each half of the 11-cell RX/TX column has five cells. Promote before
+    // rounding would produce a four-digit value with a two-cell unit.
+    let mut value = bytes_per_second;
+    let units = ["B", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei"];
+    for (index, unit) in units.iter().enumerate() {
+        let limit = if index == 0 { 1023.5 } else { 999.5 };
+        if value < limit || index == units.len() - 1 {
+            return if index >= 2 && value < 9.95 {
+                format!("{value:.1}{unit}")
+            } else {
+                format!("{value:.0}{unit}")
+            };
+        }
+        value /= 1024.0;
+    }
+    unreachable!("the final unit always formats the value")
 }
 
 /// Format a round-trip time for the fixed-width RTT column: one decimal
@@ -73,16 +76,16 @@ pub(super) fn format_countdown(remaining: std::time::Duration) -> String {
 }
 
 pub(super) fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
 
-    if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.2} KiB", bytes as f64 / KIB as f64)
     } else {
         format!("{} B", bytes)
     }
@@ -149,6 +152,20 @@ pub(super) fn ellipsize_left(s: &str, width: usize) -> String {
 mod tests {
     use super::{ellipsize_left, format_countdown};
     use std::time::Duration;
+
+    #[test]
+    fn observed_rates_use_binary_units_and_explicit_zero() {
+        for (value, expected) in [
+            (0.0, "0 B/s"),
+            (1023.0, "1023 B/s"),
+            (1024.0, "1.00 KiB/s"),
+            (1048576.0, "1.00 MiB/s"),
+            (1073741824.0, "1.00 GiB/s"),
+        ] {
+            assert_eq!(super::format_rate(value), expected);
+        }
+        assert_eq!(super::format_bytes(1048576), "1.00 MiB");
+    }
 
     #[test]
     fn truncation_respects_cells_and_keeps_graphemes_whole() {

@@ -53,27 +53,37 @@ table or selected record; full interface inventory remains available in Host.
 
 ## Traffic charts
 
-Graph and Details use one continuous filled wave with a vertical gradient.
-A three-sample moving average softens isolated spikes, and interpolation rounds
-the contour in sample coordinates so scrolling does not reshape it. Each column
-retains the highest point of that smoothed curve, without a detached outline or
-holes in the fill. Headings identify the smoothed presentation. RX and TX use
-independent, labeled linear scales by default. In Graph's traffic view, the full Details dashboard, or its Traffic section:
+Graph shows all panels together when the full dashboard fits. Smaller terminals
+use Traffic, Health, and Distribution sections, selected with `v` / Shift+`v`
+or by clicking their names.
+Traffic uses the selected capture interface’s counters and names it in the heading.
+The `any` capture interface and macOS default `pktap` capture sum all interface
+counters, labeled `all interfaces`. This can count traffic on more than one
+interface. Missing counters never fall back to another interface. Packet rates,
+connection lifecycle, and network health keep updating without those counters;
+RX/TX plots restart when counter samples return.
 
-- `s` switches independent/shared RX/TX scales for magnitude comparisons.
-- `z` switches linear/logarithmic heights. Log mode keeps small background traffic
-  visible alongside large surges; the heading and axis labels identify the scale.
-- `l` locks/unlocks the currently displayed bounds. Data keeps scrolling. A `▲`
-  at the top marks values above the locked ceiling; the peak readout stays exact.
+Graph and Details plot sampled rates directly, preserving short bursts even
+when several samples share a terminal column. The filled curves interpolate
+between samples and scroll continuously. Time labels show `-60s`, `-30s`, and
+`Now` where space permits. Overview and lifecycle mini waves retain their smoothing.
 
-These settings, including locked bounds, carry between Graph and Details. Units
-are bytes per second (K/M/G use powers of 1024). Headers show the raw current rate,
-window peak, and a time-weighted `2s avg` where space permits. During startup the
-average uses only observed intervals and appears after two samples.
-Auto scales follow the smoothed history, use rounded bounds, and wait five
-seconds before beginning a gradual shrink when older peaks leave the history.
-A sustained surge can still compress a linear chart until it leaves the
-60-second window; log mode exposes smaller rates without clipping that history.
+RX and TX each use an automatic, labeled linear scale in bytes per second
+(KiB/MiB/GiB use powers of 1024; compact axes use Ki/Mi/Gi). Compare the numeric readings when comparing directions,
+since the two axes can have different bounds. There are no scale, log, or lock
+controls. Bounds include the sampled peak, rise to rounded values, and wait five
+seconds before gradually shrinking after older peaks leave the history.
+
+Compact table rates reduce precision and promote units to keep both RX/TX values visible.
+Observed idle rates show `0 B/s`; unavailable values retain a placeholder.
+Top Processes labels its combined RX+TX rate as a smoothed 10-second average.
+Details rates use the same smoothed connection average, identified in the heading
+and statistics labels; its `2s avg` averages those displayed samples.
+
+Headers show the current sampled rate, the window peak, and a time-weighted
+`2s avg` where space permits. Startup averages use only observed intervals and
+appear after two samples. Small traffic can appear near the baseline while a
+large burst remains in the 60-second window; the numeric readings remain visible.
 
 The full Details dashboard anchors its paired RX/TX plots above the footer.
 The Traffic panel uses about one third of the content height, bounded to 7–18
@@ -91,7 +101,8 @@ existing meaning.
 Visible scrolling graphs in Overview, Graph, and Details redraw about 20 times
 per second, using continuous elapsed time between the existing 500 ms samples.
 The scroll position carries across sample arrivals to prevent timing jitter from
-jumping the history forward.
+jumping the history forward. Details uses its connection history’s own clock,
+so unavailable interface counters do not interrupt its animation.
 Activity share/coverage bars, Host DNS latency bars, and Graph health, protocol,
 and TCP-state bars ease toward new values over 250 ms. Numeric readings and
 status colors update immediately. Transitions follow each metric's identity

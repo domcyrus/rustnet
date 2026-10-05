@@ -57,4 +57,4 @@ const LIVE_RATE_INTERVAL: Duration = Duration::from_millis(500);
 /// whole 60s history window. Keep this at half of [`LIVE_RATE_INTERVAL`].
 const MIN_RATE_SAMPLE_SECONDS: f64 = 0.25;
 const TRAFFIC_HISTORY_SECONDS: usize = 60;
-const TRAFFIC_HISTORY_CAPACITY: usize = TRAFFIC_HISTORY_SECONDS * 2;
+pub(crate) const TRAFFIC_HISTORY_CAPACITY: usize = TRAFFIC_HISTORY_SECONDS * 2;

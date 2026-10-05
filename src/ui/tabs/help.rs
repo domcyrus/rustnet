@@ -251,11 +251,6 @@ const CONNECTION_DISPLAY: &[HelpRow] = &[
 ];
 
 const DETAILS_KEYS: &[HelpRow] = &[
-    ("s", "Toggle independent/shared scales in traffic charts"),
-    (
-        "z / l",
-        "Toggle log scale / lock current bounds in traffic charts",
-    ),
     ("↑/k, ↓/j", "Show the previous or next connection"),
     ("g, G", "Show the first or last connection"),
     ("Page Up/Down", "Move through connections by one page"),
@@ -411,11 +406,9 @@ const DNS_CONCEPTS: &[HelpRow] = &[
 ];
 
 const GRAPH_KEYS: &[HelpRow] = &[
-    ("s", "Toggle independent/shared scales in the traffic view"),
-    ("z / l", "Toggle log scale / lock current traffic bounds"),
     (
         "Traffic fill",
-        "Smoothed wave; raw current/peak readings; ▲ above scale",
+        "Sampled rates, preserved peaks, automatic linear scales",
     ),
     (
         "2s avg",

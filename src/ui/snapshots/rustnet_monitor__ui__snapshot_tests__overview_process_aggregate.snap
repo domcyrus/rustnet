@@ -8,9 +8,9 @@ expression: render_overview(true)
   Process               Remote                Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑  
                                                                                                                                             
 ▌▸ curl (1)                                                                                          TCP:1 UDP:0                       -/-  
- ▸ firefox (1)                                                                                       TCP:1 UDP:0                 3.1M/928K  
- ▸ sshd (1)                                                                                          TCP:1 UDP:0                 410K/1.7M  
- ▸ systemd-resolved (1)                                                                              TCP:0 UDP:1                   47K/82K  
+ ▸ firefox (1)                                                                                       TCP:1 UDP:0               3.1Mi/928Ki  
+ ▸ sshd (1)                                                                                          TCP:1 UDP:0               410Ki/1.7Mi  
+ ▸ systemd-resolved (1)                                                                              TCP:0 UDP:1                 47Ki/82Ki  
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

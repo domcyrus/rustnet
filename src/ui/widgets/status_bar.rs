@@ -164,17 +164,7 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
         1 => {
             let mut hints = Vec::new();
             hints.push(Hint::action("j/k", "connection"));
-            if !ui_state.details_compact.get()
-                || ui_state.details_section == crate::ui::DetailsSection::Traffic
-            {
-                hints.push(Hint::action("s", "scale"));
-                hints.push(Hint::mode("z", "log", ui_state.traffic_log_scale));
-                hints.push(Hint::mode(
-                    "l",
-                    "lock",
-                    ui_state.traffic_locked_scale.is_some(),
-                ));
-            }
+
             if clipboard {
                 hints.push(Hint::action("c", "copy remote addr"));
             }
@@ -235,17 +225,7 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
         // Graph: state rows can overflow even in a wide, short dashboard.
         3 => {
             let mut hints = Vec::new();
-            if !ui_state.graph_compact.get()
-                || ui_state.graph_section == crate::ui::GraphSection::Traffic
-            {
-                hints.push(Hint::action("s", "scale"));
-                hints.push(Hint::mode("z", "log", ui_state.traffic_log_scale));
-                hints.push(Hint::mode(
-                    "l",
-                    "lock",
-                    ui_state.traffic_locked_scale.is_some(),
-                ));
-            }
+
             if (!ui_state.graph_compact.get()
                 || ui_state.graph_section == crate::ui::GraphSection::Health)
                 && ui_state.graph_states_scroll.can_scroll()

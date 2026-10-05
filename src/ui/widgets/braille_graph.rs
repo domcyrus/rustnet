@@ -17,23 +17,22 @@ use ratatui::{
 use crate::ui::{format::format_rate, theme};
 
 /// Width of rate values in wave-panel headers. This fits values through
-/// `999.99 GB/s` and keeps both the trend glyph and `peak` label anchored as
+/// `999.99 GiB/s` and keeps both the trend glyph and `peak` label anchored as
 /// formatted values cross digit and unit boundaries.
 const HEADER_RATE_WIDTH: usize = 11;
 
-pub(in crate::ui) struct WavePanelOptions<'a> {
+pub(in crate::ui) struct WavePanelOptions {
     summary: Option<Line<'static>>,
     frac: f64,
     window: usize,
     max_val: Option<f64>,
     header_color: Option<Color>,
-    log_scale: bool,
     average: Option<f64>,
-    plot_samples: Option<&'a [u64]>,
+    time_window_seconds: Option<u64>,
     placeholder: Option<&'static str>,
 }
 
-impl<'a> WavePanelOptions<'a> {
+impl WavePanelOptions {
     pub(in crate::ui) fn new(frac: f64, window: usize) -> Self {
         Self {
             summary: None,
@@ -41,9 +40,8 @@ impl<'a> WavePanelOptions<'a> {
             window,
             max_val: None,
             header_color: None,
-            log_scale: false,
             average: None,
-            plot_samples: None,
+            time_window_seconds: None,
             placeholder: None,
         }
     }
@@ -58,18 +56,13 @@ impl<'a> WavePanelOptions<'a> {
         self
     }
 
-    pub(in crate::ui) fn with_log_scale(mut self, log_scale: bool) -> Self {
-        self.log_scale = log_scale;
-        self
-    }
-
     pub(in crate::ui) fn with_average(mut self, average: Option<f64>) -> Self {
         self.average = average;
         self
     }
 
-    pub(in crate::ui) fn with_plot_samples(mut self, samples: &'a [u64]) -> Self {
-        self.plot_samples = Some(samples);
+    pub(in crate::ui) fn with_time_axis(mut self, seconds: u64) -> Self {
+        self.time_window_seconds = Some(seconds);
         self
     }
 
@@ -183,7 +176,6 @@ pub(in crate::ui) fn render(
 enum WaveScale {
     Shaped,
     Linear,
-    Log,
 }
 
 impl WaveScale {
@@ -195,22 +187,21 @@ impl WaveScale {
         match self {
             Self::Shaped => ease_out_quad(value / ceiling),
             Self::Linear => value / ceiling,
-            Self::Log => value.ln_1p() / ceiling.ln_1p(),
         }
     }
 }
 
-/// Retain crests of the rounded curve when multiple samples share a column.
+/// Retain crests of the chosen curve when multiple samples share a column.
 /// The endpoints join continuously as each crest crosses a column boundary.
-fn column_peak(samples: &[u64], pos: f64, per_dot: f64) -> f64 {
+fn column_peak(samples: &[u64], pos: f64, per_dot: f64, sample: fn(&[u64], f64) -> f64) -> f64 {
     let start = (pos - per_dot / 2.0).ceil().max(0.0) as usize;
     let end = ((pos + per_dot / 2.0).floor() + 1.0).max(0.0) as usize;
     let peak = (start.min(samples.len())..end.min(samples.len()))
-        .map(|i| curve_at(samples, i as f64))
+        .map(|i| sample(samples, i as f64))
         .fold(0.0, f64::max);
-    peak.max(curve_at(samples, pos - per_dot / 2.0))
-        .max(curve_at(samples, pos + per_dot / 2.0))
-        .max(curve_at(samples, pos))
+    peak.max(sample(samples, pos - per_dot / 2.0))
+        .max(sample(samples, pos + per_dot / 2.0))
+        .max(sample(samples, pos))
 }
 
 struct WaveGeometry {
@@ -255,17 +246,22 @@ fn render_wave(
     };
     let right = (samples.len() - 1) as f64 + scroll;
     let mut grid = vec![vec![0u8; width]; height];
-    let mut overflow = vec![false; width];
+    // Traffic interpolates raw samples without averaging away their peaks.
+    // Compact activity and lifecycle waves retain their existing rounding.
+    let sample = if scale == WaveScale::Shaped {
+        curve_at
+    } else {
+        sample_at
+    };
     for x in 0..dots_x {
         let pos = right - (dots_x - 1 - x) as f64 * per_dot;
-        let value = column_peak(samples, pos, per_dot);
+        let value = column_peak(samples, pos, per_dot, sample);
         let filled = (scale.ratio(value, max_val) * dots_y as f64).ceil() as usize;
         // One contour owns the entire fill. A separate outline can leave
         // hollow pockets when its height differs from a smoothed area.
         for y in 0..filled.min(dots_y) {
             grid[height - 1 - y / 4][x / 2] |= dot_mask(x % 2, 3 - y % 4);
         }
-        overflow[x / 2] |= scale != WaveScale::Shaped && value > max_val;
     }
 
     grid.into_iter()
@@ -273,14 +269,7 @@ fn render_wave(
         .map(|(i, row)| {
             let text: String = row
                 .into_iter()
-                .enumerate()
-                .map(|(x, bits)| {
-                    if i == 0 && overflow[x] {
-                        '▲'
-                    } else {
-                        char::from_u32(0x2800 + bits as u32).unwrap_or(' ')
-                    }
-                })
+                .map(|bits| char::from_u32(0x2800 + bits as u32).unwrap_or(' '))
                 .collect();
             let intensity = 1.0 - i as f64 / height as f64;
             Line::from(Span::styled(text, theme::fg(row_color(intensity))))
@@ -314,13 +303,8 @@ fn format_peak_rate(rate: f64) -> String {
 }
 
 /// Keep plotted peaks visible while retaining the history scale's gradual decay.
-/// Independent scales expose each direction's shape; shared mode compares rates.
-pub(in crate::ui) fn rate_ceilings(
-    rx: &[u64],
-    tx: &[u64],
-    scales: (f64, f64),
-    shared: bool,
-) -> (f64, f64) {
+/// Each direction has its own labeled linear scale.
+pub(in crate::ui) fn rate_ceilings(rx: &[u64], tx: &[u64], scales: (f64, f64)) -> (f64, f64) {
     let rx = scales
         .0
         .max(rx.iter().copied().max().unwrap_or(0) as f64)
@@ -329,11 +313,7 @@ pub(in crate::ui) fn rate_ceilings(
         .1
         .max(tx.iter().copied().max().unwrap_or(0) as f64)
         .max(1024.0);
-    if shared {
-        (rx.max(tx), rx.max(tx))
-    } else {
-        (rx, tx)
-    }
+    (rx, tx)
 }
 
 /// One rate direction as a complete panel: a header line (label, the
@@ -345,7 +325,7 @@ pub(in crate::ui) fn wave_panel(
     area: Rect,
     samples: &[u64],
     label: &str,
-    options: WavePanelOptions<'_>,
+    options: WavePanelOptions,
     wave: fn(f64) -> Color,
 ) {
     if area.height < 2 || samples.is_empty() {
@@ -366,11 +346,13 @@ pub(in crate::ui) fn wave_panel(
             theme::bold_fg(options.header_color.unwrap_or_else(|| wave(0.4))),
         ),
         Span::styled(format_header_rate(current), theme::bold_fg(value_color)),
-        Span::styled(
+    ];
+    if area.width >= 48 {
+        left.push(Span::styled(
             format!(" {}", trend_glyph(samples)),
             theme::fg(theme::muted()),
-        ),
-    ];
+        ));
+    }
     let average_text = options
         .average
         .map(|avg| format!("2s avg {}", format_header_rate(avg)));
@@ -440,53 +422,47 @@ pub(in crate::ui) fn wave_panel(
         );
         return;
     }
-    // Plot a steadier series while keeping raw current and peak measurements
-    // in the header. Both use the same sample positions and clock.
+    // Plot the same sampled rates used by the current and peak readouts.
+    let time_axis_height = u16::from(
+        options.time_window_seconds.is_some() && graph_area.height >= 3 && graph_area.width >= 22,
+    );
     let axis_width = 6.min(graph_area.width.saturating_sub(1));
     let plot = Rect::new(
         graph_area.x + axis_width,
         graph_area.y,
         graph_area.width.saturating_sub(axis_width),
-        graph_area.height,
+        graph_area.height.saturating_sub(time_axis_height),
     );
     let lines = render_wave(
-        options.plot_samples.unwrap_or(samples),
+        samples,
         usize::from(plot.width),
         usize::from(plot.height),
         WaveGeometry {
             max_val,
             frac: options.frac,
             window: options.window,
-            scale: if options.log_scale {
-                WaveScale::Log
-            } else {
-                WaveScale::Linear
-            },
+            scale: WaveScale::Linear,
         },
         wave,
     );
     f.render_widget(Paragraph::new(lines), plot);
-    if axis_width > 0 && graph_area.height > 0 {
+    if axis_width > 0 && plot.height > 0 {
         let label_width = usize::from(axis_width - 1);
         let ceiling = crate::ui::format::format_rate_compact(max_val, "0B");
         let ceiling = crate::ui::format::truncate_with_ellipsis(&ceiling, label_width);
-        let midpoint_row = graph_area.height / 2;
+        let midpoint_row = plot.height / 2;
         let midpoint_ratio =
-            1.0 - f64::from(midpoint_row) / f64::from(graph_area.height.saturating_sub(1).max(1));
-        let midpoint_value = if options.log_scale {
-            (max_val.ln_1p() * midpoint_ratio).exp_m1()
-        } else {
-            max_val * midpoint_ratio
-        };
+            1.0 - f64::from(midpoint_row) / f64::from(plot.height.saturating_sub(1).max(1));
+        let midpoint_value = max_val * midpoint_ratio;
         let midpoint = crate::ui::format::format_rate_compact(midpoint_value, "0B");
         let midpoint = crate::ui::format::truncate_with_ellipsis(&midpoint, label_width);
-        let labels: Vec<_> = (0..graph_area.height)
+        let labels: Vec<_> = (0..plot.height)
             .map(|row| {
                 let label = if row == 0 {
                     ceiling.as_str()
-                } else if row + 1 == graph_area.height {
+                } else if row + 1 == plot.height {
                     "0"
-                } else if graph_area.height >= 5 && row == midpoint_row {
+                } else if plot.height >= 5 && row == midpoint_row {
                     midpoint.as_str()
                 } else {
                     ""
@@ -496,7 +472,28 @@ pub(in crate::ui) fn wave_panel(
             .collect();
         f.render_widget(
             Paragraph::new(labels),
-            Rect::new(graph_area.x, graph_area.y, axis_width, graph_area.height),
+            Rect::new(graph_area.x, graph_area.y, axis_width, plot.height),
+        );
+    }
+    if time_axis_height > 0 {
+        let seconds = options.time_window_seconds.unwrap_or_default();
+        let width = usize::from(plot.width);
+        let mut labels = vec![b' '; width];
+        let left = format!("-{seconds}s");
+        let middle = format!("-{}s", seconds / 2);
+        for (offset, label) in [(0, left.as_str()), (width.saturating_sub(3), "Now")] {
+            for (cell, ch) in labels.iter_mut().skip(offset).zip(label.bytes()) {
+                *cell = ch;
+            }
+        }
+        if width >= left.len() + middle.len() + 7 {
+            let offset = (width - middle.len()) / 2;
+            labels[offset..offset + middle.len()].copy_from_slice(middle.as_bytes());
+        }
+        f.render_widget(
+            Paragraph::new(labels.into_iter().map(char::from).collect::<String>())
+                .style(theme::fg(theme::muted())),
+            Rect::new(plot.x, plot.bottom(), plot.width, 1),
         );
     }
 }
@@ -540,10 +537,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plot_smoothing_keeps_raw_readings_and_fixed_totals_row() {
+    fn raw_plot_keeps_peak_and_fixed_totals_row() {
         use crate::ui::test_support::render;
         let raw = [0, 0, 9000, 0, 0, 0];
-        let smooth = [0, 0, 3000, 3000, 3000, 0];
         let text = render(68, 10, |f| {
             wave_panel(
                 f,
@@ -551,15 +547,15 @@ mod tests {
                 &raw,
                 "RX",
                 WavePanelOptions::new(0.0, 6)
-                    .with_plot_samples(&smooth)
-                    .with_max_val(4096.0)
+                    .with_time_axis(60)
+                    .with_max_val(9000.0)
                     .with_average(Some(1500.0))
-                    .with_summary(Line::raw("Total 100 KB · 42 packets")),
+                    .with_summary(Line::raw("Total 100 KiB · 42 packets")),
                 theme::rx_wave,
             )
         });
         let rows: Vec<_> = text.lines().collect();
-        assert!(rows[0].contains("peak") && rows[0].contains("8.79 KB/s"));
+        assert!(rows[0].contains("peak") && rows[0].contains("8.79 KiB/s"));
         assert!(rows[1].contains("Total") && rows[1].contains("2s avg"));
         assert!(
             rows[2..]
@@ -569,6 +565,9 @@ mod tests {
                 >= 5
         );
         assert!(!text.contains('▲'));
+        assert!(rows.last().unwrap().contains("-60s"));
+        assert!(rows.last().unwrap().contains("-30s"));
+        assert!(rows.last().unwrap().trim_end().ends_with("Now"));
     }
 
     #[test]
@@ -582,7 +581,7 @@ mod tests {
                 _ => 256,
             })
             .collect();
-        for scale in [WaveScale::Linear, WaveScale::Log, WaveScale::Shaped] {
+        for scale in [WaveScale::Linear, WaveScale::Shaped] {
             for width in [8, 30, 97] {
                 for step in -5..=20 {
                     let lines = render_wave(
@@ -630,8 +629,8 @@ mod tests {
         let samples = [0, 0, 10000, 0, 0];
         for footprint in [0.25, 0.8, 1.7, 3.0] {
             for boundary in [2.0 - footprint / 2.0, 2.0 + footprint / 2.0] {
-                let before = column_peak(&samples, boundary - 1e-6, footprint);
-                let after = column_peak(&samples, boundary + 1e-6, footprint);
+                let before = column_peak(&samples, boundary - 1e-6, footprint, sample_at);
+                let after = column_peak(&samples, boundary + 1e-6, footprint, sample_at);
                 assert!((after - before).abs() < 1e-5);
             }
         }
@@ -642,7 +641,7 @@ mod tests {
         let samples: Vec<u64> = (0..120).map(|i| (i * 137) % 4096).collect();
         let width = 100;
         let per_dot = 119.0 / 199.0;
-        for scale in [WaveScale::Linear, WaveScale::Log, WaveScale::Shaped] {
+        for scale in [WaveScale::Linear, WaveScale::Shaped] {
             let draw = |frac| {
                 render_wave(
                     &samples,
@@ -679,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_downsampling_keeps_bursts_visible_and_marks_overflow() {
+    fn narrow_downsampling_preserves_the_full_burst_height() {
         let mut samples = vec![0; 120];
         samples[37] = 8192;
         for width in [1, 8, 30, 120] {
@@ -696,46 +695,19 @@ mod tests {
                 |_| Color::Green,
             );
             assert!(
-                lines
+                lines[0]
+                    .spans
                     .iter()
-                    .flat_map(|line| &line.spans)
                     .any(|span| span.content.chars().any(|c| ('⠁'..='⣿').contains(&c))),
                 "width {width}"
             );
-            let lines = render_wave(
-                &samples,
-                width,
-                8,
-                WaveGeometry {
-                    max_val: 1024.0,
-                    frac: 0.3,
-                    window: 120,
-                    scale: WaveScale::Log,
-                },
-                |_| Color::Green,
-            );
-            assert!(lines[0].spans.iter().any(|span| span.content.contains('▲')));
-        }
-    }
-
-    #[test]
-    fn log_scale_preserves_zero_and_reveals_background_traffic() {
-        assert_eq!(WaveScale::Log.ratio(0.0, 1_000_000.0), 0.0);
-        assert_eq!(WaveScale::Log.ratio(1_000_000.0, 1_000_000.0), 1.0);
-        assert!(WaveScale::Log.ratio(1000.0, 1_000_000.0) > 0.4);
-        assert!(WaveScale::Linear.ratio(1000.0, 1_000_000.0) < 0.01);
-        let mut previous = 0.0;
-        for value in [0.0, 1.0, 100.0, 1000.0, 100_000.0, 1_000_000.0] {
-            let ratio = WaveScale::Log.ratio(value, 1_000_000.0);
-            assert!(ratio.is_finite() && ratio >= previous);
-            previous = ratio;
         }
     }
 
     #[test]
     fn surge_chart_keeps_readouts_visible_at_multiple_sizes() {
         use crate::ui::test_support::render;
-        for (width, height) in [(48, 12), (80, 16), (140, 24)] {
+        for (width, height) in [(38, 12), (48, 12), (80, 16), (140, 24)] {
             let text = render(width, height, |f| {
                 wave_panel(
                     f,
@@ -743,8 +715,7 @@ mod tests {
                     &[256, 8192, 512],
                     "RX",
                     WavePanelOptions::new(0.0, 3)
-                        .with_max_val(2048.0)
-                        .with_log_scale(true)
+                        .with_max_val(8192.0)
                         .with_average(Some(1024.0)),
                     theme::rx_wave,
                 )
@@ -753,7 +724,10 @@ mod tests {
                 text.contains("Now") && text.contains("2s avg") && text.contains("peak"),
                 "{text}"
             );
-            assert!(text.contains('▲'));
+            assert!(!text.contains('▲'));
+            let header = text.lines().next().unwrap();
+            assert!(header.contains("512 B/s"), "{header}");
+            assert!(header.contains("peak  8.00 KiB/s"), "{header}");
         }
     }
 
@@ -789,17 +763,13 @@ mod tests {
     }
 
     #[test]
-    fn independent_scales_preserve_peaks_and_shared_mode_matches_both_axes() {
+    fn automatic_scales_preserve_peaks_and_decay_independently() {
         assert_eq!(
-            rate_ceilings(&[0, 8192], &[0, 2048], (4096.0, 1024.0), false),
+            rate_ceilings(&[0, 8192], &[0, 2048], (4096.0, 1024.0)),
             (8192.0, 2048.0)
         );
         assert_eq!(
-            rate_ceilings(&[0, 8192], &[0, 2048], (4096.0, 1024.0), true),
-            (8192.0, 8192.0)
-        );
-        assert_eq!(
-            rate_ceilings(&[0], &[0], (4096.0, 2048.0), false),
+            rate_ceilings(&[0], &[0], (4096.0, 2048.0)),
             (4096.0, 2048.0)
         );
     }
@@ -819,7 +789,7 @@ mod tests {
         });
         let output = buffer_to_string(&buffer);
         assert!(output.contains("256 B/s"));
-        assert!(output.contains("peak") && output.contains("1.00 KB/s"));
+        assert!(output.contains("peak") && output.contains("1.00 KiB/s"));
         let colors: std::collections::HashSet<_> = buffer
             .content
             .iter()

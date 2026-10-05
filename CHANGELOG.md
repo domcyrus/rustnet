@@ -11,9 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject Unix output files owned by unrelated users before changing or writing them, anchor opens to validated directories, and create diagnostic logs exclusively
 
 ### Added
-- **Traffic surge visibility**: held auto scales, shared/independent and log modes,
-  scale lock with overflow markers, rounded traffic waves, and two-second rate averages
-  in Graph/Details and Activity sorting
+- **Traffic surge visibility**: automatic linear scales, preserved sampled peaks,
+  time labels, and two-second rate averages in Graph/Details and Activity sorting
+- **Traffic reporting clarity**: graphs follow the capture interface; label smoothed
+  process rates, use binary byte units, and show explicit idle rates
 - **Retained Linux process identity**: eBPF preserves bounded executable paths
   and immediate-parent metadata after exit or exec, and checks task birth times
   before extending ancestry through procfs (#640)
@@ -67,8 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
-- Restore gradient traffic waves with three-sample smoothing and independent RX/TX
-  scales by default; `s` switches Graph and wide Details to a shared scale.
+- Simplify Graph and Details to automatic independent RX/TX scales, with no scale,
+  log, or lock controls.
   Current rates and peak labels retain raw measurements. Details gains taller
   plots, aligned totals, and clear messages when no live history is available.
 - Smooth scrolling in Overview, Graph, and Details at 20 fps, preserving the
@@ -165,6 +166,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- Keep packet rates, connection lifecycle, and health updating when interface counters are unavailable; prevent compact RX/TX rates from losing leading digits.
+- **macOS traffic graphs**: use aggregate counters for default PKTAP capture, keep
+  Details scrolling independently, and publish complete interface-rate snapshots
 - Keep the filter cursor on UTF-8 character boundaries when typing, moving, or deleting non-ASCII text, avoiding TUI panics.
 - Preserve regex syntax in connection filters, including uppercase escapes such as `\D` and explicit case-sensitive groups.
 - ARM DEB compatibility with Ubuntu 22.04 and Debian 12/13: use a glibc 2.35
