@@ -8,7 +8,7 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
-use crate::network::types::{Connection, GraphScale, Protocol};
+use crate::network::types::{Connection, GraphScale, GraphScroll, Protocol};
 
 /// Process detection status information for UI display
 #[derive(Debug, Clone, Default)]
@@ -304,6 +304,7 @@ pub struct ConnRateHistory {
     pub rx: VecDeque<u64>,
     pub tx: VecDeque<u64>,
     pub(super) timestamps: VecDeque<Instant>,
+    pub(super) scroll: GraphScroll,
     pub(super) rx_scale: GraphScale,
     pub(super) tx_scale: GraphScale,
     generation: Option<SystemTime>,
@@ -341,7 +342,9 @@ impl ConnRateHistory {
         if self.timestamps.len() >= cap {
             self.timestamps.pop_front();
         }
-        self.timestamps.push_back(Instant::now());
+        let now = Instant::now();
+        self.scroll.record_at(now);
+        self.timestamps.push_back(now);
         self.rx.push_back(rx);
         self.tx.push_back(tx);
         self.rx_scale
@@ -353,6 +356,7 @@ impl ConnRateHistory {
 
 #[derive(Debug, Clone)]
 pub struct ConnRateHistorySnapshot {
+    pub scroll_fraction: f64,
     pub rx: Vec<u64>,
     pub tx: Vec<u64>,
     pub recent_average: Option<(f64, f64)>,

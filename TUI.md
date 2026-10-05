@@ -57,8 +57,9 @@ Graph shows all panels together when the full dashboard fits. Smaller terminals
 use Traffic, Health, and Distribution sections, selected with `v` / Shift+`v`
 or by clicking their names.
 Traffic uses the selected capture interface’s counters and names it in the heading.
-The `any` capture interface sums all interface counters, which can count traffic
-on more than one interface. Missing counters never fall back to another interface.
+The `any` capture interface and macOS default `pktap` capture sum all interface
+counters, labeled `all interfaces`. This can count traffic on more than one
+interface. Missing counters never fall back to another interface.
 
 Graph and Details plot sampled rates directly, preserving short bursts even
 when several samples share a terminal column. The filled curves interpolate
@@ -97,7 +98,8 @@ existing meaning.
 Visible scrolling graphs in Overview, Graph, and Details redraw about 20 times
 per second, using continuous elapsed time between the existing 500 ms samples.
 The scroll position carries across sample arrivals to prevent timing jitter from
-jumping the history forward.
+jumping the history forward. Details uses its connection history’s own clock,
+so unavailable interface counters do not interrupt its animation.
 Activity share/coverage bars, Host DNS latency bars, and Graph health, protocol,
 and TCP-state bars ease toward new values over 250 ms. Numeric readings and
 status colors update immediately. Transitions follow each metric's identity

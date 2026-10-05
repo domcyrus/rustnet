@@ -2215,24 +2215,16 @@ fn draw_traffic(
 
     let (rx_ceiling, tx_ceiling) =
         braille_graph::rate_ceilings(rx, tx, (rx_graph_ceiling, tx_graph_ceiling));
-    let traffic_history = ctx.app.get_traffic_history();
-    // A fallback contains no time series to advance. Driving its single
-    // point with the aggregate sampling clock makes it move left, then
-    // snap right on every tick, which is especially visible immediately
-    // after a connection becomes historic.
-    let frac = if history.is_some() {
-        traffic_history.scroll_fraction()
-    } else {
-        0.0
-    };
-    ui_state.graph_animation_visible.set(
-        history.is_some()
-            && rx.len().max(tx.len()) > 1
-            && traffic_history.has_enough_data()
-            && cols.iter().any(|area| area.height >= 4 && area.width >= 4),
-    );
+    // Each connection advances on its own samples, even when interface
+    // counters are unavailable. Historic and startup placeholders stay still.
+    let frac = history
+        .as_ref()
+        .map_or(0.0, |history| history.scroll_fraction);
+    ui_state
+        .graph_animation_visible
+        .set(placeholder.is_none() && cols.iter().any(|area| area.height >= 4 && area.width >= 4));
     let average = history.as_ref().and_then(|h| h.recent_average);
-    let window = traffic_history.capacity();
+    let window = crate::app::TRAFFIC_HISTORY_CAPACITY;
     braille_graph::wave_panel(
         f,
         cols[0],

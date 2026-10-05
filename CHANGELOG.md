@@ -166,6 +166,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **macOS traffic graphs**: use aggregate counters for default PKTAP capture, keep
+  Details scrolling independently, and publish complete interface-rate snapshots
 - Keep the filter cursor on UTF-8 character boundaries when typing, moving, or deleting non-ASCII text, avoiding TUI panics.
 - Preserve regex syntax in connection filters, including uppercase escapes such as `\D` and explicit case-sensitive groups.
 - ARM DEB compatibility with Ubuntu 22.04 and Debian 12/13: use a glibc 2.35

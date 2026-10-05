@@ -24,7 +24,7 @@ use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACIT
 /// Missing counters are unavailable, not observed idle traffic. Never fall back
 /// to other interfaces when a specific capture interface has no counters.
 fn traffic_rates(
-    rates: &DashMap<String, InterfaceRates>,
+    rates: &HashMap<String, InterfaceRates>,
     interface: Option<&str>,
 ) -> Option<(u64, u64)> {
     if let Some(name) = interface {
@@ -33,7 +33,7 @@ fn traffic_rates(
             .map(|rate| (rate.rx_bytes_per_sec, rate.tx_bytes_per_sec));
     }
     rates
-        .iter()
+        .values()
         .map(|rate| (rate.rx_bytes_per_sec, rate.tx_bytes_per_sec))
         .reduce(|(rx, tx), (next_rx, next_tx)| {
             (rx.saturating_add(next_rx), tx.saturating_add(next_tx))
@@ -288,13 +288,13 @@ impl App {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         interface_stats.clear();
-                        interface_rates.clear();
+                        let mut next_rates = HashMap::new();
                         interface_traffic_windows.clear();
 
                         for stat in stats_vec {
                             if let Some(prev) = previous_stats.get(&stat.interface_name) {
                                 let rates = stat.calculate_rates(prev);
-                                interface_rates.insert(stat.interface_name.clone(), rates);
+                                next_rates.insert(stat.interface_name.clone(), rates);
                             }
 
                             let name = stat.interface_name.clone();
@@ -317,6 +317,9 @@ impl App {
                                 interface_traffic_windows.insert(name, stat.traffic_since(oldest));
                             }
                         }
+                        // Publish a complete refresh so graphs never observe an empty
+                        // or partially repopulated set of interface counters.
+                        *interface_rates.write().unwrap_or_else(std::sync::PoisonError::into_inner) = next_rates;
                         stats_history.retain(|name, _| interface_stats.contains_key(name));
                     }
                     Err(e) => {
@@ -366,7 +369,10 @@ impl App {
             "Traffic history thread stopping",
             LIVE_RATE_INTERVAL,
             move || {
-                let traffic = traffic_rates(&interface_rates, traffic_interface.as_deref());
+                let traffic = interface_rates
+                    .read()
+                    .ok()
+                    .and_then(|rates| traffic_rates(&rates, traffic_interface.as_deref()));
 
                 // Get active connection count from snapshot (excludes
                 // historic) and record per-connection rate samples on
@@ -524,7 +530,7 @@ mod live_rate_sampling_tests {
 
     #[test]
     fn selected_interface_excludes_unrelated_traffic_and_preserves_idle() {
-        let rates = DashMap::new();
+        let mut rates = HashMap::new();
         rates.insert(
             "lo0".into(),
             InterfaceRates {

@@ -3779,6 +3779,28 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn details_animates_without_interface_counter_history() {
+        let app = test_app();
+        let connections = sample_connections();
+        assert!(!app.get_traffic_history().has_enough_data());
+        app.set_connection_rates_for_test(&connections[0], &[(0, 0), (4096, 2048)]);
+        let history = app
+            .get_connection_rate_history(&connections[0].key())
+            .unwrap();
+        assert!(history.scroll_fraction < 1.0);
+        let mut state = UiState {
+            selected_tab: 1,
+            details_section: DetailsSection::Traffic,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 140, 40);
+        assert!(state.graph_animation_visible.get());
+        app.set_connection_rates_for_test(&connections[0], &[(4096, 2048)]);
+        render_app(&app, &mut state, &connections, None, 140, 40);
+        assert!(!state.graph_animation_visible.get());
+    }
+
+    #[test]
     fn live_details_traffic_has_room_for_waves_and_aligned_totals() {
         let app = test_app();
         let connections = sample_connections();

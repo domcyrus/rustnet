@@ -152,12 +152,47 @@ impl Default for GraphScale {
     }
 }
 
+/// Animation clock owned by each sampled history. Carry the position across
+/// early arrivals, and stop one interval ahead if sampling stalls.
+#[derive(Debug, Clone, Default)]
+pub struct GraphScroll {
+    newest: Option<Instant>,
+    interval: Duration,
+    phase: f64,
+}
+
+impl GraphScroll {
+    pub fn record_at(&mut self, now: Instant) {
+        self.phase = if self.interval.is_zero() {
+            0.0
+        } else {
+            self.fraction_at(now) - 1.0
+        };
+        self.interval = self.newest.map_or(Duration::ZERO, |previous| {
+            now.saturating_duration_since(previous)
+        });
+        self.newest = Some(now);
+    }
+
+    pub fn fraction(&self) -> f64 {
+        self.fraction_at(Instant::now())
+    }
+
+    pub fn fraction_at(&self, now: Instant) -> f64 {
+        let Some(newest) = self.newest.filter(|_| !self.interval.is_zero()) else {
+            return 0.0;
+        };
+        let elapsed = now.saturating_duration_since(newest).as_secs_f64();
+        (self.phase + elapsed / self.interval.as_secs_f64()).min(1.0)
+    }
+}
+
 /// Ring buffer for aggregate traffic history (used for graphs)
 #[derive(Debug, Clone)]
 pub struct TrafficHistory {
     samples: VecDeque<TrafficSample>,
     max_samples: usize,
-    scroll_phase: f64,
+    scroll: GraphScroll,
     rx_scale: GraphScale,
     tx_scale: GraphScale,
     opened_scale: GraphScale,
@@ -172,7 +207,7 @@ impl TrafficHistory {
         Self {
             samples: VecDeque::with_capacity(max_samples),
             max_samples,
-            scroll_phase: 0.0,
+            scroll: GraphScroll::default(),
             rx_scale: GraphScale::default(),
             tx_scale: GraphScale::default(),
             opened_scale: GraphScale::new(10),
@@ -229,7 +264,7 @@ impl TrafficHistory {
         );
 
         let timestamp = Instant::now();
-        self.advance_scroll_at(timestamp);
+        self.scroll.record_at(timestamp);
         let sample = TrafficSample {
             timestamp,
             rx_bytes_per_sec,
@@ -296,38 +331,9 @@ impl TrafficHistory {
         self.closed_scale.ceiling()
     }
 
-    /// Continuous progress relative to the newest sample. Carry the previous
-    /// position across early arrivals, allowing a negative phase instead of
-    /// jumping the history forward. Stop one interval ahead if sampling stalls.
+    /// Continuous progress relative to the newest sample.
     pub fn scroll_fraction(&self) -> f64 {
-        self.scroll_fraction_at(Instant::now())
-    }
-
-    fn advance_scroll_at(&mut self, now: Instant) {
-        self.scroll_phase = if self.samples.len() >= 2 {
-            self.scroll_fraction_at(now) - 1.0
-        } else {
-            0.0
-        };
-    }
-
-    fn scroll_fraction_at(&self, now: Instant) -> f64 {
-        let len = self.samples.len();
-        if len < 2 {
-            return 0.0;
-        }
-        let newest = &self.samples[len - 1];
-        let interval = newest
-            .timestamp
-            .duration_since(self.samples[len - 2].timestamp)
-            .as_secs_f64();
-        if interval <= 0.0 {
-            return 0.0;
-        }
-        let elapsed = now
-            .saturating_duration_since(newest.timestamp)
-            .as_secs_f64();
-        (self.scroll_phase + elapsed / interval).min(1.0)
+        self.scroll.fraction()
     }
 
     /// Last `count` values of `pick`, oldest first (newest last).
@@ -450,7 +456,7 @@ impl TrafficHistory {
     /// Clear all traffic history samples
     pub fn clear(&mut self) {
         self.samples.clear();
-        self.scroll_phase = 0.0;
+        self.scroll = GraphScroll::default();
         self.rx_scale.reset();
         self.tx_scale.reset();
         self.opened_scale.reset();
@@ -646,59 +652,48 @@ mod tests {
 
     #[test]
     fn early_samples_do_not_jump_the_scrolling_history() {
-        let mut history = TrafficHistory::new(120);
-        add_sample(&mut history, 100, 200, 1, 0, 0, None);
-        add_sample(&mut history, 200, 300, 1, 0, 0, None);
+        let mut scroll = GraphScroll::default();
         let start = Instant::now();
-        history.samples[0].timestamp = start;
-        history.samples[1].timestamp = start + Duration::from_millis(550);
-        let mut now = history.samples[1].timestamp;
-        for millis in [500, 510, 505, 570, 500, 900, 500] {
+        scroll.record_at(start);
+        scroll.record_at(start + Duration::from_millis(550));
+        let mut now = start + Duration::from_millis(550);
+        for millis in [500, 510, 505, 570, 500, 900, 500]
+            .into_iter()
+            .cycle()
+            .take(1000)
+        {
             now += Duration::from_millis(millis);
-            let before = history.samples.len() as f64 - 1.0 + history.scroll_fraction_at(now);
-            history.advance_scroll_at(now);
-            let mut next = history.samples.back().unwrap().clone();
-            next.timestamp = now;
-            history.samples.push_back(next);
-            let after = history.samples.len() as f64 - 1.0 + history.scroll_fraction_at(now);
-            assert!((before - after).abs() < 1e-9, "sample interval {millis}");
-            let later = history.scroll_fraction_at(now + Duration::from_millis(25));
-            assert!(later >= history.scroll_fraction_at(now));
+            let before = scroll.fraction_at(now);
+            scroll.record_at(now);
+            assert!((before - (1.0 + scroll.fraction_at(now))).abs() < 1e-9);
+            assert!(scroll.fraction_at(now + Duration::from_millis(25)) >= scroll.fraction_at(now));
         }
-        assert_eq!(
-            history.scroll_fraction_at(now + Duration::from_secs(30)),
-            1.0
-        );
+        assert_eq!(scroll.fraction_at(now + Duration::from_secs(30)), 1.0);
     }
 
     #[test]
     fn graph_scroll_tracks_elapsed_time_and_stops_when_sampling_stalls() {
-        let mut history = TrafficHistory::new(120);
+        let mut scroll = GraphScroll::default();
         let start = Instant::now();
-        assert_eq!(history.scroll_fraction_at(start), 0.0);
-        add_sample(&mut history, 100, 200, 1, 0, 0, None);
-        history.samples[0].timestamp = start;
-        assert_eq!(history.scroll_fraction_at(start), 0.0);
-        add_sample(&mut history, 200, 300, 1, 0, 0, None);
+        assert_eq!(scroll.fraction_at(start), 0.0);
+        scroll.record_at(start);
+        assert_eq!(scroll.fraction_at(start), 0.0);
         let newest = start + Duration::from_millis(500);
-        history.samples[1].timestamp = newest;
+        scroll.record_at(newest);
         for millis in [0, 25, 50, 95, 100, 375, 495, 500, 750] {
             let expected = (millis as f64 / 500.0).min(1.0);
             assert!(
-                (history.scroll_fraction_at(newest + Duration::from_millis(millis)) - expected)
-                    .abs()
+                (scroll.fraction_at(newest + Duration::from_millis(millis)) - expected).abs()
                     < 1e-9
             );
         }
-        assert_eq!(history.scroll_fraction_at(start), 0.0);
-        add_sample(&mut history, 300, 400, 1, 0, 0, None);
+        assert_eq!(scroll.fraction_at(start), 0.0);
         let next = newest + Duration::from_millis(550);
-        history.samples[2].timestamp = next;
-        history.scroll_phase = 0.0;
-        assert_eq!(history.scroll_fraction_at(next), 0.0);
-        assert!((history.scroll_fraction_at(next + Duration::from_millis(55)) - 0.1).abs() < 1e-9);
-        history.samples[1].timestamp = next;
-        assert_eq!(history.scroll_fraction_at(next), 0.0);
+        scroll.record_at(next);
+        assert_eq!(scroll.fraction_at(next), 0.0);
+        assert!((scroll.fraction_at(next + Duration::from_millis(55)) - 0.1).abs() < 1e-9);
+        scroll.record_at(next);
+        assert_eq!(scroll.fraction_at(next), 0.0);
     }
 
     #[test]
