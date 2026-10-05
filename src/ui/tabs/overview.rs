@@ -1322,6 +1322,7 @@ fn draw_stats_panel(
             Span::raw(" · "),
             Span::styled(format!("TX {}", sidebar_rate(tx)), theme::fg(theme::tx())),
         ]));
+        lines.push(section_separator(inner_area.width.saturating_sub(2)));
         lines.extend(interface_error_lines(app, usize::MAX));
         lines.push(section_separator(inner_area.width.saturating_sub(2)));
         lines.extend(security_lines);
@@ -1465,13 +1466,16 @@ fn draw_interface_stats_with_graph(
     area: Rect,
     state: &UiState,
 ) -> Result<()> {
-    // Heading + sparklines (3 lines) + interface details (remaining).
+    // Heading + sparklines (3 lines) + separator + interface details (remaining).
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Heading
             Constraint::Length(3), // Traffic sparklines
-            Constraint::Min(0),    // Interface details
+            Constraint::Length(
+                SECTION_GAP_HEIGHT.min(area.height.saturating_sub(TRAFFIC_MIN_HEIGHT)),
+            ),
+            Constraint::Min(0), // Interface details
         ])
         .split(area);
 
@@ -1542,10 +1546,12 @@ fn draw_interface_stats_with_graph(
     let rates_para = Paragraph::new(rates_text);
     f.render_widget(rates_para, sparkline_rows[2]);
 
-    let max_interfaces = usize::from(sections[1].height).saturating_sub(1);
+    render_section_separator(f, sections[1]);
+
+    let max_interfaces = usize::from(sections[2].height).saturating_sub(1);
     let interface_text = interface_error_lines(app, max_interfaces);
     let interface_para = Paragraph::new(interface_text);
-    f.render_widget(interface_para, sections[1]);
+    f.render_widget(interface_para, sections[2]);
 
     Ok(())
 }
