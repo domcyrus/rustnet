@@ -166,6 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- Keep packet rates, connection lifecycle, and health updating when interface counters are unavailable; prevent compact RX/TX rates from losing leading digits.
 - **macOS traffic graphs**: use aggregate counters for default PKTAP capture, keep
   Details scrolling independently, and publish complete interface-rate snapshots
 - Keep the filter cursor on UTF-8 character boundaries when typing, moving, or deleting non-ASCII text, avoiding TUI panics.

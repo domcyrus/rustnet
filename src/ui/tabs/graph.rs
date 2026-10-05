@@ -266,7 +266,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, scope: &str, area
         section_title(format!(" Traffic Over Time · {scope} · 60s · B/s")),
     );
 
-    if !history.has_enough_data() {
+    if !history.has_enough_traffic_data() {
         draw_placeholder(f, inner, "Waiting for traffic data...");
         return;
     }
@@ -808,6 +808,34 @@ fn draw_tcp_states(
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn missing_counters_leave_connection_lifecycle_visible() {
+        use crate::network::types::ConnectionLifecycleSample;
+        use crate::ui::test_support::{render, test_app};
+        let app = test_app();
+        let mut history = TrafficHistory::default();
+        for _ in 0..2 {
+            history.add_sample(
+                None,
+                ConnectionLifecycleSample {
+                    active: 5,
+                    retained: 2,
+                    ..Default::default()
+                },
+                100,
+                2,
+                Some(12.0),
+            );
+        }
+        app.set_traffic_history_for_test(history);
+        let output = render(150, 60, |f| {
+            draw_graph_tab(f, &app, &[], &UiState::default(), f.area());
+        });
+        assert!(output.contains("Waiting for traffic data"));
+        assert!(output.contains("5 active"));
+        assert!(!output.contains("Waiting for connection data"));
+    }
 
     #[test]
     fn traffic_heading_matches_capture_scope() {

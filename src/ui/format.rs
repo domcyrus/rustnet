@@ -25,21 +25,25 @@ pub(super) fn format_rate(bytes_per_second: f64) -> String {
 /// zero/absent rate renders as: the "-" placeholder in tables, "0B"
 /// in the activity bars.
 pub(super) fn format_rate_compact(bytes_per_second: f64, zero: &str) -> String {
-    const KIB_PER_SEC: f64 = 1024.0;
-    const MIB_PER_SEC: f64 = KIB_PER_SEC * 1024.0;
-    const GIB_PER_SEC: f64 = MIB_PER_SEC * 1024.0;
-
-    if bytes_per_second >= GIB_PER_SEC {
-        format!("{:.1}Gi", bytes_per_second / GIB_PER_SEC)
-    } else if bytes_per_second >= MIB_PER_SEC {
-        format!("{:.1}Mi", bytes_per_second / MIB_PER_SEC)
-    } else if bytes_per_second >= KIB_PER_SEC {
-        format!("{:.0}Ki", bytes_per_second / KIB_PER_SEC)
-    } else if bytes_per_second > 0.0 {
-        format!("{:.0}B", bytes_per_second)
-    } else {
-        zero.to_string()
+    if bytes_per_second <= 0.0 || !bytes_per_second.is_finite() {
+        return zero.to_string();
     }
+    // Each half of the 11-cell RX/TX column has five cells. Promote before
+    // rounding would produce a four-digit value with a two-cell unit.
+    let mut value = bytes_per_second;
+    let units = ["B", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei"];
+    for (index, unit) in units.iter().enumerate() {
+        let limit = if index == 0 { 1023.5 } else { 999.5 };
+        if value < limit || index == units.len() - 1 {
+            return if index >= 2 && value < 9.95 {
+                format!("{value:.1}{unit}")
+            } else {
+                format!("{value:.0}{unit}")
+            };
+        }
+        value /= 1024.0;
+    }
+    unreachable!("the final unit always formats the value")
 }
 
 /// Format a round-trip time for the fixed-width RTT column: one decimal

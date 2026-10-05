@@ -59,7 +59,9 @@ or by clicking their names.
 Traffic uses the selected capture interface’s counters and names it in the heading.
 The `any` capture interface and macOS default `pktap` capture sum all interface
 counters, labeled `all interfaces`. This can count traffic on more than one
-interface. Missing counters never fall back to another interface.
+interface. Missing counters never fall back to another interface. Packet rates,
+connection lifecycle, and network health keep updating without those counters;
+RX/TX plots restart when counter samples return.
 
 Graph and Details plot sampled rates directly, preserving short bursts even
 when several samples share a terminal column. The filled curves interpolate
@@ -72,6 +74,7 @@ since the two axes can have different bounds. There are no scale, log, or lock
 controls. Bounds include the sampled peak, rise to rounded values, and wait five
 seconds before gradually shrinking after older peaks leave the history.
 
+Compact table rates reduce precision and promote units to keep both RX/TX values visible.
 Observed idle rates show `0 B/s`; unavailable values retain a placeholder.
 Top Processes labels its combined RX+TX rate as a smoothed 10-second average.
 Details rates use the same smoothed connection average, identified in the heading

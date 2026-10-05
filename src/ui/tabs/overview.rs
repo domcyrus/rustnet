@@ -1315,20 +1315,12 @@ fn draw_stats_panel(
         lines.push(section_separator(inner_area.width.saturating_sub(2)));
         lines.push(Line::styled("Traffic", theme::bold_fg(theme::heading())));
         let history = app.get_traffic_history();
-        let rx = history
-            .get_rx_sparkline_data(1)
-            .last()
-            .copied()
-            .unwrap_or(0);
-        let tx = history
-            .get_tx_sparkline_data(1)
-            .last()
-            .copied()
-            .unwrap_or(0);
+        let rx = history.get_rx_sparkline_data(1).last().copied();
+        let tx = history.get_tx_sparkline_data(1).last().copied();
         lines.push(Line::from(vec![
-            Span::styled(format!("RX {}/s", format_bytes(rx)), theme::fg(theme::rx())),
+            Span::styled(format!("RX {}", sidebar_rate(rx)), theme::fg(theme::rx())),
             Span::raw(" · "),
-            Span::styled(format!("TX {}/s", format_bytes(tx)), theme::fg(theme::tx())),
+            Span::styled(format!("TX {}", sidebar_rate(tx)), theme::fg(theme::tx())),
         ]));
         lines.extend(interface_error_lines(app, usize::MAX));
         lines.push(section_separator(inner_area.width.saturating_sub(2)));
@@ -1433,6 +1425,13 @@ fn mini_wave(
     )
 }
 
+fn sidebar_rate(rate: Option<u64>) -> String {
+    rate.map_or_else(
+        || NONE_PLACEHOLDER.to_string(),
+        |rate| format!("{}/s", format_bytes(rate)),
+    )
+}
+
 /// One sidebar sparkline row: the colored RX/TX label, then the
 /// smoothed mini wave. Both traffic rows differ only in label, rate
 /// source, and color ramp.
@@ -1499,7 +1498,7 @@ fn draw_interface_stats_with_graph(
         .split(sections[0]);
 
     state.graph_animation_visible.set(
-        traffic_history.has_enough_data()
+        traffic_history.has_enough_traffic_data()
             && sparkline_rows[..2]
                 .iter()
                 .any(|area| area.height > 0 && area.width > 3),
@@ -1526,20 +1525,17 @@ fn draw_interface_stats_with_graph(
         theme::tx_wave,
     );
 
-    let (current_rx, current_tx) = rx_rates
-        .last()
-        .zip(tx_rates.last())
-        .map(|(rx, tx)| (*rx, *tx))
-        .unwrap_or((0, 0));
+    let current_rx = rx_rates.last().copied();
+    let current_tx = tx_rates.last().copied();
 
     let rates_text = Line::from(vec![
         Span::styled(
-            format!("↓{}/s", format_bytes(current_rx)),
+            format!("↓{}", sidebar_rate(current_rx)),
             theme::fg(theme::rx_wave(MINI_WAVE_INTENSITY)),
         ),
         Span::raw(" "),
         Span::styled(
-            format!("↑{}/s", format_bytes(current_tx)),
+            format!("↑{}", sidebar_rate(current_tx)),
             theme::fg(theme::tx_wave(MINI_WAVE_INTENSITY)),
         ),
     ]);

@@ -17,6 +17,7 @@ pub struct ConnectionLifecycleSample {
 #[derive(Debug, Clone)]
 pub struct TrafficSample {
     pub timestamp: Instant,
+    traffic_available: bool,
     pub rx_bytes_per_sec: u64,
     pub tx_bytes_per_sec: u64,
     smoothed_rx_bytes_per_sec: u64,
@@ -225,6 +226,25 @@ impl TrafficHistory {
         retransmits_per_sec: u64,
         avg_rtt_ms: Option<f64>,
     ) {
+        self.add_sample(
+            Some((rx_bytes_per_sec, tx_bytes_per_sec)),
+            lifecycle,
+            packets_per_sec,
+            retransmits_per_sec,
+            avg_rtt_ms,
+        );
+    }
+
+    /// Record capture metrics even when interface byte counters are unavailable.
+    pub fn add_sample(
+        &mut self,
+        traffic: Option<(u64, u64)>,
+        lifecycle: ConnectionLifecycleSample,
+        packets_per_sec: u64,
+        retransmits_per_sec: u64,
+        avg_rtt_ms: Option<f64>,
+    ) {
+        let (rx_bytes_per_sec, tx_bytes_per_sec) = traffic.unwrap_or_default();
         let packet_loss_pct = if packets_per_sec > 0 {
             (retransmits_per_sec as f32 / packets_per_sec as f32) * 100.0
         } else {
@@ -246,10 +266,20 @@ impl TrafficHistory {
                 let sum = if round { sum + count / 2 } else { sum };
                 (sum / count) as u64
             };
+        let traffic_average = |current, pick: fn(&TrafficSample) -> u64| {
+            let (sum, count) = self
+                .traffic_samples()
+                .rev()
+                .take(2)
+                .fold((u128::from(current), 1), |(sum, count), sample| {
+                    (sum + u128::from(pick(sample)), count + 1)
+                });
+            (sum / count) as u64
+        };
         let smoothed_rx_bytes_per_sec =
-            smoothed(rx_bytes_per_sec, 2, |sample| sample.rx_bytes_per_sec, false);
+            traffic_average(rx_bytes_per_sec, |sample| sample.rx_bytes_per_sec);
         let smoothed_tx_bytes_per_sec =
-            smoothed(tx_bytes_per_sec, 2, |sample| sample.tx_bytes_per_sec, false);
+            traffic_average(tx_bytes_per_sec, |sample| sample.tx_bytes_per_sec);
         let smoothed_opened_connections_per_sec_tenths = smoothed(
             lifecycle.opened_per_sec_tenths,
             OPENED_RATE_SMOOTHING_SAMPLES - 1,
@@ -267,6 +297,7 @@ impl TrafficHistory {
         self.scroll.record_at(timestamp);
         let sample = TrafficSample {
             timestamp,
+            traffic_available: traffic.is_some(),
             rx_bytes_per_sec,
             tx_bytes_per_sec,
             smoothed_rx_bytes_per_sec,
@@ -286,19 +317,23 @@ impl TrafficHistory {
             self.samples.pop_front();
         }
         self.samples.push_back(sample);
-        let picks: [fn(&TrafficSample) -> u64; 4] = [
-            |sample| sample.rx_bytes_per_sec,
-            |sample| sample.tx_bytes_per_sec,
+        let picks: [fn(&TrafficSample) -> u64; 2] = [
             |sample| sample.smoothed_opened_connections_per_sec_tenths,
             |sample| sample.smoothed_closed_connections_per_sec_tenths,
         ];
-        let mut peaks = [0u64; 4];
+        let mut peaks = [0u64; 2];
         for sample in &self.samples {
             for (peak, pick) in peaks.iter_mut().zip(picks) {
                 *peak = (*peak).max(pick(sample));
             }
         }
-        let [rx_peak, tx_peak, opened_peak, closed_peak] = peaks;
+        let (rx_peak, tx_peak) = self.traffic_samples().fold((0, 0), |(rx, tx), sample| {
+            (
+                rx.max(sample.rx_bytes_per_sec),
+                tx.max(sample.tx_bytes_per_sec),
+            )
+        });
+        let [opened_peak, closed_peak] = peaks;
         self.rx_scale.update_peak(rx_peak);
         self.tx_scale.update_peak(tx_peak);
         self.opened_scale.update_peak(opened_peak);
@@ -345,10 +380,26 @@ impl TrafficHistory {
         self.samples.iter().skip(skip).map(pick).collect()
     }
 
+    // Restart byte-rate plots after a gap instead of drawing missing counters
+    // as idle traffic or connecting observations across an unobserved interval.
+    fn traffic_samples(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &TrafficSample> + ExactSizeIterator {
+        let start = self
+            .samples
+            .iter()
+            .rposition(|s| !s.traffic_available)
+            .map_or(0, |index| index + 1);
+        self.samples.iter().skip(start)
+    }
+
+    pub fn has_enough_traffic_data(&self) -> bool {
+        self.traffic_samples().len() >= 2
+    }
+
     /// Unsmoothed RX/TX samples, oldest first, for exact rate and peak readouts.
     pub fn get_raw_traffic_data(&self) -> (Vec<u64>, Vec<u64>) {
-        self.samples
-            .iter()
+        self.traffic_samples()
             .map(|s| (s.rx_bytes_per_sec, s.tx_bytes_per_sec))
             .unzip()
     }
@@ -356,8 +407,7 @@ impl TrafficHistory {
     /// Time-weighted average over up to two seconds of observed sample intervals.
     pub fn recent_average(&self) -> Option<(f64, f64)> {
         recent_rate_average(
-            self.samples
-                .iter()
+            self.traffic_samples()
                 .map(|s| (s.timestamp, s.rx_bytes_per_sec, s.tx_bytes_per_sec)),
             Duration::from_secs(2),
         )
@@ -366,13 +416,23 @@ impl TrafficHistory {
     /// Get RX bytes/sec values for sparkline (newest last). Each value is
     /// smoothed when sampled so trimming the ring cannot rewrite its left edge.
     pub fn get_rx_sparkline_data(&self, count: usize) -> Vec<u64> {
-        self.sparkline(count, |s| s.smoothed_rx_bytes_per_sec)
+        let samples = self.traffic_samples();
+        let skip = samples.len().saturating_sub(count);
+        samples
+            .skip(skip)
+            .map(|s| s.smoothed_rx_bytes_per_sec)
+            .collect()
     }
 
     /// Get TX bytes/sec values for sparkline (newest last). Each value is
     /// smoothed when sampled so trimming the ring cannot rewrite its left edge.
     pub fn get_tx_sparkline_data(&self, count: usize) -> Vec<u64> {
-        self.sparkline(count, |s| s.smoothed_tx_bytes_per_sec)
+        let samples = self.traffic_samples();
+        let skip = samples.len().saturating_sub(count);
+        samples
+            .skip(skip)
+            .map(|s| s.smoothed_tx_bytes_per_sec)
+            .collect()
     }
 
     pub fn get_opened_sparkline_data(&self, count: usize) -> Vec<u64> {
@@ -473,6 +533,43 @@ impl Default for TrafficHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_counters_preserve_capture_metrics_without_inventing_traffic() {
+        let mut history = TrafficHistory::new(120);
+        let lifecycle = ConnectionLifecycleSample {
+            active: 5,
+            retained: 2,
+            opened_per_sec_tenths: 30,
+            closed_per_sec_tenths: 10,
+        };
+        for traffic in [Some((9000, 8000)), None, None] {
+            history.add_sample(traffic, lifecycle, 100, 2, Some(12.0));
+        }
+        assert!(history.has_enough_data());
+        assert!(!history.has_enough_traffic_data());
+        assert_eq!(history.get_latest_packets_per_sec(), 100);
+        assert_eq!(history.latest_connection_counts(), (5, 2));
+        assert_eq!(history.get_opened_sparkline_data(3), [30, 30, 30]);
+        assert_eq!(history.get_closed_sparkline_data(3), [10, 10, 10]);
+        let (loss, rtt) = history.get_health_chart_data();
+        assert_eq!(loss.last().unwrap().1, 2.0);
+        assert_eq!(rtt.last().unwrap().1, 12.0);
+        assert_eq!(history.get_raw_traffic_data(), (vec![], vec![]));
+        assert!(history.get_rx_sparkline_data(120).is_empty());
+        assert!(history.get_tx_sparkline_data(120).is_empty());
+        assert_eq!(history.recent_average(), None);
+
+        history.add_sample(Some((100, 200)), lifecycle, 100, 2, Some(12.0));
+        assert!(!history.has_enough_traffic_data());
+        assert_eq!(history.get_raw_traffic_data(), (vec![100], vec![200]));
+        assert_eq!(history.get_rx_sparkline_data(120), [100]);
+        assert_eq!(history.get_tx_sparkline_data(120), [200]);
+        assert_eq!(history.recent_average(), None);
+        history.add_sample(Some((100, 200)), lifecycle, 100, 2, Some(12.0));
+        assert!(history.has_enough_traffic_data());
+        assert_eq!(history.recent_average(), Some((100.0, 200.0)));
+    }
 
     fn add_sample(
         history: &mut TrafficHistory,

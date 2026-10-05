@@ -1202,6 +1202,36 @@ mod lifecycle_tests {
         assert_eq!(app.get_traffic_interface().as_deref(), Some("missing"));
     }
 
+    #[test]
+    fn sampler_records_capture_metrics_without_interface_counters() {
+        use std::time::Instant;
+        let mut app = app();
+        app.config.interface = Some("missing".into());
+        app.start_traffic_history_thread().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.get_traffic_history().has_enough_data() {
+            assert!(Instant::now() < deadline, "capture history stayed empty");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.stats
+            .packets_processed
+            .fetch_add(100, Ordering::Relaxed);
+        app.stats
+            .total_connections_created
+            .fetch_add(5, Ordering::Relaxed);
+        loop {
+            let history = app.get_traffic_history();
+            if history.get_latest_packets_per_sec() > 0 {
+                assert!(history.get_opened_sparkline_data(1)[0] > 0);
+                assert!(!history.has_enough_traffic_data());
+                assert!(history.get_raw_traffic_data().0.is_empty());
+                break;
+            }
+            assert!(Instant::now() < deadline, "packet rates stayed at zero");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn assert_aggregate_capture_samples_real_counters(capture: &str) {
         let mut app = app();
         app.config.interface = Some(capture.into());

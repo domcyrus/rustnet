@@ -432,12 +432,9 @@ impl App {
                 // Last 1 second window.
                 let avg_rtt_ms = tracker.take_average_rtt(1);
 
-                if let Some((total_rx, total_tx)) = traffic
-                    && let Ok(mut history) = traffic_history.write()
-                {
-                    history.add_sample_with_lifecycle(
-                        total_rx,
-                        total_tx,
+                if let Ok(mut history) = traffic_history.write() {
+                    history.add_sample(
+                        traffic,
                         ConnectionLifecycleSample {
                             active: connection_count,
                             retained: tracker.historic_len(),
