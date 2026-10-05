@@ -567,6 +567,11 @@ mod tests {
         assert_eq!(history.get_tx_sparkline_data(120), [200]);
         assert_eq!(history.recent_average(), None);
         history.add_sample(Some((100, 200)), lifecycle, 100, 2, Some(12.0));
+        // Use fixed intervals so the average does not depend on execution timing.
+        let start = Instant::now();
+        for (index, sample) in history.samples.iter_mut().enumerate() {
+            sample.timestamp = start + Duration::from_millis(index as u64 * 500);
+        }
         assert!(history.has_enough_traffic_data());
         assert_eq!(history.recent_average(), Some((100.0, 200.0)));
     }
