@@ -1202,13 +1202,13 @@ mod lifecycle_tests {
         assert_eq!(app.get_traffic_interface().as_deref(), Some("missing"));
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn pktap_samples_real_interface_counters_without_a_pktap_counter() {
+    fn assert_aggregate_capture_samples_real_counters(capture: &str) {
         let mut app = app();
-        app.set_current_interface_for_test(Some("pktap".into()));
+        app.config.interface = Some(capture.into());
         assert_eq!(app.get_traffic_interface(), None);
-        for name in ["en0", "lo0"] {
+        app.set_current_interface_for_test(Some(capture.into()));
+        assert_eq!(app.get_traffic_interface(), None);
+        for name in ["eth0", "lo"] {
             app.set_interface_rates_for_test(
                 name,
                 InterfaceRates {
@@ -1222,13 +1222,39 @@ mod lifecycle_tests {
         while !app.get_traffic_history().has_enough_data() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "PKTAP history stayed empty"
+                "{capture} history stayed empty"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
         let (rx, tx) = app.get_traffic_history().get_raw_traffic_data();
         assert!(rx.iter().all(|&rate| rate == 2400));
         assert!(tx.iter().all(|&rate| rate == 4800));
+
+        for name in ["eth0", "lo"] {
+            app.set_interface_rates_for_test(name, InterfaceRates::default());
+        }
+        loop {
+            let (rx, tx) = app.get_traffic_history().get_raw_traffic_data();
+            if rx.last() == Some(&0) && tx.last() == Some(&0) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{capture} failed to return to idle"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn any_samples_real_interface_counters_without_an_any_counter() {
+        assert_aggregate_capture_samples_real_counters("any");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pktap_samples_real_interface_counters_without_a_pktap_counter() {
+        assert_aggregate_capture_samples_real_counters("pktap");
     }
 
     #[test]
