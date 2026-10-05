@@ -6,7 +6,7 @@ expression: output
 ─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
 Applications   Capture                                                          
 ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────
-TX       -        RX       -                                                    
+TX       0 B/s     RX       0 B/s                                               
 Coverage 60s: TX n/a  RX n/a                                                    
 ▎ Applications · TX · Retained TX ↓ ─────────────────────────────────────── 0/0 
 Waiting for application traffic...                                              

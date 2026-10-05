@@ -4,7 +4,7 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ──────────────────────────────────────────────────━━━━━━━───────────────────────────────────────────────────────────────────────────────────
-▎ Traffic Over Time · 60s · smoothed · independent B/s · linear · auto ─────────────────────────  ▎ Connection Lifecycle ───────────────────
+▎ Traffic Over Time · eth0 · 60s · B/s ─────────────────────────────────────────────────────────  ▎ Connection Lifecycle ───────────────────
 Waiting for traffic data...                                                                       Waiting for connection data...            
                                                                                                                                             
                                                                                                                                             
@@ -29,7 +29,7 @@ Waiting for health data...                         Retransmits         0        
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-▎ Application Distribution ──────────────────────────────────────────  ▎ Top Processes ─────────────────────────────────────────────────────
+▎ Application Distribution ──────────────────────────────────────────  ▎ Top Processes · smoothed 10s avg ──────────────────────────────────
 Other  ░░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓█████████████ 100.0%   No active processes                                                  
                                                                                                                                             
                                                                                                                                             
@@ -41,4 +41,4 @@ Other  ░░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒�
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- s scale  z log  l lock  esc back                                                                                            h help  q quit
+ esc back                                                                                                                    h help  q quit

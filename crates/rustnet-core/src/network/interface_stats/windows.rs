@@ -8,6 +8,30 @@ use std::time::SystemTime;
 use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 
+/// Match Npcap's GUID device name to the alias used by interface counters.
+/// Resolve once when starting the sampler, not on every graph refresh.
+pub fn capture_interface_alias(name: &str) -> Option<String> {
+    use windows::Win32::NetworkManagement::IpHelper::{
+        ConvertInterfaceGuidToLuid, ConvertInterfaceLuidToAlias,
+    };
+    use windows::Win32::NetworkManagement::Ndis::NET_LUID_LH;
+    use windows::core::GUID;
+
+    let guid = name.strip_prefix(r"\Device\NPF_{")?.strip_suffix('}')?;
+    let guid = GUID::from_u128(u128::from_str_radix(&guid.replace('-', ""), 16).ok()?);
+    let mut luid = NET_LUID_LH::default();
+    let mut alias = [0u16; 257];
+    // Both calls write only to the stack buffers passed here.
+    unsafe {
+        ConvertInterfaceGuidToLuid(&guid, &mut luid).ok().ok()?;
+        ConvertInterfaceLuidToAlias(&luid, &mut alias).ok().ok()?;
+    }
+    let alias = String::from_utf16_lossy(&alias)
+        .trim_end_matches('\0')
+        .to_string();
+    (!alias.is_empty()).then_some(alias)
+}
+
 /// Windows-specific implementation using IP Helper API
 pub struct WindowsStatsProvider;
 

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -107,14 +107,6 @@ impl Component for GraphTab {
         Ok(())
     }
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        if let KeyCode::Char(control) = key.code
-            && key.modifiers == KeyModifiers::NONE
-            && (!ctx.ui_state.graph_compact.get()
-                || ctx.ui_state.graph_section == GraphSection::Traffic)
-            && ctx.ui_state.handle_traffic_chart_key(control)
-        {
-            return Some(Vec::new());
-        }
         if ctx.ui_state.graph_compact.get() && ctx.ui_state.graph_section != GraphSection::Health {
             return None;
         }
@@ -151,6 +143,8 @@ fn draw_graph_tab(
     let compact = compact_layout(area);
     ui_state.graph_compact.set(compact);
     let traffic_history = app.get_traffic_history();
+    let traffic_interface = app.get_traffic_interface();
+    let traffic_scope = traffic_interface.as_deref().unwrap_or("all interfaces");
     let analytics = GraphAnalytics::from_connections(connections);
 
     if compact {
@@ -159,8 +153,8 @@ fn draw_graph_tab(
             GraphSection::Traffic => ui_state.graph_animation_visible.set(draw_traffic_panels(
                 f,
                 &traffic_history,
+                traffic_scope,
                 inner,
-                ui_state,
             )),
             GraphSection::Health => {
                 draw_health_panels(f, app, &traffic_history, &analytics, ui_state, inner)
@@ -182,19 +176,14 @@ fn draw_graph_tab(
     ui_state.graph_animation_visible.set(draw_traffic_panels(
         f,
         &traffic_history,
+        traffic_scope,
         sections[0],
-        ui_state,
     ));
     draw_health_panels(f, app, &traffic_history, &analytics, ui_state, sections[1]);
     draw_distribution_panels(f, &analytics, sections[2], &ui_state.bar_animations);
 }
 
-fn draw_traffic_panels(
-    f: &mut Frame,
-    history: &TrafficHistory,
-    area: Rect,
-    ui_state: &UiState,
-) -> bool {
+fn draw_traffic_panels(f: &mut Frame, history: &TrafficHistory, scope: &str, area: Rect) -> bool {
     let narrow = area.width < 100;
     let panels = Layout::default()
         .direction(if narrow {
@@ -209,7 +198,7 @@ fn draw_traffic_panels(
             [Constraint::Percentage(70), Constraint::Percentage(30)]
         })
         .split(area);
-    draw_traffic_chart(f, history, panels[0], ui_state);
+    draw_traffic_chart(f, history, scope, panels[0]);
     draw_connection_lifecycle(f, history, panels[1]);
     history.has_enough_data()
         && panels
@@ -270,14 +259,11 @@ fn draw_distribution_panels(
 /// Draw the RX/TX traffic waves: two stacked braille area graphs with
 /// a vertical gradient (bright crest, saturated base), each header
 /// showing the current rate, a trend arrow, and the 60s peak.
-fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect, ui_state: &UiState) {
+fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, scope: &str, area: Rect) {
     let inner = section_header(
         f,
         area,
-        section_title(format!(
-            " Traffic Over Time · 60s · smoothed · {}",
-            ui_state.traffic_scale_label()
-        )),
+        section_title(format!(" Traffic Over Time · {scope} · 60s · B/s")),
     );
 
     if !history.has_enough_data() {
@@ -299,11 +285,9 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect, ui_st
     let frac = history.scroll_fraction();
     let window = history.capacity();
     let (rx, tx) = history.get_raw_traffic_data();
-    let plot_rx = history.get_rx_sparkline_data(usize::MAX);
-    let plot_tx = history.get_tx_sparkline_data(usize::MAX);
-    let (rx_ceiling, tx_ceiling) = ui_state.traffic_ceilings(
-        &plot_rx,
-        &plot_tx,
+    let (rx_ceiling, tx_ceiling) = braille_graph::rate_ceilings(
+        &rx,
+        &tx,
         (history.rx_graph_ceiling(), history.tx_graph_ceiling()),
     );
     let average = history.recent_average();
@@ -313,8 +297,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect, ui_st
         &rx,
         "↓ RX",
         braille_graph::WavePanelOptions::new(frac, window)
-            .with_plot_samples(&plot_rx)
-            .with_log_scale(ui_state.traffic_log_scale)
+            .with_time_axis(60)
             .with_average(average.map(|rates| rates.0))
             .with_max_val(rx_ceiling)
             .with_header_color(theme::rx()),
@@ -326,8 +309,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect, ui_st
         &tx,
         "↑ TX",
         braille_graph::WavePanelOptions::new(frac, window)
-            .with_plot_samples(&plot_tx)
-            .with_log_scale(ui_state.traffic_log_scale)
+            .with_time_axis(60)
             .with_average(average.map(|rates| rates.1))
             .with_max_val(tx_ceiling)
             .with_header_color(theme::tx()),
@@ -538,7 +520,7 @@ fn draw_app_distribution(
 }
 
 fn draw_top_processes(f: &mut Frame, process_traffic: &HashMap<&str, f64>, area: Rect) {
-    let inner = section_header(f, area, section_title(" Top Processes"));
+    let inner = section_header(f, area, section_title(" Top Processes · smoothed 10s avg"));
 
     let top_processes =
         select_top_processes(process_traffic, usize::from(inner.height.saturating_sub(1)));
@@ -567,7 +549,7 @@ fn draw_top_processes(f: &mut Frame, process_traffic: &HashMap<&str, f64>, area:
     let table = Table::new(rows, [Constraint::Min(0), Constraint::Length(12)]).header(
         Row::new(vec![
             Cell::from("Process"),
-            Cell::from(Line::from("Rate").right_aligned()),
+            Cell::from(Line::from("Avg RX+TX").right_aligned()),
         ])
         .style(theme::fg(theme::heading())),
     );
@@ -828,6 +810,19 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[test]
+    fn traffic_heading_matches_capture_scope() {
+        use crate::ui::test_support::{render, test_app};
+        let app = test_app();
+        for (interface, expected) in [(Some("lo0"), "lo0"), (Some("any"), "all interfaces")] {
+            app.set_current_interface_for_test(interface.map(str::to_owned));
+            let output = render(140, 42, |f| {
+                draw_graph_tab(f, &app, &[], &UiState::default(), f.area());
+            });
+            assert!(output.contains(&format!("Traffic Over Time · {expected} · 60s")));
+        }
+    }
+
+    #[test]
     fn process_panel_uses_available_cells_and_rows() {
         let name = "日本語-e\u{301}-network-service-with-a-long-name";
         let mut traffic = HashMap::from([(name, 999_999.0)]);
@@ -860,7 +855,7 @@ mod tests {
                 x += crate::ui::format::cell_width(symbol).max(1) as u16;
             }
             assert_eq!(rendered.trim_end(), expected);
-            assert_eq!(buffer[(width - 1, 1)].symbol(), "e");
+            assert_eq!(buffer[(width - 1, 1)].symbol(), "X");
             assert_eq!(buffer[(width - 1, 2)].symbol(), "s");
         }
     }

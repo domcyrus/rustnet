@@ -7,9 +7,9 @@ expression: output
 Connection   Network   Process   Application   Health   Traffic                 
 ────────────────────────────────────────────────────────━━━━━━━─────────────────
 ▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────
-▎ Traffic Statistics · smoothed · independent B/s · linear · auto ──────────────
-↓ RX Now 3.05 MB/s   →peak   3.05 MB/s  ↑ TX Now 927.73 KB/s →peak 927.73 KB/s  
-Total 234.38 KB  ·  234 packets         Total 12.21 KB  ·  12 packets           
+▎ Traffic Statistics · smoothed avg · 60s · B/s ────────────────────────────────
+↓ RX Now 3.05 MiB/s  peak  3.05 MiB/s   ↑ TX Now 927.73 KiB/speak 927.73 KiB/s  
+Total 234.38 KiB  ·  234 packets        Total 12.21 KiB  ·  12 packets          
 Collecting traffic history...           Collecting traffic history...           
                                                                                 
                                                                                 
@@ -25,4 +25,4 @@ Collecting traffic history...           Collecting traffic history...
                                                                                 
                                                                                 
                                                                                 
- v/V section/page  j/k connection  s scale  z log  l lock        h help  q quit
+ v/V section/page  j/k connection  c copy remote addr            h help  q quit

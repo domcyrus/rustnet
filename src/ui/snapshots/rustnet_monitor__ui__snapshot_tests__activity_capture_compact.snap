@@ -10,19 +10,19 @@ Applications   Capture
 Coverage · last 60s                                                             
 Basis: eth0                                                                     
 TX 73.1%    ░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓███████████▎·················  
-Captured: 5.85 MB                                                               
-Interface: 8.00 MB                                                              
+Captured: 5.85 MiB                                                              
+Interface: 8.00 MiB                                                             
 RX 91.8%    ░░░░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██████████████▋·····  
-Captured: 3.67 MB                                                               
-Interface: 4.00 MB                                                              
+Captured: 3.67 MiB                                                              
+Interface: 4.00 MiB                                                             
 ──────────────────────────────────────────────────────────────────────────────  
 Attribution · retained traffic                                                  
 TX 100.0% mapped                                                                
-Mapped: 5.85 MB                                                                 
+Mapped: 5.85 MiB                                                                
 Unknown: 0 B                                                                    
-Retained: 5.85 MB                                                               
+Retained: 5.85 MiB                                                              
 RX 100.0% mapped                                                                
-Mapped: 3.67 MB                                                                 
+Mapped: 3.67 MiB                                                                
 Unknown: 0 B                                                                    
-Retained: 3.67 MB                                                               
+Retained: 3.67 MiB                                                              
  v/V section  esc back                                           h help  q quit

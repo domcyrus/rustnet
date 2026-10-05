@@ -407,7 +407,7 @@ fn draw_interface_share(
     rates.sort_by(|a, b| bytes(&b.0).cmp(&bytes(&a.0)).then_with(|| a.0.cmp(&b.0)));
     let total: f64 = rates.iter().map(|(name, _)| bytes(name) as f64).sum();
     let name_width = 12;
-    let bar_width = inner.width.saturating_sub(name_width + 33);
+    let bar_width = inner.width.saturating_sub(name_width + 35);
     let rows = rates
         .into_iter()
         .take(usize::from(inner.height))
@@ -437,8 +437,8 @@ fn draw_interface_share(
             [
                 Constraint::Length(name_width),
                 Constraint::Length(bar_width),
-                Constraint::Length(15),
-                Constraint::Length(15),
+                Constraint::Length(16),
+                Constraint::Length(16),
             ],
         )
         .column_spacing(1),
@@ -458,12 +458,12 @@ fn coverage_text(fraction: Option<f64>, exact: bool) -> String {
 fn summary_rate(label: &str, rate: f64) -> String {
     let formatted = format_rate(rate);
     let (value, unit) = formatted.split_once(' ').unwrap_or((&formatted, ""));
-    // Very large GB/s values use scientific notation instead of widening the slot.
+    // Very large GiB/s values use scientific notation instead of widening the slot.
     if value.len() > 7 {
         let value = format!("{:.1e}", rate / 1024.0_f64.powi(3));
-        format!("{label} {value:>7} {unit:<4}")
+        format!("{label} {value:>7} {unit:<5}")
     } else {
-        format!("{label} {value:>7} {unit:<4}")
+        format!("{label} {value:>7} {unit:<5}")
     }
 }
 
@@ -1141,9 +1141,9 @@ mod tests {
         use crate::ui::test_support::render;
         assert_eq!(
             summary_rate("TX", 100_000.0 * 1024.0_f64.powi(3)),
-            "TX   1.0e5 GB/s"
+            "TX   1.0e5 GiB/s"
         );
-        assert_eq!(summary_rate("RX", f64::MAX).len(), 15);
+        assert_eq!(summary_rate("RX", f64::MAX).len(), 16);
         let basis = InterfaceBasis {
             label: "eth0".into(),
             tx_window_bytes: 1,
@@ -1178,16 +1178,16 @@ mod tests {
                     });
                     let row = output.lines().next().unwrap();
                     assert_eq!(&row[0..3], "TX ");
-                    assert_eq!(&row[18..21], "RX ");
+                    assert_eq!(&row[19..22], "RX ");
                     assert_eq!(
-                        &row[34..],
-                        format!("· all traffic{}", " ".repeat(usize::from(width) - 47))
+                        &row[36..],
+                        format!("· all traffic{}", " ".repeat(usize::from(width) - 49))
                     );
-                    for (rate, value_start, unit_start) in [(tx, 3, 11), (rx, 21, 29)] {
+                    for (rate, value_start, unit_start) in [(tx, 3, 11), (rx, 22, 30)] {
                         let formatted = format_rate(rate);
                         let (value, unit) = formatted.split_once(' ').unwrap_or((&formatted, ""));
                         assert_eq!(row[value_start..value_start + 7].trim(), value);
-                        assert_eq!(row[unit_start..unit_start + 4].trim(), unit);
+                        assert_eq!(row[unit_start..unit_start + 5].trim(), unit);
                     }
                 }
             }
@@ -1237,17 +1237,17 @@ mod tests {
             });
             assert_eq!(after[(2, 1)].symbol(), "接");
             assert_eq!(after[(4, 1)].symbol(), "口");
-            for x in 0..width - 31 {
+            for x in 0..width - 33 {
                 assert_eq!(before[(x, 1)], after[(x, 1)]);
             }
             for buffer in [&before, &after] {
-                assert_eq!(buffer[(width - 31, 1)].symbol(), "T");
-                assert_eq!(buffer[(width - 15, 1)].symbol(), "R");
+                assert_eq!(buffer[(width - 33, 1)].symbol(), "T");
+                assert_eq!(buffer[(width - 16, 1)].symbol(), "R");
             }
-            let rx: String = (width - 15..width)
+            let rx: String = (width - 16..width)
                 .map(|x| after[(x, 1)].symbol())
                 .collect();
-            assert_eq!(rx, "RX    1.00 KB/s");
+            assert_eq!(rx, "RX    1.00 KiB/s");
             let ingress = render_buffer(width, 4, |f| {
                 draw_interface_share(
                     f,

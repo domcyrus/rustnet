@@ -4,26 +4,26 @@ expression: "render_activity(&app, ActivityDirection::Egress)"
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                              ● eth0
 ─────────────────────────────────────━━━━━━━━━━───────────────────────────────────────────────────────────────────────────────────────────────────────
-TX    2.88 MB/s   RX    1.70 MB/s                                                                                                                     
+TX    2.88 MiB/s   RX    1.70 MiB/s                                                                                                                   
 ▎ Applications · TX · Retained TX ↓ ───────────────────────────────────────────────────────────────────── 1-4/4   ▎ Capture ──────────────────────────
   Application                              TX/s   60s %   Retained   Conns Share · 60s  Top remote peer           Coverage · last 60s                 
-▌ firefox                                  2.4M   81.7%    4.78 MB     1/1 ░░░▒▒▓▓▓█▊·· 140.82.121.4:443          Basis: eth0                         
-  sshd                                     488K   17.7%    1.04 MB     1/1 ██▏········· 10.0.0.5:51022            TX 73.1%    ░░░░░▒▒▒▒▓▓▓▓███▏·····  
-  systemd-resolved                          16K    0.5%   32.42 KB     1/1 ▏··········· 1.1.1.1:53                Captured: 5.85 MB                   
-  curl                                        -    0.0%        0 B     1/1 ············ 151.101.1.195:443         Interface: 8.00 MB                  
+▌ firefox                                 2.4Mi   81.7%   4.78 MiB     1/1 ░░░▒▒▓▓▓█▊·· 140.82.121.4:443          Basis: eth0                         
+  sshd                                    488Ki   17.7%   1.04 MiB     1/1 ██▏········· 10.0.0.5:51022            TX 73.1%    ░░░░░▒▒▒▒▓▓▓▓███▏·····  
+  systemd-resolved                         16Ki    0.5%  32.42 KiB     1/1 ▏··········· 1.1.1.1:53                Captured: 5.85 MiB                  
+  curl                                        -    0.0%        0 B     1/1 ············ 151.101.1.195:443         Interface: 8.00 MiB                 
                                                                                                                   RX 91.8%    ░░░░░░▒▒▒▒▒▓▓▓▓▓████▎·  
-                                                                                                                  Captured: 3.67 MB                   
-                                                                                                                  Interface: 4.00 MB                  
+                                                                                                                  Captured: 3.67 MiB                  
+                                                                                                                  Interface: 4.00 MiB                 
                                                                                                                   ──────────────────────────────────  
                                                                                                                   Attribution · retained traffic      
                                                                                                                   TX 100.0% mapped                    
-                                                                                                                  Mapped: 5.85 MB                     
+                                                                                                                  Mapped: 5.85 MiB                    
                                                                                                                   Unknown: 0 B                        
-                                                                                                                  Retained: 5.85 MB                   
+                                                                                                                  Retained: 5.85 MiB                  
                                                                                                                   RX 100.0% mapped                    
-                                                                                                                  Mapped: 3.67 MB                     
+                                                                                                                  Mapped: 3.67 MiB                    
                                                                                                                   Unknown: 0 B                        
-                                                                                                                  Retained: 3.67 MB                   
+                                                                                                                  Retained: 3.67 MiB                  
                                                                                                                                                       
                                                                                                                                                       
                                                                                                                                                       
@@ -33,7 +33,7 @@ TX    2.88 MB/s   RX    1.70 MB/s
                                                                                                                                                       
                                                                                                                                                       
 ▎ Application share · TX · 60s ───────────────────────────────────────────  ▎ Interfaces · TX share 60s · live rates ─────────────────────────────────
-  firefox                  ░░░░░░░░▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓███████▉·······   81.7%    eth0         ░░░░░░░▒▒▒▒▒▒▒▓▓▓▓▓▓▓██████ TX    4.00 MB/s RX    2.00 MB/s
+  firefox                  ░░░░░░░░▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓███████▉·······   81.7%    eth0         ░░░░░░░▒▒▒▒▒▒▓▓▓▓▓▓██████ TX    4.00 MiB/s RX    2.00 MiB/s
   sshd                     ░░▒▒▓▓▉································   17.7%                                                                            
   systemd-resolved         ▎······································    0.5%                                                                            
                                                                                                                                                       

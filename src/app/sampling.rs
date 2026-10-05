@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::{
-    interface_stats::InterfaceStats,
+    interface_stats::{InterfaceRates, InterfaceStats},
     services::ServiceLookup,
     tracker::ConnectionTracker,
     types::{Connection, ConnectionLifecycleSample},
@@ -20,6 +20,25 @@ use super::logging::log_connection_closed;
 use super::runtime::RuntimeSupervisor;
 use super::state::App;
 use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACITY};
+
+/// Missing counters are unavailable, not observed idle traffic. Never fall back
+/// to other interfaces when a specific capture interface has no counters.
+fn traffic_rates(
+    rates: &DashMap<String, InterfaceRates>,
+    interface: Option<&str>,
+) -> Option<(u64, u64)> {
+    if let Some(name) = interface {
+        return rates
+            .get(name)
+            .map(|rate| (rate.rx_bytes_per_sec, rate.tx_bytes_per_sec));
+    }
+    rates
+        .iter()
+        .map(|rate| (rate.rx_bytes_per_sec, rate.tx_bytes_per_sec))
+        .reduce(|(rx, tx), (next_rx, next_tx)| {
+            (rx.saturating_add(next_rx), tx.saturating_add(next_tx))
+        })
+}
 
 /// Spawn a named worker thread that runs `body` every `interval` until
 /// shutdown is requested.
@@ -321,6 +340,11 @@ impl App {
 
     pub(super) fn start_traffic_history_thread(&mut self) -> Result<()> {
         let traffic_history = Arc::clone(&self.traffic_history);
+        let traffic_interface = self.get_traffic_interface();
+        #[cfg(target_os = "windows")]
+        let traffic_interface = traffic_interface.map(|name| {
+            crate::network::interface_stats::capture_interface_alias(&name).unwrap_or(name)
+        });
         let conn_rate_history = Arc::clone(&self.conn_rate_history);
         let interface_rates = Arc::clone(&self.interface_rates);
         let connections_snapshot = Arc::clone(&self.connections_snapshot);
@@ -342,15 +366,7 @@ impl App {
             "Traffic history thread stopping",
             LIVE_RATE_INTERVAL,
             move || {
-                let (total_rx, total_tx) =
-                    interface_rates
-                        .iter()
-                        .fold((0u64, 0u64), |(rx, tx), entry| {
-                            (
-                                rx + entry.value().rx_bytes_per_sec,
-                                tx + entry.value().tx_bytes_per_sec,
-                            )
-                        });
+                let traffic = traffic_rates(&interface_rates, traffic_interface.as_deref());
 
                 // Get active connection count from snapshot (excludes
                 // historic) and record per-connection rate samples on
@@ -410,7 +426,9 @@ impl App {
                 // Last 1 second window.
                 let avg_rtt_ms = tracker.take_average_rtt(1);
 
-                if let Ok(mut history) = traffic_history.write() {
+                if let Some((total_rx, total_tx)) = traffic
+                    && let Ok(mut history) = traffic_history.write()
+                {
                     history.add_sample_with_lifecycle(
                         total_rx,
                         total_tx,
@@ -503,6 +521,33 @@ fn per_second_rate(delta: u64, elapsed_seconds: f64, unit_scale: f64) -> u64 {
 #[cfg(test)]
 mod live_rate_sampling_tests {
     use super::*;
+
+    #[test]
+    fn selected_interface_excludes_unrelated_traffic_and_preserves_idle() {
+        let rates = DashMap::new();
+        rates.insert(
+            "lo0".into(),
+            InterfaceRates {
+                rx_bytes_per_sec: 1200,
+                tx_bytes_per_sec: 2400,
+            },
+        );
+        rates.insert(
+            "en0".into(),
+            InterfaceRates {
+                rx_bytes_per_sec: 9_000_000,
+                tx_bytes_per_sec: 8_000_000,
+            },
+        );
+        assert_eq!(traffic_rates(&rates, Some("lo0")), Some((1200, 2400)));
+        assert_eq!(traffic_rates(&rates, None), Some((9_001_200, 8_002_400)));
+        rates.insert("lo0".into(), InterfaceRates::default());
+        assert_eq!(traffic_rates(&rates, Some("lo0")), Some((0, 0)));
+        rates.remove("lo0");
+        assert_eq!(traffic_rates(&rates, Some("lo0")), None);
+        rates.clear();
+        assert_eq!(traffic_rates(&rates, None), None);
+    }
 
     /// The traffic-history thread's first pass measures only its own setup
     /// time; a startup burst divided by that sliver must not become a

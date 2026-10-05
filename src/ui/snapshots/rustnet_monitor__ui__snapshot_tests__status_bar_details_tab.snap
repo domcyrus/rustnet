@@ -2,4 +2,4 @@
 source: src/ui/mod.rs
 expression: status_bar_output(&ui_state)
 ---
- j/k connection  s scale  z log  l lock  c copy remote addr  esc back                                    h help  q quit
+ j/k connection  c copy remote addr  esc back                                                            h help  q quit

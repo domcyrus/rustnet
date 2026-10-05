@@ -576,8 +576,6 @@ impl App {
             .map(|history| ConnRateHistorySnapshot {
                 rx: history.rx.iter().copied().collect(),
                 tx: history.tx.iter().copied().collect(),
-                plot_rx: history.smoothed_rx.iter().copied().collect(),
-                plot_tx: history.smoothed_tx.iter().copied().collect(),
                 recent_average: crate::network::types::recent_rate_average(
                     history
                         .timestamps
@@ -590,6 +588,13 @@ impl App {
                 rx_graph_ceiling: history.rx_scale.ceiling(),
                 tx_graph_ceiling: history.tx_scale.ceiling(),
             })
+    }
+
+    /// Interface counters matching capture, or all counters for aggregate capture.
+    pub(crate) fn get_traffic_interface(&self) -> Option<String> {
+        self.get_current_interface()
+            .or_else(|| self.config.interface.clone())
+            .filter(|name| name != "any")
     }
 
     pub(crate) fn get_traffic_history(&self) -> TrafficHistory {

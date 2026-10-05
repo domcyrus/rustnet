@@ -6,11 +6,11 @@ expression: output
 ──────────────────────────────────────────────────━━━━━━━───────────────────────
 Traffic   Health   Distribution                                                 
 ───────────────────━━━━━━━━━━━━─────────────────────────────────────────────────
-▎ Application Distribution ────────────  ▎ Top Processes ───────────────────────
-DNS    ░░▒▓▓█··················  25.0%   Process                            Rate
-Other  ░░░░░▒▒▒▒▓▓▓▓▓████······  75.0%   firefox                       3.96 MB/s
-                                         sshd                          2.12 MB/s
-                                         systemd-resolved            128.91 KB/s
+▎ Application Distribution ────────────  ▎ Top Processes · smoothed 10s avg ────
+DNS    ░░▒▓▓█··················  25.0%   Process                       Avg RX+TX
+Other  ░░░░░▒▒▒▒▓▓▓▓▓████······  75.0%   firefox                      3.96 MiB/s
+                                         sshd                         2.12 MiB/s
+                                         systemd-resolved           128.91 KiB/s
                                                                                 
                                                                                 
                                                                                 

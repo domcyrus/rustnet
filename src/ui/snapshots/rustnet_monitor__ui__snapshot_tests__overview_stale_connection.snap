@@ -8,8 +8,8 @@ expression: output
   Process               Remote                Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑  
                                                                                                                                             
 ▌▎firefox (2001)        140.82.121.4:443      192.168.1.10:51234 https      TCP·HTTPS                ESTABLISHED    23ms R3/O1     2m left  
-  systemd-resolved (82… 1.1.1.1:53            192.168.1.10:53    dns        UDP·DNS (example.com)    DNS_QUERY         - R2/T1     47K/82K  
-  sshd (1500)           10.0.0.5:51022        192.168.1.10:22    ssh        TCP                      ESTABLISHED   184ms ok      410K/1.7M  
+  systemd-resolved (82… 1.1.1.1:53            192.168.1.10:53    dns        UDP·DNS (example.com)    DNS_QUERY         - R2/T1   47Ki/82Ki  
+  sshd (1500)           10.0.0.5:51022        192.168.1.10:22    ssh        TCP                      ESTABLISHED   184ms ok    410Ki/1.7Mi  
   curl (9876)           151.101.1.195:443     192.168.1.10:60123 https      TCP                      TIME_WAIT         - ok            -/-  
                                                                                                                                             
                                                                                                                                             

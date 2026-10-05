@@ -15,11 +15,11 @@ Connections: 1 active / 1 retained                                             �
 Remote peers: 1                                                                ▐
 ────────────────────────────────────────────────────────────────────────────── ▐
 Egress (TX)                                                                    ▐
-Current rate: 2.38 MB/s                                                        ▐
-Peak rate: 2.38 MB/s                                                           ▐
-Last 60s: 4.78 MB                                                              ▐
+Current rate: 2.38 MiB/s                                                       ▐
+Peak rate: 2.38 MiB/s                                                          ▐
+Last 60s: 4.78 MiB                                                             ▐
 Share of captured 60s: 81.7%                                                   ▐
-Retained: 4.78 MB                                                               
+Retained: 4.78 MiB                                                              
 Share of retained: 81.7%                                                        
 Share of interface 60s: 59.8%                                                   
 Top remote peer: 140.82.121.4:443                                               

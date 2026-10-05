@@ -602,12 +602,6 @@ pub struct UiState {
     pub host_sockets_scroll: PaneScroll,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
-    /// Use one vertical scale for both traffic directions in Graph and Details.
-    pub traffic_shared_scale: bool,
-    pub traffic_log_scale: bool,
-    /// Fixed bounds captured from the last displayed traffic chart.
-    pub traffic_locked_scale: Option<(f64, f64)>,
-    pub traffic_displayed_scale: Cell<(f64, f64)>,
     pub graph_states_scroll: PaneScroll,
     /// Whether the last Graph frame showed only the selected section.
     pub graph_compact: Cell<bool>,
@@ -676,10 +670,6 @@ impl Default for UiState {
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
             graph_section: GraphSection::default(),
-            traffic_shared_scale: false,
-            traffic_log_scale: false,
-            traffic_locked_scale: None,
-            traffic_displayed_scale: Cell::new((1024.0, 1024.0)),
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),
             graph_animation_visible: Cell::new(false),
@@ -1256,63 +1246,6 @@ pub fn compute_grouped_rows<'a>(
     }
 
     rows
-}
-
-impl UiState {
-    pub(crate) fn handle_traffic_chart_key(&mut self, key: char) -> bool {
-        match key {
-            's' => self.traffic_shared_scale = !self.traffic_shared_scale,
-            'z' => self.traffic_log_scale = !self.traffic_log_scale,
-            'l' => {
-                self.traffic_locked_scale = if self.traffic_locked_scale.is_some() {
-                    None
-                } else {
-                    Some(self.traffic_displayed_scale.get())
-                }
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    pub(crate) fn traffic_scale_label(&self) -> String {
-        format!(
-            "{} B/s · {} · {}",
-            if self.traffic_shared_scale {
-                "shared"
-            } else {
-                "independent"
-            },
-            if self.traffic_log_scale {
-                "log"
-            } else {
-                "linear"
-            },
-            if self.traffic_locked_scale.is_some() {
-                "locked"
-            } else {
-                "auto"
-            },
-        )
-    }
-
-    pub(crate) fn traffic_ceilings(
-        &self,
-        rx: &[u64],
-        tx: &[u64],
-        scales: (f64, f64),
-    ) -> (f64, f64) {
-        let (rx, tx) = self
-            .traffic_locked_scale
-            .unwrap_or_else(|| super::widgets::braille_graph::rate_ceilings(rx, tx, scales, false));
-        let ceilings = if self.traffic_shared_scale {
-            (rx.max(tx), rx.max(tx))
-        } else {
-            (rx, tx)
-        };
-        self.traffic_displayed_scale.set(ceilings);
-        ceilings
-    }
 }
 
 #[cfg(test)]

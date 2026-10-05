@@ -2730,7 +2730,10 @@ mod snapshot_tests {
                 "TX and Application must share a column"
             );
             assert!(tx_x >= usize::from(width / 2));
-            let last_content = rows[usize::from(height - 2)];
+            let time_axis = rows[usize::from(height - 2)];
+            assert_eq!(time_axis.matches("Now").count(), 2);
+            assert_eq!(time_axis.matches("-60s").count(), 2);
+            let last_content = rows[usize::from(height - 3)];
             assert!(
                 last_content.starts_with("    0│"),
                 "RX plot must reach the footer: {last_content}"
@@ -2816,7 +2819,7 @@ mod snapshot_tests {
             };
             let output = render_app(&app, &mut state, &[], None, width, 12);
             assert!(
-                output.contains("2.00 MB/s") && output.contains("4.00 MB/s"),
+                output.contains("2.00 MiB/s") && output.contains("4.00 MiB/s"),
                 "{output}"
             );
             if width >= 140 {
@@ -3289,7 +3292,7 @@ mod snapshot_tests {
             activity_key(&app, &mut state, KeyCode::Char('v'));
             let top = render_app(&app, &mut state, &connections, None, width, height);
             assert!(top.contains("Basis: eth0"));
-            assert!(top.contains("Captured: 5.85 MB"));
+            assert!(top.contains("Captured: 5.85 MiB"));
             assert_eq!(state.activity_capture_scroll.can_scroll(), height < 24);
             let mut all = top;
             for _ in 0..30 {
@@ -3304,12 +3307,12 @@ mod snapshot_tests {
                 ));
             }
             for metric in [
-                "Interface: 8.00 MB",
-                "Interface: 4.00 MB",
+                "Interface: 8.00 MiB",
+                "Interface: 4.00 MiB",
                 "Attribution · retained traffic",
-                "Mapped: 3.67 MB",
+                "Mapped: 3.67 MiB",
                 "Unknown: 0 B",
-                "Retained: 3.67 MB",
+                "Retained: 3.67 MiB",
             ] {
                 assert!(all.contains(metric), "missing {metric}");
             }
@@ -3322,7 +3325,7 @@ mod snapshot_tests {
             let compact = render_app(&app, &mut state, &connections, None, width, height);
             assert_eq!(state.activity_section, ActivitySection::Capture);
             assert_eq!(compact, before_resize);
-            assert!(compact.contains("Retained: 3.67 MB"));
+            assert!(compact.contains("Retained: 3.67 MiB"));
             activity_key(&app, &mut state, KeyCode::Esc);
             assert_eq!(state.activity_section, ActivitySection::Applications);
             state.activity_capture_scroll.reset();
@@ -3622,7 +3625,7 @@ mod snapshot_tests {
         );
         let output = render_app(&app, &mut state, &connections, None, 80, 24);
         assert!(state.bar_animations.is_active());
-        assert!(output.contains("Interface: 16.00 MB"));
+        assert!(output.contains("Interface: 16.00 MiB"));
         assert!(output.contains("TX 36.6%"));
         state.selected_tab = 4;
         render_app(&app, &mut state, &connections, None, 80, 24);
@@ -3818,105 +3821,31 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn traffic_scale_toggle_is_shared_between_graph_and_details() {
+    fn traffic_charts_have_no_manual_scale_controls() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let app = test_app();
         let connections = sample_connections();
-        let mut state = UiState {
-            selected_tab: 3,
-            ..Default::default()
-        };
-        let output = render_app(&app, &mut state, &connections, None, 150, 50);
-        assert!(output.contains("independent B/s"));
-        let regions = ClickableRegions::default();
-        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-        assert!(
-            dispatch_key(
-                3,
-                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
-                &mut ctx
-            )
-            .is_some()
-        );
-        let output = render_app(&app, &mut state, &connections, None, 150, 50);
-        assert!(output.contains("shared B/s"));
-        state.selected_tab = 1;
-        let output = render_app(&app, &mut state, &connections, None, 150, 50);
-        assert!(output.contains("shared B/s · linear · auto"));
-        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-        assert!(
-            dispatch_key(
-                1,
-                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
-                &mut ctx
-            )
-            .is_some()
-        );
-        assert!(!state.traffic_shared_scale);
-        render_app(&app, &mut state, &connections, None, 80, 24);
-        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-        assert!(
-            dispatch_key(
-                1,
-                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
-                &mut ctx
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn traffic_lock_and_log_controls_preserve_bounds_and_scope() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let app = test_app();
-        let connections = sample_connections();
-        let mut state = UiState {
-            selected_tab: 3,
-            ..Default::default()
-        };
-        render_app(&app, &mut state, &connections, None, 150, 50);
-        state.traffic_ceilings(&[8192], &[2048], (8192.0, 2048.0));
-        let regions = ClickableRegions::default();
-        for control in ['l', 'z'] {
-            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-            assert!(
-                dispatch_key(
-                    3,
-                    KeyEvent::new(KeyCode::Char(control), KeyModifiers::NONE),
-                    &mut ctx
-                )
-                .is_some()
-            );
+        for tab in [1, 3] {
+            let mut state = UiState {
+                selected_tab: tab,
+                ..Default::default()
+            };
+            let (output, regions) = render_app_frame(&app, &mut state, &connections, None, 150, 60);
+            for label in ["independent", "locked", "s scale", "z log", "l lock"] {
+                assert!(!output.contains(label));
+            }
+            for key in ['s', 'z', 'l'] {
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                assert!(
+                    dispatch_key(
+                        tab,
+                        KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                        &mut ctx
+                    )
+                    .is_none()
+                );
+            }
         }
-        assert_eq!(
-            state.traffic_ceilings(&[65536], &[65536], (65536.0, 65536.0)),
-            (8192.0, 2048.0)
-        );
-        state.selected_tab = 1;
-        let output = render_app(&app, &mut state, &connections, None, 150, 50);
-        assert!(output.contains("log · locked"));
-        state.handle_traffic_chart_key('s');
-        assert_eq!(
-            state.traffic_ceilings(&[65536], &[65536], (65536.0, 65536.0)),
-            (8192.0, 8192.0)
-        );
-        state.handle_traffic_chart_key('l');
-        assert_eq!(
-            state.traffic_ceilings(&[65536], &[65536], (65536.0, 65536.0)),
-            (65536.0, 65536.0)
-        );
-        state.selected_tab = 3;
-        state.graph_section = GraphSection::Health;
-        render_app(&app, &mut state, &connections, None, 80, 24);
-        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-        assert!(
-            dispatch_key(
-                3,
-                KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
-                &mut ctx
-            )
-            .is_none()
-        );
     }
 
     #[test]
@@ -4182,9 +4111,10 @@ mod snapshot_tests {
             ..Default::default()
         };
         let traffic = render_app(&app, &mut state, &connections, None, 80, 24);
-        for label in ["RX", "TX", "OPENED", "CLOSED", "8.00 KB/s", "4.00 KB/s"] {
+        for label in ["RX", "TX", "OPENED", "CLOSED", "8.00 KiB/s", "4.00 KiB/s"] {
             assert!(traffic.contains(label), "{label}: {traffic}");
         }
+        assert_eq!(traffic.matches("-60s").count(), 2);
         state.graph_section = GraphSection::Health;
         let health = render_app(&app, &mut state, &connections, None, 80, 24);
         for label in [
@@ -4527,7 +4457,7 @@ mod snapshot_tests {
                 for x in 0..width {
                     if let Some(ClickAction::CopyField { label, .. }) = regions.hit_test(x, y)
                         && label != "Traffic Total"
-                        && !label.starts_with("Current Rate")
+                        && !label.starts_with("Smoothed Avg")
                     {
                         assert!(
                             output.lines().nth(usize::from(y)).unwrap().contains(label),

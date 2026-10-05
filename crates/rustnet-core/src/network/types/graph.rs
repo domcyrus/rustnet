@@ -252,8 +252,8 @@ impl TrafficHistory {
         }
         self.samples.push_back(sample);
         let picks: [fn(&TrafficSample) -> u64; 4] = [
-            |sample| sample.smoothed_rx_bytes_per_sec,
-            |sample| sample.smoothed_tx_bytes_per_sec,
+            |sample| sample.rx_bytes_per_sec,
+            |sample| sample.tx_bytes_per_sec,
             |sample| sample.smoothed_opened_connections_per_sec_tenths,
             |sample| sample.smoothed_closed_connections_per_sec_tenths,
         ];
@@ -725,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn traffic_scale_follows_the_display_series_without_changing_raw_rates() {
+    fn traffic_scale_preserves_raw_peaks_while_mini_waves_stay_smoothed() {
         let mut history = TrafficHistory::new(6);
         for rate in [0, 0, 9_000, 0, 0, 0] {
             add_sample(&mut history, rate, 0, 1, 0, 0, None);
@@ -735,7 +735,7 @@ mod tests {
             history.get_rx_sparkline_data(6),
             [0, 0, 3_000, 3_000, 3_000, 0]
         );
-        assert_eq!(history.rx_scale.target, 4_096);
+        assert_eq!(history.rx_scale.target, 16_384);
     }
 
     #[test]

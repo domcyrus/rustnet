@@ -40,8 +40,8 @@ Executable            -
 User                  -                                                                                                                     
 Match                 -                                                                                                                     
                                                                                                                                             
-▎ Traffic Statistics · smoothed · independent B/s · linear · auto ──────────────────────────────────────────────────────────────────────────
-↓ RX Now -           →                             peak           -   ↑ TX Now -           →                             peak           -   
+▎ Traffic Statistics · smoothed avg · 60s · B/s ────────────────────────────────────────────────────────────────────────────────────────────
+↓ RX Now 0 B/s       →                             peak       0 B/s   ↑ TX Now 0 B/s       →                             peak       0 B/s   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
 Collecting traffic history...                                         Collecting traffic history...                                         
                                                                                                                                             
@@ -51,4 +51,4 @@ Collecting traffic history...                                         Collecting
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- j/k connection  s scale  z log  l lock  c copy remote addr  esc back                                                        h help  q quit
+ j/k connection  c copy remote addr  esc back                                                                                h help  q quit
