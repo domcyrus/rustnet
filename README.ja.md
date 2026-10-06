@@ -26,7 +26,7 @@ brew install rustnet
 
 パケットキャプチャにはプラットフォームに応じた権限設定が必要です。Linux のケーパビリティ、macOS の PKTAP と BPF へのアクセス、ほかのパッケージマネージャー、トラブルシューティングは[インストールガイド](INSTALL.md)を参照してください。
 
-> **リリース状況:** 以下の特長は v1.7.0 の内容です。GIF とスクリーンショットは v1.6.0 の画面です。新しい画面については[ターミナルのレイアウトガイド](TUI.ja.md)を参照してください。`main` からリンクされるガイドには[未リリースの変更](CHANGELOG.md#unreleased)も含まれる場合があります。リリース版を使う場合は [v1.7.0 のドキュメント](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.ja.md)を参照し、`rustnet --version` と `rustnet --help` でバージョンと対応オプションを確認してください。
+> **リリース状況:** 以下の特長、GIF、スクリーンショットは v1.7.0 の内容です。録画には隔離した Linux 環境で生成した通信を使用しています。`main` からリンクされるガイドには[未リリースの変更](CHANGELOG.md#unreleased)も含まれる場合があります。リリース版を使う場合は [v1.7.0 のドキュメント](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.ja.md)を参照し、`rustnet --version` と `rustnet --help` でバージョンと対応オプションを確認してください。
 
 ## デモ
 
@@ -59,7 +59,11 @@ v1.7.0 では、ARM DEB と古い glibc および Debian 13 の time64 ライブ
   </tr>
   <tr>
     <td align="center"><strong>Graph</strong><br>通信量とアプリケーションのグラフ<br><img src="./assets/screenshots/graph.png" width="400" alt="RustNet Graph"></td>
-    <td align="center"><strong>Activity</strong><br>プロセスごとの通信量<br><img src="./assets/screenshots/interfaces.png" width="400" alt="RustNet Activity"></td>
+    <td align="center"><strong>Activity</strong><br>プロセスごとの通信量<br><img src="./assets/screenshots/activity.png" width="400" alt="RustNet Activity"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Host sockets</strong><br>待ち受け中およびバインド済みのエンドポイント<br><img src="./assets/screenshots/host.png" width="400" alt="RustNet Host sockets"></td>
+    <td align="center"><strong>DNS</strong><br>パッシブに観測した DNS クエリと応答<br><img src="./assets/screenshots/dns.png" width="400" alt="RustNet DNS"></td>
   </tr>
 </table>
 

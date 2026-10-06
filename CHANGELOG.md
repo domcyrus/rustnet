@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- Refresh the demo GIF and screenshots for v1.7.0, including Host sockets and DNS analytics
+
 ## [1.7.0] - 2026-10-06
 
 ### Security

@@ -26,7 +26,7 @@ brew install rustnet
 
 Packet capture needs platform-specific permissions. See the [installation guide](INSTALL.md) for Linux capabilities, macOS PKTAP and BPF access, other package managers, and troubleshooting.
 
-> **Release status:** The highlights describe v1.7.0. The GIF and screenshots show v1.6.0; see the [terminal layout guide](TUI.md) for the updated views. The guides linked from `main` may also describe [unreleased changes](CHANGELOG.md#unreleased). For the installed release, use the [v1.7.0 documentation](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.md) and check `rustnet --version` and `rustnet --help`.
+> **Release status:** The highlights, GIF, and screenshots show v1.7.0. The recordings use generated traffic in an isolated Linux environment. The guides linked from `main` may also describe [unreleased changes](CHANGELOG.md#unreleased). For the installed release, use the [v1.7.0 documentation](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.md) and check `rustnet --version` and `rustnet --help`.
 
 ## Demo
 
@@ -59,7 +59,11 @@ v1.7.0 fixes ARM DEB compatibility with older glibc and Debian 13's time64 libra
   </tr>
   <tr>
     <td align="center"><strong>Graph</strong><br>Traffic and application charts<br><img src="./assets/screenshots/graph.png" width="400" alt="RustNet Graph"></td>
-    <td align="center"><strong>Activity</strong><br>Traffic by process<br><img src="./assets/screenshots/interfaces.png" width="400" alt="RustNet Activity"></td>
+    <td align="center"><strong>Activity</strong><br>Traffic by process<br><img src="./assets/screenshots/activity.png" width="400" alt="RustNet Activity"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Host sockets</strong><br>Listening and bound endpoints<br><img src="./assets/screenshots/host.png" width="400" alt="RustNet Host sockets"></td>
+    <td align="center"><strong>DNS</strong><br>Passive DNS queries and responses<br><img src="./assets/screenshots/dns.png" width="400" alt="RustNet DNS"></td>
   </tr>
 </table>
 
