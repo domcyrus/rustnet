@@ -1466,7 +1466,7 @@ fn draw_interface_stats_with_graph(
     area: Rect,
     state: &UiState,
 ) -> Result<()> {
-    // Heading + sparklines (3 lines) + separator + interface details (remaining).
+    // Traffic heading + sparklines (3 lines) + separator + Interfaces section.
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1548,7 +1548,8 @@ fn draw_interface_stats_with_graph(
 
     render_section_separator(f, sections[1]);
 
-    let max_interfaces = usize::from(sections[2].height).saturating_sub(1);
+    // Reserve the heading and a possible overflow summary.
+    let max_interfaces = usize::from(sections[2].height).saturating_sub(2);
     let interface_text = interface_error_lines(app, max_interfaces);
     let interface_para = Paragraph::new(interface_text);
     f.render_widget(interface_para, sections[2]);
@@ -1585,13 +1586,13 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
             .collect()
     };
 
+    let mut lines = vec![Line::styled("Interfaces", theme::bold_fg(theme::heading()))];
     if filtered_interface_stats.is_empty() {
-        vec![Line::from(Span::styled(
+        lines.push(Line::from(Span::styled(
             "No interface stats available",
             theme::fg(theme::muted()),
-        ))]
+        )));
     } else {
-        let mut lines = Vec::new();
         let num_to_show = max_interfaces.min(filtered_interface_stats.len());
 
         for stat in filtered_interface_stats.iter().take(num_to_show) {
@@ -1616,8 +1617,8 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
                 theme::fg(theme::muted()),
             )));
         }
-        lines
     }
+    lines
 }
 
 #[cfg(test)]
