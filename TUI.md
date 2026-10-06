@@ -27,6 +27,15 @@ Use `j` / `k`, arrow keys, Page Up / Page Down, `g` / `G`, or the mouse wheel to
 scroll. The footer shows a scroll hint when content extends beyond the viewport.
 Host's `v` / Shift+`v` shortcuts still select Sockets, Interfaces, and DNS.
 
+On Linux, Host preserves owners discovered at startup for unchanged sockets,
+including TCP listeners and bound UDP sockets, after sandboxing restricts
+`/proc/<pid>/fd` access. This is best effort: shared sockets, exited processes,
+and changed socket identities are excluded. The usual
+`cap_net_raw,cap_bpf,cap_perfmon+eip` setup can discover other users' owners at
+startup when the eBPF task-file iterator is available. Without that iterator or
+sufficient procfs permissions, names may be missing. Sockets created after
+startup still depend on procfs access for their Host process names.
+
 Text truncation measures terminal cells and preserves combining characters and
 emoji sequences. Details uses the terminal's full width for its connection
 strip, headings, information panes, and aligned RX/TX charts.

@@ -23,6 +23,14 @@ Sockets 和 Interfaces 在宽终端中使用表格。少于 120 列时，改用�
 内容超出视口时，底部显示滚动提示。Host 中仍用 `v` / Shift+`v` 切换
 Sockets、Interfaces 和 DNS。
 
+在 Linux 上，沙箱限制 `/proc/<pid>/fd` 访问后，Host 会为身份未变的套接字
+保留启动时发现的进程信息，包括 TCP 监听套接字和已绑定的 UDP 套接字。
+这是尽力而为的回退：共享套接字、已退出的进程和身份已变化的套接字不在此列。
+使用常见的 `cap_net_raw,cap_bpf,cap_perfmon+eip` 配置时，若 eBPF task-file
+迭代器可用，就能在启动时发现其他用户的套接字所属进程。若该迭代器不可用且
+procfs 权限不足，进程名可能缺失。启动后新建套接字在 Host 中的进程名仍取决于
+procfs 访问权限。
+
 文本截断按终端单元格宽度计算，保留组合字符和完整 emoji 序列。
 Details 的连接列表、标题、信息面板和对齐的 RX/TX 图使用终端的完整宽度。
 

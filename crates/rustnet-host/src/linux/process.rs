@@ -350,6 +350,72 @@ fn snapshot_owner_still_matches(owner: &SnapshotOwner) -> bool {
         }
 }
 
+/// Inventory-only fallback. Never feed retained listeners into the traffic
+/// lookup, where a wildcard listener could claim unrelated connections.
+struct RetainedSocketOwner {
+    socket: HostSocket,
+    start_ticks: u64,
+}
+
+fn retain_socket_owners(
+    snapshot: &SocketSnapshot,
+    shared_inodes: &HashSet<u64>,
+) -> HashMap<u64, RetainedSocketOwner> {
+    snapshot
+        .sockets
+        .iter()
+        .filter_map(|socket| {
+            let inode = socket.native_id.filter(|inode| *inode != 0)?;
+            let owner = socket.owner.as_ref()?;
+            if shared_inodes.contains(&inode) {
+                return None;
+            }
+            Some((
+                inode,
+                RetainedSocketOwner {
+                    socket: socket.clone(),
+                    start_ticks: process_start_ticks(owner.pid)?,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn restore_socket_owners(
+    retained: &mut HashMap<u64, RetainedSocketOwner>,
+    snapshot: &mut SocketSnapshot,
+    shared_inodes: &HashSet<u64>,
+) {
+    let mut present = HashSet::new();
+    for socket in std::sync::Arc::make_mut(&mut snapshot.sockets) {
+        let Some(inode) = socket.native_id else {
+            continue;
+        };
+        let Some(previous) = retained.get(&inode) else {
+            continue;
+        };
+        let Some(owner) = previous.socket.owner.as_ref() else {
+            continue;
+        };
+        if shared_inodes.contains(&inode)
+            || socket.protocol != previous.socket.protocol
+            || socket.local_addr != previous.socket.local_addr
+            || socket.remote_addr != previous.socket.remote_addr
+            || socket.owner.as_ref().is_some_and(|live| live != owner)
+            || process_start_ticks(owner.pid) != Some(previous.start_ticks)
+            || read_comm(owner.pid).as_deref() != Some(owner.name.as_str())
+        {
+            continue;
+        }
+        present.insert(inode);
+        if socket.owner.is_none() {
+            socket.owner = Some(owner.clone());
+        }
+    }
+    // Once a socket disappears or changes identity, never resurrect its owner.
+    retained.retain(|inode, _| present.contains(inode));
+}
+
 fn parse_proc_tcp_state(value: &str) -> HostTcpState {
     match value {
         "01" => HostTcpState::Established,
@@ -378,6 +444,7 @@ pub(super) struct LinuxProcessLookup {
     // attributable. The live cache always wins; the snapshot only fills
     // holes, so a reused 4-tuple visible to the rescan is never shadowed.
     startup_snapshot: HashMap<ConnectionKey, SnapshotOwner>,
+    retained_socket_owners: RwLock<HashMap<u64, RetainedSocketOwner>>,
     // Memo: TGID -> lineage, so many connections of one process walk /proc
     // once per refresh instead of once each. Failures are memoized too.
     lineages: RwLock<HashMap<u32, Option<ProcessLineage>>>,
@@ -400,6 +467,10 @@ impl LinuxProcessLookup {
 
         Ok(Self {
             startup_snapshot: build_startup_snapshot(&socket_snapshot, &shared_inodes),
+            retained_socket_owners: RwLock::new(retain_socket_owners(
+                &socket_snapshot,
+                &shared_inodes,
+            )),
             cache: RwLock::new(process_map),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(socket_snapshot),
@@ -412,6 +483,7 @@ impl LinuxProcessLookup {
     fn with_socket_table(lookup: ConnectionProcessMap) -> Self {
         Self {
             startup_snapshot: HashMap::new(),
+            retained_socket_owners: RwLock::new(HashMap::new()),
             cache: RwLock::new(lookup),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::default()),
@@ -677,8 +749,17 @@ impl ProcessLookup for LinuxProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
-        let (process_map, socket_snapshot, _shared_inodes) =
+        let (process_map, mut socket_snapshot, shared_inodes) =
             Self::build_process_map(StartupSocketOwners::default())?;
+
+        restore_socket_owners(
+            &mut self
+                .retained_socket_owners
+                .write()
+                .expect("retained socket owners lock poisoned"),
+            &mut socket_snapshot,
+            &shared_inodes,
+        );
 
         *self.cache.write().expect("process cache lock poisoned") = process_map;
         *self
@@ -847,6 +928,7 @@ mod tests {
         );
         LinuxProcessLookup {
             startup_snapshot: startup,
+            retained_socket_owners: RwLock::new(HashMap::new()),
             cache: RwLock::new(ConnectionProcessMap::new()),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::new(inventory)),
@@ -857,6 +939,85 @@ mod tests {
         let mut socket = host_socket(local, remote, inode);
         socket.owner = Some(SocketOwner::new(pid, name, None));
         socket
+    }
+
+    fn owned_listener() -> HostSocket {
+        let mut socket = owned_socket("0.0.0.0:8080", "0.0.0.0:0", 123, own_pid(), &own_comm());
+        socket.remote_addr = None;
+        socket.state = HostSocketState::Tcp(HostTcpState::Listen);
+        socket.owner.as_mut().unwrap().uid = Some(1000);
+        socket
+    }
+
+    #[test]
+    fn host_inventory_retains_listener_and_udp_owners_after_restricted_refresh() {
+        for protocol in [Protocol::Tcp, Protocol::Udp] {
+            let mut socket = owned_listener();
+            socket.protocol = protocol;
+            if protocol == Protocol::Udp {
+                socket.state = HostSocketState::UdpBound;
+            }
+            let startup = SocketSnapshot::new(vec![socket.clone()]);
+            let mut retained = retain_socket_owners(&startup, &HashSet::new());
+            // Unconnected sockets must remain excluded from traffic fallback.
+            assert!(build_startup_snapshot(&startup, &HashSet::new()).is_empty());
+            for _ in 0..2 {
+                let mut hidden = socket.clone();
+                hidden.owner = None;
+                let mut refreshed = SocketSnapshot::new(vec![hidden]);
+                restore_socket_owners(&mut retained, &mut refreshed, &HashSet::new());
+                assert_eq!(refreshed.sockets[0].owner, socket.owner);
+            }
+        }
+    }
+
+    #[test]
+    fn host_inventory_rejects_changed_sockets_and_preserves_live_owners() {
+        let original = owned_listener();
+        for change in 0..6 {
+            let mut retained = retain_socket_owners(
+                &SocketSnapshot::new(vec![original.clone()]),
+                &HashSet::new(),
+            );
+            let mut changed = original.clone();
+            changed.owner = None;
+            match change {
+                0 => changed.native_id = Some(456),
+                1 => changed.local_addr = "0.0.0.0:9090".parse().unwrap(),
+                2 => changed.remote_addr = Some("127.0.0.1:9000".parse().unwrap()),
+                3 => changed.protocol = Protocol::Udp,
+                4 => changed.owner = Some(SocketOwner::new(1, "new-owner", Some(0))),
+                5 => retained.get_mut(&123).unwrap().start_ticks += 1,
+                _ => unreachable!(),
+            }
+            let expected = changed.owner.clone();
+            let mut refreshed = SocketSnapshot::new(vec![changed]);
+            restore_socket_owners(&mut retained, &mut refreshed, &HashSet::new());
+            assert_eq!(refreshed.sockets[0].owner, expected);
+            assert!(retained.is_empty());
+        }
+    }
+
+    #[test]
+    fn host_inventory_forgets_closed_and_shared_sockets() {
+        let startup = SocketSnapshot::new(vec![owned_listener()]);
+        let shared = HashSet::from([123]);
+        assert!(retain_socket_owners(&startup, &shared).is_empty());
+        for closed in [false, true] {
+            let mut retained = retain_socket_owners(&startup, &HashSet::new());
+            let mut hidden = owned_listener();
+            hidden.owner = None;
+            let mut refreshed = if closed {
+                SocketSnapshot::default()
+            } else {
+                SocketSnapshot::new(vec![hidden.clone()])
+            };
+            restore_socket_owners(&mut retained, &mut refreshed, &shared);
+            assert!(retained.is_empty());
+            let mut reappeared = SocketSnapshot::new(vec![hidden]);
+            restore_socket_owners(&mut retained, &mut reappeared, &HashSet::new());
+            assert!(reappeared.sockets[0].owner.is_none());
+        }
     }
 
     #[test]
@@ -1016,6 +1177,7 @@ mod tests {
         );
         let lookup = LinuxProcessLookup {
             startup_snapshot: startup,
+            retained_socket_owners: RwLock::new(HashMap::new()),
             cache: RwLock::new(ConnectionProcessMap::new()),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::new(vec![host_socket(
@@ -1062,6 +1224,7 @@ mod tests {
 
         let lookup = LinuxProcessLookup {
             startup_snapshot: snapshot,
+            retained_socket_owners: RwLock::new(HashMap::new()),
             cache: RwLock::new(live),
             lineages: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::default()),

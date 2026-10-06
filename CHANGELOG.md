@@ -169,6 +169,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Apply Overview's PTR visibility setting to Activity totals, including retained
   connections; use `--show-ptr-lookups` to include reverse DNS traffic in both tabs.
+- Preserve Linux Host socket owners discovered at startup across restricted procfs refreshes, including listeners and bound UDP sockets
 - Keep packet rates, connection lifecycle, and health updating when interface counters are unavailable; prevent compact RX/TX rates from losing leading digits.
 - **macOS traffic graphs**: use aggregate counters for default PKTAP capture, keep
   Details scrolling independently, and publish complete interface-rate snapshots
