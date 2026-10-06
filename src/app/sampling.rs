@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::{
     interface_stats::{InterfaceRates, InterfaceStats},
+    process_activity::ProcessActivityTracker,
     services::ServiceLookup,
     tracker::ConnectionTracker,
     types::{Connection, ConnectionLifecycleSample},
@@ -18,7 +19,7 @@ use crate::network::{
 
 use super::logging::log_connection_closed;
 use super::runtime::RuntimeSupervisor;
-use super::state::App;
+use super::state::{App, is_ptr_lookup};
 use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACITY};
 
 /// Missing counters are unavailable, not observed idle traffic. Never fall back
@@ -97,6 +98,38 @@ fn passes_localhost_filter(connection: &Connection, filter_localhost: bool) -> b
         && connection.remote_addr.ip().is_loopback())
 }
 
+fn sample_process_activity(
+    tracker: &ConnectionTracker,
+    activity: &mut ProcessActivityTracker,
+    now: SystemTime,
+    filter_localhost: bool,
+    hide_ptr_lookups: bool,
+) {
+    let visible = |conn: &Connection| {
+        passes_localhost_filter(conn, filter_localhost)
+            && !(hide_ptr_lookups && is_ptr_lookup(conn))
+    };
+    tracker.with_retained_sources(|active, historic| {
+        activity.observe_sources(
+            now,
+            |observe| {
+                for entry in active.iter() {
+                    if visible(entry.value()) {
+                        observe(entry.value());
+                    }
+                }
+            },
+            |observe| {
+                for entry in historic.iter() {
+                    if visible(entry.value()) {
+                        observe(entry.value());
+                    }
+                }
+            },
+        );
+    });
+}
+
 /// Build the same deterministic, service-enriched connection view used by
 /// interactive and headless frontends. Calling this after workers have joined
 /// captures the fully drained tracker state for final machine output.
@@ -141,6 +174,7 @@ impl App {
         let process_activity = Arc::clone(&self.process_activity);
         let show_historic = Arc::clone(&self.show_historic);
         let filter_localhost = self.config.filter_localhost;
+        let hide_ptr_lookups = self.hide_ptr_lookups();
         let refresh_interval = Duration::from_millis(self.config.refresh_interval);
         let loop_interval = refresh_interval.min(Duration::from_secs(1));
 
@@ -170,27 +204,13 @@ impl App {
                     .is_none_or(|sampled| sampled.elapsed() >= Duration::from_secs(1));
                 if activity_due {
                     if let Ok(mut activity) = process_activity.write() {
-                        tracker.with_retained_sources(|active, historic| {
-                            activity.observe_sources(
-                                SystemTime::now(),
-                                |observe| {
-                                    for entry in active.iter() {
-                                        let conn = entry.value();
-                                        if passes_localhost_filter(conn, filter_localhost) {
-                                            observe(conn);
-                                        }
-                                    }
-                                },
-                                |observe| {
-                                    for entry in historic.iter() {
-                                        let conn = entry.value();
-                                        if passes_localhost_filter(conn, filter_localhost) {
-                                            observe(conn);
-                                        }
-                                    }
-                                },
-                            );
-                        });
+                        sample_process_activity(
+                            &tracker,
+                            &mut activity,
+                            SystemTime::now(),
+                            filter_localhost,
+                            hide_ptr_lookups,
+                        );
                     }
                     last_activity_sample = Some(Instant::now());
                 }
@@ -524,6 +544,103 @@ fn per_second_rate(delta: u64, elapsed_seconds: f64, unit_scale: f64) -> u64 {
 #[cfg(test)]
 mod live_rate_sampling_tests {
     use super::*;
+    use crate::network::tracker::HistoricKey;
+    use crate::network::types::{
+        ApplicationProtocol, ConnectionKey, DnsInfo, DnsQueryType, DpiInfo, Protocol, ProtocolState,
+    };
+
+    #[test]
+    fn activity_and_overview_share_ptr_visibility_for_active_and_historic_dns() {
+        for resolve_dns in [false, true] {
+            for show_ptr_lookups in [false, true] {
+                for historic in [false, true] {
+                    for is_response in [false, true] {
+                        let app = App::new(crate::app::Config {
+                            resolve_dns,
+                            show_ptr_lookups,
+                            ..crate::ui::test_support::test_config()
+                        })
+                        .unwrap();
+                        let mut ptr = Connection::new(
+                            Protocol::Udp,
+                            "192.0.2.1:40000".parse().unwrap(),
+                            "198.51.100.1:53".parse().unwrap(),
+                            ProtocolState::Udp,
+                        );
+                        ptr.process_name = Some("rustnet".into());
+                        ptr.pid = Some(123);
+                        ptr.bytes_sent = 100;
+                        ptr.bytes_received = 200;
+                        ptr.dpi_info = Some(DpiInfo {
+                            application: ApplicationProtocol::Dns(DnsInfo {
+                                query_name: Some("1.2.0.192.in-addr.arpa".into()),
+                                query_type: Some(DnsQueryType::PTR),
+                                response_ips: Vec::new(),
+                                is_response,
+                                txid: 1,
+                                rcode: is_response.then_some(0),
+                                nodata: None,
+                            }),
+                        });
+                        let key = ConnectionKey::new(ptr.protocol, ptr.local_addr, ptr.remote_addr);
+                        if historic {
+                            app.tracker
+                                .historic()
+                                .insert(HistoricKey::for_connection(key, &ptr), ptr.clone());
+                        } else {
+                            app.tracker.connections().insert(key, ptr.clone());
+                        }
+                        let mut activity = ProcessActivityTracker::new();
+                        let now = SystemTime::now();
+                        sample_process_activity(
+                            &app.tracker,
+                            &mut activity,
+                            now,
+                            false,
+                            app.hide_ptr_lookups(),
+                        );
+                        app.set_connections_snapshot_for_test(vec![ptr.clone()]);
+                        let expected = usize::from(!resolve_dns || show_ptr_lookups);
+                        assert_eq!(app.get_filtered_connections("").len(), expected);
+                        let snapshot = activity.snapshot();
+                        assert_eq!(snapshot.processes.len(), expected);
+                        assert_eq!(snapshot.applications.len(), expected);
+                        assert_eq!(snapshot.retained_tx_bytes, expected as u64 * 100);
+                        assert_eq!(snapshot.retained_rx_bytes, expected as u64 * 200);
+
+                        // The same process's ordinary DNS traffic must remain visible.
+                        let mut forward = ptr;
+                        forward.local_addr.set_port(40001);
+                        if let Some(DpiInfo {
+                            application: ApplicationProtocol::Dns(dns),
+                        }) = &mut forward.dpi_info
+                        {
+                            dns.query_type = Some(DnsQueryType::A);
+                            dns.query_name = Some("example.com".into());
+                        }
+                        let key = ConnectionKey::new(
+                            forward.protocol,
+                            forward.local_addr,
+                            forward.remote_addr,
+                        );
+                        app.tracker.connections().insert(key, forward);
+                        sample_process_activity(
+                            &app.tracker,
+                            &mut activity,
+                            now + Duration::from_secs(1),
+                            false,
+                            app.hide_ptr_lookups(),
+                        );
+                        let snapshot = activity.snapshot();
+                        assert_eq!(snapshot.processes.len(), 1);
+                        assert_eq!(snapshot.processes[0].total_connections, expected as u64 + 1);
+                        assert_eq!(snapshot.retained_tx_bytes, (expected as u64 + 1) * 100);
+                        assert_eq!(snapshot.retained_rx_bytes, (expected as u64 + 1) * 200);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn selected_interface_excludes_unrelated_traffic_and_preserves_idle() {

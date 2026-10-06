@@ -931,7 +931,12 @@ Window Size  ↓ 137.50 KB · ↑ 1.00 KB
 
 活动标签页根据活跃连接以及 RustNet 现有的历史连接池（最多保留 5,000 条）计算有界的进程流量总计。短寿命上传进程在套接字关闭后仍然可见，直到对应历史连接被淘汰或连接被清除。按 `3` 打开此标签页。
 
-Activity 按完全相同的进程名汇总，与 Overview 的进程分组一致。例如，所有保留的 `gh` PID 会合并为一行应用。Overview 用于浏览连接，Activity 用于比较应用流量。Activity 包含其保留池中的全部捕获流量，不受 Overview 筛选条件或历史显示开关影响；有 Overview 筛选条件时，概要会显示 `all traffic`。
+Activity 按完全相同的进程名汇总，与 Overview 的进程分组一致。例如，所有保留的 `gh` PID 会合并为一行应用。Overview 用于浏览连接，Activity 用于比较应用流量。Activity 包含其保留池中的流量，不受 Overview 筛选条件或历史显示开关影响；有 Overview 筛选条件时，概要会显示 `all traffic`。
+
+**尚未发布：** Activity 遵循 Overview 的 PTR 显示设置。启用反向 DNS 解析时，
+两个视图均排除 DNS PTR 查询和响应，除非指定 `--show-ptr-lookups`。
+使用 `--no-resolve-dns` 时，其他程序产生的已捕获 PTR 流量仍然可见。
+接口计数器仍包含这些流量。
 
 应用浏览器可在出站 (TX) 和入站 (RX) 之间切换。表格和页面内详情提供以下信息：
 

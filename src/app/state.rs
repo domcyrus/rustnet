@@ -57,7 +57,7 @@ enum AppLifecycle {
     Stopped,
 }
 
-fn is_ptr_lookup(connection: &Connection) -> bool {
+pub(super) fn is_ptr_lookup(connection: &Connection) -> bool {
     matches!(
         connection.dpi_info.as_ref().map(|dpi| &dpi.application),
         Some(ApplicationProtocol::Dns(dns_info))
@@ -474,7 +474,7 @@ impl App {
 
     /// Count the unfiltered UI snapshot without cloning connection records.
     pub(crate) fn get_connection_counts(&self) -> ConnectionCounts {
-        let hide_ptr_lookups = self.dns_resolver.is_some() && !self.config.show_ptr_lookups;
+        let hide_ptr_lookups = self.hide_ptr_lookups();
         let snapshot = self.connections_snapshot.read().unwrap();
         ConnectionCounts::from_connections(
             snapshot
@@ -507,7 +507,7 @@ impl App {
         snapshot: &[Connection],
         filter_query: &str,
     ) -> Vec<Connection> {
-        let hide_ptr_lookups = self.dns_resolver.is_some() && !self.config.show_ptr_lookups;
+        let hide_ptr_lookups = self.hide_ptr_lookups();
         let filter = if filter_query.trim().is_empty() {
             None
         } else {
@@ -527,6 +527,11 @@ impl App {
             })
             .cloned()
             .collect()
+    }
+
+    /// Shared PTR visibility policy for connection rows and process activity.
+    pub(super) fn hide_ptr_lookups(&self) -> bool {
+        self.dns_resolver.is_some() && !self.config.show_ptr_lookups
     }
 
     pub(crate) fn get_interface_stats(&self) -> Vec<InterfaceStats> {
