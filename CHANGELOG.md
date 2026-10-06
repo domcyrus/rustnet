@@ -68,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- Label the Overview interface error and drop counters as Interfaces.
 - Simplify Graph and Details to automatic independent RX/TX scales, with no scale,
   log, or lock controls.
   Current rates and peak labels retain raw measurements. Details gains taller

@@ -9,6 +9,9 @@
 列宽，接口名称列使用剩余宽度。Activity 的应用表格和 Capture 标题在速率汇总下方对齐。
 Graph 的进程列表按终端单元格宽度显示名称，并使用列标题下方所有可用行。
 
+Overview 的接口错误和丢包计数以 Interfaces 为标题，在 System 侧栏和紧凑 System
+视图中均位于 Traffic 下方。
+
 ## 自适应 Host 视图
 
 Sockets 和 Interfaces 在宽终端中使用表格。少于 120 列时，改用自动换行的记录，

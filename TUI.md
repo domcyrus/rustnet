@@ -12,6 +12,9 @@ Activity's application and Capture headings align below the rate summary.
 Graph's process list fits names by terminal-cell width and uses every available
 row below its column headings.
 
+Overview labels interface error and drop counters as Interfaces, below Traffic
+in both the System sidebar and compact System view.
+
 ## Responsive Host views
 
 Sockets and Interfaces use tables on wide terminals. Below 120 columns, they
