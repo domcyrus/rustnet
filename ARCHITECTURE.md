@@ -2,7 +2,7 @@
 
 # Architecture
 
-> **Documentation version:** On `main`, this guide describes development code and may include unreleased implementation details. For v1.6.0, use the [v1.6.0 architecture guide](https://github.com/domcyrus/rustnet/blob/v1.6.0/ARCHITECTURE.md). Check `rustnet --version` for your installed version.
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased implementation details. For v1.7.0, use the [v1.7.0 architecture guide](https://github.com/domcyrus/rustnet/blob/v1.7.0/ARCHITECTURE.md). Check `rustnet --version` for your installed version.
 
 This document describes the technical architecture and implementation details of RustNet.
 
@@ -117,7 +117,7 @@ Multiple worker threads (up to 4 by default, based on CPU cores) that parse pack
   - QUIC protocol with CONNECTION_CLOSE frame detection
   - MQTT with packet types, version, and client identifier
   - MySQL classic greetings/SSLRequest, Redis RESP commands, and PostgreSQL
-    startup/SSLRequest, using bounded packet-local inspection (unreleased)
+    startup/SSLRequest, using bounded packet-local inspection (available since v1.7.0)
   - BitTorrent handshakes and DHT messages
   - WireGuard and OpenVPN tunnel traffic
   - STUN for WebRTC and NAT traversal
@@ -188,7 +188,7 @@ Cache properties:
 
 **Race safety**: `attribute()` enrolls the connection in the pending index, then re-checks the cache. If a concurrent `record_and_drain_pending()` for the same IP landed between the lookup and the enrollment, the re-check tags the connection; the now-stale enrollment is harmless and is removed by `forget_pending` when the connection is cleaned up or by the pending prune after the freshness window.
 
-**Distinct from `network::dns::DnsResolver`**: that component performs *reverse* DNS (IP to PTR) via the system resolver; the attribution cache is *forward* DNS (domain to IPs) harvested from observed packets. The two are complementary. In development builds, the UI shows reverse DNS in Remote and DNS attribution in App, with SNI / Host taking precedence over inferred names.
+**Distinct from `network::dns::DnsResolver`**: that component performs *reverse* DNS (IP to PTR) via the system resolver; the attribution cache is *forward* DNS (domain to IPs) harvested from observed packets. The two are complementary. Since v1.7.0, the UI shows reverse DNS in Remote and DNS attribution in App, with SNI / Host taking precedence over inferred names.
 
 CNAME chains need no separate map: the DNS DPI parser records the original *question* name, and the answer's A/AAAA records map directly to it. Capturing at the wire sees fewer signals than an eBPF socket-level approach (no app-to-stub traffic on `lo` unless captured, no D-Bus resolutions, no DoH/DoT plaintext); this is a known limitation.
 
@@ -287,7 +287,7 @@ The same backend publishes a socket snapshot every 5 seconds for the Host tab. T
 - On Linux 5.11+, runs a one-shot task-file iterator after attaching the live probes to capture owners of sockets that predate RustNet, including other users' sockets in file-capability mode
 - Provides lower overhead than procfs scanning
 - Records the group leader's TGID, the acting TID, credentials, and process name
-- In development builds, also snapshots the executable and immediate parent (PID, name, executable, and birth time) at socket observation, retaining them after exit or exec. Procfs extends the parent chain only while task birth times still match.
+- Since v1.7.0, also snapshots the executable and immediate parent (PID, name, executable, and birth time) at socket observation, retaining them after exit or exec. Procfs extends the parent chain only while task birth times still match.
 - **Limitations:**
   - Names originate from the 16-byte kernel `comm` field; a retained executable basename can recover truncation. Executable snapshots are bounded to 255 path bytes and 32 directory/mount steps; incomplete paths remain unknown. Scripts identify the running interpreter. Ancestors beyond the immediate parent remain best effort.
 - **Capability requirements:**

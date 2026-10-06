@@ -26,7 +26,7 @@ brew install rustnet
 
 Packet capture needs platform-specific permissions. See the [installation guide](INSTALL.md) for Linux capabilities, macOS PKTAP and BPF access, other package managers, and troubleshooting.
 
-> **Release status:** The highlights, GIF, and screenshots below reflect v1.6.0. The guides linked from `main` may also describe [unreleased changes](CHANGELOG.md#unreleased). For the installed release, use the [v1.6.0 documentation](https://github.com/domcyrus/rustnet/blob/v1.6.0/README.md) and check `rustnet --version` and `rustnet --help`.
+> **Release status:** The highlights describe v1.7.0. The GIF and screenshots show v1.6.0; see the [terminal layout guide](TUI.md) for the updated views. The guides linked from `main` may also describe [unreleased changes](CHANGELOG.md#unreleased). For the installed release, use the [v1.7.0 documentation](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.md) and check `rustnet --version` and `rustnet --help`.
 
 ## Demo
 
@@ -39,14 +39,16 @@ Packet capture needs platform-specific permissions. See the [installation guide]
 - Shows connection state, traffic, application protocol, and available process information in a terminal UI that works over SSH.
 - Identifies protocols such as HTTP, TLS/SNI, DNS, SSH, and QUIC through packet inspection.
 - Filters connections by process, address, port, protocol, and more.
+- Streams versioned JSON snapshots in headless mode for scripts and monitoring.
+- Shows host sockets, passive DNS analytics, and connection health.
 - Exports captures as PCAP or PCAPNG with best-effort annotations for analysis in Wireshark.
 - Reduces privileges after startup and uses platform sandboxing where supported.
 
 See the [usage guide](USAGE.md), [architecture guide](ARCHITECTURE.md), and [security guide](SECURITY.md) for feature details.
 
-Development builds require trusted directories for Unix output files and create diagnostic logs exclusively.
+Since v1.7.0, RustNet requires trusted directories for Unix output files and creates diagnostic logs exclusively.
 
-Development builds also fix ARM DEB compatibility with older glibc and Debian 13's time64 libraries. See the [installation guide](INSTALL.md#debianubuntu-deb-packages) for supported distributions; v1.6.0 assets do not include these fixes.
+v1.7.0 fixes ARM DEB compatibility with older glibc and Debian 13's time64 libraries. See the [installation guide](INSTALL.md#debianubuntu-deb-packages) for supported distributions; v1.6.0 assets do not include these fixes.
 
 ## Screenshots
 
@@ -72,7 +74,7 @@ Development builds also fix ARM DEB compatibility with older glibc and Debian 13
 | Cargo | `cargo install rustnet-monitor` |
 | Nix / NixOS | `nix-shell -p rustnet` |
 
-Windows also requires [Npcap](https://npcap.com). For v1.6.0, enable its "WinPcap API compatible mode". For openSUSE, Pop!_OS, FreeBSD, Docker, and source builds, see the [installation guide](INSTALL.md).
+Windows also requires [Npcap](https://npcap.com). v1.7.0 supports its default settings; v1.6.0 requires "WinPcap API compatible mode". For openSUSE, Pop!_OS, FreeBSD, Docker, and source builds, see the [installation guide](INSTALL.md).
 
 ## Run
 
@@ -88,10 +90,10 @@ Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See th
 
 ## Documentation
 
-- [QUIC inspection](QUIC.md): handshake storage and library compatibility (unreleased).
+- [QUIC inspection](QUIC.md): handshake storage and library compatibility (available since v1.7.0).
 - [Installation](INSTALL.md): platforms, permissions, and troubleshooting
 - [Usage](USAGE.md): controls, filtering, automation, and capture exports
-- [Terminal layout and appearance (development)](TUI.md)
+- [Terminal layout and appearance](TUI.md)
 - [Security](SECURITY.md): sandboxing and privilege management
 - [Architecture](ARCHITECTURE.md): platform backends and performance
 - [Kubernetes and containers](KUBERNETES.md): attribution and capture exports

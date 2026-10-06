@@ -2,7 +2,7 @@
 
 [English](QUIC.md) | [简体中文](QUIC.zh-CN.md) | [日本語](QUIC.ja.md)
 
-**未リリース：** RustNet はクライアント Initial の CRYPTO ストリームを組み立て、
+**v1.7.0 以降で利用可能：** RustNet はクライアント Initial の CRYPTO ストリームを組み立て、
 ClientHello から SNI、ALPN、TLS バージョンを抽出します。後続断片に ALPN があるため、
 SNI を得た後も組み立てを続けます。
 

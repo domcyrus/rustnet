@@ -2,7 +2,7 @@
 
 [English](QUIC.md) | [简体中文](QUIC.zh-CN.md) | [日本語](QUIC.ja.md)
 
-**Unreleased:** RustNet assembles the client Initial CRYPTO stream to extract
+**Available since v1.7.0:** RustNet assembles the client Initial CRYPTO stream to extract
 ClientHello metadata, including SNI, ALPN, and TLS version. Finding SNI alone
 does not stop assembly because later fragments can carry ALPN.
 

@@ -2,7 +2,7 @@
 
 [English](KUBERNETES.md) | [日本語](KUBERNETES.ja.md)
 
-## Docker、Podman 和 LXC（未发布）
+## Docker、Podman 和 LXC（自 v1.7.0 起可用）
 
 Linux 容器归属识别不依赖 `kubernetes` 特性或守护进程套接字，通过进程 cgroup 和 eBPF 保留的套接字标识工作，需要主机 PID、cgroup 和网络可见性。未知布局保持未知，procfs 回退无法恢复已退出的进程。
 
@@ -12,7 +12,7 @@ Docker 和 Podman 名称来自降低权限前读取的本地元数据；LXC 的 
 
 无界面 JSON、JSONL 日志和 PCAP 附属文件中的 `container` 包含 `runtime`、`id`、`name` 和 `cgroup_path`，后两项可为 null。PCAPNG 注释包含 `runtime=`、`container_id=` 和可用时的 `container=` 名称。事件反映写入时已知的元数据；PCAP 附属文件包含关闭时仍被跟踪连接的最终元数据。
 
-## 短连接（尚未发布）
+## 短连接（自 v1.7.0 起可用）
 
 在启用 Linux eBPF 和 cgroup v2 时，RustNet 会在 socket 事件发生时保留容器及其父 pod 的 cgroup 名称。因此，对于标准 systemd 和 cgroupfs Kubernetes 布局，即使连接在间隔五秒的两次命名空间扫描之间建立并结束，进程退出后仍可识别归属。查询先尝试观测到的端点方向（包括源地址通配匹配），再尝试反向匹配，因此主机上的抓包也能匹配 pod 网络命名空间内的 socket。Pod 和容器名称通过现有的 kubelet 日志元数据解析。事件中的 pod UID 和容器 ID 优先于按 PID 缓存的元数据。
 

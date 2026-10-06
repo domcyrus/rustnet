@@ -1656,9 +1656,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.2.3"
+version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b18443e9c262bfe8fa82f51666e2642c53393f7e5c27b3e1aeab922cff5b9d8"
+checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
 dependencies = [
  "libc",
  "log",
@@ -2637,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-capture"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -2648,7 +2648,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-host"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -2684,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-monitor"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2718,7 +2718,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-sandbox"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "caps",

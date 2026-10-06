@@ -2,13 +2,13 @@
 
 # Usage Guide
 
-> **Documentation version:** On `main`, this guide describes development code and may include unreleased features. For v1.6.0, use the [v1.6.0 usage guide](https://github.com/domcyrus/rustnet/blob/v1.6.0/USAGE.md). Check `rustnet --version` for your installed version and `rustnet --help` for its supported options.
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased features. For v1.7.0, use the [v1.7.0 usage guide](https://github.com/domcyrus/rustnet/blob/v1.7.0/USAGE.md). Check `rustnet --version` for your installed version and `rustnet --help` for its supported options.
 
 This guide covers detailed usage of RustNet, including command-line options, keyboard controls, filtering, sorting, and understanding connection lifecycle.
 
 ## Table of Contents
 
-- [Terminal layout and appearance (development)](TUI.md)
+- [Terminal layout and appearance](TUI.md)
 - [Running RustNet](#running-rustnet)
 - [Command-line Options](#command-line-options)
 - [Headless Mode](#headless-mode)
@@ -131,7 +131,7 @@ Builds compiled with the optional `kubernetes` feature (including the official D
 
 ### Headless Mode
 
-> **Unreleased:** `--headless`, `--duration`, `--output`, and `--filter` are unavailable in v1.6.0. To use this mode, [build from current `main`](INSTALL.md#building-from-source) or wait for a release that includes it.
+> **Available since v1.7.0.**
 
 RustNet starts its interactive TUI by default. If either stdin or stdout is not a terminal, interactive startup is refused before packet capture begins. Scripts, pipelines, schedulers, and services must opt in explicitly with `--headless`.
 
@@ -204,7 +204,7 @@ rustnet -i eth0          # Monitor Ethernet interface
 rustnet -i wlan0         # Monitor WiFi interface
 rustnet -i en0           # Monitor macOS primary interface
 
-# Windows (unreleased): use the adapter's friendly name; it is resolved to the
+# Windows (available since v1.7.0): use the adapter's friendly name; it is resolved to the
 # \Device\NPF_{GUID} device automatically
 rustnet -i Ethernet
 rustnet -i "Wi-Fi"
@@ -270,7 +270,7 @@ networks, but disables:
 
 Useful for performance-constrained environments or when application-level details aren't needed.
 
-#### Database DPI (unreleased)
+#### Database DPI (available since v1.7.0)
 
 With DPI enabled, **Details → Application** shows:
 
@@ -352,7 +352,7 @@ per-process name tints darken likewise. Terminals that do not answer the query
 keep the theme as-is, and explicit `[theme.overrides]` values are never
 touched.
 
-**Unreleased:** The same file accepts an optional `[view]` table. Set `group_by_process = true`
+**Available since v1.7.0:** The same file accepts an optional `[view]` table. Set `group_by_process = true`
 to start Overview with collapsed process groups. The default is `false` (flat).
 `a` toggles grouping for the session, `Space` expands a group, and `r` restores
 the configured grouping preference. These settings do not affect headless output.
@@ -413,7 +413,7 @@ Enable logging with the specified level. Logging is **disabled by default**.
 - `debug` - Detailed debugging information
 - `trace` - Very verbose output (includes packet-level details)
 
-Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`. Development builds add a numeric suffix if that name already exists.
+Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`. Since v1.7.0, RustNet adds a numeric suffix if that name already exists.
 
 #### `--kubernetes <MODE>` (optional feature) <a id="--kubernetes-mode-optional-feature"></a>
 
@@ -436,7 +436,7 @@ Attribution is surfaced in:
 
 **Running on a cluster:** the easiest way to use this is the [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) plugin (`kubectl krew install rustnet`). It launches RustNet as an ephemeral debug pod on a node using the official image, mounts the kubelet log directories read-only for name resolution, and cleans up the pod on exit. Since the plugin runs RustNet inside a pod, the default `auto` mode enables attribution without any flags.
 
-**Short flows (unreleased):** eBPF retains cgroup v2 pod/container identity after process exit. See [Kubernetes capture](KUBERNETES.md) for retention limits and the separate plugin’s `--output-dir` follow-up.
+**Short flows (available since v1.7.0):** eBPF retains cgroup v2 pod/container identity after process exit. See [Kubernetes capture](KUBERNETES.md) for retention limits and the separate plugin’s `--output-dir` follow-up.
 
 ```bash
 # On a Kubernetes cluster: run as an ephemeral debug pod via the plugin
@@ -451,7 +451,7 @@ rustnet --kubernetes on
 
 ## Keyboard Controls
 
-> **Unreleased navigation changes:** The Host tab, contextual help overlay, and compact section controls below are unavailable in v1.6.0. In that release, `5` opens Help and `i` on Activity opens interface details.
+> **Available since v1.7.0.**
 
 ### Navigation
 
@@ -516,7 +516,7 @@ including space taken by the filter editor or a two-row capture-error banner.
 
 ### Observed VLAN IDs
 
-> **Unreleased:** available on `main`, not in v1.6.0.
+> **Available since v1.7.0.**
 
 Details shows **Observed VLANs** in the Connection section, with the sorted,
 unique 802.1Q IDs seen for that connection. The field supports click-to-copy.
@@ -593,7 +593,7 @@ RustNet has full mouse support. Mouse capture is enabled automatically — all i
 | **Click** a connection in the top strip | Select that connection |
 | **Click** on any field line | Copy the field value to the system clipboard |
 
-In development builds, `v` / Shift+`v` moves through information pages and
+Since v1.7.0, `v` / Shift+`v` moves through information pages and
 sections when the complete dashboard does not fit; clicking a section opens its
 first page. Details uses no information scrollbar. `j` / `k`, up/down arrows,
 Page Up/Down (or Ctrl+B/F), and the mouse wheel navigate connections, skipping
@@ -631,7 +631,7 @@ Use keyword filters for targeted searches:
 | `src:` | `source:` | Source IPs/hostnames | `src:192.168` matches 192.168.x.x |
 | `dst:` | `dest:`, `destination:` | Destinations | `dst:github.com` matches github.com |
 | `process:` | `proc:` | Process names; `unknown` includes unresolved names | `process:ssh` matches ssh, sshd |
-| `pid:` | | Exact process ID (unreleased) | `pid:1234` matches PID 1234 |
+| `pid:` | | Exact process ID (available since v1.7.0) | `pid:1234` matches PID 1234 |
 | `sni:` | `host:`, `hostname:` | SNI hostnames (HTTPS) and DNS-attributed hostnames | `sni:api` matches api.example.com |
 | `service:` | `svc:` | Service names | `service:https` matches HTTPS service |
 | `app:` | `application:` | Detected application protocol | `app:ssh` matches SSH connections |
@@ -639,8 +639,8 @@ Use keyword filters for targeted searches:
 | `proto:` | `protocol:` | Protocol type | `proto:tcp` matches TCP connections |
 | `pod:` | | Kubernetes pod name or UID * | `pod:nginx` matches nginx-86644db9cc-mf5lx |
 | `ns:` | `namespace:` | Kubernetes pod namespace * | `ns:kube-system` matches pods in kube-system |
-| `container:` | `cont:` | Container name or ID (generic Linux support is unreleased) | `container:nginx` matches the nginx container |
-| `runtime:` | | Container manager (unreleased) | `runtime:docker`, `runtime:podman`, `runtime:lxc` |
+| `container:` | `cont:` | Container name or ID (generic Linux support since v1.7.0) | `container:nginx` matches the nginx container |
+| `runtime:` | | Container manager (available since v1.7.0) | `runtime:docker`, `runtime:podman`, `runtime:lxc` |
 
 \* Requires a build with the `kubernetes` feature and active pod attribution. See [`--kubernetes`](#--kubernetes-mode-optional-feature).
 
@@ -734,7 +734,7 @@ Press `s` to cycle through columns in left-to-right order:
 | **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.), with TCP/UDP as tie-break |
 | **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
 | **RTT** | ↓ Descending | Sort by round-trip time (slowest connections first by default) |
-| **Health** (unreleased) | ↓ Descending | Sort protocol-aware health signals by severity, then event count |
+| **Health** (available since v1.7.0) | ↓ Descending | Sort protocol-aware health signals by severity, then event count |
 | **Bandwidth (Rx/Tx)** | ↓ Descending | Sort by **combined up+down** bandwidth (highest first by default) |
 
 Columns hidden at narrow terminal widths stay in the cycle — the active sort is always named in the table's section title.
@@ -939,7 +939,7 @@ Active TCP Flows: 18
 
 ### Per-Connection Statistics
 
-> **Unreleased:** The Health badges and severity sort, plus the per-direction TCP window display described below, were added after v1.6.0.
+> **Available since v1.7.0.**
 
 The Overview table shows observable connection quality in the **Health**
 column. The badge adapts to the protocol:
@@ -1010,7 +1010,7 @@ Fast retransmit frequency indicates how well TCP is recovering from packet loss 
 
 ## Process Activity
 
-> **Unreleased:** The application browser, PID drill-down, and `o` shortcut below are unavailable in v1.6.0, which has a process-based Activity table.
+> **Available since v1.7.0.**
 
 The Activity tab derives bounded process traffic totals from active connections and RustNet's existing pool of up to 5,000 retained historic connections. A short-lived uploader remains visible after its socket closes, until its historic connection is evicted or the connections are cleared. Press `3` to open it.
 
@@ -1021,7 +1021,7 @@ Activity includes traffic in its retained pool, regardless of the
 Overview filter or history toggle. An active Overview filter adds an `all traffic`
 label to Activity's summary.
 
-**Unreleased:** Activity follows Overview's PTR visibility setting. When reverse
+**Available since v1.7.0:** Activity follows Overview's PTR visibility setting. When reverse
 DNS resolution is enabled, DNS PTR queries and responses are excluded from both
 views unless `--show-ptr-lookups` is set. With `--no-resolve-dns`, captured PTR
 traffic from other programs remains visible. Interface counters still include it.
@@ -1088,7 +1088,7 @@ For a quick security review, sort Egress by the rolling or retained byte count, 
 
 ## Host Socket Inventory
 
-> **Unreleased:** The Host tab is unavailable in v1.6.0. For interface statistics in that release, press `3` for Activity, then `i`.
+> **Available since v1.7.0.**
 
 Press `5` to open the Host tab. Unlike the Overview connection list, this view reads the operating system's socket table and does not require a packet to have been captured for a row to appear.
 
@@ -1262,11 +1262,11 @@ RustNet uses intelligent timeout management to automatically clean up inactive c
 
 ### Hostname Display
 
-Hostnames extracted from the connection itself (TLS SNI from HTTPS or QUIC, the HTTP `Host:` header) are shown in the **App** column. In development builds, DNS-attributed names also appear in **App**, for example `TCP·HTTPS (~example.com)` or `UDP (~example.com)` when no application protocol is detected. They appear when no SNI / Host name is available and a DNS resolution to the remote IP was observed within the last **10 seconds**. Compact App columns omit hostname metadata.
+Hostnames extracted from the connection itself (TLS SNI from HTTPS or QUIC, the HTTP `Host:` header) are shown in the **App** column. Since v1.7.0, DNS-attributed names also appear in **App**, for example `TCP·HTTPS (~example.com)` or `UDP (~example.com)` when no application protocol is detected. They appear when no SNI / Host name is available and a DNS resolution to the remote IP was observed within the last **10 seconds**. Compact App columns omit hostname metadata.
 
 The **Remote** column shows reverse DNS (unless disabled with `--no-resolve-dns`), falling back to the raw IP address. The `d` key toggles reverse-DNS names without hiding application names.
 
-The leading `~` glyph signals that the hostname was *inferred* from a DNS response seen on the wire, not extracted from the connection. This is most useful for QUIC sessions after the handshake (where SNI is encrypted) and for plain TCP/UDP connections that carry no hostname-bearing payload. Attribution needs no active lookups, so it works even with `--no-resolve-dns`. In development builds, the Details tab’s **Application** card shows a separate **Attributed Name** row with the full inferred hostname, plus an **Attributed Via** row with the source and observation age (`Captured DNS, 5s ago`) so the provenance is explicit. Attributed names are searchable like any other hostname: both the `sni:` / `host:` / `hostname:` keyword filter and the free-text search match them.
+The leading `~` glyph signals that the hostname was *inferred* from a DNS response seen on the wire, not extracted from the connection. This is most useful for QUIC sessions after the handshake (where SNI is encrypted) and for plain TCP/UDP connections that carry no hostname-bearing payload. Attribution needs no active lookups, so it works even with `--no-resolve-dns`. Since v1.7.0, the Details tab’s **Application** card shows a separate **Attributed Name** row with the full inferred hostname, plus an **Attributed Via** row with the source and observation age (`Captured DNS, 5s ago`) so the provenance is explicit. Attributed names are searchable like any other hostname: both the `sni:` / `host:` / `hostname:` keyword filter and the free-text search match them.
 
 **Caveats** (RustNet learns names by sniffing DNS on the wire):
 
@@ -1277,9 +1277,7 @@ The leading `~` glyph signals that the hostname was *inferred* from a DNS respon
 
 ### Visual Staleness Indicators
 
-> **Unreleased:** The stripe and countdown below are unavailable in v1.6.0. In
-> that release, the entire expiring row turns yellow at 75% of its timeout and
-> progresses toward red during the final 10% before cleanup.
+> **Available since v1.7.0.**
 
 The cleanup clock uses the time since the last packet for nonterminal connections
 and the first terminal observation for terminal connections. The visual cue also
@@ -1398,7 +1396,7 @@ Observed Network Health, Observed TCP States, and Application Distribution use t
 
 ## Logging
 
-Logging is **disabled by default**. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`. Development builds add a numeric suffix when that name already exists and require a trusted launch directory on Unix.
+Logging is **disabled by default**. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`. Since v1.7.0, RustNet adds a numeric suffix when that name already exists and requires a trusted launch directory on Unix.
 
 ### Log File Contents
 

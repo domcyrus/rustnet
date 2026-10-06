@@ -2,11 +2,11 @@
 
 # Security
 
-> **Documentation version:** On `main`, this guide describes development code and may include unreleased changes. For v1.6.0, use the [v1.6.0 security guide](https://github.com/domcyrus/rustnet/blob/v1.6.0/SECURITY.md). Check `rustnet --version` for your installed version.
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased changes. For v1.7.0, use the [v1.7.0 security guide](https://github.com/domcyrus/rustnet/blob/v1.7.0/SECURITY.md). Check `rustnet --version` for your installed version.
 
 RustNet processes untrusted network data, making defense-in-depth security critical. This document describes the security measures implemented.
 
-> **Unreleased hardening:** Aborting on a failed requested UID/GID drop, retaining secure output descriptors without Seatbelt output-path exceptions, and checking for output-file collisions are changes after v1.6.0. The Linux startup socket inventory described below is also unreleased.
+> **Hardening available since v1.7.0:** RustNet aborts on a failed requested UID/GID drop, retains secure output descriptors without Seatbelt output-path exceptions, and checks for output-file collisions. The Linux startup socket inventory described below is also available since v1.7.0.
 
 On Linux, macOS, and FreeBSD, a requested root UID/GID drop must succeed before
 packet-processing workers start, even in best-effort mode. A failed transition
@@ -128,7 +128,7 @@ and execution of all binaries except `/usr/sbin/lsof`.
 
 All three flags work normally within the sandbox.
 
-**Unreleased:** On Unix, existing explicit output files must belong to the effective user or a valid sudo caller. Output paths are opened relative to validated directory descriptors. Directories with unsafe ownership or permissions are rejected. Automatic diagnostic logs are created only as new files in a validated `logs/` directory. Use trusted private launch and output directories; changing permissions on an existing file cannot revoke descriptors another process already holds.
+**Available since v1.7.0:** On Unix, existing explicit output files must belong to the effective user or a valid sudo caller. Output paths are opened relative to validated directory descriptors. Directories with unsafe ownership or permissions are rejected. Automatic diagnostic logs are created only as new files in a validated `logs/` directory. Use trusted private launch and output directories; changing permissions on an existing file cannot revoke descriptors another process already holds.
 
 ### Security Benefits
 

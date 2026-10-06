@@ -2,7 +2,7 @@
 
 # Terminal layout and appearance
 
-> These changes are unreleased and describe development builds after v1.6.0.
+> These changes are available since v1.7.0.
 
 All five tabs use the available terminal width, with shared section headings and
 consistent gaps between adjacent panes. Scrolling tables reserve two cells at the

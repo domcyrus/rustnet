@@ -2,7 +2,7 @@
 
 [简体中文](KUBERNETES.zh-CN.md) | [日本語](KUBERNETES.ja.md)
 
-## Docker, Podman and LXC (unreleased)
+## Docker, Podman and LXC (available since v1.7.0)
 
 On Linux, container attribution works without the `kubernetes` feature or daemon sockets. It uses process cgroups and retained eBPF socket identity; host PID/cgroup and network visibility are required. Unknown layouts stay unknown, and procfs fallback cannot recover exited processes.
 
@@ -12,7 +12,7 @@ Docker and Podman names come from readable local metadata collected before privi
 
 Headless JSON, JSONL logs and PCAP sidecars expose `container` with `runtime`, `id`, `name` and `cgroup_path`; the last two may be null. PCAPNG comments include `runtime=`, `container_id=` and available `container=` names. Events reflect metadata known when written; PCAP sidecars include final metadata for connections still tracked at shutdown.
 
-## Short flows (unreleased)
+## Short flows (available since v1.7.0)
 
 With Linux eBPF and cgroup v2, RustNet retains the container and parent pod cgroup names at each socket event. Standard systemd and cgroupfs Kubernetes layouts can therefore be attributed after the process exits, even when the flow starts and ends between the five-second namespace scans. Lookup tries the observed endpoint orientation first, including wildcard source addresses, then the reverse orientation, so host capture can match sockets in a pod network namespace. Pod and container names are resolved from the existing kubelet log metadata. The recorded pod UID and container ID take precedence over cached PID metadata.
 
