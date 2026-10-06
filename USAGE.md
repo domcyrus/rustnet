@@ -1017,9 +1017,14 @@ The Activity tab derives bounded process traffic totals from active connections 
 Activity groups traffic by exact process name, matching Overview's process-name
 groups. For example, all retained `gh` PIDs contribute to one application row.
 Overview browses connections; Activity compares application traffic over time.
-Activity includes all captured traffic in its retained pool, regardless of the
+Activity includes traffic in its retained pool, regardless of the
 Overview filter or history toggle. An active Overview filter adds an `all traffic`
 label to Activity's summary.
+
+**Unreleased:** Activity follows Overview's PTR visibility setting. When reverse
+DNS resolution is enabled, DNS PTR queries and responses are excluded from both
+views unless `--show-ptr-lookups` is set. With `--no-resolve-dns`, captured PTR
+traffic from other programs remains visible. Interface counters still include it.
 
 The application browser switches between Egress (TX) and Ingress (RX). Its table
 and inline application or process details expose:

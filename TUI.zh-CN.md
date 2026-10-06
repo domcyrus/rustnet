@@ -43,6 +43,11 @@ Activity 的 TX/RX 汇总标签和单位使用固定列，数字右对齐。速�
 实时接口速率使用固定列，条形图则使用更平稳的 60 秒总量。Capture 覆盖率也显示
 TX/RX 条形图。小终端和详情视图优先显示表格或所选记录；完整接口列表仍位于 Host。
 
+Activity 对活跃及保留的历史连接采用与 Overview 相同的 PTR 显示设置。
+启用反向 DNS 时，两个标签页均隐藏 PTR 查询和响应，除非指定 `--show-ptr-lookups`。
+`--no-resolve-dns` 禁用 RustNet 的查询，同时保留已捕获 PTR 流量的显示。
+接口计数器仍包含这些流量。Overview 的文本筛选条件和历史显示开关不限制 Activity。
+
 ## 流量图
 
 Graph 在完整仪表板放得下时同时显示所有面板。较小的终端使用 Traffic、Health 和

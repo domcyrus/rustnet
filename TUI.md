@@ -54,6 +54,12 @@ use fixed columns, while the bars follow the steadier 60-second totals. Capture
 coverage also has TX/RX bars. Smaller terminals and detail views prioritize the
 table or selected record; full interface inventory remains available in Host.
 
+Activity follows Overview's PTR visibility setting for active and retained
+connections. With reverse DNS enabled, PTR queries and responses are hidden in
+both tabs unless `--show-ptr-lookups` is set. `--no-resolve-dns` disables RustNet's
+lookups and leaves captured PTR traffic visible. Interface counters still include
+this traffic. Overview's text filter and history toggle do not limit Activity.
+
 ## Traffic charts
 
 Graph shows all panels together when the full dashboard fits. Smaller terminals
