@@ -1,114 +1,63 @@
-# vhs tape for the rustnet demo GIF.
-#
-# Render with: scripts/record-rustnet-demo.sh
-# (wraps `vhs demo.tape` with setcap, background traffic, and
-#  gifsicle optimization).
-#
-# Manual render: vhs demo.tape (writes assets/rustnet.gif).
-# Pre-build the release binary and grant it capture capabilities first:
-#   cargo build --release
-#   sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' target/release/rustnet
-# The tape then runs the binary unprivileged, so the Security sidebar
-# shows the sandboxed non-root posture instead of a root warning.
-#
-# Pacing principles (from the ratatui showcase review):
-#   - never show the blank state: stay hidden until the table is populated
-#   - fewer beats, longer dwell on each screen; short overall (~28s)
-#   - larger text, less padding: FontSize 16 / Padding 10 — the responsive
-#     column hiding keeps the table clean at the narrower cell count, and
-#     the sidebar toggle beat shows columns flowing back in
-#   - navigations should read as zooming/expanding, not screen replacement
-#   - the GIF shows fewer things for longer
-#
-# Storyboard (~28s, 6 beats):
-#   1. Reveal Overview with live traffic, let it breathe.
-#   2. Walk two rows slowly.
-#   3. Toggle the System sidebar off and on (i) — columns reflow to fill.
-#   4. Group by process (a), expand the selected group (Space), walk into
-#      its connections.
-#   5. Enter zooms into Details: the continuity strip shows the grouped
-#      neighbors; j flips through them without leaving the tab. Esc back.
-#   6. Jump to Graph (4), dwell, then back to Overview (1).
-#
-# Sized for the README: 1600x900 at FontSize 16 yields ~164 terminal
-# columns — enough for the near-full column set alongside the System
-# sidebar (GitHub scales the GIF down to the README width; wide captures
-# stay sharp on click-through/retina). Narrower canvases push the table
-# to its degraded column floor, which hides most of the data.
-#
-# The font is pinned deliberately. The traffic graphs are drawn with Unicode
-# Braille (U+2800..U+28FF), and VHS's default family is plain "JetBrains Mono",
-# which is often not installed. Fontconfig then substitutes silently and every
-# graph cell renders as fallback tofu, turning the waves into a solid block.
-# The Nerd Font Mono variant has Braille coverage and keeps every glyph one
-# cell wide, so the table columns stay aligned.
-#   Arch: sudo pacman -S ttf-jetbrains-mono-nerd
-#   Verify: fc-list ':charset=2840' family
+# RustNet v1.7.0: live Overview, grouping, Details, Activity, Graph and Host.
+# Published assets use the v1.7.0 Linux ARM64 release with eBPF and generated
+# traffic on an isolated Docker network. The commands below target native Linux.
+# Render with scripts/record-rustnet-demo.sh on Linux after setting capture
+# capabilities. Use generated traffic and verify rustnet --version first.
+# Keep the warm-up hidden and allow time to read each view.
 
 Output assets/rustnet.gif
 
 Set Theme "Catppuccin Mocha"
 Set FontFamily "JetBrainsMono Nerd Font Mono"
-Set FontSize 16
+Set FontSize 18
 Set Width 1600
-Set Height 900
-Set Padding 10
-Set TypingSpeed 50ms
-Set Framerate 24
+Set Height 1000
+Set Padding 12
+Set TypingSpeed 30ms
+Set Framerate 15
 Set PlaybackSpeed 1.0
 
-# Stay hidden until capture has warmed up so the reveal is a busy table,
-# never the empty/loading state.
 Hide
-Type "clear"
+Type "target/release/rustnet -i any --theme catppuccin-mocha"
 Enter
-Type "target/release/rustnet -i any"
-Enter
-Sleep 5s
+Sleep 12s
 Show
 
-# 1. Overview with live traffic.
-Sleep 3500ms
-
-# 2. Walk two rows.
-Down
-Sleep 1s
-Down
-Sleep 1500ms
-
-# 3. System sidebar toggle: the table reflows and extra columns appear.
-Type "i"
-Sleep 2500ms
-Type "i"
-Sleep 1500ms
-
-# 4. Group by process and step into the expanded group.
+# Live connections, then filter and expand a process group.
+Sleep 4s
+Type "/process:curl"
+Enter
+Sleep 2s
 Type "a"
 Sleep 2s
 Space
-Sleep 1500ms
-Down
-Sleep 800ms
+Sleep 2s
 Down
 Sleep 1s
 
-# 5. Details: the strip at the top continues the grouped list; j flips
-#    through the neighbors without leaving the tab.
+# Inspect one connection and its protocol metadata.
 Enter
-Sleep 3500ms
-Down
-Sleep 1200ms
-Down
-Sleep 2s
-Escape
-Sleep 1500ms
+Sleep 5s
 
-# 6. Graph, then close the loop on Overview.
-Type "4"
-Sleep 3s
+# Clear the filter before showing all application traffic and graphs.
 Type "1"
-Sleep 2s
+Type "/"
+Escape
+Type "3"
+Sleep 5s
+Type "4"
+Sleep 5s
 
+# Host socket inventory and passive DNS analytics.
+Type "5"
+Sleep 4s
+Type "vv"
+Sleep 5s
+
+# Return to the opening view for a gentle loop.
+Type "1"
+Type "a"
+Sleep 3s
 Hide
 Type "q"
 Sleep 200ms

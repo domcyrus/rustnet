@@ -26,7 +26,7 @@ brew install rustnet
 
 抓包需要按平台配置权限。Linux capabilities、macOS 的 PKTAP 和 BPF 访问权限、其他包管理器及故障排查见[安装指南](INSTALL.zh-CN.md)。
 
-> **发布状态：** 下文的功能亮点对应 v1.7.0。GIF 和截图展示 v1.6.0；新版界面请参阅[终端布局指南](TUI.zh-CN.md)。`main` 分支链接的指南还可能介绍[尚未发布的变更](CHANGELOG.md#unreleased)。使用已发布版本时，请参阅 [v1.7.0 文档](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.zh-CN.md)，并运行 `rustnet --version` 和 `rustnet --help` 确认版本及选项。
+> **发布状态：** 下文的功能亮点、GIF 和截图均对应 v1.7.0。录制使用隔离 Linux 环境中生成的流量。`main` 分支链接的指南还可能介绍[尚未发布的变更](CHANGELOG.md#unreleased)。使用已发布版本时，请参阅 [v1.7.0 文档](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.zh-CN.md)，并运行 `rustnet --version` 和 `rustnet --help` 确认版本及选项。
 
 ## 演示
 
@@ -59,7 +59,11 @@ v1.7.0 修复了 ARM DEB 与旧版 glibc 及 Debian 13 time64 库的兼容性。
   </tr>
   <tr>
     <td align="center"><strong>图表</strong><br>流量与应用图表<br><img src="./assets/screenshots/graph.png" width="400" alt="RustNet 图表"></td>
-    <td align="center"><strong>活动</strong><br>按进程查看流量<br><img src="./assets/screenshots/interfaces.png" width="400" alt="RustNet 活动"></td>
+    <td align="center"><strong>活动</strong><br>按进程查看流量<br><img src="./assets/screenshots/activity.png" width="400" alt="RustNet 活动"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>主机 socket</strong><br>监听及已绑定的端点<br><img src="./assets/screenshots/host.png" width="400" alt="RustNet 主机 socket"></td>
+    <td align="center"><strong>DNS</strong><br>被动观测的 DNS 查询与响应<br><img src="./assets/screenshots/dns.png" width="400" alt="RustNet DNS"></td>
   </tr>
 </table>
 

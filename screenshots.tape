@@ -1,94 +1,67 @@
-# vhs tape for the rustnet README screenshots.
-#
-# Render with: scripts/record-rustnet-demo.sh
-# (which runs both demo.tape and this tape, then cleans the throwaway GIF).
-#
-# Manual render: vhs screenshots.tape
-# Pre-build the release binary and grant it capture capabilities first:
-#   cargo build --release
-#   sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' target/release/rustnet
-#
-# Captures the four README views and emits PNGs under assets/screenshots/.
-# Sized larger than demo.tape (1600x1000, FontSize 16) for crisper README
-# rendering. The GIF Output is a throwaway and is deleted by the script.
-#
-# Beats and outputs:
-#   1. Overview                      -> assets/screenshots/overview.png
-#   2. Details from a grouped child  -> assets/screenshots/details.png
-#      (shows the continuity strip + "grouped by process" badge)
-#   3. Graph (4)                     -> assets/screenshots/graph.png
-#   4. Activity (3)                  -> assets/screenshots/interfaces.png
-#
-# The font is pinned deliberately. The traffic graphs are drawn with Unicode
-# Braille (U+2800..U+28FF), and VHS's default family is plain "JetBrains Mono",
-# which is often not installed. Fontconfig then substitutes silently and every
-# graph cell renders as fallback tofu, turning the waves into a solid block.
-# The Nerd Font Mono variant has Braille coverage and keeps every glyph one
-# cell wide, so the table columns stay aligned.
-#   Arch: sudo pacman -S ttf-jetbrains-mono-nerd
-#   Verify: fc-list ':charset=2840' family
+# RustNet v1.7.0 README views. Render with scripts/record-rustnet-demo.sh.
+# Published assets use the v1.7.0 Linux ARM64 release with eBPF and generated
+# traffic on an isolated Docker network. The commands below target native Linux.
+# Warm up the capture and graphs before taking any screenshots.
+# The font includes the Braille glyphs used by the traffic plots.
 
 Output assets/screenshots/_throwaway.gif
 
 Set Theme "Catppuccin Mocha"
 Set FontFamily "JetBrainsMono Nerd Font Mono"
-Set FontSize 16
+Set FontSize 18
 Set Width 1600
 Set Height 1000
-Set Padding 20
-Set TypingSpeed 50ms
-Set Framerate 24
+Set Padding 12
+Set TypingSpeed 30ms
+Set Framerate 15
 Set PlaybackSpeed 1.0
 
-# Stay hidden until capture has warmed up so no shot catches the
-# empty/loading state.
 Hide
-Type "clear"
+Type "target/release/rustnet -i any --theme catppuccin-mocha"
 Enter
-Type "target/release/rustnet -i any"
-Enter
-Sleep 5s
+Sleep 18s
 Show
-
-# 1. Overview
-Sleep 3s
-Down
-Sleep 500ms
-Down
-Sleep 500ms
+Sleep 2s
 Screenshot "assets/screenshots/overview.png"
-Sleep 500ms
+Sleep 300ms
 
-# Prepare Details: expand the selected process group and step onto a child.
-Type "a"
-Sleep 1500ms
-Space
-Sleep 1000ms
-Down
-Sleep 400ms
-Down
-Sleep 1000ms
-# 2. Details from the grouped child: continuity strip + grouped badge.
+# Filter first so unrelated packets cannot change the selected connection.
+Type "/process:curl"
 Enter
-Sleep 2500ms
-Screenshot "assets/screenshots/details.png"
-Sleep 500ms
-Escape
-Sleep 800ms
+Sleep 1s
 Type "a"
-Sleep 800ms
-
-# 3. Graph
-Type "4"
-Sleep 2500ms
-Screenshot "assets/screenshots/graph.png"
+Sleep 1s
+Space
+Sleep 1s
+Down
 Sleep 500ms
+Enter
+Sleep 3s
+Screenshot "assets/screenshots/details.png"
+Sleep 300ms
 
-# 4. Activity
+# Restore the full traffic view.
+Type "1"
+Type "/"
+Escape
 Type "3"
-Sleep 2500ms
-Screenshot "assets/screenshots/interfaces.png"
-Sleep 500ms
+Sleep 3s
+Screenshot "assets/screenshots/activity.png"
+Sleep 300ms
+
+Type "4"
+Sleep 3s
+Screenshot "assets/screenshots/graph.png"
+Sleep 300ms
+
+Type "5"
+Sleep 3s
+Screenshot "assets/screenshots/host.png"
+Sleep 300ms
+Type "vv"
+Sleep 3s
+Screenshot "assets/screenshots/dns.png"
+Sleep 300ms
 
 Hide
 Type "q"
