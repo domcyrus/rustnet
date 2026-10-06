@@ -3,7 +3,7 @@
 Name:    rustnet
 # renovate: datasource=github-releases depName=domcyrus/rustnet extractVersion=true
 Version: 1.7.0
-Release: 1%{?dist}
+Release: 2%{?dist}
 Summary: Per-process network monitoring TUI with deep packet inspection
 License: Apache-2.0
 URL:     https://github.com/domcyrus/%{name}
@@ -75,6 +75,19 @@ Features:
 %{cargo_build}
 %else
 export RUSTFLAGS="%{build_rustflags}"
+%if 0%{?fedora}
+%ifarch aarch64
+# libbpf 1.7.0 shadows linux/types.h without the types used by Linux 7.3.
+# Remove when libbpf-sys includes libbpf commit f90a9c487d75.
+cat > libbpf-u128-compat.h <<'EOF'
+#ifdef __SIZEOF_INT128__
+typedef __signed__ __int128 __s128 __attribute__((aligned(16)));
+typedef unsigned __int128 __u128 __attribute__((aligned(16)));
+#endif
+EOF
+export LIBBPF_SYS_EXTRA_CFLAGS="${LIBBPF_SYS_EXTRA_CFLAGS:-} -include $PWD/libbpf-u128-compat.h"
+%endif
+%endif
 # eBPF is now enabled by default, no need for explicit feature flag
 cargo build --release
 %endif
