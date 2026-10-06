@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-06
+
 ### Security
 - Reject Unix output files owned by unrelated users before changing or writing them, anchor opens to validated directories, and create diagnostic logs exclusively
 
@@ -68,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- Publish the internal workspace crates as 0.6.0 for the changed library APIs.
 - Label the Overview interface error and drop counters as Interfaces.
 - Simplify Graph and Details to automatic independent RX/TX scales, with no scale,
   log, or lock controls.
@@ -167,6 +170,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- Restore FreeBSD builds with mio 1.2.4, which supports libc 0.2.190.
 - Apply Overview's PTR visibility setting to Activity totals, including retained
   connections; use `--show-ptr-lookups` to include reverse DNS traffic in both tabs.
 - Preserve Linux Host socket owners discovered at startup across restricted procfs refreshes, including listeners and bound UDP sockets
@@ -1344,7 +1348,8 @@ Special thanks to the external contributors in this release:
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/domcyrus/rustnet/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/domcyrus/rustnet/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/domcyrus/rustnet/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/domcyrus/rustnet/compare/v1.3.0...v1.4.0

@@ -39,7 +39,10 @@ This catches cross-platform and static linking issues before you invest time in 
 > `[workspace.dependencies]`). A normal feature
 > release bumps **only the binary `[package] version`** and `rpm/rustnet.spec`.
 > Bump the library version separately, and only when the libraries actually
-> change in a release-worthy way.
+> change in a release-worthy way. Update `[workspace.package] version` and
+> all four internal `[workspace.dependencies]` versions together. For v1.7.0,
+> the changed library APIs require 0.6.0; leaving them at the published 0.5.0
+> would make crates.io skip the new library code.
 
 Update the binary version in `Cargo.toml` and `rpm/rustnet.spec`, and turn the
 accumulated `[Unreleased]` changelog section into the release entry:
@@ -126,10 +129,10 @@ The GitHub Actions workflow will automatically:
 - Start crates.io, Docker, COPR, PPA, and OBS publishing after the release is published
 - Trigger Homebrew, Chocolatey, FreeBSD, and AUR updates after those publishing jobs succeed
 
-The current `publish-release` job waits for installer jobs to finish but only
-checks that `create-release` succeeded. It can publish a release when an
-installer job failed and its asset is missing. Inspect job results and assets
-before treating the release as complete.
+The `publish-release` job requires release creation and all Linux, macOS,
+and Windows installer jobs to succeed. If an installer job fails, the release
+stays in draft. Inspect job results and assets before treating the release
+as complete.
 
 ### 6. Verify the Release
 

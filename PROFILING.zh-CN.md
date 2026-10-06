@@ -127,7 +127,7 @@ sudo perf stat -p $PID sleep 60
 sudo kill $PID
 ```
 
-以上无界面示例需要从当前 `main` 分支构建；v1.6.0 不支持 `--headless`。
+以上无界面示例需要 v1.7.0 或更高版本；v1.6.0 不支持 `--headless`。
 运行该示例时不要同时运行其他 `rustnet` 进程，以确保 `pgrep` 选中刚启动的进程。
 
 ## 性能回归测试<a id="performance-regression-testing"></a>

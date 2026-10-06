@@ -26,7 +26,7 @@ brew install rustnet
 
 抓包需要按平台配置权限。Linux capabilities、macOS 的 PKTAP 和 BPF 访问权限、其他包管理器及故障排查见[安装指南](INSTALL.zh-CN.md)。
 
-> **发布状态：** 下文的功能亮点、GIF 和截图对应 v1.6.0。`main` 分支链接的指南还可能介绍[尚未发布的变更](CHANGELOG.md#unreleased)。使用已发布版本时，请参阅 [v1.6.0 文档](https://github.com/domcyrus/rustnet/blob/v1.6.0/README.zh-CN.md)，并运行 `rustnet --version` 和 `rustnet --help` 确认版本及选项。
+> **发布状态：** 下文的功能亮点对应 v1.7.0。GIF 和截图展示 v1.6.0；新版界面请参阅[终端布局指南](TUI.zh-CN.md)。`main` 分支链接的指南还可能介绍[尚未发布的变更](CHANGELOG.md#unreleased)。使用已发布版本时，请参阅 [v1.7.0 文档](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.zh-CN.md)，并运行 `rustnet --version` 和 `rustnet --help` 确认版本及选项。
 
 ## 演示
 
@@ -39,14 +39,16 @@ brew install rustnet
 - 在可通过 SSH 使用的终端界面中，显示连接状态、流量、应用层协议及可获取的进程信息。
 - 通过数据包检测识别 HTTP、TLS/SNI、DNS、SSH、QUIC 等协议。
 - 按进程、地址、端口、协议等条件过滤连接。
+- 在无界面模式下流式输出带版本号的 JSON 快照，供脚本与监控使用。
+- 显示主机 socket、被动 DNS 分析与连接健康状况。
 - 导出 PCAP 或带尽力而为注释的 PCAPNG，供 Wireshark 分析。
 - 启动后降低权限，并在支持的平台上启用沙箱。
 
 功能详情见[使用指南](USAGE.zh-CN.md)、[架构指南](ARCHITECTURE.zh-CN.md)和[安全指南](SECURITY.zh-CN.md)。
 
-开发版在 Unix 上要求输出目录可信，并以独占方式创建诊断日志。
+自 v1.7.0 起，RustNet 在 Unix 上要求输出目录可信，并以独占方式创建诊断日志。
 
-开发版还修复了 ARM DEB 与旧版 glibc 及 Debian 13 time64 库的兼容性。支持的发行版请参阅[安装指南](INSTALL.zh-CN.md#debianubuntu-deb-packages)；v1.6.0 发布文件不包含这些修复。
+v1.7.0 修复了 ARM DEB 与旧版 glibc 及 Debian 13 time64 库的兼容性。支持的发行版请参阅[安装指南](INSTALL.zh-CN.md#debianubuntu-deb-packages)；v1.6.0 发布文件不包含这些修复。
 
 ## 截图
 
@@ -72,7 +74,7 @@ brew install rustnet
 | Cargo | `cargo install rustnet-monitor` |
 | Nix / NixOS | `nix-shell -p rustnet` |
 
-Windows 还需要安装 [Npcap](https://npcap.com)。使用 v1.6.0 时，请启用“WinPcap API compatible mode”。openSUSE、Pop!_OS、FreeBSD、Docker 和源码构建的说明见[安装指南](INSTALL.zh-CN.md)。
+Windows 还需要安装 [Npcap](https://npcap.com)。v1.7.0 支持默认设置；v1.6.0 需要启用“WinPcap API compatible mode”。openSUSE、Pop!_OS、FreeBSD、Docker 和源码构建的说明见[安装指南](INSTALL.zh-CN.md)。
 
 ## 运行
 
@@ -88,10 +90,10 @@ rustnet
 
 ## 文档
 
-- [QUIC 检查](QUIC.zh-CN.md)：握手存储及库兼容性（未发布）。
+- [QUIC 检查](QUIC.zh-CN.md)：握手存储及库兼容性（自 v1.7.0 起可用）。
 - [安装](INSTALL.zh-CN.md)：平台支持、权限配置与故障排查
 - [使用](USAGE.zh-CN.md)：操作、过滤、自动化与抓包导出
-- [终端布局与外观（开发版本）](TUI.zh-CN.md)
+- [终端布局与外观](TUI.zh-CN.md)
 - [安全](SECURITY.zh-CN.md)：沙箱与权限管理
 - [架构](ARCHITECTURE.zh-CN.md)：各平台后端与性能
 - [Kubernetes 与容器](KUBERNETES.zh-CN.md)：归属识别与抓包导出

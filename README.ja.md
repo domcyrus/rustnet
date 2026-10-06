@@ -26,7 +26,7 @@ brew install rustnet
 
 パケットキャプチャにはプラットフォームに応じた権限設定が必要です。Linux のケーパビリティ、macOS の PKTAP と BPF へのアクセス、ほかのパッケージマネージャー、トラブルシューティングは[インストールガイド](INSTALL.md)を参照してください。
 
-> **リリース状況:** 以下の特長、GIF、スクリーンショットは v1.6.0 の内容です。`main` からリンクされるガイドには[未リリースの変更](CHANGELOG.md#unreleased)も含まれる場合があります。リリース版を使う場合は [v1.6.0 のドキュメント](https://github.com/domcyrus/rustnet/blob/v1.6.0/README.ja.md)を参照し、`rustnet --version` と `rustnet --help` でバージョンと対応オプションを確認してください。
+> **リリース状況:** 以下の特長は v1.7.0 の内容です。GIF とスクリーンショットは v1.6.0 の画面です。新しい画面については[ターミナルのレイアウトガイド](TUI.ja.md)を参照してください。`main` からリンクされるガイドには[未リリースの変更](CHANGELOG.md#unreleased)も含まれる場合があります。リリース版を使う場合は [v1.7.0 のドキュメント](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.ja.md)を参照し、`rustnet --version` と `rustnet --help` でバージョンと対応オプションを確認してください。
 
 ## デモ
 
@@ -39,14 +39,16 @@ brew install rustnet
 - SSH 越しでも使えるターミナル UI で、接続の状態、通信量、アプリケーションプロトコルと、取得できたプロセス情報を表示します。
 - パケット解析で HTTP、TLS/SNI、DNS、SSH、QUIC などを識別します。
 - プロセス、アドレス、ポート、プロトコルなどで接続を絞り込みます。
+- ヘッドレスモードでバージョン付き JSON スナップショットを出力し、スクリプトや監視に利用できます。
+- ホストのソケット、パッシブ DNS 分析、接続の健全性を表示します。
 - PCAP や、取得できた情報を注釈に含む PCAPNG を出力し、Wireshark で分析できます。
 - 起動後に不要な権限を削除し、対応プラットフォームではサンドボックスを使います。
 
 機能の詳細は[使用ガイド](USAGE.md)、[アーキテクチャガイド](ARCHITECTURE.md)、[セキュリティガイド](SECURITY.md)を参照してください。
 
-開発版では、Unix の出力先に信頼できるディレクトリが必要で、診断ログは排他的に新規作成されます。
+v1.7.0 以降、Unix の出力先に信頼できるディレクトリが必要で、診断ログは排他的に新規作成されます。
 
-開発版では、ARM DEB と古い glibc および Debian 13 の time64 ライブラリとの互換性も修正しています。対応するディストリビューションは[インストールガイド](INSTALL.md#debianubuntu-deb-packages)を参照してください。v1.6.0 の配布物には適用されません。
+v1.7.0 では、ARM DEB と古い glibc および Debian 13 の time64 ライブラリとの互換性も修正しています。対応するディストリビューションは[インストールガイド](INSTALL.md#debianubuntu-deb-packages)を参照してください。v1.6.0 の配布物には適用されません。
 
 ## スクリーンショット
 
@@ -72,7 +74,7 @@ brew install rustnet
 | Cargo | `cargo install rustnet-monitor` |
 | Nix / NixOS | `nix-shell -p rustnet` |
 
-Windows では [Npcap](https://npcap.com) も必要です。v1.6.0 を使う場合は「WinPcap API compatible mode」を有効にしてください。openSUSE、Pop!_OS、FreeBSD、Docker、ソースからのビルドについては[インストールガイド](INSTALL.md)を参照してください。
+Windows では [Npcap](https://npcap.com) も必要です。v1.7.0 はデフォルト設定に対応しています。v1.6.0 では「WinPcap API compatible mode」が必要です。openSUSE、Pop!_OS、FreeBSD、Docker、ソースからのビルドについては[インストールガイド](INSTALL.md)を参照してください。
 
 ## 実行
 
@@ -88,13 +90,13 @@ macOS で PKTAP を使用するには `sudo` が必要です。BPF へのアク�
 
 ## ドキュメント
 
-- [QUIC 検査](QUIC.ja.md)：ハンドシェイク保持とライブラリ互換性（未リリース）。
+- [QUIC 検査](QUIC.ja.md)：ハンドシェイク保持とライブラリ互換性（v1.7.0 以降で利用可能）。
 
 以下の詳細ガイドは英語版です。各ガイドの先頭から簡体字中国語版にも移動できます。
 
 - [インストール](INSTALL.md): 対応プラットフォーム、権限設定、トラブルシューティング
 - [使用方法](USAGE.md): 操作、フィルター、自動化、キャプチャの出力
-- [ターミナルのレイアウトと外観（開発版）](TUI.ja.md)
+- [ターミナルのレイアウトと外観](TUI.ja.md)
 - [セキュリティ](SECURITY.md): サンドボックスと権限管理
 - [アーキテクチャ](ARCHITECTURE.md): プラットフォーム別の実装と性能
 - [Kubernetes とコンテナ](KUBERNETES.ja.md): 所有者特定とキャプチャの出力

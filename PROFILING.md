@@ -127,7 +127,7 @@ sudo perf stat -p $PID sleep 60
 sudo kill $PID
 ```
 
-The headless examples require a build from current `main`; v1.6.0 does not
+The headless examples require v1.7.0 or later; v1.6.0 does not
 include `--headless`. Run this example when no other `rustnet` process is active
 so `pgrep` selects the process you started.
 

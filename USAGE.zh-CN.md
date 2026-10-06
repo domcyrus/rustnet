@@ -2,13 +2,13 @@
 
 # 使用指南
 
-> **文档版本：** `main` 分支上的本指南描述开发中的代码，可能包含尚未发布的功能。使用 v1.6.0 时，请参阅 [v1.6.0 使用指南](https://github.com/domcyrus/rustnet/blob/v1.6.0/USAGE.zh-CN.md)。运行 `rustnet --version` 查看已安装的版本，运行 `rustnet --help` 查看该版本支持的选项。
+> **文档版本：** `main` 分支上的本指南描述开发中的代码，可能包含尚未发布的功能。使用 v1.7.0 时，请参阅 [v1.7.0 使用指南](https://github.com/domcyrus/rustnet/blob/v1.7.0/USAGE.zh-CN.md)。运行 `rustnet --version` 查看已安装的版本，运行 `rustnet --help` 查看该版本支持的选项。
 
 本文档涵盖 RustNet 的详细使用说明，包括命令行选项、键盘控制、过滤、排序以及理解连接生命周期。
 
 ## 目录
 
-- [终端布局与外观（开发版本）](TUI.zh-CN.md)
+- [终端布局与外观](TUI.zh-CN.md)
 - [运行 RustNet](#running-rustnet)
 - [命令行选项](#command-line-options)
 - [无界面模式](#headless-mode)
@@ -130,7 +130,7 @@ Options:
 
 ### 无界面模式<a id="headless-mode"></a>
 
-> **尚未发布：** v1.6.0 不支持 `--headless`、`--duration`、`--output` 和 `--filter`。要使用此模式，请[从当前 `main` 分支构建](INSTALL.zh-CN.md#building-from-source)，或等待包含此功能的版本发布。
+> **自 v1.7.0 起可用。**
 
 RustNet 默认启动交互式 TUI。如果 stdin 或 stdout 不是终端，程序会在开始抓包前拒绝启动交互模式。脚本、管道、调度器和服务必须显式使用 `--headless`。
 
@@ -203,7 +203,7 @@ rustnet -i eth0          # 监控以太网接口
 rustnet -i wlan0         # 监控 WiFi 接口
 rustnet -i en0           # 监控 macOS 主接口
 
-# Windows（尚未发布）：可直接使用适配器的友好名称，会自动解析为
+# Windows（自 v1.7.0 起可用）：可直接使用适配器的友好名称，会自动解析为
 # \Device\NPF_{GUID} 设备
 rustnet -i Ethernet
 rustnet -i "Wi-Fi"
@@ -268,7 +268,7 @@ RustNet 自动检测 TUN/TAP 接口并相应调整数据包解析。接口类型
 
 适用于性能受限的环境或不需要应用层详细信息时。
 
-#### 数据库 DPI（尚未发布）
+#### 数据库 DPI（自 v1.7.0 起可用）
 
 启用 DPI 后，**Details → Application** 显示：
 
@@ -343,7 +343,7 @@ Unix），并在背景报告为浅色时将这些灰色层级加深为 ANSI Dark
 辨识色也会相应加深。不回应查询的终端保持主题原样，显式的 `[theme.overrides]`
 值也绝不会被改动。
 
-**未发布：** 同一文件还支持可选的 `[view]` 表。设置 `group_by_process = true` 可在启动时
+**自 v1.7.0 起可用：** 同一文件还支持可选的 `[view]` 表。设置 `group_by_process = true` 可在启动时
 按进程分组显示 Overview，分组初始为折叠状态。默认值为 `false`（平铺）。
 `a` 在当前会话中切换分组，`Space` 展开分组，`r` 恢复配置的分组偏好。
 这些设置不影响无界面模式的输出。
@@ -403,7 +403,7 @@ rustnet --bpf-filter "not port 22"
 - `debug` —— 详细的调试信息
 - `trace` —— 非常详细的输出（包含数据包级详情）
 
-日志文件创建于 `logs/` 目录，带时间戳：`rustnet_YYYY-MM-DD_HH-MM-SS.log`。开发版在文件名已存在时添加数字后缀。
+日志文件创建于 `logs/` 目录，带时间戳：`rustnet_YYYY-MM-DD_HH-MM-SS.log`。自 v1.7.0 起，在文件名已存在时添加数字后缀。
 
 #### `--kubernetes <MODE>`（可选 feature）<a id="--kubernetes-mode-optional-feature"></a>
 
@@ -426,7 +426,7 @@ rustnet --bpf-filter "not port 22"
 
 **在集群上运行：** 最简单的方法是使用 [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) 插件（`kubectl krew install rustnet`）。它使用官方镜像在节点上启动临时调试 pod，以只读方式挂载 kubelet 日志目录来解析名称，并在退出时清理 pod。由于插件让 RustNet 在 pod 内运行，默认的 `auto` 模式无需额外参数即可启用归属识别。
 
-**短连接（尚未发布）：** eBPF 可在进程退出后保留 cgroup v2 的 pod/容器身份。保留限制和独立插件的 `--output-dir` 后续任务见 [Kubernetes 抓包](KUBERNETES.zh-CN.md)。
+**短连接（自 v1.7.0 起可用）：** eBPF 可在进程退出后保留 cgroup v2 的 pod/容器身份。保留限制和独立插件的 `--output-dir` 后续任务见 [Kubernetes 抓包](KUBERNETES.zh-CN.md)。
 
 ```bash
 # 在 Kubernetes 集群上通过插件作为临时调试 pod 运行
@@ -441,7 +441,7 @@ rustnet --kubernetes on
 
 ## 键盘控制<a id="keyboard-controls"></a>
 
-> **尚未发布的导航变更：** 下文的 Host 标签页、上下文帮助浮层和紧凑区块操作在 v1.6.0 中不可用。该版本中，`5` 打开帮助，Activity 中的 `i` 打开接口详情。
+> **自 v1.7.0 起可用。**
 
 ### 导航<a id="navigation"></a>
 
@@ -521,7 +521,7 @@ RustNet 具有完整的鼠标支持。鼠标捕获自动启用 —— 以下描�
 | **单击** 顶部连接列表中的连接 | 选择该连接 |
 | **单击** 任意字段行 | 将字段值复制到系统剪贴板 |
 
-在开发版本中，完整仪表板放不下时，`v` / Shift+`v` 切换信息页面和区块，
+自 v1.7.0 起，完整仪表板放不下时，`v` / Shift+`v` 切换信息页面和区块，
 点击区块名称打开其第一页。Details 不使用信息滚动条。`j` / `k`、上下方向键、
 Page Up/Down（或 Ctrl+B/F）和鼠标滚轮切换连接并跳过分组头部，`g` / `G`
 选择第一个或最后一个连接。切换连接时保留所选区块并显示其第一页。
@@ -557,7 +557,7 @@ Traffic 在空间允许时保留 RX/TX 图，否则显示分页统计。
 | `src:` | `source:` | 源 IP/主机名 | `src:192.168` 匹配 192.168.x.x |
 | `dst:` | `dest:`、`destination:` | 目的地址 | `dst:github.com` 匹配 github.com |
 | `process:` | `proc:` | 进程名；`unknown` 也匹配未解析名称 | `process:ssh` 匹配 ssh、sshd |
-| `pid:` | | 精确匹配进程 ID（尚未发布） | `pid:1234` 匹配 PID 1234 |
+| `pid:` | | 精确匹配进程 ID（自 v1.7.0 起可用） | `pid:1234` 匹配 PID 1234 |
 | `sni:` | `host:`、`hostname:` | SNI 主机名（HTTPS）及 DNS 归因主机名 | `sni:api` 匹配 api.example.com |
 | `service:` | `svc:` | 服务名 | `service:https` 匹配 HTTPS 服务 |
 | `app:` | `application:` | 检测到的应用协议 | `app:ssh` 匹配 SSH 连接 |
@@ -565,8 +565,8 @@ Traffic 在空间允许时保留 RX/TX 图，否则显示分页统计。
 | `proto:` | `protocol:` | 协议类型 | `proto:tcp` 匹配 TCP 连接 |
 | `pod:` | | Kubernetes pod 名或 UID * | `pod:nginx` 匹配 nginx-86644db9cc-mf5lx |
 | `ns:` | `namespace:` | Kubernetes pod namespace * | `ns:kube-system` 匹配 kube-system 中的 pod |
-| `container:` | `cont:` | 容器名称或 ID（通用 Linux 支持尚未发布） | `container:nginx` 匹配 nginx container |
-| `runtime:` | | 容器运行时（未发布） | `runtime:docker`、`runtime:podman`、`runtime:lxc` |
+| `container:` | `cont:` | 容器名称或 ID（通用 Linux 支持自 v1.7.0 起可用） | `container:nginx` 匹配 nginx container |
+| `runtime:` | | 容器运行时（自 v1.7.0 起可用） | `runtime:docker`、`runtime:podman`、`runtime:lxc` |
 
 \* 需要启用 `kubernetes` feature 的构建，并已激活 pod 归属识别。详见 [`--kubernetes`](#--kubernetes-mode-optional-feature)。
 
@@ -660,7 +660,7 @@ RustNet 提供强大的表格排序功能来帮助你分析网络连接。按 `s
 | **Application** | ↑ 升序 | 按检测到的应用协议排序（HTTP、DNS 等），以 TCP/UDP 作为同序比较 |
 | **State** | ↑ 升序 | 按连接状态排序（ESTABLISHED 等） |
 | **RTT** | ↓ 降序 | 按往返时延排序（默认最慢的连接优先） |
-| **Health**（尚未发布） | ↓ 降序 | 按协议相关健康信号的严重程度排序，再按事件数排序 |
+| **Health**（自 v1.7.0 起可用） | ↓ 降序 | 按协议相关健康信号的严重程度排序，再按事件数排序 |
 | **Bandwidth (Rx/Tx)** | ↓ 降序 | 按**上下行合计**带宽排序（默认最高优先） |
 
 在窄终端下被隐藏的列仍留在循环中 —— 当前排序列始终显示在表格的区段标题中。
@@ -864,7 +864,7 @@ Active TCP Flows: 18
 
 ### 逐连接统计<a id="per-connection-statistics"></a>
 
-> **尚未发布：** 下文的 Health 徽标、按严重程度排序，以及按方向显示 TCP 窗口大小均在 v1.6.0 之后加入。
+> **自 v1.7.0 起可用。**
 
 概览表格的 **Health** 列会显示可观测的连接质量，徽标会随协议变化：
 
@@ -927,13 +927,13 @@ Window Size  ↓ 137.50 KB · ↑ 1.00 KB
 
 ## 进程活动<a id="process-activity"></a>
 
-> **尚未发布：** 下文的应用浏览器、PID 逐层查看和 `o` 快捷键在 v1.6.0 中不可用；该版本的 Activity 表格按进程展示。
+> **自 v1.7.0 起可用。**
 
 活动标签页根据活跃连接以及 RustNet 现有的历史连接池（最多保留 5,000 条）计算有界的进程流量总计。短寿命上传进程在套接字关闭后仍然可见，直到对应历史连接被淘汰或连接被清除。按 `3` 打开此标签页。
 
 Activity 按完全相同的进程名汇总，与 Overview 的进程分组一致。例如，所有保留的 `gh` PID 会合并为一行应用。Overview 用于浏览连接，Activity 用于比较应用流量。Activity 包含其保留池中的流量，不受 Overview 筛选条件或历史显示开关影响；有 Overview 筛选条件时，概要会显示 `all traffic`。
 
-**尚未发布：** Activity 遵循 Overview 的 PTR 显示设置。启用反向 DNS 解析时，
+**自 v1.7.0 起可用：** Activity 遵循 Overview 的 PTR 显示设置。启用反向 DNS 解析时，
 两个视图均排除 DNS PTR 查询和响应，除非指定 `--show-ptr-lookups`。
 使用 `--no-resolve-dns` 时，其他程序产生的已捕获 PTR 流量仍然可见。
 接口计数器仍包含这些流量。
@@ -993,7 +993,7 @@ Activity 在不足 120 列或内容区域不足 25 行时显示 Applications 和
 
 ### 已观察到的 VLAN ID
 
-> **尚未发布：** 适用于 `main`，v1.6.0 不包含此功能。
+> **自 v1.7.0 起可用。**
 
 Details 的 Connection 区块通过 **Observed VLANs** 显示该连接中捕获到的 802.1Q ID，按升序排列并去重，支持点击复制。占位符表示未观察到标签，并不能证明流量没有标签。VID `0` 表示优先级标签，不代表 VLAN 成员关系。后续未携带可见标签的数据包不会清除已有记录。
 
@@ -1003,7 +1003,7 @@ Details 的 Connection 区块通过 **Observed VLANs** 显示该连接中捕获�
 
 ## 主机套接字清单<a id="host-socket-inventory"></a>
 
-> **尚未发布：** v1.6.0 没有 Host 标签页。要在该版本查看接口统计，请按 `3` 打开 Activity，再按 `i`。
+> **自 v1.7.0 起可用。**
 
 按 `5` 打开主机标签页。此视图直接读取操作系统套接字表，不需要先捕获到数据包，因此可显示未产生流量的监听端点。
 
@@ -1177,11 +1177,11 @@ RustNet 使用智能超时管理自动清理不活跃的连接，同时在移除
 
 ### 主机名显示
 
-从连接本身提取的主机名（HTTPS 或 QUIC 的 TLS SNI、HTTP `Host:` 头）显示在 **App** 列中。在开发版本中，DNS 归因主机名也显示在 **App** 中，例如 `TCP·HTTPS (~example.com)`；尚未识别应用协议时显示为 `UDP (~example.com)`。当连接没有 SNI / Host 名称，且最近 **10 秒**内观测到了指向远程 IP 的 DNS 解析时，显示此推断名称。紧凑的 App 列省略主机名元数据。
+从连接本身提取的主机名（HTTPS 或 QUIC 的 TLS SNI、HTTP `Host:` 头）显示在 **App** 列中。自 v1.7.0 起，DNS 归因主机名也显示在 **App** 中，例如 `TCP·HTTPS (~example.com)`；尚未识别应用协议时显示为 `UDP (~example.com)`。当连接没有 SNI / Host 名称，且最近 **10 秒**内观测到了指向远程 IP 的 DNS 解析时，显示此推断名称。紧凑的 App 列省略主机名元数据。
 
 **Remote** 列显示反向 DNS 名称（除非用 `--no-resolve-dns` 禁用），否则显示原始 IP 地址。`d` 键切换反向 DNS 名称，不会隐藏应用名称。
 
-前缀 `~` 表示该主机名是从 DNS 响应*推断*出来的，而非从连接本身提取。这对握手后的 QUIC 会话（SNI 已加密）以及不携带主机名载荷的纯 TCP/UDP 连接最有用。归因不需要主动查询，因此即使使用 `--no-resolve-dns` 也能工作。在开发版本中，详情标签页的 **Application** 卡片会单独显示一行 **Attributed Name**（完整的推断主机名），以及一行 **Attributed Via**（来源和观测时间，如 `Captured DNS, 5s ago`），使来源一目了然。归因主机名可以像其他主机名一样搜索：`sni:` / `host:` / `hostname:` 关键字过滤器和自由文本搜索都能匹配它们。
+前缀 `~` 表示该主机名是从 DNS 响应*推断*出来的，而非从连接本身提取。这对握手后的 QUIC 会话（SNI 已加密）以及不携带主机名载荷的纯 TCP/UDP 连接最有用。归因不需要主动查询，因此即使使用 `--no-resolve-dns` 也能工作。自 v1.7.0 起，详情标签页的 **Application** 卡片会单独显示一行 **Attributed Name**（完整的推断主机名），以及一行 **Attributed Via**（来源和观测时间，如 `Captured DNS, 5s ago`），使来源一目了然。归因主机名可以像其他主机名一样搜索：`sni:` / `host:` / `hostname:` 关键字过滤器和自由文本搜索都能匹配它们。
 
 **注意事项**（RustNet 通过嗅探线上的 DNS 学习名称）：
 
@@ -1192,8 +1192,7 @@ RustNet 使用智能超时管理自动清理不活跃的连接，同时在移除
 
 ### 视觉陈旧度指示器<a id="visual-staleness-indicators"></a>
 
-> **尚未发布：** 下文的条纹和倒计时在 v1.6.0 中不可用。该版本在达到超时时间的
-> 75% 时将即将过期的整行变为黄色，并在清理前最后 10% 的时间里逐渐变为红色。
+> **自 v1.7.0 起可用。**
 
 非终止连接的清理计时从最后一个数据包开始，终止连接则从首次观察到终止状态开始。
 视觉提示还要求显示的双向流量速率都衰减为零，因此可能晚于超时时间的一半才出现：
@@ -1294,7 +1293,7 @@ Observed Network Health（观测到的网络健康状况）、Observed TCP State
 
 ## 日志<a id="logging"></a>
 
-日志**默认禁用**。使用 `--log-level` 选项启用时，RustNet 在 `logs/` 目录中创建带时间戳的日志文件。每个会话生成一个新日志文件，格式为 `rustnet_YYYY-MM-DD_HH-MM-SS.log`。开发版在文件名已存在时添加数字后缀；在 Unix 上还要求使用可信的启动目录。
+日志**默认禁用**。使用 `--log-level` 选项启用时，RustNet 在 `logs/` 目录中创建带时间戳的日志文件。每个会话生成一个新日志文件，格式为 `rustnet_YYYY-MM-DD_HH-MM-SS.log`。自 v1.7.0 起，在文件名已存在时添加数字后缀；在 Unix 上还要求使用可信的启动目录。
 
 ### 日志文件内容<a id="log-file-contents"></a>
 

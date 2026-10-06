@@ -2,7 +2,7 @@
 
 [English](QUIC.md) | [简体中文](QUIC.zh-CN.md) | [日本語](QUIC.ja.md)
 
-**未发布：** RustNet 组装客户端 Initial CRYPTO 流，提取 ClientHello 中的 SNI、ALPN
+**自 v1.7.0 起可用：** RustNet 组装客户端 Initial CRYPTO 流，提取 ClientHello 中的 SNI、ALPN
 和 TLS 版本。找到 SNI 后仍继续组装，因为后续分片可能携带 ALPN。
 
 检查窗口覆盖偏移 0 至 65,535，最多保留 256 个不连续区间。相邻区间会合并，

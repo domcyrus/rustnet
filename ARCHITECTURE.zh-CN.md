@@ -2,7 +2,7 @@
 
 # 架构
 
-> **文档版本：** `main` 分支上的本指南描述开发中的代码，可能包含尚未发布的实现细节。使用 v1.6.0 时，请参阅 [v1.6.0 架构指南](https://github.com/domcyrus/rustnet/blob/v1.6.0/ARCHITECTURE.zh-CN.md)。运行 `rustnet --version` 可查看已安装的版本。
+> **文档版本：** `main` 分支上的本指南描述开发中的代码，可能包含尚未发布的实现细节。使用 v1.7.0 时，请参阅 [v1.7.0 架构指南](https://github.com/domcyrus/rustnet/blob/v1.7.0/ARCHITECTURE.zh-CN.md)。运行 `rustnet --version` 可查看已安装的版本。
 
 本文档描述 RustNet 的技术架构和实现细节。
 
@@ -116,7 +116,7 @@ flowchart LR
   - 带命令、响应代码、用户名、服务器软件和系统类型的 FTP 控制通道
   - 带 CONNECTION_CLOSE 帧检测的 QUIC 协议
   - 带报文类型、版本和客户端标识符的 MQTT
-  - MySQL 经典握手/SSLRequest、Redis RESP 命令以及 PostgreSQL 启动消息/SSLRequest，使用有界的单包解析（尚未发布）
+  - MySQL 经典握手/SSLRequest、Redis RESP 命令以及 PostgreSQL 启动消息/SSLRequest，使用有界的单包解析（自 v1.7.0 起可用）
   - BitTorrent 握手和 DHT 消息
   - WireGuard 和 OpenVPN 隧道流量
   - 用于 WebRTC 和 NAT 穿越的 STUN
@@ -187,7 +187,7 @@ flowchart LR
 
 **竞争安全**：`attribute()` 先把连接登记到待归因索引，然后重查缓存。如果同一 IP 的并发 `record_and_drain_pending()` 恰好落在查找和登记之间，重查会为连接打上标签；此时已过时的登记是无害的，会在连接被清理时由 `forget_pending` 移除，或在新鲜窗口过后由待归因清理移除。
 
-**与 `network::dns::DnsResolver` 的区别**：后者通过系统解析器执行*反向* DNS（IP 到 PTR）；归因缓存则是从观测到的数据包中收集的*正向* DNS（域名到 IP）。两者互补。在开发版本中，UI 在 Remote 中显示反向 DNS，在 App 中显示 DNS 归因；SNI / Host 名称优先于推断名称。
+**与 `network::dns::DnsResolver` 的区别**：后者通过系统解析器执行*反向* DNS（IP 到 PTR）；归因缓存则是从观测到的数据包中收集的*正向* DNS（域名到 IP）。两者互补。自 v1.7.0 起，UI 在 Remote 中显示反向 DNS，在 App 中显示 DNS 归因；SNI / Host 名称优先于推断名称。
 
 CNAME 链不需要单独的映射：DNS DPI 解析器记录的是原始*问题*名称，应答中的 A/AAAA 记录直接映射到它。在线路层捕获看到的信号比 eBPF 套接字层方案少（除非同时捕获 `lo`，否则看不到应用到 stub 的流量；看不到 D-Bus 解析；看不到 DoH/DoT 明文）；这是已知限制。
 
@@ -279,7 +279,7 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 - 在 Linux 5.11 及更高版本上，先附加实时探针，再运行一次性的 task-file 迭代器，以捕获 RustNet 启动前已存在的 socket 所有者；使用文件 capabilities 运行时也包括其他用户的 socket
 - 比 procfs 扫描开销更低
 - 记录进程组组长的 TGID、当前线程的 TID、凭据和进程名
-- 开发版本还在观察 socket 时保存可执行文件和直接父进程（PID、名称、可执行文件和启动时间），在退出或 exec 后继续保留。只有进程启动时间仍匹配时，才通过 procfs 扩展父进程链。
+- 自 v1.7.0 起，还在观察 socket 时保存可执行文件和直接父进程（PID、名称、可执行文件和启动时间），在退出或 exec 后继续保留。只有进程启动时间仍匹配时，才通过 procfs 扩展父进程链。
 - **局限性：**
   - 进程名来源于内核 16 字节的 `comm` 字段，可使用保留的可执行文件名恢复截断。可执行路径最多保留 255 字节，最多遍历 32 个目录或挂载点；不完整路径保持未知。脚本显示运行中的解释器。直接父进程之外的祖先信息仍尽力提供。
 - **Linux capabilities 需求：**

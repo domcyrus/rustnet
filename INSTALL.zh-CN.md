@@ -2,7 +2,7 @@
 
 # 安装指南
 
-> **文档版本：** `main` 分支上的本指南描述开发中的代码，可能包含尚未发布的变更。使用 v1.6.0 时，请参阅 [v1.6.0 安装指南](https://github.com/domcyrus/rustnet/blob/v1.6.0/INSTALL.zh-CN.md)。运行 `rustnet --version` 查看已安装的版本。
+> **文档版本：** `main` 分支上的本指南描述开发中的代码，可能包含尚未发布的变更。使用 v1.7.0 时，请参阅 [v1.7.0 安装指南](https://github.com/domcyrus/rustnet/blob/v1.7.0/INSTALL.zh-CN.md)。运行 `rustnet --version` 查看已安装的版本。
 
 本文档涵盖 RustNet 在各平台上的所有安装方法。
 
@@ -69,7 +69,7 @@
 
 1. **安装 Npcap Runtime**（包捕获必需）：
    - 从 https://npcap.com/dist/ 下载
-   - 使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。对 Npcap 默认设置的支持尚未发布，目前仅在 `main` 中可用
+   - 使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持 Npcap 默认设置
 
 2. **下载并安装**适合的 MSI 包：
    - 64 位 Windows 使用 `Rustnet_Windows_64-bit.msi`
@@ -92,7 +92,7 @@
 choco install rustnet
 ```
 
-**注意：** 请单独安装 [Npcap](https://npcap.com)。使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。对 Npcap 默认设置的支持尚未发布，目前仅在 `main` 中可用。
+**注意：** 请单独安装 [Npcap](https://npcap.com)。使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持 Npcap 默认设置。
 
 ### Windows Scoop 安装<a id="windows-scoop-installation"></a>
 
@@ -102,7 +102,7 @@ RustNet 已收录在 [Scoop main bucket](https://github.com/ScoopInstaller/Main/
 scoop install rustnet
 ```
 
-**注意：** 请单独安装 [Npcap](https://npcap.com)。使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。对 Npcap 默认设置的支持尚未发布，目前仅在 `main` 中可用。
+**注意：** 请单独安装 [Npcap](https://npcap.com)。使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持 Npcap 默认设置。
 
 ### Linux 包安装<a id="linux-package-installation"></a>
 
@@ -140,7 +140,7 @@ rustnet
 
 用于手动安装或非 Ubuntu 的 Debian 系发行版：
 
-**开发版本（尚未发布）：** GNU 发布二进制文件要求 glibc 2.35 或更高版本。
+**自 v1.7.0 起可用：** GNU 发布二进制文件要求 glibc 2.35 或更高版本。
 ARM64 DEB 支持 Ubuntu 22.04+ 和 Debian 12/13；ARMv7 DEB 支持 Debian 12/13，
 并静态链接 libpcap，以确保在 time64 库迁移前后数据包时间戳的兼容性。
 这些修复不适用于 v1.6.0 的发布文件。
@@ -549,7 +549,7 @@ cargo build --release --no-default-features
 
 1. **安装 Npcap Runtime**：
    - 从 https://npcap.com/dist/ 下载 Npcap 安装程序
-   - 使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。对 Npcap 默认设置的支持尚未发布，目前仅在 `main` 中可用
+   - 使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持 Npcap 默认设置
 
 2. **运行 RustNet**：
    ```cmd
@@ -1070,7 +1070,7 @@ docker run --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON \
 #### Windows：未找到 Npcap<a id="windows-npcap-not-found"></a>
 
 - 确保从 https://npcap.com/dist/ 安装了 Npcap
-- 使用 RustNet v1.6.0 时，请在安装 Npcap 时启用 **"WinPcap API compatible mode"**。对默认设置的支持尚未发布，目前仅在 `main` 中可用
+- 使用 RustNet v1.6.0 时，请在安装 Npcap 时启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持默认设置
 - 验证 Npcap 服务正在运行：`sc query npcap`
 - 尝试使用管理员权限重新安装 Npcap
 
