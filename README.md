@@ -1,8 +1,9 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/domcyrus/rustnet/main/assets/rustnet.svg" alt="RustNet logo" width="96" height="96">
-</p>
-
-<h1 align="center">RustNet</h1>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/rustnet-heading-dark.svg">
+    <img src="./assets/rustnet-heading.svg" alt="RustNet" width="192" height="48">
+  </picture>
+</h1>
 
 <p align="center">
   <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Built with Ratatui"></a>
