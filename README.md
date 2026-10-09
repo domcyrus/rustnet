@@ -9,6 +9,7 @@
   <a href="https://github.com/domcyrus/rustnet/actions"><img src="https://github.com/domcyrus/rustnet/workflows/Rust/badge.svg" alt="Build status"></a>
   <a href="https://crates.io/crates/rustnet-monitor"><img src="https://img.shields.io/crates/v/rustnet-monitor.svg" alt="Crates.io version"></a>
   <a href="https://github.com/domcyrus/rustnet/releases"><img src="https://img.shields.io/github/v/release/domcyrus/rustnet.svg" alt="Latest release"></a>
+  <a href="https://repology.org/project/rustnet/versions"><img src="https://repology.org/badge/tiny-repos/rustnet.svg" alt="Packaging status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license"></a>
 </p>
 
@@ -74,6 +75,7 @@ v1.7.0 fixes ARM DEB compatibility with older glibc and Debian 13's time64 libra
 | Ubuntu 22.04+ / Linux Mint 21+ | `sudo add-apt-repository ppa:domcyrus/rustnet`<br>`sudo apt update && sudo apt install rustnet` |
 | Fedora 42+ | `sudo dnf copr enable domcyrus/rustnet`<br>`sudo dnf install rustnet` |
 | Arch Linux | `sudo pacman -S rustnet` |
+| Alpine Linux (edge/community) | `apk add rustnet` |
 | Windows | `choco install rustnet` or `scoop install rustnet` |
 | Cargo | `cargo install rustnet-monitor` |
 | Nix / NixOS | `nix-shell -p rustnet` |

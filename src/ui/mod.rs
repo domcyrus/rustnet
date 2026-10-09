@@ -5428,9 +5428,11 @@ mod snapshot_tests {
     /// exact row sets (placeholders included) are pinned and reviewable.
     /// The name is explicit because the assertion runs inside this shared
     /// helper, where insta cannot derive a per-test name.
-    fn assert_details_snapshot(name: &str, conn: Connection) {
+    fn assert_details_snapshot(name: &str, make_connection: impl FnOnce() -> Connection) {
         let app = test_app();
-        let connections = vec![conn];
+        // App setup parses embedded databases and can be slow on builders.
+        // Start the fixture's activity clock only once setup is complete.
+        let connections = vec![make_connection()];
         app.set_connections_snapshot_for_test(connections.clone());
         let output = render_details(&app, &connections, 0);
         insta::with_settings!({
@@ -5447,19 +5449,17 @@ mod snapshot_tests {
             .into_iter()
             .find(|v| matches!(v, ApplicationProtocol::Http(_)))
             .expect("HTTP fixture");
-        assert_details_snapshot(
-            "details_tab_http_application_card",
-            dpi_details_connection(http),
-        );
+        assert_details_snapshot("details_tab_http_application_card", || {
+            dpi_details_connection(http)
+        });
     }
 
     #[test]
     fn details_tab_https_without_tls_info() {
         use crate::network::types::{ApplicationProtocol, HttpsInfo};
-        assert_details_snapshot(
-            "details_tab_https_without_tls_info",
-            dpi_details_connection(ApplicationProtocol::Https(HttpsInfo { tls_info: None })),
-        );
+        assert_details_snapshot("details_tab_https_without_tls_info", || {
+            dpi_details_connection(ApplicationProtocol::Https(HttpsInfo { tls_info: None }))
+        });
     }
 
     #[test]
@@ -5469,10 +5469,9 @@ mod snapshot_tests {
             .into_iter()
             .find(|v| matches!(v, ApplicationProtocol::Ssh(_)))
             .expect("SSH fixture");
-        assert_details_snapshot(
-            "details_tab_ssh_application_card",
-            dpi_details_connection(ssh),
-        );
+        assert_details_snapshot("details_tab_ssh_application_card", || {
+            dpi_details_connection(ssh)
+        });
     }
 
     #[test]
@@ -5482,10 +5481,9 @@ mod snapshot_tests {
             .into_iter()
             .find(|v| matches!(v, ApplicationProtocol::Dns(_)))
             .expect("DNS fixture");
-        assert_details_snapshot(
-            "details_tab_dns_response_application_card",
-            dpi_details_connection(dns),
-        );
+        assert_details_snapshot("details_tab_dns_response_application_card", || {
+            dpi_details_connection(dns)
+        });
     }
 
     #[test]
@@ -5495,17 +5493,16 @@ mod snapshot_tests {
             .into_iter()
             .find(|v| matches!(v, ApplicationProtocol::Ntp(_)))
             .expect("NTP fixture");
-        assert_details_snapshot(
-            "details_tab_ntp_application_card",
-            dpi_details_connection(ntp),
-        );
+        assert_details_snapshot("details_tab_ntp_application_card", || {
+            dpi_details_connection(ntp)
+        });
     }
 
     #[test]
     fn details_tab_icmp_echo_application_card() {
         assert_details_snapshot(
             "details_tab_icmp_echo_application_card",
-            icmp_echo_details_connection(),
+            icmp_echo_details_connection,
         );
     }
 
@@ -5513,23 +5510,19 @@ mod snapshot_tests {
     fn details_tab_icmpv6_ndp_application_card() {
         assert_details_snapshot(
             "details_tab_icmpv6_ndp_application_card",
-            icmpv6_ndp_details_connection(),
+            icmpv6_ndp_details_connection,
         );
     }
 
     #[test]
     fn details_tab_igmp_application_card() {
-        assert_details_snapshot(
-            "details_tab_igmp_application_card",
-            igmp_details_connection(),
-        );
+        assert_details_snapshot("details_tab_igmp_application_card", igmp_details_connection);
     }
 
     #[test]
     fn details_tab_arp_application_card() {
-        assert_details_snapshot(
-            "details_tab_arp_application_card",
-            arp_details_connection(true),
-        );
+        assert_details_snapshot("details_tab_arp_application_card", || {
+            arp_details_connection(true)
+        });
     }
 }
