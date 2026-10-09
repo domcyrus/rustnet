@@ -25,8 +25,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Install-Module -Name Microsoft.WinGet.Client -Force -Scope CurrentUser -Repository PSGallery
-          Repair-WinGetPackageManager -AllUsers -Version 1.29.380
+          $setup = Join-Path $env:RUNNER_TEMP 'winget-setup'
+          New-Item -ItemType Directory -Path $setup -Force | Out-Null
+          $release = 'https://github.com/microsoft/winget-cli/releases/download/v1.29.380'
+          Invoke-WebRequest "$release/DesktopAppInstaller_Dependencies.zip" -OutFile "$setup/dependencies.zip"
+          Invoke-WebRequest "$release/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle" -OutFile "$setup/winget.msixbundle"
+          Expand-Archive "$setup/dependencies.zip" -DestinationPath "$setup/dependencies"
+          $dependencies = @(Get-ChildItem "$setup/dependencies/x64/*.appx" | Select-Object -ExpandProperty FullName)
+          Add-AppxPackage -Path "$setup/winget.msixbundle" -DependencyPath $dependencies -ForceApplicationShutdown
           $winget = (Get-Command winget -ErrorAction SilentlyContinue).Source
           if (-not $winget) {
             $package = Get-AppxPackage -Name Microsoft.DesktopAppInstaller

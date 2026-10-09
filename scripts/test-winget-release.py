@@ -11,6 +11,8 @@ import winreg
 
 import yaml
 
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 ARCH = sys.argv[1]
 ROOT = Path('winget-test-results').resolve()
 ROOT.mkdir(exist_ok=True)
