@@ -1,0 +1,55 @@
+name: Validate released Windows installers
+on:
+  push:
+    branches: [test/winget-1.7.0-validation]
+    paths:
+      - .github/workflows/winget-release-validation.yml
+      - scripts/test-winget-release.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    name: Released MSI (${{ matrix.arch }})
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, x64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare WinGet
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Install-Module -Name Microsoft.WinGet.Client -Force -Scope CurrentUser -Repository PSGallery
+            Repair-WinGetPackageManager -AllUsers
+          }
+          $winget = (Get-Command winget -ErrorAction SilentlyContinue).Source
+          if (-not $winget) {
+            $package = Get-AppxPackage -Name Microsoft.DesktopAppInstaller
+            $winget = Join-Path $package.InstallLocation 'winget.exe'
+          }
+          if (-not (Test-Path $winget)) { throw 'winget.exe was not found' }
+          "WINGET_EXE=$winget" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          python -m pip install PyYAML==6.0.3
+          if ($LASTEXITCODE -ne 0) { throw 'PyYAML installation failed' }
+      - name: Test published installer and manifest
+        shell: pwsh
+        run: python scripts/test-winget-release.py ${{ matrix.arch }}
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: winget-1.7.0-${{ matrix.arch }}
+          path: |
+            winget-test-results/*.txt
+            winget-test-results/*.json
+            winget-test-results/*.md
+            winget-test-results/*.log
+            winget-test-results/manifest/
+          retention-days: 14
