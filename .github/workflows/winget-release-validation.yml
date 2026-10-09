@@ -25,10 +25,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-            Install-Module -Name Microsoft.WinGet.Client -Force -Scope CurrentUser -Repository PSGallery
-            Repair-WinGetPackageManager -AllUsers
-          }
+          Install-Module -Name Microsoft.WinGet.Client -Force -Scope CurrentUser -Repository PSGallery
+          Repair-WinGetPackageManager -AllUsers -Version 1.29.380
           $winget = (Get-Command winget -ErrorAction SilentlyContinue).Source
           if (-not $winget) {
             $package = Get-AppxPackage -Name Microsoft.DesktopAppInstaller
