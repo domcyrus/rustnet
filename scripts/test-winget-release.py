@@ -121,7 +121,7 @@ run('winget-install', [winget, 'install', '--manifest', str(MANIFEST), '--archit
                        '--silent', '--disable-interactivity',
                        '--accept-source-agreements', '--accept-package-agreements', '--verbose-logs'])
 smoke('winget', exe)
-run('winget-uninstall', [winget, 'uninstall', '--id', 'domcyrus.RustNet', '--exact', '--silent',
+run('winget-uninstall', [winget, 'uninstall', '--name', 'Rustnet', '--exact', '--silent',
                          '--disable-interactivity', '--accept-source-agreements'])
 assert not exe.exists()
 summary = f'## Windows {ARCH} release validation\n\nPassed {len(RESULTS)} command checks against the published v1.7.0 MSI and PR commit `{REF}`.\n\n- MSI and winget installation/uninstallation passed.\n- Winget manifest validation passed.\n- Correct executable architecture and installed registry version.\n- Help/version succeeded with pipes and files, with no Npcap installed.\n- No-argument execution reproduced the validator terminal error.\n- Headless execution reported Npcap installation instructions.\n'
