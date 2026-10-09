@@ -118,7 +118,7 @@ run('msi-uninstall', ['msiexec.exe', '/x', str(msi), '/qn', '/norestart', '/L*v'
 assert not exe.exists()
 run('winget-local-manifests', [winget, 'settings', '--enable', 'LocalManifestFiles'])
 run('winget-install', [winget, 'install', '--manifest', str(MANIFEST), '--architecture', ARCH,
-                       '--source', 'winget', '--silent', '--disable-interactivity',
+                       '--silent', '--disable-interactivity',
                        '--accept-source-agreements', '--accept-package-agreements', '--verbose-logs'])
 smoke('winget', exe)
 run('winget-uninstall', [winget, 'uninstall', '--id', 'domcyrus.RustNet', '--exact', '--silent',
