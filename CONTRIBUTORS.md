@@ -13,6 +13,7 @@ We would like to thank these people for their valuable contributions:
 - **DeepChirp** ([@DeepChirp](https://github.com/DeepChirp)) - Code contributions
 - **Conor O'Callaghan** ([@Conor0Callaghan](https://github.com/Conor0Callaghan)) - JSON/SIEM logging research and design input
 - **Ken Tobias** ([@l1a](https://github.com/l1a)) - Code contributions
+- **omni** - Alpine Linux packaging and build testing ([aport](https://github.com/alpinelinux/aports/commit/6df03aea0c48544a90d17b9bac96e73df18008d4))
 
 ## Contributing
 

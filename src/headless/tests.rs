@@ -499,15 +499,19 @@ fn stalled_flush_cannot_block_duration_shutdown() {
 #[test]
 fn stalled_writer_cannot_block_signal_shutdown() {
     let (writer, _output, entered, release, finished) = stalled_writer();
+    // Finish app setup before starting the writer-entry timeout.
+    let mut app = app_with_connections();
     let shutdown = Arc::new(AtomicBool::new(false));
     let signal = Arc::clone(&shutdown);
     let trigger = thread::spawn(move || {
-        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        let entered = entered.recv_timeout(Duration::from_secs(5));
+        let signaled_at = Instant::now();
+        // Even on timeout, stop the duration-free monitor before reporting
+        // the failure. Panicking here first would leave it running forever.
         signal.store(true, Ordering::Release);
+        (entered, signaled_at)
     });
-    let mut app = app_with_connections();
-    let started = Instant::now();
-    let error = run_with_writer_deadline(
+    let result = run_with_writer_deadline(
         &mut app,
         writer,
         &HeadlessOptions {
@@ -517,14 +521,16 @@ fn stalled_writer_cannot_block_signal_shutdown() {
         },
         &shutdown,
         Duration::from_millis(30),
-    )
-    .unwrap_err();
+    );
 
-    trigger.join().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(error.to_string().contains("did not finish within 30ms"));
+    let (entered, signaled_at) = trigger.join().unwrap();
+    let shutdown_elapsed = signaled_at.elapsed();
     release.send(()).unwrap();
-    finished.recv_timeout(Duration::from_secs(1)).unwrap();
+    finished.recv_timeout(Duration::from_secs(5)).unwrap();
+    entered.expect("writer did not start before the signal timeout");
+    assert!(shutdown_elapsed < Duration::from_secs(1));
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("did not finish within 30ms"));
 }
 
 struct FailingSerialize;

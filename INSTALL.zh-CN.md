@@ -8,6 +8,8 @@
 
 > **提示：** 想一眼看清哪些发行版打包了 RustNet、各自分发的版本号是多少，请查看 [Repology 上的 RustNet 页面](https://repology.org/project/rustnet/versions)。
 
+[![软件包收录状态](https://repology.org/badge/vertical-allrepos/rustnet.svg)](https://repology.org/project/rustnet/versions)
+
 ## 目录
 
 - [从发布包安装](#installing-from-release-packages)
@@ -188,6 +190,16 @@ rustnet
 ```
 
 **注意：** .rpm 包的安装后脚本会在 `setcap` 可用时尝试设置 Linux capabilities。请用 `getcap /usr/bin/rustnet` 验证；若缺少 `CAP_NET_RAW`，请手动配置 capabilities 或使用 `sudo`。
+
+#### Alpine Linux
+
+RustNet 已收录到 Alpine 的 [edge/community 仓库](https://pkgs.alpinelinux.org/packages?name=rustnet&branch=edge&repo=community)。在已启用 `community` 仓库的 Alpine edge 上，以 root 身份运行：
+
+```sh
+apk add rustnet
+```
+
+该软件包会自动设置抓包所需的 capabilities。如果无法抓包，请参阅[权限配置](#permissions-setup)。
 
 #### Arch Linux
 

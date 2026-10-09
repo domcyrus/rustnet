@@ -8,6 +8,8 @@ This guide covers all installation methods for RustNet across different platform
 
 > **Tip:** For an at-a-glance view of which distributions package RustNet and which version each carries, see [RustNet on Repology](https://repology.org/project/rustnet/versions).
 
+[![Packaging status](https://repology.org/badge/vertical-allrepos/rustnet.svg)](https://repology.org/project/rustnet/versions)
+
 ## Table of Contents
 
 - [Installing from Release Packages](#installing-from-release-packages)
@@ -188,6 +190,16 @@ rustnet
 ```
 
 **Note:** The .rpm post-install script attempts to set Linux capabilities when `setcap` is available. Check with `getcap /usr/bin/rustnet`; if `CAP_NET_RAW` is absent, configure capabilities manually or run with `sudo`.
+
+#### Alpine Linux
+
+RustNet is available in Alpine's [edge/community repository](https://pkgs.alpinelinux.org/packages?name=rustnet&branch=edge&repo=community). On Alpine edge with `community` enabled, run as root:
+
+```sh
+apk add rustnet
+```
+
+The package installs capture capabilities automatically. See [Permissions Setup](#permissions-setup) if packet capture is unavailable.
 
 #### Arch Linux
 
