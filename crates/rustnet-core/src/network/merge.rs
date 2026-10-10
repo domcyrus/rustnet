@@ -715,7 +715,11 @@ fn merge_http_info(old_info: &mut HttpInfo, new_info: &HttpInfo) {
     set_if_absent(&mut old_info.path, &new_info.path);
     set_if_absent(&mut old_info.host, &new_info.host);
     set_if_absent(&mut old_info.user_agent, &new_info.user_agent);
-    set_if_absent(&mut old_info.status_code, &new_info.status_code);
+    // Keep the numeric code and observed token from the same first response.
+    if old_info.status_code.is_none() && old_info.status_token.is_none() {
+        old_info.status_code = new_info.status_code;
+        old_info.status_token.clone_from(&new_info.status_token);
+    }
 }
 
 /// Merge QUIC information with reassembly support
@@ -961,6 +965,36 @@ mod tests {
     use super::*;
     use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState, TlsVersion};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn observed_http_status_merge_keeps_the_first_response_pair() {
+        let make_http = |code, token: Option<&str>| HttpInfo {
+            version: crate::network::types::HttpVersion::Http11,
+            method: None,
+            host: None,
+            path: None,
+            status_code: code,
+            status_token: token.map(str::to_string),
+            user_agent: None,
+        };
+        let mut request = make_http(None, None);
+        let response = make_http(Some(200), Some("+200"));
+        merge_http_info(&mut request, &response);
+        assert_eq!(request.status_code, Some(200));
+        assert_eq!(request.status_token.as_deref(), Some("+200"));
+
+        let later_response = make_http(Some(404), Some("0404"));
+        merge_http_info(&mut request, &later_response);
+        assert_eq!(request.status_code, Some(200));
+        assert_eq!(request.status_token.as_deref(), Some("+200"));
+
+        // Older metadata with only a numeric status must not gain the token
+        // of a different response; Details can use its numeric fallback.
+        let mut numeric_only = make_http(Some(200), None);
+        merge_http_info(&mut numeric_only, &later_response);
+        assert_eq!(numeric_only.status_code, Some(200));
+        assert_eq!(numeric_only.status_token, None);
+    }
 
     #[test]
     fn quic_merge_assembles_late_metadata_after_complete_sni() {

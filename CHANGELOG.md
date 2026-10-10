@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject Unix output files owned by unrelated users before changing or writing them, anchor opens to validated directories, and create diagnostic logs exclusively
 
 ### Added
+- Preserve original HTTP response status tokens in Details and mark malformed values as `invalid format`, without changing protocol detection
 - **Traffic surge visibility**: automatic linear scales, preserved sampled peaks,
   time labels, and two-second rate averages in Graph/Details and Activity sorting
 - **Traffic reporting clarity**: graphs follow the capture interface; label smoothed

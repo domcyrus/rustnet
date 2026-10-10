@@ -12,6 +12,7 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
         host: None,
         path: None,
         status_code: None,
+        status_token: None,
         user_agent: None,
     };
 
@@ -35,6 +36,7 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
                 .ok()
                 .filter(|c| (100..=599).contains(c))?,
         );
+        info.status_token = Some(tok1.to_string());
     } else if is_http_method(tok0) {
         // Request line: GET /path HTTP/1.1. The version token is required:
         // SIP and RTSP share the same verbs ("OPTIONS sip:bob@example.com
@@ -109,6 +111,36 @@ fn parse_http_version(s: &str) -> Option<HttpVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observed_http_status_preserves_original_token() {
+        for (token, code) in [
+            ("100", 100),
+            ("200", 200),
+            ("599", 599),
+            ("+200", 200),
+            ("0200", 200),
+        ] {
+            for suffix in [" OK", " ", ""] {
+                let payload = format!("HTTP/1.1 {token}{suffix}\r\n\r\n");
+                let info = analyze_http(payload.as_bytes()).expect("previously detected response");
+                assert_eq!(info.status_code, Some(code));
+                assert_eq!(info.status_token.as_deref(), Some(token));
+            }
+        }
+    }
+
+    #[test]
+    fn observed_http_status_keeps_detection_rules() {
+        for token in ["099", "600", "OK", "20", "2000"] {
+            let payload = format!("HTTP/1.1 {token} OK\r\n\r\n");
+            assert!(analyze_http(payload.as_bytes()).is_none(), "{token}");
+        }
+        let request = analyze_http(b"GET / HTTP/1.1 extra\r\n\r\n")
+            .expect("extra request tokens remain tolerated");
+        assert_eq!(request.status_code, None);
+        assert_eq!(request.status_token, None);
+    }
 
     #[test]
     fn test_http_request() {

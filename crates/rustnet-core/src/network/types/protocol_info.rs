@@ -435,6 +435,8 @@ pub struct HttpInfo {
     pub host: Option<String>,
     pub path: Option<String>,
     pub status_code: Option<u16>,
+    /// Original response status token, retained for display without normalization.
+    pub status_token: Option<String>,
     pub user_agent: Option<String>,
 }
 
