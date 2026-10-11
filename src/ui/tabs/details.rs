@@ -39,8 +39,8 @@ macro_rules! app_info {
 
 use crate::network::dns::DnsResolver;
 use crate::network::types::{
-    AddrKind, Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState, TcpAnalytics,
-    WindowSample,
+    AddrKind, Connection, HttpInfo, MatchQuality, ProcessLineage, Protocol, ProtocolState,
+    TcpAnalytics, WindowSample,
 };
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, DetailsSection, Effect, GroupedRow,
@@ -636,6 +636,23 @@ fn format_quic_close(close: &crate::network::types::QuicCloseInfo) -> String {
         "transport"
     };
     format!("{} 0x{:x}", origin, close.error_code)
+}
+
+/// Preserve the observed token and flag malformed values only in the display.
+fn format_http_status(info: &HttpInfo) -> Option<String> {
+    let Some(token) = info.status_token.as_deref() else {
+        return info.status_code.map(|code| code.to_string());
+    };
+    let valid = token.len() == 3
+        && token.bytes().all(|byte| byte.is_ascii_digit())
+        && token
+            .parse::<u16>()
+            .is_ok_and(|code| (100..=599).contains(&code));
+    Some(if valid {
+        token.to_string()
+    } else {
+        format!("{token} (invalid format)")
+    })
 }
 
 /// Comma-joined display form of a response-IP list, `None` when empty so the
@@ -1373,7 +1390,7 @@ pub(in crate::ui) fn draw_connection_details(
                     ("HTTP Method", info.method.clone()),
                     ("HTTP Host", info.host.clone()),
                     ("HTTP Path", info.path.clone()),
-                    ("HTTP Status", info.status_code.map(|s| s.to_string())),
+                    ("HTTP Status", format_http_status(info)),
                     ("User-Agent", info.user_agent.clone()),
                 ]);
             }
@@ -2643,5 +2660,39 @@ mod window_size_tests {
     fn placeholder_until_a_window_is_seen() {
         assert_eq!(format_window_sizes(None), "-");
         assert_eq!(format_window_sizes(Some(&TcpAnalytics::new())), "-");
+    }
+}
+
+#[cfg(test)]
+mod http_status_tests {
+    use super::format_http_status;
+    use crate::network::types::{HttpInfo, HttpVersion};
+
+    #[test]
+    fn observed_http_status_checks_format_and_range_only_for_display() {
+        let mut info = HttpInfo {
+            version: HttpVersion::Http11,
+            method: None,
+            host: None,
+            path: None,
+            status_code: Some(200),
+            status_token: None,
+            user_agent: None,
+        };
+        for token in ["100", "200", "599"] {
+            info.status_token = Some(token.to_string());
+            assert_eq!(format_http_status(&info).as_deref(), Some(token));
+        }
+        for token in ["+200", "0200", "099", "600", "20", "OK", "２００"] {
+            info.status_token = Some(token.to_string());
+            assert_eq!(
+                format_http_status(&info),
+                Some(format!("{token} (invalid format)"))
+            );
+        }
+        info.status_token = None;
+        assert_eq!(format_http_status(&info).as_deref(), Some("200"));
+        info.status_code = None;
+        assert_eq!(format_http_status(&info), None);
     }
 }

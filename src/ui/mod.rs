@@ -4960,6 +4960,7 @@ mod snapshot_tests {
                 host: Some("example.com".to_string()),
                 path: Some("/index.html".to_string()),
                 status_code: Some(200),
+                status_token: None,
                 user_agent: Some("curl/8.9.0".to_string()),
             }),
             ApplicationProtocol::Https(HttpsInfo {
@@ -5440,6 +5441,36 @@ mod snapshot_tests {
         }, {
             insta::assert_snapshot!(name, output);
         });
+    }
+
+    #[test]
+    fn details_tab_observed_http_status_marks_malformed_tokens() {
+        use crate::network::types::ApplicationProtocol;
+        let app = test_app();
+        for token in ["200", "+200", "0200"] {
+            let mut http = dpi_variants_full()
+                .into_iter()
+                .find(|v| matches!(v, ApplicationProtocol::Http(_)))
+                .expect("HTTP fixture");
+            let ApplicationProtocol::Http(info) = &mut http else {
+                unreachable!();
+            };
+            info.status_token = Some(token.to_string());
+            let connections = vec![dpi_details_connection(http)];
+            app.set_connections_snapshot_for_test(connections.clone());
+            let output = render_details(&app, &connections, 0);
+            let status_row = output
+                .lines()
+                .find(|line| line.contains("HTTP Status"))
+                .unwrap();
+            let value = status_row.split_once("HTTP Status").unwrap().1.trim();
+            let expected = if token == "200" {
+                "200".to_string()
+            } else {
+                format!("{token} (invalid format)")
+            };
+            assert_eq!(value, expected);
+        }
     }
 
     #[test]
