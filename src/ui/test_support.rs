@@ -15,6 +15,35 @@ use crate::app::{App, Config};
 use crate::network::types::{Connection, Protocol, ProtocolState, TcpState};
 use crate::ui::{ClickableRegions, HandlerContext, UiState};
 
+/// Kernel sample with deliberately different counters from captured traffic.
+pub(crate) fn kernel_stats() -> crate::network::types::KernelSocketStats {
+    use crate::network::types::{
+        KernelSocketStats, SocketQueueKind, SocketQueues, SocketStatsSource, TcpSocketStats,
+    };
+    use std::time::{Duration, SystemTime};
+    KernelSocketStats {
+        source: SocketStatsSource::LinuxSockDiag,
+        sampled_at: SystemTime::now() - Duration::from_secs(20),
+        socket_cookie: Some(123),
+        network_namespace: Some(456),
+        state: "ESTABLISHED",
+        queues: SocketQueues {
+            kind: SocketQueueKind::Bytes,
+            receive: 4096,
+            send: 64,
+        },
+        memory: None,
+        tcp: Some(TcpSocketStats {
+            rtt: Some(Duration::from_micros(12500)),
+            congestion_window_segments: Some(10),
+            total_retransmissions: Some(7),
+            bytes_sent: Some(999_999),
+            congestion_control: Some("cubic".into()),
+            ..Default::default()
+        }),
+    }
+}
+
 /// Render a closure into a `width × height` test buffer and return the
 /// buffer for cell-level inspection.
 pub(crate) fn render_buffer<F>(width: u16, height: u16, draw: F) -> Buffer

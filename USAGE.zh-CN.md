@@ -1003,6 +1003,8 @@ Details 的 Connection 区块通过 **Observed VLANs** 显示该连接中捕获�
 
 ## 主机套接字清单<a id="host-socket-inventory"></a>
 
+开发版本还在 Host、Details 和无界面 JSON 中提供 [Linux 内核套接字遥测](SOCKET_TELEMETRY.zh-CN.md)，与 fentry/fexit 进程归属功能配合使用。
+
 > **自 v1.7.0 起可用。**
 
 按 `5` 打开主机标签页。此视图直接读取操作系统套接字表，不需要先捕获到数据包，因此可显示未产生流量的监听端点。
@@ -1020,7 +1022,7 @@ UDP 没有 LISTEN 状态。UDP 表中的每一行都代表一个本地绑定端�
 
 | 平台 | 套接字来源 |
 |---|---|
-| Linux | `/proc/net/tcp`、`tcp6`、`udp` 和 `udp6`，并通过 `/proc/<pid>/fd` 中的 socket inode 关联进程 |
+| Linux | 开发版本使用 `NETLINK_SOCK_DIAG`，失败时回退到 `/proc/net/tcp`、`tcp6`、`udp` 和 `udp6`；通过 `/proc/<pid>/fd` 中的 socket inode 关联进程 |
 | macOS | 数字格式的 `lsof` 套接字清单，即使 PKTAP 提供数据包进程元数据，此视图仍使用该清单 |
 | FreeBSD | 使用 `sockstat -s` 获取原生 TCP 状态及 UDP 套接字行 |
 | Windows | IP Helper 的 `GetExtendedTcpTable` 和 `GetExtendedUdpTable` owner 表 |

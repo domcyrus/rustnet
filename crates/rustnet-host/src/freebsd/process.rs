@@ -296,6 +296,7 @@ impl FreeBSDProcessLookup {
                 state,
                 owner,
                 native_id: None,
+                kernel_stats: None,
             });
         }
 

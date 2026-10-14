@@ -413,6 +413,7 @@ fn draw_dns_questions(
 
 fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result<()> {
     let snapshot = ctx.app.get_socket_snapshot();
+    let show_kernel = snapshot.sockets.iter().any(|s| s.kernel_stats.is_some());
     let mut endpoints: Vec<&HostSocket> = snapshot
         .sockets
         .iter()
@@ -424,6 +425,13 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         })
         .collect();
     endpoints.sort_by_key(|socket| (socket.protocol, socket.local_addr, socket.remote_addr));
+    let kernel_width = endpoints
+        .iter()
+        .filter_map(|s| socket_kernel_summary(s))
+        .map(|text| text.len())
+        .max()
+        .unwrap_or(0)
+        .max(29);
 
     let endpoint_width = endpoints
         .iter()
@@ -463,11 +471,24 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         .max()
         .unwrap_or(0)
         .max(8);
-    let required_width =
-        7 + 10 + endpoint_width + peer_width + service_width + pid_width + process_width + 8;
+    let required_width = 7
+        + 10
+        + endpoint_width
+        + peer_width
+        + service_width
+        + pid_width
+        + process_width
+        + 8
+        + if show_kernel { kernel_width + 1 } else { 0 };
     if area.width < 120 || area.height < 12 || usize::from(area.width) < required_width {
         let inner = section_header(f, area, section_title("Host Socket States and Endpoints"));
         let mut lines = socket_summary_lines(&snapshot.sockets, ctx.connections);
+        if snapshot.telemetry_status != rustnet_host::SocketTelemetryStatus::Unsupported {
+            lines.push(Line::from(format!(
+                "Kernel telemetry: {} (local namespace)",
+                snapshot.telemetry_status.as_str()
+            )));
+        }
         lines.push(Line::default());
         lines.push(Line::from(section_title(format!(
             "Listening and Bound Endpoints · {} rows",
@@ -499,6 +520,9 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
                 || "Process: -".to_string(),
                 |o| format!("Process: {} (PID {})", o.name, o.pid),
             )));
+            if let Some(kernel) = socket_kernel_summary(socket) {
+                lines.push(Line::from(format!("Kernel: {kernel}")));
+            }
             lines.push(Line::default());
         }
         if lines.last().is_some_and(|line| line.width() == 0) {
@@ -519,7 +543,7 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         .constraints([Constraint::Length(5), Constraint::Min(5)])
         .split(area);
     draw_socket_summary(f, chunks[0], &snapshot.sockets, ctx.connections);
-    let widths = [
+    let mut widths = vec![
         Constraint::Length(7),
         Constraint::Length(10),
         Constraint::Min(endpoint_width as u16),
@@ -528,7 +552,17 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         Constraint::Length(pid_width as u16),
         Constraint::Length(process_width as u16),
     ];
-    draw_endpoint_table(f, chunks[1], ctx, &endpoints, &widths);
+    if show_kernel {
+        widths.push(Constraint::Length(kernel_width as u16));
+    }
+    draw_endpoint_table(
+        f,
+        chunks[1],
+        ctx,
+        &endpoints,
+        &widths,
+        snapshot.telemetry_status,
+    );
     Ok(())
 }
 
@@ -630,7 +664,8 @@ fn draw_endpoint_table(
     area: Rect,
     ctx: &ComponentContext<'_>,
     endpoints: &[&HostSocket],
-    widths: &[Constraint; 7],
+    widths: &[Constraint],
+    status: rustnet_host::SocketTelemetryStatus,
 ) {
     let inner = section_header(
         f,
@@ -638,7 +673,11 @@ fn draw_endpoint_table(
         Line::from(vec![
             section_title(" Listening and Bound Endpoints"),
             Span::styled(
-                format!("  {} rows", endpoints.len()),
+                if status == rustnet_host::SocketTelemetryStatus::Unsupported {
+                    format!("  {} rows", endpoints.len())
+                } else {
+                    format!("  {} rows · kernel {}", endpoints.len(), status.as_str())
+                },
                 theme::fg(theme::muted()),
             ),
         ]),
@@ -658,7 +697,7 @@ fn draw_endpoint_table(
                 || ("-".to_string(), "-".to_string()),
                 |owner| (owner.pid.to_string(), owner.name.clone()),
             );
-            Row::new(vec![
+            let mut cells = vec![
                 Cell::from(socket.protocol.to_string()),
                 Cell::from(state),
                 Cell::from(socket.local_addr.to_string()),
@@ -670,10 +709,16 @@ fn draw_endpoint_table(
                 Cell::from(service.to_string()),
                 Cell::from(Line::from(pid).right_aligned()),
                 Cell::from(process),
-            ])
+            ];
+            if widths.len() == 8 {
+                cells.push(Cell::from(
+                    socket_kernel_summary(socket).unwrap_or_else(|| "-".into()),
+                ));
+            }
+            Row::new(cells)
         })
         .collect();
-    let header = Row::new([
+    let mut headers = vec![
         Cell::from("Proto"),
         Cell::from("State"),
         Cell::from("Local endpoint"),
@@ -681,7 +726,11 @@ fn draw_endpoint_table(
         Cell::from("Service"),
         right_header("PID"),
         Cell::from("Process"),
-    ]);
+    ];
+    if widths.len() == 8 {
+        headers.push(Cell::from("Kernel queues / drops / age"));
+    }
+    let header = Row::new(headers);
     render_scrolled_table(
         f,
         inner,
@@ -690,4 +739,25 @@ fn draw_endpoint_table(
         widths,
         &ctx.ui_state.host_sockets_scroll,
     );
+}
+
+fn socket_kernel_summary(socket: &HostSocket) -> Option<String> {
+    use crate::network::types::SocketQueueKind;
+    let stats = socket.kernel_stats.as_ref()?;
+    let queues = &stats.queues;
+    let queue = match queues.kind {
+        SocketQueueKind::Backlog => format!("Backlog {}/{}", queues.receive, queues.send),
+        SocketQueueKind::MemoryBytes => format!("Mem {}/{} B", queues.receive, queues.send),
+        SocketQueueKind::Bytes => format!("RX/TX {}/{} B", queues.receive, queues.send),
+    };
+    let drops = stats
+        .memory
+        .as_ref()
+        .and_then(|m| m.drops)
+        .map_or_else(|| "-".into(), |d| d.to_string());
+    Some(format!(
+        "{queue} D:{drops} {}s{}",
+        stats.age().as_secs(),
+        if stats.is_stale() { " stale" } else { "" }
+    ))
 }

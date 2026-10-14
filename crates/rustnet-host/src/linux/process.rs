@@ -12,7 +12,9 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 /// Resolve the executable path of a TGID from `/proc/<tgid>/exe`.
 ///
@@ -463,7 +465,8 @@ impl LinuxProcessLookup {
 
     fn new_with_startup_socket_owners(owners: StartupSocketOwners) -> Result<Self> {
         // Populate the cache immediately so it is ready before packet capture starts.
-        let (process_map, socket_snapshot, shared_inodes) = Self::build_process_map(owners)?;
+        let (process_map, socket_snapshot, shared_inodes) =
+            Self::build_process_map(owners, &AtomicBool::new(false))?;
 
         Ok(Self {
             startup_snapshot: build_startup_snapshot(&socket_snapshot, &shared_inodes),
@@ -590,23 +593,67 @@ impl LinuxProcessLookup {
     /// Build the connection map and socket inventory.
     fn build_process_map(
         startup_owners: StartupSocketOwners,
+        cancelled: &AtomicBool,
     ) -> Result<(ConnectionProcessMap, SocketSnapshot, HashSet<u64>)> {
         let mut process_map = HashMap::new();
         let mut sockets = Vec::new();
 
         let (inode_to_process, shared_inodes) = Self::build_inode_map(startup_owners)?;
-
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut successful_dumps = 0;
         for (path, protocol) in PROC_NET_TABLES {
-            Self::parse_and_map(
-                path,
-                protocol,
-                &inode_to_process,
-                &mut process_map,
-                &mut sockets,
-            )?;
+            anyhow::ensure!(!cancelled.load(Ordering::Relaxed), "socket scan cancelled");
+            let family = if path.ends_with('6') {
+                libc::AF_INET6
+            } else {
+                libc::AF_INET
+            };
+            match super::sock_diag::dump(family as u8, protocol, deadline, cancelled) {
+                Ok(mut records) => {
+                    successful_dumps += 1;
+                    for socket in &mut records {
+                        socket.owner = socket
+                            .native_id
+                            .and_then(|inode| inode_to_process.get(&inode))
+                            .cloned();
+                        if let Some(owner) = &socket.owner {
+                            let remote = socket.remote_addr.unwrap_or_else(|| {
+                                if socket.local_addr.is_ipv4() {
+                                    "0.0.0.0:0"
+                                } else {
+                                    "[::]:0"
+                                }
+                                .parse()
+                                .unwrap()
+                            });
+                            process_map.insert(
+                                ConnectionKey::new(protocol, socket.local_addr, remote),
+                                (owner.pid, owner.name.clone()),
+                            );
+                        }
+                    }
+                    sockets.extend(records);
+                }
+                Err(error) => {
+                    log::debug!("Socket diagnostics for {path} unavailable: {error}; using procfs");
+                    Self::parse_and_map(
+                        path,
+                        protocol,
+                        &inode_to_process,
+                        &mut process_map,
+                        &mut sockets,
+                    )?;
+                }
+            }
         }
-
-        Ok((process_map, SocketSnapshot::new(sockets), shared_inodes))
+        anyhow::ensure!(!cancelled.load(Ordering::Relaxed), "socket scan cancelled");
+        let mut snapshot = SocketSnapshot::new(sockets);
+        snapshot.telemetry_status = match successful_dumps {
+            0 => crate::SocketTelemetryStatus::Unavailable,
+            4 => crate::SocketTelemetryStatus::Available,
+            _ => crate::SocketTelemetryStatus::Partial,
+        };
+        Ok((process_map, snapshot, shared_inodes))
     }
 
     /// Build inode -> (pid, process_name) mapping.
@@ -728,6 +775,7 @@ impl LinuxProcessLookup {
                 state,
                 owner,
                 native_id: inode,
+                kernel_stats: None,
             });
         }
     }
@@ -749,8 +797,12 @@ impl ProcessLookup for LinuxProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
+        self.refresh_interruptible(&AtomicBool::new(false))
+    }
+
+    fn refresh_interruptible(&self, cancelled: &AtomicBool) -> Result<()> {
         let (process_map, mut socket_snapshot, shared_inodes) =
-            Self::build_process_map(StartupSocketOwners::default())?;
+            Self::build_process_map(StartupSocketOwners::default(), cancelled)?;
 
         restore_socket_owners(
             &mut self
@@ -908,6 +960,7 @@ mod tests {
             state: HostSocketState::Tcp(HostTcpState::Established),
             owner: None,
             native_id: Some(inode),
+            kernel_stats: None,
         }
     }
 

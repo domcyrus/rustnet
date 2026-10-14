@@ -1,6 +1,7 @@
 // Linux process attribution: eBPF (optional) with a procfs fallback.
 
 mod process;
+mod sock_diag;
 
 #[cfg(feature = "ebpf")]
 mod ebpf;

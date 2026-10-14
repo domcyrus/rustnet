@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Linux socket telemetry in Details, Host and headless JSON: TCP kernel metrics, listener backlogs and UDP queues/drops alongside fentry/fexit attribution (#678)
+
 ### Fixed
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0
 

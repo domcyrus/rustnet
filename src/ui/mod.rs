@@ -2760,6 +2760,7 @@ mod snapshot_tests {
         let app = test_app();
         let endpoint = "[2001:db8:1234:5678:abcd:1234:5678:abcd]:65535";
         app.set_socket_snapshot_for_test(SocketSnapshot {
+            telemetry_status: rustnet_host::SocketTelemetryStatus::Unsupported,
             sockets: Arc::from([HostSocket {
                 protocol: Protocol::Tcp,
                 local_addr: endpoint.parse().unwrap(),
@@ -2767,6 +2768,7 @@ mod snapshot_tests {
                 state: HostSocketState::Tcp(HostTcpState::Listen),
                 owner: Some(SocketOwner::new(123456, "日本語-server", Some(1000))),
                 native_id: None,
+                kernel_stats: None,
             }]),
         });
         for width in [50, 80, 100, 140] {
@@ -2903,6 +2905,7 @@ mod snapshot_tests {
         connections[0].initial_rtt = Some(Duration::from_millis(24));
         app.set_connections_snapshot_for_test(connections);
         app.set_socket_snapshot_for_test(SocketSnapshot {
+            telemetry_status: rustnet_host::SocketTelemetryStatus::Unsupported,
             sockets: Arc::from([
                 HostSocket {
                     protocol: Protocol::Tcp,
@@ -2911,6 +2914,7 @@ mod snapshot_tests {
                     state: HostSocketState::Tcp(HostTcpState::Listen),
                     owner: Some(SocketOwner::new(4242, "web-server", Some(1000))),
                     native_id: Some(123),
+                    kernel_stats: None,
                 },
                 HostSocket {
                     protocol: Protocol::Tcp,
@@ -2919,6 +2923,7 @@ mod snapshot_tests {
                     state: HostSocketState::Tcp(HostTcpState::Established),
                     owner: None,
                     native_id: Some(124),
+                    kernel_stats: None,
                 },
                 HostSocket {
                     protocol: Protocol::Udp,
@@ -2927,6 +2932,7 @@ mod snapshot_tests {
                     state: HostSocketState::UdpBound,
                     owner: Some(SocketOwner::new(53, "resolver", Some(0))),
                     native_id: Some(125),
+                    kernel_stats: None,
                 },
             ]),
         });
@@ -2939,6 +2945,87 @@ mod snapshot_tests {
         let output = render_app(&app, &mut ui_state, &connections, None, 140, 30);
 
         assert_app_snapshot!(output);
+    }
+
+    #[test]
+    fn kernel_socket_details_fit_dashboard_and_paginated_health_view() {
+        let app = test_app();
+        let mut connections = sample_connections();
+        connections[0].kernel_stats = Some(Arc::new(test_support::kernel_stats()));
+        let mut state = UiState {
+            selected_tab: 1,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &connections, None, 160, 60);
+        assert!(!state.details_compact.get());
+        for field in [
+            "Kernel Socket (local)",
+            "Kernel Retransmits",
+            "TCP Bytes Acked",
+            "stale",
+            "Traffic Statistics",
+        ] {
+            assert!(output.contains(field), "missing {field}:\n{output}");
+        }
+        state.details_section = DetailsSection::Health;
+        let mut pages = render_app(&app, &mut state, &connections, None, 80, 24);
+        assert!(state.details_compact.get());
+        for page in 1..state.details_page_count.get() {
+            state.details_page.set(page);
+            pages.push_str(&render_app(&app, &mut state, &connections, None, 80, 24));
+        }
+        for field in ["Kernel Socket (local)", "Kernel RTT", "Retransmitted Bytes"] {
+            assert!(pages.contains(field), "missing {field}:\n{pages}");
+        }
+    }
+
+    #[test]
+    fn host_kernel_queues_keep_backlog_and_udp_memory_units() {
+        use crate::network::types::{SocketMemoryStats, SocketQueueKind, SocketQueues};
+        let app = test_app();
+        let sockets = [
+            (Protocol::Tcp, SocketQueueKind::Backlog, 2, 128),
+            (Protocol::Udp, SocketQueueKind::MemoryBytes, 960, 0),
+        ]
+        .map(|(protocol, kind, receive, send)| {
+            let mut stats = test_support::kernel_stats();
+            stats.queues = SocketQueues {
+                kind,
+                receive,
+                send,
+            };
+            stats.memory = Some(SocketMemoryStats {
+                drops: Some(3),
+                ..Default::default()
+            });
+            HostSocket {
+                protocol,
+                local_addr: "127.0.0.1:1234".parse().unwrap(),
+                remote_addr: None,
+                state: if protocol == Protocol::Tcp {
+                    HostSocketState::Tcp(HostTcpState::Listen)
+                } else {
+                    HostSocketState::UdpBound
+                },
+                owner: None,
+                native_id: None,
+                kernel_stats: Some(Arc::new(stats)),
+            }
+        });
+        app.set_socket_snapshot_for_test(SocketSnapshot {
+            sockets: Arc::from(sockets),
+            telemetry_status: rustnet_host::SocketTelemetryStatus::Partial,
+        });
+        for width in [80, 220] {
+            let mut state = UiState {
+                selected_tab: 4,
+                ..Default::default()
+            };
+            let output = render_app(&app, &mut state, &[], None, width, 40);
+            for text in ["Backlog 2/128", "Mem 960/0 B", "D:3", "partial", "stale"] {
+                assert!(output.contains(text), "missing {text}:\n{output}");
+            }
+        }
     }
 
     #[test]

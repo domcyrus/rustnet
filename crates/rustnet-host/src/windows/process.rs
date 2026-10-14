@@ -196,6 +196,7 @@ macro_rules! refresh_table {
                         state,
                         owner,
                         native_id: None,
+                        kernel_stats: None,
                     });
                 }
             }

@@ -304,6 +304,7 @@ impl MacOSProcessLookup {
                     state,
                     owner: Some(owner),
                     native_id: parts.get(5).and_then(|value| parse_lsof_native_id(value)),
+                    kernel_stats: None,
                 });
                 successful_parsers += 1;
             } else {
