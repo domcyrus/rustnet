@@ -128,7 +128,7 @@ clap_mangen = "0.3"
 
 [target.'cfg(windows)'.build-dependencies]
 http_req = "0.14"
-zip = "8.6"
+zip = "9.0.4"
 sha2 = "0.11"
 windows = { workspace = true, features = [
     "Win32_Foundation",
