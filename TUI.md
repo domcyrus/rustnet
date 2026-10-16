@@ -15,14 +15,6 @@ row below its column headings.
 Overview labels interface error and drop counters as Interfaces, below Traffic
 in both the System sidebar and compact System view.
 
-## System sidebar (unreleased)
-
-The header shows the interface and adds its link layer only when different.
-The System panel omits capture fields already visible in the header, restoring
-them when a narrow terminal hides the header fields. Repeated capture and
-process-detection names appear once. Distinct methods, tunnel labels, and degraded
-detection warnings remain visible.
-
 ## Responsive Host views
 
 Sockets and Interfaces use tables on wide terminals. Below 120 columns, they
