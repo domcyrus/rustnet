@@ -367,6 +367,40 @@ fn detection_method_label(method: &str) -> &str {
     }
 }
 
+fn capture_summary_lines(
+    interface: &str,
+    link_layer: &str,
+    is_tunnel: bool,
+    detection: &str,
+    degraded: bool,
+    header_visible: (bool, bool),
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if !header_visible.0 {
+        lines.push(Line::from(format!("Interface: {interface}")));
+    }
+    if (!header_visible.1 && !link_layer.eq_ignore_ascii_case(interface)) || is_tunnel {
+        lines.push(Line::from(format!(
+            "Link Layer: {link_layer}{}",
+            if is_tunnel { " (Tunnel)" } else { "" }
+        )));
+    }
+    // A fallback or warning must stay explicit even when its name repeats.
+    if degraded
+        || (!detection.eq_ignore_ascii_case(interface)
+            && !detection.eq_ignore_ascii_case(link_layer))
+    {
+        lines.push(Line::from(vec![
+            Span::raw("Detection: "),
+            Span::styled(
+                detection_method_label(detection).to_owned(),
+                theme::fg(if degraded { theme::warn() } else { theme::ok() }),
+            ),
+        ]));
+    }
+    lines
+}
+
 /// Whether the complete Security section fits without taking the four rows
 /// needed to keep the live Traffic summary usable.
 fn security_details_fit(area_height: u16, stats_height: u16, full_security_height: u16) -> bool {
@@ -1056,6 +1090,20 @@ fn draw_stats_panel(
         )
     };
 
+    let interface_name = app
+        .get_current_interface()
+        .unwrap_or_else(|| "Unknown".to_string());
+    let detection_status = app.get_process_detection_status();
+    let (link_layer_type, is_tunnel) = app.get_link_layer_info();
+    let capture_lines = capture_summary_lines(
+        &interface_name,
+        &link_layer_type,
+        is_tunnel,
+        &detection_status.method,
+        detection_status.is_degraded,
+        state.capture_header_visibility.get(),
+    );
+
     // Size the Statistics block from every optional row so Historic and export
     // counters cannot be clipped when their combinations change.
     let pcap_export_enabled = app.is_pcap_export_enabled();
@@ -1063,14 +1111,11 @@ fn draw_stats_panel(
     let pre_attribution_packets = stats
         .pre_attribution_packets
         .load(std::sync::atomic::Ordering::Relaxed);
-    let stats_height: u16 = 14
+    let stats_height: u16 = 11
+        + capture_lines.len() as u16
         + u16::from(connection_counts.historic > 0)
         + u16::from(pre_attribution_packets > 0)
-        + if app.get_process_detection_status().is_degraded {
-            2
-        } else {
-            0
-        }
+        + if detection_status.is_degraded { 2 } else { 0 }
         + if pcap_export_enabled { 4 } else { 0 }
         + if pcapng_export_enabled { 7 } else { 0 };
 
@@ -1102,38 +1147,8 @@ fn draw_stats_panel(
         ])
         .split(inner_area);
 
-    let interface_name = app
-        .get_current_interface()
-        .unwrap_or_else(|| "Unknown".to_string());
-
-    let detection_status = app.get_process_detection_status();
-    let (link_layer_type, is_tunnel) = app.get_link_layer_info();
-
-    // Build process detection lines with a human-facing method label. The
-    // platform implementations use stable machine identifiers internally,
-    // but strings such as "windows-iphlpapi" are too noisy for this sidebar.
-    let process_detection_color = if detection_status.is_degraded {
-        theme::warn()
-    } else {
-        theme::ok()
-    };
-
-    let mut conn_stats_text: Vec<Line> = vec![
-        Line::from(Span::styled("Statistics", theme::bold_fg(theme::heading()))),
-        Line::from(format!("Interface: {}", interface_name)),
-        Line::from(format!(
-            "Link Layer: {}{}",
-            link_layer_type,
-            if is_tunnel { " (Tunnel)" } else { "" }
-        )),
-        Line::from(vec![
-            Span::raw("Detection: "),
-            Span::styled(
-                detection_method_label(&detection_status.method),
-                theme::fg(process_detection_color),
-            ),
-        ]),
-    ];
+    let mut conn_stats_text = vec![Line::styled("Statistics", theme::bold_fg(theme::heading()))];
+    conn_stats_text.extend(capture_lines);
 
     // Keep the warning and its impact separate. This avoids constructions like
     // "ETW unavailable: ETW unavailable" and wraps predictably in narrow panes.
@@ -1648,6 +1663,75 @@ mod tests {
         );
         assert_eq!(detection_method_label("windows-iphlpapi"), "IP Helper");
         assert_eq!(detection_method_label("procfs"), "procfs");
+    }
+
+    #[test]
+    fn repeated_capture_labels_preserve_fallback_and_tunnel_information() {
+        assert!(
+            super::capture_summary_lines("pktap", "Pktap", false, "pktap", false, (true, true))
+                .is_empty()
+        );
+        let fallback =
+            super::capture_summary_lines("pktap", "Pktap", false, "lsof", true, (true, true));
+        assert_eq!(
+            fallback.iter().map(line_text).collect::<Vec<_>>(),
+            ["Detection: lsof"]
+        );
+        let lines = |interface, link, tunnel, detection, degraded| {
+            super::capture_summary_lines(
+                interface,
+                link,
+                tunnel,
+                detection,
+                degraded,
+                (false, false),
+            )
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            lines("pktap", "Pktap", false, "pktap", false),
+            ["Interface: pktap"]
+        );
+        assert_eq!(
+            lines("pktap", "Pktap", false, "lsof", true),
+            ["Interface: pktap", "Detection: lsof"]
+        );
+        assert_eq!(
+            lines("pktap", "Pktap", false, "pktap", true),
+            ["Interface: pktap", "Detection: pktap"]
+        );
+        assert_eq!(
+            lines("en0", "Ethernet", false, "pktap", false),
+            ["Interface: en0", "Link Layer: Ethernet", "Detection: pktap"]
+        );
+        for method in ["ebpf", "procfs"] {
+            assert_eq!(
+                lines("any", "LinuxSll2", false, method, false),
+                [
+                    "Interface: any",
+                    "Link Layer: LinuxSll2",
+                    &format!("Detection: {method}")
+                ]
+            );
+            let partial_header = super::capture_summary_lines(
+                "any",
+                "LinuxSll2",
+                false,
+                method,
+                false,
+                (true, false),
+            );
+            assert_eq!(
+                partial_header.iter().map(line_text).collect::<Vec<_>>(),
+                ["Link Layer: LinuxSll2", &format!("Detection: {method}")]
+            );
+        }
+        assert!(
+            lines("utun0", "RawIp", true, "lsof", false)
+                .contains(&"Link Layer: RawIp (Tunnel)".to_owned())
+        );
     }
 
     #[test]

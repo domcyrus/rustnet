@@ -541,6 +541,8 @@ impl ClickableRegions {
 
 /// UI state for managing the interface
 pub struct UiState {
+    /// Interface and link-layer fields actually visible in the current header.
+    pub capture_header_visibility: Cell<(bool, bool)>,
     pub selected_tab: usize,
     pub selected_connection_key: Option<String>,
     /// Cached positions for the selected key. Each lookup validates the hint
@@ -633,6 +635,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            capture_header_visibility: Cell::new((false, false)),
             selected_tab: 0,
             selected_connection_key: None,
             selected_connection_index_hint: Cell::new(None),

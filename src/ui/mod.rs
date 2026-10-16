@@ -931,6 +931,7 @@ mod snapshot_tests {
         });
 
         let title_row = output.lines().next().expect("title row");
+        assert_eq!(ui_state.capture_header_visibility.get(), (true, true));
         assert!(
             title_row.trim_end().ends_with("● eth0 · Ethernet"),
             "cluster should sit at the right edge, got:\n{output}"
@@ -956,6 +957,7 @@ mod snapshot_tests {
             medium.contains("● eth0") && !medium.contains("Ethernet"),
             "link layer should be dropped first, got:\n{medium}"
         );
+        assert_eq!(ui_state.capture_header_visibility.get(), (true, false));
 
         let mut regions = ClickableRegions::default();
         let narrow = render(72, 2, |f| {
@@ -965,6 +967,7 @@ mod snapshot_tests {
             !narrow.contains("●"),
             "cluster should disappear rather than collide, got:\n{narrow}"
         );
+        assert_eq!(ui_state.capture_header_visibility.get(), (false, false));
     }
 
     /// An active filter marks the Overview title, and the underline
@@ -4636,7 +4639,12 @@ mod snapshot_tests {
             let (output, regions) =
                 render_app_frame(&app, &mut state, &connections, None, width, 24);
             assert!(output.contains("System"));
-            assert!(output.contains("Interface: eth0"));
+            if state.capture_header_visibility.get().0 {
+                assert!(output.contains("● eth0"));
+                assert!(!output.contains("Interface: eth0"));
+            } else {
+                assert!(output.contains("Interface: eth0"));
+            }
             let divider = "─".repeat(usize::from(width - 2));
             assert!(
                 output
