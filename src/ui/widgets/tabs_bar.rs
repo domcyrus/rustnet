@@ -67,7 +67,9 @@ fn capture_cluster_spans(capture: &CaptureCluster<'_>, room: usize) -> Option<Ve
         return None;
     }
 
-    if let Some(link_type) = capture.link_type {
+    if let Some(link_type) = capture.link_type
+        && !link_type.eq_ignore_ascii_case(interface)
+    {
         let suffix = Span::styled(format!(" · {link_type}"), theme::fg(theme::muted()));
         if base + suffix.width() <= room {
             spans.push(suffix);
@@ -137,7 +139,16 @@ pub(in crate::ui) fn draw_tabs(
     // Right-align the capture cluster on the title row, keeping at least
     // CLUSTER_GAP cells clear of the last title.
     let room = (area.width as usize).saturating_sub(used + CLUSTER_GAP);
+    ui_state.capture_header_visibility.set((false, false));
     if let Some(cluster) = capture_cluster_spans(capture, room) {
+        if area.height > 0 {
+            let link_visible = cluster.len() == 3
+                || capture
+                    .interface
+                    .zip(capture.link_type)
+                    .is_some_and(|(interface, link)| interface.eq_ignore_ascii_case(link));
+            ui_state.capture_header_visibility.set((true, link_visible));
+        }
         let pad = (area.width as usize).saturating_sub(used + cluster_width(&cluster));
         strip.titles.push(Span::raw(" ".repeat(pad)));
         strip.titles.extend(cluster);
@@ -166,6 +177,13 @@ mod tests {
         };
         let spans = capture_cluster_spans(&capture, 40).expect("cluster fits");
         assert_eq!(spans_text(&spans), "● eth0 · Ethernet");
+        let capture = CaptureCluster {
+            interface: Some("pktap"),
+            link_type: Some("Pktap"),
+            failed: false,
+        };
+        let spans = capture_cluster_spans(&capture, 40).expect("cluster fits");
+        assert_eq!(spans_text(&spans), "● pktap");
     }
 
     #[test]
