@@ -1180,7 +1180,6 @@ mod snapshot_tests {
     use rustnet_core::network::dpi::DpiResult;
     use rustnet_host::{HostSocket, HostSocketState, HostTcpState, SocketOwner, SocketSnapshot};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::sync::Arc;
     use std::time::{Duration, SystemTime};
 
     fn dns_test_packet(
@@ -2762,16 +2761,14 @@ mod snapshot_tests {
     fn host_compact_records_preserve_ipv6_and_unicode_owners() {
         let app = test_app();
         let endpoint = "[2001:db8:1234:5678:abcd:1234:5678:abcd]:65535";
-        app.set_socket_snapshot_for_test(SocketSnapshot {
-            sockets: Arc::from([HostSocket {
-                protocol: Protocol::Tcp,
-                local_addr: endpoint.parse().unwrap(),
-                remote_addr: None,
-                state: HostSocketState::Tcp(HostTcpState::Listen),
-                owner: Some(SocketOwner::new(123456, "日本語-server", Some(1000))),
-                native_id: None,
-            }]),
-        });
+        app.set_socket_snapshot_for_test(SocketSnapshot::new(vec![HostSocket {
+            protocol: Protocol::Tcp,
+            local_addr: endpoint.parse().unwrap(),
+            remote_addr: None,
+            state: HostSocketState::Tcp(HostTcpState::Listen),
+            owner: Some(SocketOwner::new(123456, "日本語-server", Some(1000))),
+            native_id: None,
+        }]));
         for width in [50, 80, 100, 140] {
             let mut state = UiState {
                 selected_tab: 4,
@@ -2905,34 +2902,32 @@ mod snapshot_tests {
         let mut connections = sample_connections();
         connections[0].initial_rtt = Some(Duration::from_millis(24));
         app.set_connections_snapshot_for_test(connections);
-        app.set_socket_snapshot_for_test(SocketSnapshot {
-            sockets: Arc::from([
-                HostSocket {
-                    protocol: Protocol::Tcp,
-                    local_addr: "0.0.0.0:8080".parse().unwrap(),
-                    remote_addr: None,
-                    state: HostSocketState::Tcp(HostTcpState::Listen),
-                    owner: Some(SocketOwner::new(4242, "web-server", Some(1000))),
-                    native_id: Some(123),
-                },
-                HostSocket {
-                    protocol: Protocol::Tcp,
-                    local_addr: "192.0.2.10:49152".parse().unwrap(),
-                    remote_addr: Some("198.51.100.20:443".parse().unwrap()),
-                    state: HostSocketState::Tcp(HostTcpState::Established),
-                    owner: None,
-                    native_id: Some(124),
-                },
-                HostSocket {
-                    protocol: Protocol::Udp,
-                    local_addr: "127.0.0.1:53".parse().unwrap(),
-                    remote_addr: None,
-                    state: HostSocketState::UdpBound,
-                    owner: Some(SocketOwner::new(53, "resolver", Some(0))),
-                    native_id: Some(125),
-                },
-            ]),
-        });
+        app.set_socket_snapshot_for_test(SocketSnapshot::new(vec![
+            HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: "0.0.0.0:8080".parse().unwrap(),
+                remote_addr: None,
+                state: HostSocketState::Tcp(HostTcpState::Listen),
+                owner: Some(SocketOwner::new(4242, "web-server", Some(1000))),
+                native_id: Some(123),
+            },
+            HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: "192.0.2.10:49152".parse().unwrap(),
+                remote_addr: Some("198.51.100.20:443".parse().unwrap()),
+                state: HostSocketState::Tcp(HostTcpState::Established),
+                owner: None,
+                native_id: Some(124),
+            },
+            HostSocket {
+                protocol: Protocol::Udp,
+                local_addr: "127.0.0.1:53".parse().unwrap(),
+                remote_addr: None,
+                state: HostSocketState::UdpBound,
+                owner: Some(SocketOwner::new(53, "resolver", Some(0))),
+                native_id: Some(125),
+            },
+        ]));
 
         let mut ui_state = UiState {
             selected_tab: 4,

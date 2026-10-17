@@ -225,6 +225,9 @@ impl App {
             if last_refresh.elapsed() > Duration::from_secs(5) {
                 if let Err(e) = process_lookup.refresh_interruptible(shutdown.requested_flag()) {
                     debug!("Process lookup refresh failed: {}", e);
+                    if let Ok(mut snapshot) = socket_snapshot.write() {
+                        snapshot.invalidate_port_status();
+                    }
                 } else if let Ok(mut snapshot) = socket_snapshot.write() {
                     *snapshot = process_lookup.socket_snapshot();
                 }

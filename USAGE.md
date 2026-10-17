@@ -1515,6 +1515,7 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 | `protocol` | string | Protocol (TCP, UDP, etc.) |
 | `source_ip` | string | Local IP address |
 | `source_port` | number | Local port number |
+| `local_port_status` | string | `opened`, `closed`, or `unknown` for new incoming TCP/UDP flows (unreleased) |
 | `destination_ip` | string | Remote IP address |
 | `destination_port` | number | Remote port number |
 | `pid` | number | Process ID (if available) |
@@ -1526,6 +1527,13 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 | `bytes_sent` | number | Total bytes sent (connection_closed only) |
 | `bytes_received` | number | Total bytes received (connection_closed only) |
 | `duration_secs` | number | Connection duration in seconds (connection_closed only) |
+
+`local_port_status` (unreleased) uses the cached host inventory: `opened` means a
+matching TCP listener or UDP bind, `closed` means no observed match, and `unknown`
+means an unavailable/failed inventory or ambiguous IPv4/IPv6 wildcard binding.
+It is included only on incoming `new_connection` events, using the TCP handshake
+direction when known, otherwise the first packet's direction. The five-second
+refresh and OS visibility limit accuracy; this is not a firewall verdict.
 
 **Example output:**
 

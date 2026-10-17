@@ -2,6 +2,7 @@
 //! shutdown paths.
 
 use log::warn;
+use rustnet_host::LocalPortStatus;
 use serde_json::{Map, Value, json};
 use std::fs::File;
 use std::io::Write;
@@ -234,6 +235,7 @@ pub(super) fn log_connection_closed(
             conn,
             duration_secs,
             dns_resolver,
+            None,
         );
     }
     if let Some(writer) = pcap_sidecar {
@@ -248,6 +250,7 @@ pub(super) fn log_connection_event(
     conn: &Connection,
     duration_secs: Option<u64>,
     dns_resolver: Option<&DnsResolver>,
+    local_port_status: Option<LocalPortStatus>,
 ) -> bool {
     let mut event = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -258,6 +261,12 @@ pub(super) fn log_connection_event(
         "destination_ip": conn.remote_addr.ip().to_string(),
         "destination_port": conn.remote_addr.port(),
     });
+
+    if event_type == "new_connection"
+        && let Some(status) = local_port_status
+    {
+        event["local_port_status"] = json!(status.as_token());
+    }
 
     add_network_fields(
         &mut event,
@@ -404,6 +413,7 @@ mod vlan_tests {
             "new_connection",
             &conn,
             None,
+            None,
             None
         ));
         assert!(log_pcap_connection(&writer, &conn));
@@ -419,6 +429,7 @@ mod vlan_tests {
             "connection_closed",
             &conn,
             Some(0),
+            None,
             None
         ));
         assert!(log_pcap_connection(&writer, &conn));

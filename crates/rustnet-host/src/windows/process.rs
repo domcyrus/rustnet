@@ -116,23 +116,26 @@ macro_rules! refresh_table {
             cache: &mut ProcessMap,
             process_names: &mut ProcessNameCache,
             sockets: &mut Vec<HostSocket>,
-        ) -> Result<()> {
+        ) -> bool {
             unsafe {
                 let mut size: u32 = 0;
 
                 let result = $api(None, &mut size, false, $family, $table_class, 0);
 
+                if result == 0 {
+                    return true;
+                }
                 if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
                     log::debug!(
                         concat!($api_label, " returned no data or error: {}"),
                         result
                     );
-                    return Ok(());
+                    return false;
                 }
 
                 if size == 0 || size > 100_000_000 {
                     log::warn!(concat!($api_label, " returned invalid size: {}"), size);
-                    return Ok(());
+                    return false;
                 }
 
                 let mut table = allocate_table_buffer(size);
@@ -147,12 +150,12 @@ macro_rules! refresh_table {
 
                 if result != 0 {
                     log::debug!(concat!($api_label, " second call failed: {}"), result);
-                    return Ok(());
+                    return false;
                 }
 
                 if table_buffer_len(&table) < std::mem::size_of::<u32>() {
                     log::warn!(concat!($table_label, " table buffer too small for header"));
-                    return Ok(());
+                    return false;
                 }
 
                 let parsed_table = &*(table.as_ptr() as *const $table_ty);
@@ -170,7 +173,7 @@ macro_rules! refresh_table {
                         required_size,
                         num_entries
                     );
-                    return Ok(());
+                    return false;
                 }
 
                 log::debug!(
@@ -200,7 +203,7 @@ macro_rules! refresh_table {
                 }
             }
 
-            Ok(())
+            true
         }
     };
 }
@@ -335,17 +338,6 @@ impl WindowsProcessLookup {
         })
     }
 
-    fn refresh_tcp_processes(
-        &self,
-        cache: &mut ProcessMap,
-        process_names: &mut ProcessNameCache,
-        sockets: &mut Vec<HostSocket>,
-    ) -> Result<()> {
-        self.refresh_tcp_table_v4(cache, process_names, sockets)?;
-        self.refresh_tcp_table_v6(cache, process_names, sockets)?;
-        Ok(())
-    }
-
     refresh_table!(
         refresh_tcp_table_v4,
         GetExtendedTcpTable,
@@ -393,17 +385,6 @@ impl WindowsProcessLookup {
         },
         |row| HostSocketState::Tcp(windows_tcp_state(row.dwState))
     );
-
-    fn refresh_udp_processes(
-        &self,
-        cache: &mut ProcessMap,
-        process_names: &mut ProcessNameCache,
-        sockets: &mut Vec<HostSocket>,
-    ) -> Result<()> {
-        self.refresh_udp_table_v4(cache, process_names, sockets)?;
-        self.refresh_udp_table_v6(cache, process_names, sockets)?;
-        Ok(())
-    }
 
     refresh_table!(
         refresh_udp_table_v4,
@@ -568,8 +549,15 @@ impl ProcessLookup for WindowsProcessLookup {
         let mut process_names = HashMap::new();
         let mut sockets = Vec::new();
 
-        self.refresh_tcp_processes(&mut new_cache, &mut process_names, &mut sockets)?;
-        self.refresh_udp_processes(&mut new_cache, &mut process_names, &mut sockets)?;
+        let mut complete = true;
+        for refresh in [
+            Self::refresh_tcp_table_v4,
+            Self::refresh_tcp_table_v6,
+            Self::refresh_udp_table_v4,
+            Self::refresh_udp_table_v6,
+        ] {
+            complete &= refresh(self, &mut new_cache, &mut process_names, &mut sockets);
+        }
 
         match Self::snapshot_processes() {
             Ok(processes) => {
@@ -586,10 +574,11 @@ impl ProcessLookup for WindowsProcessLookup {
         let total_entries = new_cache.len();
         cache.lookup = new_cache;
         cache.last_refresh = Instant::now();
+        let snapshot = SocketSnapshot::from_inventory(sockets, complete);
         *self
             .socket_snapshot
             .write()
-            .expect("socket snapshot lock poisoned") = SocketSnapshot::new(sockets);
+            .expect("socket snapshot lock poisoned") = snapshot;
 
         log::debug!(
             "Windows process lookup refresh complete: {} entries cached",
@@ -734,9 +723,7 @@ fn cache_process(
             ProcessNameLookup::Denied => Some(UNKNOWN_PROCESS_NAME.to_string()),
             ProcessNameLookup::Gone => None,
         });
-    let Some(process_name) = resolved.clone() else {
-        return None;
-    };
+    let process_name = resolved.clone()?;
 
     log::trace!(
         "Cached: {:?} {} -> {} (PID: {}, {})",

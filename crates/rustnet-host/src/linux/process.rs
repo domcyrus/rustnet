@@ -596,17 +596,18 @@ impl LinuxProcessLookup {
 
         let (inode_to_process, shared_inodes) = Self::build_inode_map(startup_owners)?;
 
+        let mut complete = true;
         for (path, protocol) in PROC_NET_TABLES {
-            Self::parse_and_map(
+            complete &= Self::parse_and_map(
                 path,
                 protocol,
                 &inode_to_process,
                 &mut process_map,
                 &mut sockets,
-            )?;
+            );
         }
-
-        Ok((process_map, SocketSnapshot::new(sockets), shared_inodes))
+        let snapshot = SocketSnapshot::from_inventory(sockets, complete);
+        Ok((process_map, snapshot, shared_inodes))
     }
 
     /// Build inode -> (pid, process_name) mapping.
@@ -664,14 +665,15 @@ impl LinuxProcessLookup {
         inode_map: &InodeProcessMap,
         result: &mut ConnectionProcessMap,
         sockets: &mut Vec<HostSocket>,
-    ) -> Result<()> {
+    ) -> bool {
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
-            Err(_) => return Ok(()), // File might not exist
+            // IPv6 tables may be absent when IPv6 is disabled.
+            Err(e) => return e.kind() == std::io::ErrorKind::NotFound && path.ends_with('6'),
         };
 
         Self::parse_and_map_content(&content, protocol, inode_map, result, sockets);
-        Ok(())
+        true
     }
 
     fn parse_and_map_content(

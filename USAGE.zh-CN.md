@@ -1412,6 +1412,7 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 | `protocol` | string | 协议（TCP、UDP 等） |
 | `source_ip` | string | 本地 IP 地址 |
 | `source_port` | number | 本地端口号 |
+| `local_port_status` | string | 入站 TCP/UDP 新连接：`opened`、`closed` 或 `unknown`（未发布） |
 | `destination_ip` | string | 远程 IP 地址 |
 | `destination_port` | number | 远程端口号 |
 | `pid` | number | 进程 ID（如果可用） |
@@ -1423,6 +1424,8 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 | `bytes_sent` | number | 发送的总字节数（仅 connection_closed） |
 | `bytes_received` | number | 接收的总字节数（仅 connection_closed） |
 | `duration_secs` | number | 连接持续时间，单位为秒（仅 connection_closed） |
+
+`local_port_status`（未发布）使用缓存的主机套接字清单：匹配 TCP 监听或 UDP 绑定时为 `opened`，未观察到匹配时为 `closed`，清单不可用、刷新失败或 IPv4/IPv6 通配绑定存在歧义时为 `unknown`。仅在入站 `new_connection` 事件中包含此字段，优先使用已知 TCP 握手方向，否则使用首个数据包的方向。五秒刷新间隔和操作系统可见范围限制了准确性；这不是防火墙判定。
 
 **示例输出：**<a id="example-output"></a>
 

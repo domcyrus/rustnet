@@ -4,6 +4,7 @@
 use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
 use log::{debug, error, info, warn};
+use rustnet_host::{LocalPortStatus, SocketSnapshot};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::ops::ControlFlow;
@@ -17,6 +18,7 @@ use crate::network::{
     dns::DnsResolver,
     parser::{PacketParser, ParsedPacket, ParserConfig},
     tracker::{ConnectionTracker, IngestOutcome},
+    types::Protocol,
 };
 
 use super::logging::{JsonLineWriter, log_connection_closed, log_connection_event};
@@ -878,6 +880,7 @@ impl App {
         let json_log_file = self.json_log_file.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
         let dns_resolver = self.dns_resolver.clone();
+        let socket_snapshot = Arc::clone(&self.socket_snapshot);
         let oui_lookup = self.oui_lookup.clone();
         let parser_config = ParserConfig {
             enable_dpi: self.config.enable_dpi,
@@ -982,7 +985,9 @@ impl App {
                                     parsed,
                                     packet_timestamp,
                                     &stats,
-                                    &json_log_file,
+                                    json_log_file
+                                        .as_deref()
+                                        .map(|writer| (writer, socket_snapshot.as_ref())),
                                     &pcap_sidecar_file,
                                     dns_resolver.as_deref(),
                                 );
@@ -1086,7 +1091,7 @@ fn update_connection(
     parsed: &ParsedPacket,
     now: SystemTime,
     stats: &AppStats,
-    json_log_file: &Option<Arc<JsonLineWriter>>,
+    json_log_file: Option<(&JsonLineWriter, &RwLock<SocketSnapshot>)>,
     pcap_sidecar_file: &Option<Arc<JsonLineWriter>>,
     dns_resolver: Option<&DnsResolver>,
 ) -> IngestOutcome {
@@ -1130,7 +1135,7 @@ fn update_connection(
         log_connection_closed(
             conn,
             now,
-            json_log_file.as_deref(),
+            json_log_file.map(|(writer, _)| writer),
             pcap_sidecar_file.as_deref(),
             dns_resolver,
         );
@@ -1145,10 +1150,24 @@ fn update_connection(
             .total_connections_created
             .fetch_add(1, Ordering::Relaxed);
         debug!("New connection detected: {}", outcome.key);
-        if let Some(writer) = json_log_file
+        if let Some((writer, sockets)) = json_log_file
             && let Some(conn) = tracker.connections().get(&outcome.key)
         {
-            log_connection_event(writer, "new_connection", conn.value(), None, dns_resolver);
+            let local_port_status = (!conn.connection_direction.unwrap_or(parsed.is_outgoing)
+                && matches!(conn.protocol, Protocol::Tcp | Protocol::Udp))
+            .then(|| {
+                sockets.read().map_or(LocalPortStatus::Unknown, |snapshot| {
+                    snapshot.local_port_status(conn.protocol, conn.local_addr)
+                })
+            });
+            log_connection_event(
+                writer,
+                "new_connection",
+                conn.value(),
+                None,
+                dns_resolver,
+                local_port_status,
+            );
         }
     }
 
@@ -1936,6 +1955,78 @@ mod connection_lifecycle_tests {
     }
 
     #[test]
+    fn new_connection_logs_local_port_status_only_for_incoming_flows() {
+        use rustnet_host::{HostSocket, HostSocketState, HostTcpState};
+        let dir = ScratchDir::new("local-port-status", "events");
+        let path = dir.path().join("events.jsonl");
+        let writer = json_writer(&path);
+        let opened = SocketSnapshot::new(
+            [Protocol::Tcp, Protocol::Udp]
+                .map(|protocol| HostSocket {
+                    protocol,
+                    local_addr: "0.0.0.0:40000".parse().unwrap(),
+                    remote_addr: None,
+                    state: if protocol == Protocol::Tcp {
+                        HostSocketState::Tcp(HostTcpState::Listen)
+                    } else {
+                        HostSocketState::UdpBound
+                    },
+                    owner: None,
+                    native_id: None,
+                })
+                .into(),
+        );
+        let closed = SocketSnapshot::new(vec![]);
+        let unknown = SocketSnapshot::default();
+        let cases = [
+            (Protocol::Tcp, false, false, &opened, Some("opened")),
+            (Protocol::Tcp, false, false, &closed, Some("closed")),
+            (Protocol::Tcp, false, false, &unknown, Some("unknown")),
+            (Protocol::Udp, false, false, &opened, Some("opened")),
+            (Protocol::Udp, false, false, &unknown, Some("unknown")),
+            (Protocol::Tcp, true, false, &opened, None),
+            (Protocol::Udp, true, false, &opened, None),
+            (Protocol::Tcp, true, true, &unknown, Some("unknown")),
+            (Protocol::Tcp, false, true, &unknown, None),
+        ];
+        for (protocol, outgoing, syn_ack, snapshot, _) in &cases {
+            let mut parsed = tcp_packet(TcpFlags {
+                ack: *syn_ack,
+                ..flags(true, false)
+            });
+            parsed.is_outgoing = *outgoing;
+            if *protocol == Protocol::Udp {
+                parsed.protocol = *protocol;
+                parsed.protocol_state = ProtocolState::Udp;
+                parsed.tcp_header = None;
+            }
+            let tracker = ConnectionTracker::new();
+            let sockets = RwLock::new((*snapshot).clone());
+            let outcome = update_connection(
+                &tracker,
+                &parsed,
+                SystemTime::now(),
+                &AppStats::default(),
+                Some((&writer, &sockets)),
+                &None,
+                None,
+            );
+            let conn = tracker.connections().get(&outcome.key).unwrap();
+            log_connection_closed(&conn, SystemTime::now(), Some(&writer), None, None);
+        }
+        let contents = std::fs::read_to_string(path).unwrap();
+        let records: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), cases.len() * 2);
+        for (pair, (_, _, _, _, expected)) in records.as_chunks::<2>().0.iter().zip(cases) {
+            assert_eq!(pair[0]["local_port_status"].as_str(), expected);
+            assert!(pair[1].get("local_port_status").is_none());
+        }
+    }
+
+    #[test]
     fn lifecycle_counters_record_new_and_replaced_generations() {
         let tracker = ConnectionTracker::new();
         let stats = AppStats::default();
@@ -1947,7 +2038,7 @@ mod connection_lifecycle_tests {
             &tcp_packet(flags(true, false)),
             started,
             &stats,
-            &no_log,
+            None,
             &no_log,
             None,
         );
@@ -1956,7 +2047,7 @@ mod connection_lifecycle_tests {
             &tcp_packet(flags(false, true)),
             started + Duration::from_secs(1),
             &stats,
-            &no_log,
+            None,
             &no_log,
             None,
         );
@@ -1965,7 +2056,7 @@ mod connection_lifecycle_tests {
             &tcp_packet(flags(true, false)),
             started + Duration::from_secs(2),
             &stats,
-            &no_log,
+            None,
             &no_log,
             None,
         );
@@ -1997,7 +2088,7 @@ mod connection_lifecycle_tests {
                     &parsed,
                     started,
                     &earlier_stats,
-                    &None,
+                    None,
                     &None,
                     None,
                 );
@@ -2015,7 +2106,7 @@ mod connection_lifecycle_tests {
                     &parsed,
                     started + Duration::from_secs(1),
                     &later_stats,
-                    &None,
+                    None,
                     &None,
                     None,
                 );
@@ -2040,6 +2131,7 @@ mod connection_lifecycle_tests {
         let events_path = dir.path().join("events.jsonl");
         let sidecar_path = dir.path().join("capture.pcap.connections.jsonl");
         let events = Some(json_writer(&events_path));
+        let sockets = RwLock::new(SocketSnapshot::default());
         let sidecar = Some(json_writer(&sidecar_path));
         let tracker = ConnectionTracker::new();
         let stats = AppStats::default();
@@ -2050,7 +2142,7 @@ mod connection_lifecycle_tests {
             &tcp_packet(flags(true, false)),
             started,
             &stats,
-            &events,
+            events.as_deref().map(|writer| (writer, &sockets)),
             &sidecar,
             None,
         );
@@ -2059,7 +2151,7 @@ mod connection_lifecycle_tests {
             &tcp_packet(flags(false, true)),
             started + Duration::from_secs(1),
             &stats,
-            &events,
+            events.as_deref().map(|writer| (writer, &sockets)),
             &sidecar,
             None,
         );
@@ -2068,7 +2160,7 @@ mod connection_lifecycle_tests {
             &tcp_packet(flags(true, false)),
             started + Duration::from_secs(2),
             &stats,
-            &events,
+            events.as_deref().map(|writer| (writer, &sockets)),
             &sidecar,
             None,
         );
