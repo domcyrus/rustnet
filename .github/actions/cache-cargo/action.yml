@@ -18,12 +18,16 @@ runs:
           cargo_home=$(cygpath -m "$cargo_home")
         fi
         echo "cargo-home=$cargo_home" >> "$GITHUB_OUTPUT"
+        hash_command=(sha256sum)
+        if [[ "$RUNNER_OS" == macOS ]]; then
+          hash_command=(shasum -a 256)
+        fi
         fingerprint=$(
           {
             rustc -vV
             printf '%s\n' "${RUSTFLAGS-}" "${CARGO_ENCODED_RUSTFLAGS-}" \
               "${CC-}" "${CFLAGS-}" "${CXX-}" "${CXXFLAGS-}"
-          } | sha256sum | cut -d' ' -f1
+          } | "${hash_command[@]}" | cut -d' ' -f1
         )
         echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
     - name: Restore Cargo cache
