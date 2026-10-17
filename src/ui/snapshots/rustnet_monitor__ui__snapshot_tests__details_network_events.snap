@@ -1,0 +1,54 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
+                                                                                                                                            
+▌ client                192.0.2.1:443           127.0.0.1:1000     -          TCP                      ESTABLISHED       - ok            -/-
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+▎ client → 192.0.2.1:443 [ESTABLISHED] · click a field to copy ─────────────────────────────────────────────────────────────────────────────
+Connection                                                            Application                                                           
+Protocol              TCP                                             Detected              -                                               
+Status                Active (last seen <T> ago)                                                                                             
+Local Address         127.0.0.1:1000                                                                                                        
+Remote Address        192.0.2.1:443                                                                                                         
+Scope                 DOCUMENTATION                                                                                                         
+State                 ESTABLISHED                                                                                                           
+Process               client                                                                                                                
+PID                   -                                                                                                                     
+Service               -                                               Attributed Name       -                                               
+Observed VLANs        -                                               Attributed Via        -                                               
+                                                                                                                                            
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               Initial RTT           -                                               
+Local MAC             -                                               Live RTT              -                                               
+Remote Hostname       -                                               TCP Retransmits (R)   0                                               
+Remote MAC            -                                               Out-of-Order (O)      0                                               
+Country               -                                               Duplicate ACKs        0                                               
+City                  -                                               Fast Retransmits      0                                               
+ASN                   -                                               Window Size           -                                               
+                                                                                                                                            
+Attribution                                                           Observed Network Events                                               
+PID                   -                                               TCP Resets            Sent 0 · Received 1                             
+PPID                  -                                               ICMP Errors           Sent 0 · Received 1                             
+Process Tree          -                                               Latest Error          ICMP packet too big / frag needed               
+Executable            -                                               Type / Code           ICMPv4 3 / 4                                    
+User                  -                                               Reported By           192.0.2.1                                       
+Match                 -                                               Observed              <direction> · <T> ago                               
+                                                                      Advertised MTU        1400                                            
+                                                                      ICMP matched by quoted endpoints (best effort)                        
+                                                                                                                                            
+▎ Traffic Statistics · smoothed avg · 60s · B/s ────────────────────────────────────────────────────────────────────────────────────────────
+↓ RX Now 0 B/s       →                             peak       0 B/s   ↑ TX Now 0 B/s       →                             peak       0 B/s   
+Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
+Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ j/k connection  c copy remote addr  esc back                                                                                h help  q quit

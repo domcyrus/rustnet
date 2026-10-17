@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
+- Show observed TCP resets and ICMP errors in Host, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
 
 ### Fixed
 - Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0
 
 ### Documentation
+- Consolidate terminal guidance into concise usage documentation in English, Chinese, and Japanese (#683)
 - Add Repology packaging badges, Alpine edge installation instructions, and credit the Alpine maintainer (#671)
 - Refresh the demo GIF and screenshots for v1.7.0, including Host sockets and DNS analytics
 

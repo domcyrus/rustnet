@@ -152,6 +152,7 @@ pub struct Connection {
 
     // Protocol state
     pub protocol_state: ProtocolState,
+    pub network_events: Option<Box<super::ConnectionNetworkEvents>>,
 
     // Process information
     pub pid: Option<u32>,
@@ -306,6 +307,7 @@ impl Connection {
             remote_is_gateway: false,
             observed_vlan_ids: Vec::new(),
             protocol_state: state,
+            network_events: None,
             pid: None,
             process_ppid: None,
             process_name: None,
@@ -389,6 +391,7 @@ impl Connection {
             remote_is_gateway: self.remote_is_gateway,
             observed_vlan_ids: self.observed_vlan_ids.clone(),
             protocol_state: self.protocol_state.clone(),
+            network_events: self.network_events.clone(),
             pid: self.pid,
             process_ppid: self.process_ppid,
             process_name: self.process_name.clone(),

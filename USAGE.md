@@ -1,4 +1,4 @@
-<p align="center"><strong>English</strong> | <a href="USAGE.zh-CN.md">简体中文</a></p>
+<p align="center"><strong>English</strong> | <a href="USAGE.zh-CN.md">简体中文</a> | <a href="USAGE.ja.md">日本語</a></p>
 
 # Usage Guide
 
@@ -8,7 +8,8 @@ This guide covers detailed usage of RustNet, including command-line options, key
 
 ## Table of Contents
 
-- [Terminal layout and appearance](TUI.md)
+- [Terminal views](#compact-terminals)
+- [Traffic charts](#traffic-charts)
 - [Running RustNet](#running-rustnet)
 - [Command-line Options](#command-line-options)
 - [Headless Mode](#headless-mode)
@@ -362,6 +363,9 @@ the configured grouping preference. These settings do not affect headless output
 group_by_process = true
 ```
 
+For an optional Help shadow, add `[ui]` with `popup_shadow = true` to the same
+config file (default: `false`). `NO_COLOR` or `--no-color` disables the shadow.
+
 Related: `--no-color` disables all colors entirely (also honors the `NO_COLOR`
 environment variable).
 
@@ -478,41 +482,32 @@ click anywhere dismisses it.
 
 ### Compact terminals
 
-Overview, Details, Activity, and Graph show a shared section selector only when the full
-layout does not fit. Press `v` for the next section or Shift+`v` for the previous
-one, or click a section name. Host uses the same controls to select Sockets, Interfaces, or
-DNS at every size. Tab / Shift+Tab, `[` / `]`, and 1-5 switch main tabs
-everywhere. Section selectors share the main tabs' title and underline styling,
-with their shortcuts in the footer.
+When the dashboard does not fit, use `v` / Shift+`v` or click a section name to
+switch views. Host always uses these controls for Sockets, Interfaces, and DNS.
+In Details they also page through long sections; `j` / `k` and the mouse wheel
+switch connections. The selected section survives resizing and connection changes.
 
-Below 90 columns, Overview shows either Connections or System inline. System
-information retains its section dividers and scrolls with `j` / `k`,
-Page Up/Down, or the mouse wheel. Escape returns to Connections without changing the selected connection or filter.
-Wider terminals retain the connection table and System sidebar, toggled with `i`.
+Host's Sockets and Interfaces use wrapped records when tables do not fit.
+Scroll with `j` / `k`, arrows, Page Up/Down, `g` / `G`, or the mouse wheel.
+In compact Overview, Esc returns from System to Connections; `i` toggles the
+System sidebar on wider terminals. Press `h` for the active view's controls.
 
-Details switches to section pages below 100 columns or whenever its complete
-information dashboard and traffic plots do not fit. Choose Connection, Network,
-Process, Application, Health, or Traffic with `v` / Shift+`v` or a section click.
-Long sections on very short terminals have numbered pages, reached with the same
-keys. `j` / `k` and the mouse wheel switch connections. The selected section
-survives connection changes and resizing. Larger terminals show all cards and
-traffic plots together, without an information scrollbar. The dashboard spans
-the terminal's full width. Its RX/TX panel sits above the footer, using about one
-third of the content height, capped at 18 rows including the heading and statistics.
+### Traffic charts
 
-Graph shows Traffic, Health, or Distribution below 100 columns or 32 content
-rows (35 terminal rows without an open filter or expanded error banner).
-Larger terminals show all sections together. Wide dashboards have no added
-section selector or panel focus. Shrinking restores the last compact section.
-Help remains an overlay and consumes section controls while open.
+Graph uses the selected capture interface's counters. `any` and macOS default
+`pktap` show all-interface totals, which can count the same traffic more than once.
+Missing counters leave RX/TX plots unavailable until sampling resumes.
 
-Activity shows Applications and Capture sections below 120 columns or 25 content
-rows (28 terminal rows without extra banners). Every retained application and its processes are reachable
-by scrolling, including at 50×12. Capture contains the full coverage and
-attribution summary. Wide terminals show Capture beside the application table.
+Graph and Details preserve sampled bursts on independent automatic linear RX/TX
+scales in bytes per second (KiB/MiB/GiB are binary units). Compare numeric readings
+across directions. Headers show current rate, window peak, and `2s avg` when space
+permits. `0 B/s` means observed idle traffic; a placeholder means unavailable data.
+Details and Top Processes use smoothed connection rates; Graph uses interface rates.
 
-Connection paging, scrollbars, and mouse selection use the actual table height,
-including space taken by the filter editor or a two-row capture-error banner.
+In Activity, `s` selects `2s Avg TX/RX` sorting and `d` switches TX/RX. Share bars
+cover the last 60 seconds; interface shares can overlap for virtual/VPN interfaces.
+Overview's filter and history toggle do not limit Activity. Both views hide PTR
+traffic when DNS resolution is enabled unless `--show-ptr-lookups` is set.
 
 ### Observed VLAN IDs
 
@@ -1103,6 +1098,10 @@ UDP does not have a LISTEN state. Every UDP row represents a local bound endpoin
 
 The inventory refreshes every 5 seconds. Process ownership is best effort because a process can exit during a scan or permissions can hide its details. The socket row remains visible when ownership is unavailable.
 
+On Linux, cached startup owners remain visible for unchanged sockets after
+sandboxing. Shared sockets, exited processes, changed identities, or insufficient
+permissions can leave ownership unknown. Newly created sockets still require procfs access.
+
 | Platform | Socket source |
 |---|---|
 | Linux | `/proc/net/tcp`, `tcp6`, `udp`, and `udp6`, joined to socket inodes in `/proc/<pid>/fd` |
@@ -1111,6 +1110,20 @@ The inventory refreshes every 5 seconds. Process ownership is best effort becaus
 | Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |
 
 Use `v` / Shift+`v` or click Sockets / Interfaces / DNS to select a section. The footer shows the shortcut. Tab / Shift+Tab and 1-5 switch main tabs.
+
+### Observed network events (unreleased)
+
+Host > Sockets counts sent/received TCP resets and ICMPv4/v6 errors: unreachable,
+prohibited, packet too big/fragmentation needed, time exceeded, and parameter problems.
+Counts cover captured traffic since startup or clear, independent of display filters
+and connection retention. They are observations, not firewall verdicts or OS-wide
+counters; MTU and traceroute messages can be normal.
+
+Details > Health shows counts and the latest error's type/code, reporter, direction,
+age, and advertised MTU when available. TCP/UDP correlation uses quoted endpoints
+without changing connection state or traffic totals. Truncated quotes, fragments,
+IPv6 extensions, NAT, or missing/reused connections can prevent or confuse matching.
+Unmatched errors still count in Host; no error history is retained.
 
 ## Passive DNS Analytics
 

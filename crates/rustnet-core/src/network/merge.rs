@@ -326,6 +326,11 @@ pub fn merge_packet_into_connection(
 fn apply_packet(conn: &mut Connection, parsed: &ParsedPacket, now: SystemTime) -> TcpMergeEvents {
     let mut tcp_events = TcpMergeEvents::default();
     let was_terminal = conn.is_terminal();
+    if let Some(error) = &parsed.icmp_error {
+        conn.network_events
+            .get_or_insert_with(Default::default)
+            .record_icmp(error.error, parsed.is_outgoing, now);
+    }
 
     // Record every observed packet. Terminal cleanup uses terminal_since, so
     // late teardown retransmissions update last seen data without postponing
@@ -357,6 +362,12 @@ fn apply_packet(conn: &mut Connection, parsed: &ParsedPacket, now: SystemTime) -
     }
 
     if let Some(tcp_header) = parsed.tcp_header {
+        if tcp_header.flags.rst {
+            conn.network_events
+                .get_or_insert_with(Default::default)
+                .tcp_resets
+                .record(parsed.is_outgoing);
+        }
         let current_tcp_state = match conn.protocol_state {
             ProtocolState::Tcp(state) => state,
             _ => {

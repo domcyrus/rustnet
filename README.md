@@ -100,7 +100,6 @@ Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See th
 - [QUIC inspection](QUIC.md): handshake storage and library compatibility (available since v1.7.0).
 - [Installation](INSTALL.md): platforms, permissions, and troubleshooting
 - [Usage](USAGE.md): controls, filtering, automation, and capture exports
-- [Terminal layout and appearance](TUI.md)
 - [Security](SECURITY.md): sandboxing and privilege management
 - [Architecture](ARCHITECTURE.md): platform backends and performance
 - [Kubernetes and containers](KUBERNETES.md): attribution and capture exports

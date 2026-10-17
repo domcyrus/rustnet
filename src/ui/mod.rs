@@ -1405,6 +1405,7 @@ mod snapshot_tests {
             (r"Started \d+[smhd] ago", "Started <T> ago"),
             (r"Closed \(\d+[smhd] ago\)", "Closed (<T> ago)"),
             (r"\(idle \d+[smhd]\)", "(idle <T>)"),
+            (r"(received|sent) · \d+[smhd] ago", "<direction> · <T> ago"),
         ]
     }
 
@@ -2937,6 +2938,137 @@ mod snapshot_tests {
         let output = render_app(&app, &mut ui_state, &connections, None, 140, 30);
 
         assert_app_snapshot!(output);
+    }
+
+    fn observed_icmp_error() -> crate::network::types::IcmpError {
+        crate::network::types::IcmpError {
+            ipv6: false,
+            message_type: 3,
+            code: 4,
+            kind: crate::network::types::NetworkEventKind::PacketTooBig,
+            reporter: "192.0.2.1".parse().unwrap(),
+            mtu: Some(1400),
+        }
+    }
+
+    #[test]
+    fn host_network_events() {
+        use crate::network::types::NetworkEventKind;
+        let app = test_app();
+        let mut packet = ParsedPacket::new(
+            Protocol::Icmp,
+            "192.0.2.10:0".parse().unwrap(),
+            "192.0.2.1:0".parse().unwrap(),
+            ProtocolState::Icmp {
+                icmp_type: 3,
+                icmp_id: None,
+                icmp_sequence: None,
+                ndp_neighbor: None,
+            },
+            false,
+            56,
+            None,
+            None,
+        );
+        for kind in NetworkEventKind::ALL.into_iter().skip(1) {
+            packet.icmp_error = Some(Box::new(crate::network::parser::ParsedIcmpError {
+                error: crate::network::types::IcmpError {
+                    kind,
+                    ..observed_icmp_error()
+                },
+                quoted_connection: None,
+            }));
+            app.ingest_packet_at_for_test(&packet, SystemTime::now());
+        }
+        packet.protocol = Protocol::Tcp;
+        packet.protocol_state = ProtocolState::Tcp(TcpState::Unknown);
+        packet.local_addr.set_port(8080);
+        packet.remote_addr.set_port(49152);
+        packet.icmp_error = None;
+        packet.tcp_header = Some(crate::network::parser::TcpHeaderInfo {
+            seq: 0,
+            ack: 1,
+            window: 0,
+            flags: crate::network::parser::TcpFlags {
+                syn: false,
+                ack: true,
+                fin: false,
+                rst: true,
+            },
+            payload_len: 0,
+            window_scale: None,
+        });
+        packet.is_outgoing = true;
+        app.ingest_packet_at_for_test(&packet, SystemTime::now());
+        let mut state = UiState {
+            selected_tab: 4,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &[], None, 140, 30);
+        assert_app_snapshot!(output);
+        for width in [50, 80, 140] {
+            state.host_sockets_scroll.reset();
+            render_app(&app, &mut state, &[], None, width, 12);
+            assert!(state.host_sockets_scroll.can_scroll());
+            let regions = ClickableRegions::default();
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                4,
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char('G'),
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                &mut ctx,
+            )
+            .unwrap();
+            let bottom = render_app(&app, &mut state, &[], None, width, 12);
+            assert!(bottom.contains("Listening and Bound Endpoints"), "{bottom}");
+        }
+    }
+
+    #[test]
+    fn details_network_events() {
+        let app = test_app();
+        let mut conn = test_support::local_tcp(1000, "client");
+        let events = conn.network_events.get_or_insert_with(Default::default);
+        events.tcp_resets.record(false);
+        events.record_icmp(observed_icmp_error(), false, SystemTime::now());
+        let connections = [conn];
+        let output = render_details(&app, &connections, 0);
+        assert_app_snapshot!(output);
+        assert!(output.contains("Advertised MTU"));
+        assert!(output.contains("Traffic Statistics"));
+        for (width, height) in [(50, 12), (80, 24), (140, 24)] {
+            let mut state = UiState {
+                selected_tab: 1,
+                details_section: DetailsSection::Health,
+                ..Default::default()
+            };
+            let mut all_pages = render_app(&app, &mut state, &connections, None, width, height);
+            for page in 1..state.details_page_count.get() {
+                state.details_page.set(page);
+                all_pages.push_str(&render_app(
+                    &app,
+                    &mut state,
+                    &connections,
+                    None,
+                    width,
+                    height,
+                ));
+            }
+            for label in [
+                "TCP Resets",
+                "ICMP Errors",
+                "Type / Code",
+                "Reported By",
+                "Advertised MTU",
+            ] {
+                assert!(
+                    all_pages.contains(label),
+                    "{width}x{height}: missing {label}: {all_pages}"
+                );
+            }
+        }
     }
 
     #[test]

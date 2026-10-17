@@ -49,8 +49,8 @@ use crate::network::merge::{
 use crate::network::neighbors::{NeighborCache, NeighborEntry};
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{
-    ApplicationProtocol, AttributionSource, Connection, ConnectionKey, Protocol, ProtocolState,
-    QuicPacketType, RequestHealthEvents, RttTracker,
+    ApplicationProtocol, AttributionSource, Connection, ConnectionKey, NetworkEventCounts,
+    NetworkEventKind, Protocol, ProtocolState, QuicPacketType, RequestHealthEvents, RttTracker,
 };
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
@@ -351,6 +351,7 @@ pub struct ConnectionTracker {
     lifecycle: RwLock<()>,
     rtt: Mutex<RttTracker>,
     dns_analytics: Mutex<DnsAnalyticsTracker>,
+    network_events: Mutex<NetworkEventCounts>,
     quic_map: Mutex<HashMap<String, ConnectionKey>>,
     recently_closed: Mutex<HashMap<ConnectionKey, SystemTime>>,
     config: TrackerConfig,
@@ -385,6 +386,7 @@ impl ConnectionTracker {
             lifecycle: RwLock::new(()),
             rtt: Mutex::new(RttTracker::new()),
             dns_analytics: Mutex::new(DnsAnalyticsTracker::default()),
+            network_events: Mutex::new(NetworkEventCounts::default()),
             quic_map: Mutex::new(HashMap::new()),
             recently_closed: Mutex::new(HashMap::new()),
             config,
@@ -481,6 +483,7 @@ impl ConnectionTracker {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = self.resolve_connection_key(parsed);
+        self.record_network_event(parsed, now);
 
         // Existing flows need one shard lookup and lock, not separate
         // presence, generation and update lookups. Keep the lifecycle guard
@@ -520,6 +523,34 @@ impl ConnectionTracker {
         }
 
         self.ingest_into_active(parsed, now, key, timings)
+    }
+
+    /// Called under the lifecycle guard, before taking any connection shard.
+    /// Count packets even when their own flow cannot be retained. Correlation
+    /// annotates only an existing TCP/UDP flow and never changes its lifecycle.
+    fn record_network_event(&self, parsed: &ParsedPacket, now: SystemTime) {
+        let kind = if let Some(error) = &parsed.icmp_error {
+            error.error.kind
+        } else if parsed.tcp_header.is_some_and(|header| header.flags.rst) {
+            NetworkEventKind::TcpReset
+        } else {
+            return;
+        };
+        self.network_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record(kind, parsed.is_outgoing);
+
+        if let Some(error) = &parsed.icmp_error
+            && let Some(key) = error.quoted_connection
+            && matches!(key.protocol, Protocol::Tcp | Protocol::Udp)
+            && let Some(mut conn) = self.connections.get_mut(&key)
+            && now >= conn.created_at
+        {
+            conn.network_events
+                .get_or_insert_with(Default::default)
+                .record_icmp(error.error, parsed.is_outgoing, now);
+        }
     }
 
     /// Run this packet through the RTT tracker and collect any round trips it
@@ -1095,6 +1126,15 @@ impl ConnectionTracker {
             .snapshot(now)
     }
 
+    /// Packet observations since startup or the last clear, independent of
+    /// active/historic connection retention and frontend display filters.
+    pub fn network_event_counts(&self) -> NetworkEventCounts {
+        *self
+            .network_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Drop all active and historic connections and reset RTT, DNS, QUIC,
     /// and learned-neighbor state.
     pub fn clear(&self) {
@@ -1105,6 +1145,10 @@ impl ConnectionTracker {
         self.connections.clear();
         self.active_count.store(0, Ordering::Relaxed);
         self.historic.clear();
+        *self
+            .network_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = NetworkEventCounts::default();
         if let Ok(mut tracker) = self.rtt.lock() {
             tracker.clear();
         }
@@ -1227,6 +1271,169 @@ mod tests {
         packet.is_outgoing = is_outgoing;
         packet.packet_len = 60;
         packet
+    }
+
+    fn router_error(protocol: u8) -> ParsedPacket {
+        let local = "192.168.0.1".parse().unwrap();
+        let router = "192.168.0.254".parse().unwrap();
+        let bytes = [
+            3, 4, 0, 0, 0, 0, 5, 120, 0x45, 0, 0, 60, 0, 0, 0, 0, 64, protocol, 0, 0, 192, 168, 0,
+            1, 192, 168, 0, 2, 0x9c, 0x40, 1, 0xbb, 0, 0, 0, 1,
+        ];
+        crate::network::protocol::icmp::parse(
+            &bytes,
+            crate::network::protocol::TransportParams::new(router, local, 56, None, None),
+            &std::collections::HashSet::from([local]),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn icmp_errors_annotate_exact_tcp_and_udp_flows_without_changing_lifecycle() {
+        for protocol in [Protocol::Tcp, Protocol::Udp] {
+            let tracker = ConnectionTracker::new();
+            let mut packet = tcp_packet(true, false, false, false, true);
+            if protocol == Protocol::Udp {
+                packet.protocol = protocol;
+                packet.protocol_state = ProtocolState::Udp;
+                packet.tcp_header = None;
+            }
+            let started = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+            let key = tracker.ingest_at(&packet, started).key;
+            let error = router_error(if protocol == Protocol::Tcp { 6 } else { 17 });
+            tracker.ingest_at(&error, started + Duration::from_secs(1));
+            // An older observation contributes to counts but cannot replace latest.
+            tracker.ingest_at(&error, started + Duration::from_millis(500));
+            let conn = tracker.connections().get(&key).unwrap();
+            assert_eq!(conn.last_activity, started);
+            assert_eq!(conn.packets_sent, 1);
+            assert_eq!(conn.packets_received, 0);
+            assert_eq!(conn.bytes_sent, 60);
+            assert!(!conn.is_terminal());
+            let events = conn.network_events.as_ref().unwrap();
+            assert_eq!(events.icmp_errors.received, 2);
+            assert_eq!(
+                events.latest_icmp.unwrap().observed_at,
+                started + Duration::from_secs(1)
+            );
+            assert_eq!(events.latest_icmp.unwrap().error.mtu, Some(1400));
+            assert_eq!(
+                conn.snapshot_clone()
+                    .network_events
+                    .unwrap()
+                    .icmp_errors
+                    .received,
+                2
+            );
+            assert_eq!(
+                tracker
+                    .network_event_counts()
+                    .observed()
+                    .next()
+                    .unwrap()
+                    .1
+                    .received,
+                2
+            );
+            drop(conn);
+            tracker.clear();
+            assert_eq!(
+                tracker.network_event_counts(),
+                NetworkEventCounts::default()
+            );
+        }
+    }
+
+    #[test]
+    fn unmatched_errors_count_without_creating_quoted_flows() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            max_connections: 0,
+            ..Default::default()
+        });
+        let error = router_error(17);
+        let outcome = tracker.ingest(&error);
+        assert!(outcome.dropped);
+        assert!(tracker.connections().is_empty());
+        assert_eq!(
+            tracker
+                .network_event_counts()
+                .observed()
+                .next()
+                .unwrap()
+                .1
+                .received,
+            1
+        );
+
+        let tracker = ConnectionTracker::new();
+        let packet = tcp_packet(true, false, false, false, true);
+        let key = tracker.ingest(&packet).key;
+        tracker.ingest(&error); // Same ports, different protocol: no match.
+        assert!(
+            tracker
+                .connections()
+                .get(&key)
+                .unwrap()
+                .network_events
+                .is_none()
+        );
+        let mut error = router_error(6);
+        error
+            .icmp_error
+            .as_mut()
+            .unwrap()
+            .quoted_connection
+            .as_mut()
+            .unwrap()
+            .remote_addr
+            .set_port(444);
+        tracker.ingest(&error);
+        assert!(
+            tracker
+                .connections()
+                .get(&key)
+                .unwrap()
+                .network_events
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reset_counts_survive_archival_and_reset_on_clear() {
+        let tracker = ConnectionTracker::new();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let sent = tcp_packet(false, true, false, true, true);
+        let received = tcp_packet(false, true, false, true, false);
+        let key = tracker.ingest_at(&sent, started).key;
+        tracker.ingest_at(&received, started + Duration::from_secs(1));
+        let conn = tracker.connections().get(&key).unwrap();
+        let counts = conn.network_events.as_ref().unwrap().tcp_resets;
+        assert_eq!(counts.sent, 1);
+        assert_eq!(counts.received, 1);
+        drop(conn);
+        tracker.cleanup(started + Duration::from_secs(600));
+        assert!(tracker.connections().is_empty());
+        assert_eq!(
+            tracker
+                .historic()
+                .iter()
+                .next()
+                .unwrap()
+                .network_events
+                .as_ref()
+                .unwrap()
+                .tcp_resets,
+            counts
+        );
+        assert_eq!(
+            tracker.network_event_counts().observed().next().unwrap(),
+            (NetworkEventKind::TcpReset, counts)
+        );
+        tracker.clear();
+        assert_eq!(
+            tracker.network_event_counts(),
+            NetworkEventCounts::default()
+        );
     }
 
     fn quic_packet(packet_type: QuicPacketType, is_outgoing: bool) -> ParsedPacket {
