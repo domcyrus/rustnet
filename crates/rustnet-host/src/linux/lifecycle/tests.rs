@@ -106,6 +106,51 @@ fn exit(child: &mut TestChild) {
     child.0.wait().unwrap();
 }
 
+#[cfg(feature = "ebpf")]
+#[test]
+fn protected_socket_present_at_startup_enrolls_without_reading_owner_fds() {
+    use crate::linux::process::{LinuxProcessLookup, StartupSocketOwners};
+    use crate::{ProcessLookup, SocketOwner};
+
+    let (mut child, addr) = child("protected", Stdio::null());
+    let pid = child.0.id();
+    assert!(fs::read_dir(format!("/proc/{pid}/fd")).is_err());
+    let table = fs::read_to_string("/proc/net/udp6").unwrap();
+    let inode = table
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            (parse_proc_net_addr(fields[1]) == Some(addr))
+                .then(|| fields[9].parse::<u64>().unwrap())
+        })
+        .unwrap();
+    // The startup BPF iterator observes ownership without opening /proc/PID/fd.
+    let mut owners = StartupSocketOwners::default();
+    owners.insert(
+        inode,
+        SocketOwner::new(pid, crate::procfs::read_comm(pid).unwrap(), None),
+    );
+    let lookup = LinuxProcessLookup::new_with_bpf_startup_owners(owners).unwrap();
+    let mut conn = Connection::new(
+        Protocol::Udp,
+        SocketAddr::new("::1".parse().unwrap(), addr.port()),
+        "[::1]:443".parse().unwrap(),
+        ProtocolState::Udp,
+    );
+    let attribution = lookup.get_process_attribution(&conn).unwrap();
+    assert_eq!(attribution.process_start_id, process_start_ticks(pid));
+    assert_eq!(attribution.socket_netns_id, local_netns_id());
+    conn.pid = Some(attribution.tgid);
+    conn.process_start_id = attribution.process_start_id;
+    conn.socket_netns_id = attribution.socket_netns_id;
+    let observed = TrackedConnection::from_connection(&conn).unwrap();
+    let mut tracker = ProcessExitTracker::default();
+    enroll(&mut tracker, observed);
+    exit(&mut child);
+    assert_eq!(await_closure(&mut tracker, observed), observed.observation);
+}
+
 fn is_enrolled(tracker: &ProcessExitTracker, conn: TrackedConnection) -> bool {
     tracker
         .observations

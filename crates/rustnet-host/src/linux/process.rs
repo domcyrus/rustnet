@@ -346,11 +346,26 @@ fn snapshot_owner_still_matches(owner: &SnapshotOwner) -> bool {
         }
 }
 
-/// Inventory-only fallback. Never feed retained listeners into the traffic
-/// lookup, where a wildcard listener could claim unrelated connections.
+/// Retained ownership evidence. Never use it to select a traffic owner:
+/// lifecycle checks may only validate a socket already matched by attribution.
 struct RetainedSocketOwner {
     socket: HostSocket,
     start_ticks: u64,
+}
+
+impl RetainedSocketOwner {
+    fn matches(&self, socket: &HostSocket) -> bool {
+        let Some(owner) = self.socket.owner.as_ref() else {
+            return false;
+        };
+        socket.native_id == self.socket.native_id
+            && socket.protocol == self.socket.protocol
+            && socket.local_addr == self.socket.local_addr
+            && socket.remote_addr == self.socket.remote_addr
+            && socket.owner.as_ref().is_none_or(|live| live == owner)
+            && process_start_ticks(owner.pid) == Some(self.start_ticks)
+            && read_comm(owner.pid).as_deref() == Some(owner.name.as_str())
+    }
 }
 
 fn retain_socket_owners(
@@ -393,14 +408,7 @@ fn restore_socket_owners(
         let Some(owner) = previous.socket.owner.as_ref() else {
             continue;
         };
-        if shared_inodes.contains(&inode)
-            || socket.protocol != previous.socket.protocol
-            || socket.local_addr != previous.socket.local_addr
-            || socket.remote_addr != previous.socket.remote_addr
-            || socket.owner.as_ref().is_some_and(|live| live != owner)
-            || process_start_ticks(owner.pid) != Some(previous.start_ticks)
-            || read_comm(owner.pid).as_deref() != Some(owner.name.as_str())
-        {
+        if shared_inodes.contains(&inode) || !previous.matches(socket) {
             continue;
         }
         present.insert(inode);
@@ -783,9 +791,28 @@ impl ProcessLookup for LinuxProcessLookup {
             let inode =
                 matching_socket_inode(&snapshot, ConnectionKey::from_connection(conn), quality);
             if let Some(inode) = inode {
+                // Startup ownership survives the privilege drop. Reuse it
+                // only while the same socket and process generation remain.
+                let retained_owner = self
+                    .retained_socket_owners
+                    .read()
+                    .expect("retained socket owners lock poisoned")
+                    .get(&inode)
+                    .is_some_and(|retained| {
+                        retained.start_ticks == start
+                            && retained
+                                .socket
+                                .owner
+                                .as_ref()
+                                .is_some_and(|owner| owner.pid == tgid)
+                            && snapshot
+                                .sockets
+                                .iter()
+                                .any(|socket| retained.matches(socket))
+                    });
                 let expected = format!("socket:[{inode}]");
-                let owns_socket =
-                    fs::read_dir(format!("/proc/{tgid}/fd"))
+                let owns_socket = retained_owner
+                    || fs::read_dir(format!("/proc/{tgid}/fd"))
                         .ok()
                         .is_some_and(|entries| {
                             entries.flatten().any(|entry| {
@@ -1048,6 +1075,59 @@ mod tests {
         socket.state = HostSocketState::Tcp(HostTcpState::Listen);
         socket.owner.as_mut().unwrap().uid = Some(1000);
         socket
+    }
+
+    #[test]
+    fn startup_lifecycle_evidence_rejects_reuse_shared_and_ambiguous_sockets() {
+        let conn = tcp_connection("127.0.0.1:45000", "127.0.0.1:443");
+        let inode = u64::MAX;
+        let original = owned_socket(
+            "127.0.0.1:45000",
+            "127.0.0.1:443",
+            inode,
+            own_pid(),
+            &own_comm(),
+        );
+        for change in 0..6 {
+            let lookup = LinuxProcessLookup::with_socket_table(HashMap::from([(
+                ConnectionKey::from_connection(&conn),
+                (own_pid(), own_comm()),
+            )]));
+            let shared = if change == 4 {
+                HashSet::from([inode])
+            } else {
+                HashSet::new()
+            };
+            let mut retained =
+                retain_socket_owners(&SocketSnapshot::new(vec![original.clone()]), &shared);
+            let mut current = original.clone();
+            current.owner = None;
+            match change {
+                1 => retained.get_mut(&inode).unwrap().start_ticks += 1,
+                2 => current.native_id = Some(inode - 1),
+                3 => current.owner = Some(SocketOwner::new(1, "other", None)),
+                _ => {}
+            }
+            let mut sockets = vec![current];
+            if change == 5 {
+                let mut duplicate = original.clone();
+                duplicate.native_id = Some(inode - 1);
+                sockets.push(duplicate);
+            }
+            *lookup.retained_socket_owners.write().unwrap() = retained;
+            *lookup.socket_snapshot.write().unwrap() = SocketSnapshot::new(sockets);
+            let attribution = lookup.get_process_attribution(&conn).unwrap();
+            assert_eq!(
+                attribution.process_start_id.is_some(),
+                change == 0,
+                "case {change}"
+            );
+            assert_eq!(
+                attribution.socket_netns_id.is_some(),
+                change == 0,
+                "case {change}"
+            );
+        }
     }
 
     #[test]
