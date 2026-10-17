@@ -7,37 +7,12 @@
 
 use super::SocketObservation;
 use crate::{HostSocket, HostSocketState, HostTcpState, SocketSnapshot};
-use rustnet_core::network::types::{Connection, ConnectionKey, ProcessExitStatus, Protocol};
+use rustnet_core::network::types::{ConnectionKey, ProcessExitStatus, Protocol};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::time::SystemTime;
 
-#[derive(Clone, Copy, Debug)]
-pub struct TrackedConnection {
-    pub key: ConnectionKey,
-    pub created_at: SystemTime,
-    pub last_activity: SystemTime,
-    pub packet_counts: (u64, u64),
-}
-
-impl TrackedConnection {
-    pub fn from_connection(conn: &Connection) -> Option<Self> {
-        matches!(conn.protocol, Protocol::Tcp | Protocol::Udp).then_some(Self {
-            key: ConnectionKey::from_connection(conn),
-            created_at: conn.created_at,
-            last_activity: conn.last_activity,
-            packet_counts: (conn.packets_sent, conn.packets_received),
-        })
-    }
-
-    fn identity(&self) -> (ConnectionKey, SystemTime) {
-        (self.key, self.created_at)
-    }
-
-    fn activity(&self) -> (SystemTime, (u64, u64)) {
-        (self.last_activity, self.packet_counts)
-    }
-}
+pub use rustnet_core::network::types::ConnectionObservation as TrackedConnection;
 
 #[derive(Default)]
 pub struct SocketLifecycleTracker {

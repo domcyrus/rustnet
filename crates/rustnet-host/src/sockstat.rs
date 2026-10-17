@@ -7,7 +7,16 @@ use crate::{
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub(crate) fn parse_output(stdout: &str, protocol: Protocol) -> SocketScan {
-    let mut scan = SocketScan::default();
+    let mut scan = SocketScan {
+        complete: stdout.lines().next().is_some_and(|header| {
+            header.split_whitespace().take(9).collect::<Vec<_>>()
+                == [
+                    "USER", "COMMAND", "PID", "FD", "PROTO", "LOCAL", "ADDRESS", "FOREIGN",
+                    "ADDRESS",
+                ]
+        }),
+        ..Default::default()
+    };
 
     for line in stdout.lines().skip(1) {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -17,12 +26,18 @@ pub(crate) fn parse_output(stdout: &str, protocol: Protocol) -> SocketScan {
         // 1001     sshd       1234  3  tcp4   192.168.1.1:22        192.168.1.2:54321
 
         if parts.len() < 7 {
+            scan.complete = false;
             continue;
         }
 
         let uid = parts[0].parse::<u32>().ok();
         let process_name = parts[1].to_string();
         let pid = parts[2].parse::<u32>().ok();
+
+        scan.complete &= matches!(
+            (protocol, parts[4]),
+            (Protocol::Tcp, "tcp4" | "tcp6" | "tcp46") | (Protocol::Udp, "udp4" | "udp6" | "udp46")
+        );
 
         // sockstat prints `*` for both families, including dual-stack tcp46/udp46.
         let wildcard = if parts[4].ends_with('6') {
@@ -34,6 +49,7 @@ pub(crate) fn parse_output(stdout: &str, protocol: Protocol) -> SocketScan {
             parse_socket_addr_text(parts[5], wildcard),
             parse_socket_addr_text(parts[6], wildcard),
         ) else {
+            scan.complete = false;
             continue;
         };
         if protocol == Protocol::Udp && local_addr.port() == 0 {
@@ -172,5 +188,42 @@ USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS
         assert_eq!(udp.sockets.len(), 1);
         assert_eq!(udp.sockets[0].state, HostSocketState::UdpBound);
         assert_eq!(udp.sockets[0].remote_addr, None);
+    }
+
+    #[test]
+    fn socket_scan_requires_a_valid_header_and_every_row() {
+        let valid = "USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS\n1000 browser 42 7 udp6 *:45000 *:*\n";
+        let scan = parse_output(valid, Protocol::Udp);
+        assert!(scan.complete);
+        assert_eq!(scan.sockets[0].local_addr, "[::]:45000".parse().unwrap());
+        assert!(scan.sockets[0].remote_addr.is_none());
+        for (local, remote) in [
+            ("192.0.2.1:45000", "198.51.100.1:443"),
+            ("[2001:db8::1]:45000", "[2001:db8::2]:443"),
+        ] {
+            let key = crate::test_support::connection_key(Protocol::Udp, local, remote);
+            let (owner, quality) = crate::owner_match(&scan.lookup, &key).unwrap();
+            assert_eq!(owner.pid, 42);
+            assert_eq!(quality, crate::MatchQuality::ListenerSocket);
+        }
+        for invalid in [
+            "".to_owned(),
+            format!("{valid}malformed row\n"),
+            valid.replace(
+                "USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS",
+                "unexpected header",
+            ),
+        ] {
+            let scan = parse_output(&invalid, Protocol::Udp);
+            assert!(!scan.complete);
+            let snapshot = SocketSnapshot::from_inventory(scan.sockets, scan.complete);
+            assert_eq!(
+                snapshot.local_port_status(Protocol::Udp, "[::1]:45000".parse().unwrap()),
+                LocalPortStatus::Unknown
+            );
+            assert!(snapshot.closure_scan_started.is_none());
+        }
+        let empty = "USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS\n";
+        assert!(parse_output(empty, Protocol::Udp).complete);
     }
 }

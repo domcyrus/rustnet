@@ -122,6 +122,9 @@ macro_rules! refresh_table {
 
                 let result = $api(None, &mut size, false, $family, $table_class, 0);
 
+                if result == 0 {
+                    return Ok(());
+                }
                 if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
                     log::debug!(
                         concat!($api_label, " returned no data or error: {}"),
@@ -587,7 +590,7 @@ impl ProcessLookup for WindowsProcessLookup {
         let total_entries = new_cache.len();
         cache.lookup = new_cache;
         cache.last_refresh = Instant::now();
-        let snapshot = SocketSnapshot::new(sockets);
+        let snapshot = SocketSnapshot::from_inventory(sockets, complete);
         *self
             .socket_snapshot
             .write()

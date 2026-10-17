@@ -426,18 +426,13 @@ impl App {
                 for mut entry in tracker.connections().iter_mut() {
                     entry.process_exit_status = lifecycle.connection_status(&entry);
                 }
-                for closed in closed {
+                if !closed.is_empty() {
                     let now = SystemTime::now();
-                    if let Some(conn) = tracker.retire_if_unchanged(
-                        closed.key,
-                        closed.created_at,
-                        closed.last_activity,
-                        closed.packet_counts,
-                        now,
-                    ) {
+                    for conn in tracker.retire_if_unchanged(closed, now) {
                         debug!(
                             "Host lifecycle retired connection: pid={:?} tuple={:?}",
-                            conn.pid, closed.key
+                            conn.pid,
+                            conn.key()
                         );
                         report_closed(&conn, now);
                     }

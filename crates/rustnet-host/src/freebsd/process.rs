@@ -1,12 +1,11 @@
 //! FreeBSD sockstat-based process lookup.
 
 use crate::{
-    ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
-    ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketScan, SocketSnapshot,
-    ancestor_display_name, collect_process_lineage,
+    ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution, ProcessLineage,
+    ProcessLookup, SocketOwner, SocketScan, SocketSnapshot, ancestor_display_name,
+    collect_process_lineage,
     command::{PROCESS_TABLE_COMMAND_TIMEOUT, output_with_timeout_or_cancel},
-    decode_process_name, memoized, owner_match, parse_socket_addr_text, path_from_c_buffer,
-    remote_if_present,
+    decode_process_name, memoized, owner_match, path_from_c_buffer,
 };
 use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
@@ -239,111 +238,9 @@ impl FreeBSDProcessLookup {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut scan = Self::parse_sockstat_rows(&stdout, protocol);
+        let mut scan = crate::sockstat::parse_output(&stdout, protocol);
         scan.complete &= output.stderr.is_empty();
         Ok(scan)
-    }
-
-    fn parse_sockstat_rows(stdout: &str, protocol: Protocol) -> SocketScan {
-        let mut result = HashMap::new();
-        let mut sockets = Vec::new();
-        let mut complete = stdout.lines().next().is_some_and(|header| {
-            header.split_whitespace().take(9).collect::<Vec<_>>()
-                == [
-                    "USER", "COMMAND", "PID", "FD", "PROTO", "LOCAL", "ADDRESS", "FOREIGN",
-                    "ADDRESS",
-                ]
-        });
-
-        for line in stdout.lines().skip(1) {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-
-            // Expected format:
-            // USER     COMMAND    PID   FD PROTO  LOCAL ADDRESS         FOREIGN ADDRESS
-            // 1001     sshd       1234  3  tcp4   192.168.1.1:22        192.168.1.2:54321
-
-            if parts.len() < 7 {
-                complete = false;
-                continue;
-            }
-
-            let uid = parts[0].parse::<u32>().ok();
-            let process_name = parts[1].to_string();
-            let pid = parts[2].parse::<u32>().ok();
-
-            let mut local_addr = match parse_socket_addr_text(parts[5]) {
-                Some(addr) => addr,
-                None => {
-                    complete = false;
-                    continue;
-                }
-            };
-
-            let foreign_addr = match parse_socket_addr_text(parts[6]) {
-                Some(addr) => addr,
-                None => {
-                    complete = false;
-                    continue;
-                }
-            };
-            complete &= matches!(
-                (protocol, parts[4]),
-                (Protocol::Tcp, "tcp4" | "tcp6" | "tcp46")
-                    | (Protocol::Udp, "udp4" | "udp6" | "udp46")
-            );
-            if parts[4].contains('6') && local_addr.ip().is_unspecified() {
-                local_addr.set_ip(std::net::Ipv6Addr::UNSPECIFIED.into());
-            }
-            if protocol == Protocol::Udp && local_addr.port() == 0 {
-                continue;
-            }
-
-            let key = ConnectionKey {
-                protocol,
-                local_addr,
-                remote_addr: foreign_addr,
-            };
-
-            let owner = pid.zip(uid).map(|(pid, uid)| SocketOwner {
-                pid,
-                name: process_name.clone(),
-                uid: Some(uid),
-            });
-            if let Some(owner) = &owner {
-                result.insert(key, owner.clone());
-            }
-
-            let state = match protocol {
-                Protocol::Tcp => HostSocketState::Tcp(parts.get(7).map_or_else(
-                    || infer_tcp_state(foreign_addr),
-                    |value| HostTcpState::parse_name(value),
-                )),
-                Protocol::Udp => HostSocketState::UdpBound,
-                _ => continue,
-            };
-            sockets.push(HostSocket {
-                protocol,
-                local_addr,
-                remote_addr: remote_if_present(foreign_addr),
-                state,
-                owner,
-                native_id: None,
-            });
-        }
-
-        SocketScan {
-            lookup: result,
-            sockets,
-            complete,
-        }
-    }
-}
-
-fn infer_tcp_state(remote_addr: std::net::SocketAddr) -> HostTcpState {
-    if remote_addr.port() == 0 && remote_addr.ip().is_unspecified() {
-        HostTcpState::Listen
-    } else {
-        HostTcpState::Unknown
     }
 }
 
@@ -419,7 +316,7 @@ fn snapshot_from_scan(
     complete: bool,
     started: SystemTime,
 ) -> SocketSnapshot {
-    let snapshot = SocketSnapshot::new(sockets);
+    let snapshot = SocketSnapshot::from_inventory(sockets, complete);
     // Root inside a jail can still have a restricted view of the host.
     let mut jailed: libc::c_int = 1;
     let mut length = size_of::<libc::c_int>();
@@ -450,26 +347,6 @@ mod tests {
     use crate::test_support::tcp_connection;
 
     #[test]
-    fn socket_scan_requires_a_valid_header_and_every_row() {
-        let valid = "USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS\n1000 browser 42 7 udp6 *:45000 *:*\n";
-        let scan = FreeBSDProcessLookup::parse_sockstat_rows(valid, Protocol::Udp);
-        assert!(scan.complete);
-        assert_eq!(scan.sockets[0].local_addr, "[::]:45000".parse().unwrap());
-        for invalid in [
-            "".to_owned(),
-            format!("{valid}malformed row\n"),
-            valid.replace(
-                "USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS",
-                "unexpected header",
-            ),
-        ] {
-            assert!(!FreeBSDProcessLookup::parse_sockstat_rows(&invalid, Protocol::Udp).complete);
-        }
-        let empty = "USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS\n";
-        assert!(FreeBSDProcessLookup::parse_sockstat_rows(empty, Protocol::Udp).complete);
-    }
-
-    #[test]
     fn cancelled_sockstat_scan_returns_an_error() {
         let cancelled = AtomicBool::new(true);
 
@@ -493,9 +370,7 @@ USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS
 1001 curl 4294967295 3 tcp4 127.0.0.1:5000 1.1.1.1:443
 ";
         let lookup = FreeBSDProcessLookup {
-            cache: RwLock::new(
-                FreeBSDProcessLookup::parse_sockstat_rows(output, Protocol::Tcp).lookup,
-            ),
+            cache: RwLock::new(crate::sockstat::parse_output(output, Protocol::Tcp).lookup),
             process_details: RwLock::new(HashMap::new()),
             socket_snapshot: RwLock::new(SocketSnapshot::default()),
         };
@@ -508,47 +383,6 @@ USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS
         assert_eq!(attribution.uid, Some(1001));
         assert_eq!(attribution.gid, None);
         assert_eq!(attribution.quality, MatchQuality::ExactTuple);
-    }
-
-    #[test]
-    fn sockstat_parser_requires_numeric_uid_enabled_by_dash_n() {
-        let output = "\
-USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS
-root server 42 3 tcp4 127.0.0.1:8080 0.0.0.0:0
-";
-
-        assert!(
-            FreeBSDProcessLookup::parse_sockstat_rows(output, Protocol::Tcp)
-                .lookup
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn sockstat_parser_reports_tcp_listeners_and_udp_binds() {
-        // sockstat prints a wildcard peer as `*:*`, never `0.0.0.0:0`.
-        let tcp_output = "\
-USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS STATE
-1001 server 42 3 tcp4 *:8080 *:* LISTEN
-";
-        let udp_output = "\
-USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS
-1001 resolver 43 4 udp4 127.0.0.1:5353 *:*
-";
-
-        let tcp = FreeBSDProcessLookup::parse_sockstat_rows(tcp_output, Protocol::Tcp);
-        let udp = FreeBSDProcessLookup::parse_sockstat_rows(udp_output, Protocol::Udp);
-
-        assert_eq!(tcp.sockets.len(), 1);
-        assert_eq!(
-            tcp.sockets[0].state,
-            HostSocketState::Tcp(HostTcpState::Listen)
-        );
-        assert_eq!(tcp.sockets[0].local_addr, "0.0.0.0:8080".parse().unwrap());
-        assert_eq!(tcp.sockets[0].remote_addr, None);
-        assert_eq!(udp.sockets.len(), 1);
-        assert_eq!(udp.sockets[0].state, HostSocketState::UdpBound);
-        assert_eq!(udp.sockets[0].remote_addr, None);
     }
 
     #[test]

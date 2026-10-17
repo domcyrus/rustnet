@@ -32,6 +32,11 @@ fn socket_child() {
             socket
         })
     });
+    let socket = socket.or_else(|| match mode.as_str() {
+        "unconnected4" => Some(UdpSocket::bind("0.0.0.0:0").unwrap()),
+        "unconnected6" => Some(UdpSocket::bind("[::]:0").unwrap()),
+        _ => None,
+    });
     let tcp = mode
         .strip_prefix("tcp:")
         .map(|target| TcpStream::connect(target).unwrap());
@@ -120,6 +125,30 @@ fn enroll(tracker: &mut ProcessExitTracker, conn: TrackedConnection) {
     }
 }
 
+fn await_closure(
+    tracker: &mut ProcessExitTracker,
+    conn: TrackedConnection,
+) -> ConnectionObservation {
+    // Live procfs reads can be incomplete while parallel tests create and
+    // release sockets. Only the deterministic table fixtures assume that
+    // every scan succeeds; allow fresh complete scans to confirm closure.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        tracker.last_scan = None;
+        let closed = tracker.scan_closed(&[conn]);
+        if let Some(observed) = closed.first() {
+            assert_eq!(closed.len(), 1);
+            return *observed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "closure not confirmed: {:?}",
+            tracker.observation_status(&conn)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn exited_owner_retires_private_socket_but_not_a_new_connection_generation() {
     let (mut child, addr) = child("private", Stdio::null());
@@ -130,13 +159,16 @@ fn exited_owner_retires_private_socket_but_not_a_new_connection_generation() {
     exit(&mut child);
     tracker.last_scan = None;
     assert!(tracker.scan_closed(&[conn]).is_empty());
-    tracker.last_scan = None;
-    let closed = tracker.scan_closed(&[conn]);
-    assert_eq!(closed.len(), 1);
-    assert_eq!(closed[0].identity(), conn.identity());
+    assert_eq!(
+        await_closure(&mut tracker, conn).identity(),
+        conn.identity()
+    );
 
     let replacement = TrackedConnection {
-        created_at: conn.created_at + Duration::from_secs(1),
+        observation: ConnectionObservation {
+            created_at: conn.observation.created_at + Duration::from_secs(1),
+            ..conn.observation
+        },
         ..conn
     };
     tracker.last_scan = None;
@@ -168,16 +200,18 @@ fn exited_tcp_owner_retires_without_waiting_for_transport_timeout() {
     let (mut child, local) = child(&format!("tcp:{remote}"), Stdio::null());
     let (_server, _) = listener.accept().unwrap();
     let mut conn = observation(child.0.id(), local);
-    conn.key.protocol = Protocol::Tcp;
-    conn.key.remote_addr = remote;
+    conn.observation.key.protocol = Protocol::Tcp;
+    conn.observation.key.remote_addr = remote;
     let mut tracker = ProcessExitTracker::default();
     assert!(tracker.scan_closed(&[conn]).is_empty());
     enroll(&mut tracker, conn);
     exit(&mut child);
     tracker.last_scan = None;
     assert!(tracker.scan_closed(&[conn]).is_empty());
-    tracker.last_scan = None;
-    assert_eq!(tracker.scan_closed(&[conn]).len(), 1);
+    assert_eq!(
+        await_closure(&mut tracker, conn).identity(),
+        conn.identity()
+    );
 }
 
 #[test]
@@ -195,8 +229,10 @@ fn captured_namespace_covers_socket_closed_between_scans() {
     exit(&mut child);
     tracker.last_scan = None;
     assert!(tracker.scan_closed(&[conn]).is_empty());
-    tracker.last_scan = None;
-    assert_eq!(tracker.scan_closed(&[conn]).len(), 1);
+    assert_eq!(
+        await_closure(&mut tracker, conn).identity(),
+        conn.identity()
+    );
 }
 
 #[test]
@@ -209,17 +245,24 @@ fn delayed_packets_use_cached_exit_but_a_reused_live_socket_is_preserved() {
     exit(&mut child);
     tracker.last_scan = None;
     assert!(tracker.scan_closed(&[conn]).is_empty());
-    tracker.last_scan = None;
-    assert_eq!(tracker.scan_closed(&[conn]).len(), 1);
+    assert_eq!(
+        await_closure(&mut tracker, conn).identity(),
+        conn.identity()
+    );
     tracker.scan_closed(&[]);
     let delayed = TrackedConnection {
-        created_at: conn.created_at + Duration::from_secs(1),
+        observation: ConnectionObservation {
+            created_at: conn.observation.created_at + Duration::from_secs(1),
+            ..conn.observation
+        },
         ..conn
     };
     // A new local socket using this tuple must survive even if an old
     // eBPF attribution is returned for its first incoming packet.
     let replacement = UdpSocket::bind(addr).unwrap();
-    replacement.connect(conn.key.remote_addr).unwrap();
+    replacement
+        .connect(conn.observation.key.remote_addr)
+        .unwrap();
     for _ in 0..2 {
         tracker.last_scan = None;
         assert!(tracker.scan_closed(&[delayed]).is_empty());
@@ -231,8 +274,10 @@ fn delayed_packets_use_cached_exit_but_a_reused_live_socket_is_preserved() {
     drop(replacement);
     tracker.last_scan = None;
     assert!(tracker.scan_closed(&[delayed]).is_empty());
-    tracker.last_scan = None;
-    assert_eq!(tracker.scan_closed(&[delayed]).len(), 1);
+    assert_eq!(
+        await_closure(&mut tracker, delayed).identity(),
+        delayed.identity()
+    );
 }
 
 #[test]
@@ -241,10 +286,11 @@ fn protected_ipv6_udp_owner_retires_using_captured_socket_namespace() {
     // This is the permission boundary hit by protected browser processes.
     assert!(fs::read_link(format!("/proc/{}/ns/net", child.0.id())).is_err());
     let mut conn = observation(child.0.id(), wildcard);
-    conn.key
+    conn.observation
+        .key
         .local_addr
         .set_ip(std::net::Ipv6Addr::LOCALHOST.into());
-    conn.key.remote_addr = "[::1]:443".parse().unwrap();
+    conn.observation.key.remote_addr = "[::1]:443".parse().unwrap();
     let mut tracker = ProcessExitTracker::default();
     // A live pidfd alone is not sufficient without namespace evidence.
     assert!(tracker.scan_closed(&[conn]).is_empty());
@@ -257,8 +303,10 @@ fn protected_ipv6_udp_owner_retires_using_captured_socket_namespace() {
     exit(&mut child);
     tracker.last_scan = None;
     assert!(tracker.scan_closed(&[conn]).is_empty());
-    tracker.last_scan = None;
-    assert_eq!(tracker.scan_closed(&[conn]).len(), 1);
+    assert_eq!(
+        await_closure(&mut tracker, conn).identity(),
+        conn.identity()
+    );
 }
 
 #[test]
@@ -294,6 +342,45 @@ fn procfs_attribution_supplies_verified_process_birth_identity() {
 }
 
 #[test]
+fn procfs_unconnected_udp_attribution_enrolls_and_retires_after_exit() {
+    use crate::ProcessLookup;
+    for (mode, local_ip, remote) in [
+        ("unconnected4", "127.0.0.1", "127.0.0.1:9"),
+        ("unconnected6", "::1", "[::1]:9"),
+    ] {
+        let (mut child, mut local) = child(mode, Stdio::null());
+        local.set_ip(local_ip.parse().unwrap());
+        let lookup = super::super::process::LinuxProcessLookup::new().unwrap();
+        let mut conn = Connection::new(
+            Protocol::Udp,
+            local,
+            remote.parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        let attribution = lookup.get_process_attribution(&conn).unwrap();
+        assert_eq!(attribution.tgid, child.0.id());
+        assert_eq!(
+            attribution.quality,
+            rustnet_core::network::types::MatchQuality::ProcfsRelaxed
+        );
+        assert!(attribution.process_start_id.is_some());
+        conn.pid = Some(attribution.tgid);
+        conn.process_start_id = attribution.process_start_id;
+        conn.socket_netns_id = attribution.socket_netns_id;
+        let observed = TrackedConnection::from_connection(&conn).unwrap();
+        let mut tracker = ProcessExitTracker::default();
+        enroll(&mut tracker, observed);
+        exit(&mut child);
+        tracker.last_scan = None;
+        assert!(tracker.scan_closed(&[observed]).is_empty());
+        assert_eq!(
+            await_closure(&mut tracker, observed).identity(),
+            observed.identity()
+        );
+    }
+}
+
+#[test]
 fn worker_thread_exit_does_not_signal_whole_process_exit() {
     let pid = std::process::id();
     let start = process_start_ticks(pid).unwrap();
@@ -322,8 +409,10 @@ fn inherited_socket_survives_owner_exit_until_last_reference_closes() {
     drop(socket);
     tracker.last_scan = None;
     assert!(tracker.scan_closed(&[conn]).is_empty());
-    tracker.last_scan = None;
-    assert_eq!(tracker.scan_closed(&[conn]).len(), 1);
+    assert_eq!(
+        await_closure(&mut tracker, conn).identity(),
+        conn.identity()
+    );
 }
 
 #[test]
@@ -366,13 +455,17 @@ fn failed_scan_new_traffic_and_reappearing_socket_reset_confirmation() {
         .insert((Protocol::Udp, false), Some(HashSet::new()));
     assert!(tracker.reconcile(&[conn], &tables).is_empty());
     let active = TrackedConnection {
-        packet_counts: (1, 0),
+        observation: ConnectionObservation {
+            packet_counts: (1, 0),
+            ..conn.observation
+        },
         ..conn
     };
     assert!(tracker.reconcile(&[active], &tables).is_empty());
-    tables
-        .tables
-        .insert((Protocol::Udp, false), Some(HashSet::from([conn.key])));
+    tables.tables.insert(
+        (Protocol::Udp, false),
+        Some(HashSet::from([conn.observation.key])),
+    );
     assert!(tracker.reconcile(&[active], &tables).is_empty());
     tables
         .tables

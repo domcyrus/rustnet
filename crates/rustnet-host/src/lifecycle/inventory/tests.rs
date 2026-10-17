@@ -1,5 +1,6 @@
 use super::*;
 use crate::SocketOwner;
+use rustnet_core::network::types::Connection;
 use std::time::Duration;
 
 fn at(seconds: u64) -> SystemTime {

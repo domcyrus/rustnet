@@ -8,27 +8,44 @@ use rustnet_core::network::util::normalize_process_name;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 pub(crate) fn parse_output(stdout: &str) -> SocketScan {
-    let mut scan = SocketScan::default();
+    let mut scan = SocketScan {
+        complete: stdout.lines().next().is_some_and(|header| {
+            header.split_whitespace().collect::<Vec<_>>()
+                == [
+                    "COMMAND", "PID", "USER", "FD", "TYPE", "DEVICE", "SIZE/OFF", "NODE", "NAME",
+                ]
+        }),
+        ..Default::default()
+    };
     for line in stdout.lines().skip(1) {
         let parts: Vec<_> = line.split_whitespace().collect();
         // COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME [(STATE)]
         if parts.len() < 9 {
+            scan.complete = false;
             continue;
         }
         let wildcard = match parts[4] {
             "IPv4" => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             "IPv6" => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-            _ => continue,
+            _ => {
+                scan.complete = false;
+                continue;
+            }
         };
         let protocol = match parts[7] {
             "TCP" => Protocol::Tcp,
             "UDP" => Protocol::Udp,
-            _ => continue,
+            _ => {
+                scan.complete = false;
+                continue;
+            }
         };
         let (Ok(pid), Ok(uid)) = (parts[1].parse::<u32>(), parts[2].parse::<u32>()) else {
+            scan.complete = false;
             continue;
         };
         let Some((local, remote)) = parse_connection(parts[8], wildcard) else {
+            scan.complete = false;
             continue;
         };
         if protocol == Protocol::Udp && local.port() == 0 {
@@ -254,5 +271,42 @@ client 44 1000 5u IPv4 0x3 0t0 UDP *:0 (Unbound)
             decode_lsof_string("App\\Normal"),
             "App\\Normal" // Non-escape backslashes are preserved
         );
+    }
+
+    #[test]
+    fn socket_scan_requires_a_valid_header_and_every_row() {
+        let valid = "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nbrowser 42 501 7u IPv6 0x1 0t0 UDP *:45000\n";
+        let scan = parse_output(valid);
+        assert!(scan.complete);
+        assert_eq!(scan.sockets[0].local_addr, "[::]:45000".parse().unwrap());
+        assert!(scan.sockets[0].remote_addr.is_none());
+        for (local, remote) in [
+            ("192.0.2.1:45000", "198.51.100.1:443"),
+            ("[2001:db8::1]:45000", "[2001:db8::2]:443"),
+        ] {
+            let key = crate::test_support::connection_key(Protocol::Udp, local, remote);
+            let (owner, quality) = crate::owner_match(&scan.lookup, &key).unwrap();
+            assert_eq!(owner.pid, 42);
+            assert_eq!(quality, crate::MatchQuality::ListenerSocket);
+        }
+        for invalid in [
+            "".to_owned(),
+            format!("{valid}malformed row\n"),
+            valid.replace(
+                "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME",
+                "unexpected header",
+            ),
+        ] {
+            let scan = parse_output(&invalid);
+            assert!(!scan.complete);
+            let snapshot = SocketSnapshot::from_inventory(scan.sockets, scan.complete);
+            assert_eq!(
+                snapshot.local_port_status(Protocol::Udp, "[::1]:45000".parse().unwrap()),
+                LocalPortStatus::Unknown
+            );
+            assert!(snapshot.closure_scan_started.is_none());
+        }
+        let empty = "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n";
+        assert!(parse_output(empty).complete);
     }
 }

@@ -49,8 +49,9 @@ use crate::network::merge::{
 use crate::network::neighbors::{NeighborCache, NeighborEntry};
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{
-    ApplicationProtocol, AttributionSource, Connection, ConnectionKey, NetworkEventCounts,
-    NetworkEventKind, Protocol, ProtocolState, QuicPacketType, RequestHealthEvents, RttTracker,
+    ApplicationProtocol, AttributionSource, Connection, ConnectionKey, ConnectionObservation,
+    NetworkEventCounts, NetworkEventKind, Protocol, ProtocolState, QuicPacketType,
+    RequestHealthEvents, RttTracker,
 };
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
@@ -1048,32 +1049,35 @@ impl ConnectionTracker {
         }
     }
 
-    /// Retire a connection after external evidence confirms its local socket
-    /// has gone. Reject observations superseded by new packets or tuple reuse.
-    /// The last observed protocol state is preserved: local retirement is not
-    /// evidence of a TCP handshake or QUIC CONNECTION_CLOSE on the wire.
+    /// Retire a batch after external evidence confirms local socket closure.
+    /// Recheck each generation and its packet activity under the lifecycle
+    /// lock, then enforce retention limits once for the whole batch. Preserve
+    /// transport state: host closure does not imply an observed TCP/QUIC close.
     pub fn retire_if_unchanged(
         &self,
-        key: ConnectionKey,
-        created_at: SystemTime,
-        last_activity: SystemTime,
-        packet_counts: (u64, u64),
+        observations: impl IntoIterator<Item = ConnectionObservation>,
         now: SystemTime,
-    ) -> Option<Connection> {
+    ) -> Vec<Connection> {
         let _lifecycle = self
             .lifecycle
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (_, conn) = self.connections.remove_if(&key, |_, conn| {
-            conn.created_at == created_at
-                && conn.last_activity == last_activity
-                && (conn.packets_sent, conn.packets_received) == packet_counts
-        })?;
-        self.archive_snapshot(key, &conn, now);
-        self.retire(key, &conn, now);
-        self.enforce_historic_limit();
-        self.prune_recently_closed(now);
-        Some(conn)
+        let mut removed = Vec::new();
+        for observed in observations {
+            if let Some((key, conn)) = self
+                .connections
+                .remove_if(&observed.key, |_, conn| observed.matches(conn))
+            {
+                self.archive_snapshot(key, &conn, now);
+                self.retire(key, &conn, now);
+                removed.push(conn);
+            }
+        }
+        if !removed.is_empty() {
+            self.enforce_historic_limit();
+            self.prune_recently_closed(now);
+        }
+        removed
     }
 
     /// Remove connections whose protocol-aware timeout has elapsed as of `now`.
@@ -2580,45 +2584,53 @@ mod tests {
         let packet = parse(&udp_frame(40000, 9999));
         let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         let key = tracker.ingest_at(&packet, started).key;
-        let observed = tracker.connections().get(&key).unwrap().snapshot_clone();
+        let observed =
+            ConnectionObservation::from_connection(&tracker.connections().get(&key).unwrap())
+                .unwrap();
         // Even packets with the same timestamp invalidate an observation.
         tracker.ingest_at(&packet, started);
-        assert!(
-            tracker
-                .retire_if_unchanged(
-                    key,
-                    observed.created_at,
-                    observed.last_activity,
-                    (observed.packets_sent, observed.packets_received),
-                    started
-                )
-                .is_none()
-        );
-        let current = tracker.connections().get(&key).unwrap().snapshot_clone();
+        assert!(tracker.retire_if_unchanged([observed], started).is_empty());
+        let current =
+            ConnectionObservation::from_connection(&tracker.connections().get(&key).unwrap())
+                .unwrap();
         let now = started + Duration::from_secs(1);
-        let counts = (current.packets_sent, current.packets_received);
-        let retired = tracker
-            .retire_if_unchanged(key, current.created_at, current.last_activity, counts, now)
-            .unwrap();
-        assert!(matches!(retired.protocol_state, ProtocolState::Udp));
+        let retired = tracker.retire_if_unchanged([current, current], now);
+        assert_eq!(retired.len(), 1);
+        assert!(matches!(retired[0].protocol_state, ProtocolState::Udp));
         assert!(tracker.connections().is_empty());
         assert_eq!(tracker.historic_len(), 1);
         assert_eq!(
             tracker.historic().iter().next().unwrap().closed_at,
             Some(now)
         );
-        assert!(
-            tracker
-                .retire_if_unchanged(key, current.created_at, current.last_activity, counts, now)
-                .is_none()
-        );
         tracker.ingest_at(&packet, now);
-        assert!(
-            tracker
-                .retire_if_unchanged(key, current.created_at, current.last_activity, counts, now)
-                .is_none()
-        );
+        assert!(tracker.retire_if_unchanged([current], now).is_empty());
         assert_eq!(tracker.connections().len(), 1);
+    }
+
+    #[test]
+    fn host_retirement_batch_preserves_changed_flows_and_enforces_history_limit() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            max_historic: 2,
+            ..Default::default()
+        });
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let packets: Vec<_> = (40000..40004)
+            .map(|port| parse(&udp_frame(port, 9999)))
+            .collect();
+        let observations: Vec<_> = packets
+            .iter()
+            .map(|packet| {
+                let key = tracker.ingest_at(packet, now).key;
+                ConnectionObservation::from_connection(&tracker.connections().get(&key).unwrap())
+                    .unwrap()
+            })
+            .collect();
+        tracker.ingest_at(&packets[0], now);
+        let retired = tracker.retire_if_unchanged(observations, now + Duration::from_secs(1));
+        assert_eq!(retired.len(), 3);
+        assert_eq!(tracker.connections().len(), 1);
+        assert_eq!(tracker.historic_len(), 2);
     }
 
     #[test]

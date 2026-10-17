@@ -1,7 +1,9 @@
 //! Host evidence for retiring connections, independent of logging and UI.
 
 use crate::ProcessLookup;
-use rustnet_core::network::types::{Connection, ProcessExitStatus, Protocol};
+use rustnet_core::network::types::{
+    Connection, ConnectionObservation, ProcessExitStatus, Protocol,
+};
 use std::time::SystemTime;
 
 #[cfg(any(
@@ -32,7 +34,7 @@ impl LifecycleTracker {
         &mut self,
         connections: &[TrackedConnection],
         process_lookup: &dyn ProcessLookup,
-    ) -> Vec<TrackedConnection> {
+    ) -> Vec<ConnectionObservation> {
         #[cfg(target_os = "linux")]
         {
             // Exit watches use their own fresh procfs scans, independently of

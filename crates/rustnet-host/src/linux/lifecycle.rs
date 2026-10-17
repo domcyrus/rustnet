@@ -3,7 +3,9 @@
 
 use super::process::process_start_ticks;
 use crate::{lifecycle::SocketObservation, procfs::parse_proc_net_addr};
-use rustnet_core::network::types::{Connection, ConnectionKey, ProcessExitStatus, Protocol};
+use rustnet_core::network::types::{
+    Connection, ConnectionKey, ConnectionObservation, ProcessExitStatus, Protocol,
+};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
@@ -15,10 +17,7 @@ use std::time::{Duration, Instant, SystemTime};
 /// No guard is held while reading procfs or polling process descriptors.
 #[derive(Clone, Copy, Debug)]
 pub struct TrackedConnection {
-    pub key: ConnectionKey,
-    pub created_at: SystemTime,
-    pub last_activity: SystemTime,
-    pub packet_counts: (u64, u64),
+    pub observation: ConnectionObservation,
     pid: u32,
     start_id: u64,
     socket_netns_id: Option<u64>,
@@ -27,12 +26,8 @@ pub struct TrackedConnection {
 impl TrackedConnection {
     /// Only TCP/UDP flows with a verified process generation are eligible.
     pub fn from_connection(conn: &Connection) -> Option<Self> {
-        matches!(conn.protocol, Protocol::Tcp | Protocol::Udp).then_some(())?;
         Some(Self {
-            key: ConnectionKey::from_connection(conn),
-            created_at: conn.created_at,
-            last_activity: conn.last_activity,
-            packet_counts: (conn.packets_sent, conn.packets_received),
+            observation: ConnectionObservation::from_connection(conn)?,
             pid: conn.pid?,
             start_id: conn.process_start_id?,
             socket_netns_id: conn.socket_netns_id,
@@ -40,7 +35,7 @@ impl TrackedConnection {
     }
 
     fn identity(&self) -> (ConnectionKey, SystemTime) {
-        (self.key, self.created_at)
+        self.observation.identity()
     }
 
     fn process(&self) -> (u32, u64) {
@@ -110,7 +105,7 @@ impl ProcessExitTracker {
     pub(crate) fn scan_closed(
         &mut self,
         connections: &[TrackedConnection],
-    ) -> Vec<TrackedConnection> {
+    ) -> Vec<ConnectionObservation> {
         let processes: HashSet<_> = connections.iter().map(TrackedConnection::process).collect();
         let identities: HashSet<_> = connections
             .iter()
@@ -182,7 +177,7 @@ impl ProcessExitTracker {
                 log::debug!(
                     "Process-exit enrolled captured socket: pid={} tuple={:?} namespace={:?}",
                     conn.pid,
-                    conn.key,
+                    conn.observation.key,
                     conn.socket_netns_id
                 );
             }
@@ -217,7 +212,7 @@ impl ProcessExitTracker {
         &mut self,
         connections: &[TrackedConnection],
         tables: &SocketTables,
-    ) -> Vec<TrackedConnection> {
+    ) -> Vec<ConnectionObservation> {
         let mut closed = Vec::new();
         let local_netns = local_netns_id();
         for conn in connections {
@@ -229,7 +224,7 @@ impl ProcessExitTracker {
                 continue;
             };
             let observation = self.observations.entry(conn.identity()).or_default();
-            let Some(present) = tables.contains(conn.key) else {
+            let Some(present) = tables.contains(conn.observation.key) else {
                 observation.missing = None;
                 observation.status = Some(ProcessExitStatus::SocketTableUnreadable);
                 continue;
@@ -259,7 +254,7 @@ impl ProcessExitTracker {
                 log::debug!(
                     "Process-exit cleanup: pid={} tuple={:?} namespace={:?} local_namespace={:?}: {status}",
                     conn.pid,
-                    conn.key,
+                    conn.observation.key,
                     conn.socket_netns_id,
                     local_netns
                 );
@@ -268,9 +263,9 @@ impl ProcessExitTracker {
                 if observation.enrolled && !present {
                     // Procfs scans are not atomic. Require two consecutive
                     // successful scans with no intervening packet activity.
-                    let activity = (conn.last_activity, conn.packet_counts);
+                    let activity = conn.observation.activity();
                     if observation.missing.replace(activity) == Some(activity) {
-                        closed.push(*conn);
+                        closed.push(conn.observation);
                     }
                 }
             } else if present && local_socket {
@@ -342,7 +337,7 @@ impl SocketTables {
         let mut tables = HashMap::new();
         for conn in connections {
             for ipv6 in [false, true] {
-                let family = (conn.key.protocol, ipv6);
+                let family = (conn.observation.key.protocol, ipv6);
                 tables.entry(family).or_insert_with(|| {
                     let path = match family {
                         (Protocol::Tcp, false) => "/proc/self/net/tcp",

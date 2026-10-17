@@ -4,7 +4,7 @@ use crate::procfs::{parse_proc_net_addr, read_comm, read_comm_in};
 use crate::{
     ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
     ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketSnapshot,
-    collect_process_lineage, memoized, relaxed_lookup, remote_if_present,
+    collect_process_lineage, memoized, relaxed_candidates, relaxed_lookup, remote_if_present,
 };
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
@@ -157,19 +157,15 @@ pub(super) fn retained_lineage(info: &super::ebpf::ProcessInfo) -> Option<Proces
 }
 
 #[cfg(feature = "ebpf")]
+pub(super) fn boottime_to_start_ticks(start_ns: u64) -> Option<u64> {
+    (start_ns != 0).then_some(())?;
+    u64::try_from(u128::from(start_ns) * u128::from(clock_ticks_per_second()?) / 1_000_000_000).ok()
+}
+
+#[cfg(feature = "ebpf")]
 fn process_generation_matches(pid: u32, start_ns: u64) -> bool {
-    let Some(ticks) = clock_ticks_per_second() else {
-        return false;
-    };
-    let Some(expected) = (u128::from(start_ns) * u128::from(ticks)).checked_div(1_000_000_000)
-    else {
-        return false;
-    };
-    start_ns != 0
-        && fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|stat| parse_proc_stat(&stat))
-            .is_some_and(|stat| u128::from(stat.start_ticks) == expected)
+    boottime_to_start_ticks(start_ns)
+        .is_some_and(|expected| process_start_ticks(pid) == Some(expected))
 }
 
 fn resolve_process_ancestor(pid: u32) -> Option<(ProcessAncestor, u32)> {
@@ -744,6 +740,37 @@ impl LinuxProcessLookup {
     }
 }
 
+/// Recover the same socket-table shape used by attribution. Multiple
+/// candidate inodes are ambiguous, even when their cached owner agrees.
+fn matching_socket_inode(
+    snapshot: &SocketSnapshot,
+    key: ConnectionKey,
+    quality: MatchQuality,
+) -> Option<u64> {
+    let relaxed = relaxed_candidates(&key);
+    let mut found = None;
+    for socket in snapshot.sockets.iter() {
+        let matches = |candidate: &ConnectionKey| {
+            socket.protocol == candidate.protocol
+                && socket.local_addr == candidate.local_addr
+                && socket.remote_addr == remote_if_present(candidate.remote_addr)
+        };
+        let matched = if quality == MatchQuality::ProcfsRelaxed {
+            relaxed.iter().any(|(candidate, _)| matches(candidate))
+        } else {
+            matches(&key)
+        };
+        if matched {
+            let inode = socket.native_id.filter(|inode| *inode != 0)?;
+            if found.is_some_and(|previous| previous != inode) {
+                return None;
+            }
+            found = Some(inode);
+        }
+    }
+    found
+}
+
 impl ProcessLookup for LinuxProcessLookup {
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (tgid, name, quality) = self.lookup_match(conn)?;
@@ -753,16 +780,8 @@ impl ProcessLookup for LinuxProcessLookup {
         let before = process_start_ticks(tgid);
         if let Some(start) = before {
             let snapshot = self.socket_snapshot();
-            let inode = snapshot
-                .sockets
-                .iter()
-                .find(|socket| {
-                    socket.protocol == conn.protocol
-                        && socket.local_addr == conn.local_addr
-                        && socket.remote_addr == Some(conn.remote_addr)
-                })
-                .and_then(|socket| socket.native_id)
-                .filter(|inode| *inode != 0);
+            let inode =
+                matching_socket_inode(&snapshot, ConnectionKey::from_connection(conn), quality);
             if let Some(inode) = inode {
                 let expected = format!("socket:[{inode}]");
                 let owns_socket =
@@ -829,6 +848,51 @@ mod tests {
     use super::*;
     use crate::test_support::{tcp_connection, tcp_key as key};
     use rustnet_core::network::types::{ProtocolState, TcpState};
+
+    #[test]
+    fn lifecycle_inode_lookup_preserves_matching_shape_and_rejects_ambiguity() {
+        let key = ConnectionKey {
+            protocol: Protocol::Udp,
+            local_addr: "192.0.2.1:45000".parse().unwrap(),
+            remote_addr: "198.51.100.1:443".parse().unwrap(),
+        };
+        let socket = HostSocket {
+            protocol: Protocol::Udp,
+            local_addr: "0.0.0.0:45000".parse().unwrap(),
+            remote_addr: None,
+            state: HostSocketState::UdpBound,
+            owner: None,
+            native_id: Some(42),
+        };
+        let snapshot = SocketSnapshot::new(vec![socket.clone()]);
+        assert_eq!(
+            matching_socket_inode(&snapshot, key, MatchQuality::ProcfsRelaxed),
+            Some(42)
+        );
+        assert_eq!(
+            matching_socket_inode(&snapshot, key, MatchQuality::ProcfsExact),
+            None
+        );
+        let snapshot = SocketSnapshot::new(vec![
+            socket.clone(),
+            HostSocket {
+                native_id: Some(43),
+                ..socket.clone()
+            },
+        ]);
+        assert_eq!(
+            matching_socket_inode(&snapshot, key, MatchQuality::ProcfsRelaxed),
+            None
+        );
+        let snapshot = SocketSnapshot::new(vec![HostSocket {
+            native_id: None,
+            ..socket
+        }]);
+        assert_eq!(
+            matching_socket_inode(&snapshot, key, MatchQuality::ProcfsRelaxed),
+            None
+        );
+    }
 
     #[test]
     fn startup_socket_owners_report_a_shared_inode_without_losing_its_owner() {

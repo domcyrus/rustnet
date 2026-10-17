@@ -188,12 +188,7 @@ impl EnhancedLinuxProcessLookup {
             .with_credentials(info.uid, info.gid)
             .with_executable(info.executable)
             .with_lineage(lineage);
-        attribution.process_start_id = super::process::clock_ticks_per_second()
-            .filter(|_| info.start_boottime != 0)
-            .and_then(|ticks| {
-                u64::try_from(u128::from(info.start_boottime) * u128::from(ticks) / 1_000_000_000)
-                    .ok()
-            });
+        attribution.process_start_id = super::process::boottime_to_start_ticks(info.start_boottime);
         attribution.socket_netns_id = info.socket_netns_id;
         attribution.socket_cgroup = info.socket_cgroup;
         if let Some(ppid) = parent_pid {
