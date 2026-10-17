@@ -17,6 +17,26 @@ in both the System sidebar and compact System view.
 
 ## Responsive Host views
 
+### Observed network events (unreleased)
+
+Host > Sockets shows sent/received packet counts for TCP resets and ICMPv4/v6
+errors: port or other destination unreachable, administratively prohibited,
+packet too big / fragmentation needed, time exceeded, and parameter problem.
+Only observed categories appear. Counts cover the capture interface and capture
+filter since startup or the last clear, independent of display filters and
+connection retention. These are packet observations, not firewall verdicts or
+host-wide OS counters. MTU messages and traceroute replies can be normal.
+
+Details > Health shows reset counts and ICMP error counts, plus the latest
+error's type/code, reporting address, direction, age, and advertised MTU when
+available. ICMP errors are matched to active TCP/UDP connections by the quoted
+protocol and endpoints, without changing connection state or traffic totals.
+Matching is best effort: incomplete quotes, fragments, IPv6 extension headers,
+NAT, or an absent connection can prevent matching; reused tuples can be
+ambiguous. Unmatched errors still count in Host. No error history is retained.
+
+### Layout and navigation
+
 Sockets and Interfaces use tables on wide terminals. Below 120 columns, they
 switch to wrapped records so addresses, process names, rate digits, and counters
 remain readable. Records are also used when unusually long values cannot fit a

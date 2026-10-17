@@ -413,6 +413,9 @@ fn draw_dns_questions(
 
 fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result<()> {
     let snapshot = ctx.app.get_socket_snapshot();
+    let events = ctx.app.get_network_event_counts();
+    let event_lines = network_event_lines(&events, area.width < 70);
+    let event_height = event_lines.len() as u16 + 1;
     let mut endpoints: Vec<&HostSocket> = snapshot
         .sockets
         .iter()
@@ -465,9 +468,15 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         .max(8);
     let required_width =
         7 + 10 + endpoint_width + peer_width + service_width + pid_width + process_width + 8;
-    if area.width < 120 || area.height < 12 || usize::from(area.width) < required_width {
+    if area.width < 120
+        || area.height < 10 + event_height
+        || usize::from(area.width) < required_width
+    {
         let inner = section_header(f, area, section_title("Host Socket States and Endpoints"));
         let mut lines = socket_summary_lines(&snapshot.sockets, ctx.connections);
+        lines.push(Line::default());
+        lines.push(Line::from(section_title("Observed network events")));
+        lines.extend(event_lines);
         lines.push(Line::default());
         lines.push(Line::from(section_title(format!(
             "Listening and Bound Endpoints · {} rows",
@@ -516,9 +525,15 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .spacing(1)
-        .constraints([Constraint::Length(5), Constraint::Min(5)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(event_height),
+            Constraint::Min(5),
+        ])
         .split(area);
     draw_socket_summary(f, chunks[0], &snapshot.sockets, ctx.connections);
+    let event_area = section_header(f, chunks[1], section_title(" Observed network events"));
+    f.render_widget(Paragraph::new(event_lines), event_area);
     let widths = [
         Constraint::Length(7),
         Constraint::Length(10),
@@ -528,8 +543,46 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         Constraint::Length(pid_width as u16),
         Constraint::Length(process_width as u16),
     ];
-    draw_endpoint_table(f, chunks[1], ctx, &endpoints, &widths);
+    draw_endpoint_table(f, chunks[2], ctx, &endpoints, &widths);
     Ok(())
+}
+
+fn network_event_lines(
+    events: &crate::network::types::NetworkEventCounts,
+    compact: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        "Captured packets · since startup/clear · capture interface/filter",
+        theme::fg(theme::muted()),
+    ))];
+    let observed: Vec<_> = events.observed().collect();
+    if observed.is_empty() {
+        lines.push(Line::from("No events observed"));
+        return lines;
+    }
+    if !compact {
+        lines.push(Line::from(Span::styled(
+            format!("{:<34}{:>12}{:>12}", "", "Sent", "Received"),
+            theme::fg(theme::muted()),
+        )));
+    }
+    for (kind, count) in observed {
+        if compact {
+            lines.push(Line::from(kind.to_string()));
+            lines.push(Line::from(format!(
+                "  Sent {}   Received {}",
+                count.sent, count.received
+            )));
+        } else {
+            lines.push(Line::from(format!(
+                "{:<34}{:>12}{:>12}",
+                kind.as_str(),
+                count.sent,
+                count.received
+            )));
+        }
+    }
+    lines
 }
 
 fn draw_socket_summary(

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
+- Show observed TCP resets and ICMP errors in Host, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
 
 ### Fixed
 - Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)

@@ -546,6 +546,10 @@ impl App {
         self.tracker.dns_analytics_snapshot()
     }
 
+    pub(crate) fn get_network_event_counts(&self) -> crate::network::types::NetworkEventCounts {
+        self.tracker.network_event_counts()
+    }
+
     /// Get interface rates (bytes/sec)
     pub(crate) fn get_interface_rates(&self) -> HashMap<String, InterfaceRates> {
         self.interface_rates

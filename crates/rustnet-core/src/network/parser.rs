@@ -17,6 +17,14 @@ const AMBIGUOUS_ENDPOINT_REFRESH_MAX_INTERVAL: Duration = Duration::from_secs(60
 
 pub use crate::network::protocol::tcp::{SynWindowScale, TcpFlags, TcpHeaderInfo};
 
+/// Kept off the ordinary packet path to avoid enlarging every processing batch.
+#[derive(Debug)]
+pub struct ParsedIcmpError {
+    pub error: IcmpError,
+    /// Exact TCP/UDP endpoints from a supported ICMP quote, if available.
+    pub quoted_connection: Option<ConnectionKey>,
+}
+
 /// Result of parsing a packet
 #[derive(Debug)]
 pub struct ParsedPacket {
@@ -34,6 +42,7 @@ pub struct ParsedPacket {
     /// priority tag; `None` means no tag was observed, including stripped tags.
     pub vlan_id: Option<u16>,
     pub tcp_header: Option<TcpHeaderInfo>, // TCP header info (seq, ack, window, flags)
+    pub icmp_error: Option<Box<ParsedIcmpError>>,
     pub protocol_state: ProtocolState,
     pub is_outgoing: bool,
     pub packet_len: usize,
@@ -68,6 +77,7 @@ impl ParsedPacket {
             remote_is_gateway: false,
             vlan_id: None,
             tcp_header: None,
+            icmp_error: None,
             protocol_state,
             is_outgoing,
             packet_len,
