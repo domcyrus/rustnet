@@ -1,0 +1,51 @@
+name: Setup Windows workspace tests
+description: Prepare verified Npcap import libraries and delay loading without a release build
+
+inputs:
+  target:
+    description: Windows MSVC target triple
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare Npcap SDK and test linker flags
+      shell: powershell
+      env:
+        NPCAP_TARGET: ${{ inputs.target }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $libraryPath = switch ($env:NPCAP_TARGET) {
+          'x86_64-pc-windows-msvc' { 'Lib\x64' }
+          'i686-pc-windows-msvc' { 'Lib' }
+          default { throw "Unsupported Windows test target: $env:NPCAP_TARGET" }
+        }
+
+        # Keep the version and checksum in sync with build.rs.
+        $sdkVersion = '1.15'
+        $expected = '52c7b9fb4abee3ad9fe739bb545c3efe77b731c8e127122bdf328eafdae3ed4f'
+        $archive = Join-Path $env:RUNNER_TEMP "npcap-sdk-$sdkVersion.zip"
+        Invoke-WebRequest -UseBasicParsing -Uri "https://npcap.com/dist/npcap-sdk-$sdkVersion.zip" -OutFile $archive
+        $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) {
+          throw "Npcap SDK checksum mismatch: expected $expected, got $actual"
+        }
+
+        $sdkRoot = Join-Path $env:RUNNER_TEMP "npcap-sdk-$env:NPCAP_TARGET"
+        Expand-Archive -LiteralPath $archive -DestinationPath $sdkRoot -Force
+        $sdk = Join-Path $sdkRoot $libraryPath
+        if (-not (Test-Path (Join-Path $sdk 'wpcap.lib')) -or
+            -not (Test-Path (Join-Path $sdk 'Packet.lib'))) {
+          throw 'The verified Npcap SDK libraries were not found'
+        }
+        "LIBPCAP_LIBDIR=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        # pnet also needs Packet.lib in crates without a pcap dependency.
+        # Encoded flags preserve paths containing spaces as a single argument.
+        $rustflags = @(
+          '-L', "native=$sdk",
+          '-C', 'link-arg=/DELAYLOAD:Packet.dll',
+          '-C', 'link-arg=/DELAYLOAD:wpcap.dll',
+          '-C', 'link-arg=/DEFAULTLIB:delayimp.lib'
+        )
+        "CARGO_ENCODED_RUSTFLAGS=$($rustflags -join [char]0x1f)" |
+          Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
