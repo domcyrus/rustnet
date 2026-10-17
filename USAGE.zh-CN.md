@@ -1,4 +1,4 @@
-<p align="center"><a href="USAGE.md">English</a> | <strong>简体中文</strong></p>
+<p align="center"><a href="USAGE.md">English</a> | <strong>简体中文</strong> | <a href="USAGE.ja.md">日本語</a></p>
 
 # 使用指南
 
@@ -8,7 +8,8 @@
 
 ## 目录
 
-- [终端布局与外观](TUI.zh-CN.md)
+- [终端视图](#compact-terminals)
+- [流量图](#traffic-charts)
 - [运行 RustNet](#running-rustnet)
 - [命令行选项](#command-line-options)
 - [无界面模式](#headless-mode)
@@ -352,6 +353,9 @@ Unix），并在背景报告为浅色时将这些灰色层级加深为 ANSI Dark
 [view]
 group_by_process = true
 ```
+
+如需帮助浮层阴影，在同一配置文件的 `[ui]` 下设置 `popup_shadow = true`
+（默认为 `false`）。`NO_COLOR` 或 `--no-color` 会禁用阴影。
 
 相关：`--no-color` 完全禁用所有颜色（同时尊重 `NO_COLOR` 环境变量）。
 
@@ -977,19 +981,31 @@ Activity 按完全相同的进程名汇总，与 Overview 的进程分组一致�
 
 进行快速安全检查时，可按滚动字节数或保留字节数对出站流量排序，找出异常的高流量进程，并检查其流量最大的远端对端。保留流量会让短寿命上传进程在套接字关闭后仍然可见。
 
-### 紧凑终端布局
+### 紧凑终端布局<a id="compact-terminals"></a>
 
-Overview、Details、Activity 和 Graph 仅在完整布局放不下时显示共用的区块选择栏。按 `v` 选择下一个区块，Shift+`v` 选择上一个，也可点击名称。Host 在所有尺寸下使用 `v` / Shift+`v` 切换 Sockets、Interfaces 和 DNS。Tab / Shift+Tab、`[` / `]` 和 1-5 在所有页面切换主标签页。区块选择栏与主标签页共用标题和下划线样式，快捷键显示在底部。
+完整仪表板放不下时，按 `v` / Shift+`v` 或点击区块名称切换视图。
+Host 始终使用这些操作切换 Sockets、Interfaces 和 DNS。
+在 Details 中，这些操作也用于长区块翻页；`j` / `k` 和鼠标滚轮切换连接。
+调整大小或切换连接时保留所选区块。
 
-Overview 在不足 90 列时直接在页面内显示 Connections 或 System。System 保留区块分隔线，可用 `j` / `k`、Page Up/Down 或鼠标滚轮滚动；Esc 返回 Connections，保留连接选择和筛选条件。更宽时保留原有的连接表和 System 侧栏，按 `i` 切换侧栏。
+Host 的 Sockets 和 Interfaces 在表格放不下时使用换行记录。
+使用 `j` / `k`、方向键、Page Up/Down、`g` / `G` 或滚轮滚动。
+紧凑 Overview 中按 Esc 从 System 返回 Connections；宽屏时按 `i` 切换 System 侧栏。
+按 `h` 查看当前视图的操作。
 
-Details 在不足 100 列或完整信息仪表板和流量图放不下时使用区块页面。按 `v` / Shift+`v` 或点击名称选择 Connection、Network、Process、Application、Health 或 Traffic。高度不足时，长区块使用带页码的页面，并用相同按键切换。`j` / `k` 和滚轮切换连接。切换连接和调整大小时保留所选区块。更大的终端完整显示所有卡片和流量图，不使用信息滚动条。仪表板使用终端的完整宽度。RX/TX 面板固定在底部状态栏上方，约占内容高度的三分之一，包含标题和统计行时最多为 18 行。
+### 流量图<a id="traffic-charts"></a>
 
-Graph 在不足 100 列或内容区域不足 32 行时显示 Traffic、Health 或 Distribution（通常对应终端高度 35 行）。更大的终端同时显示所有区块。宽屏仪表板没有额外的选择栏或面板焦点。再次缩小时恢复上次选择的紧凑区块。帮助仍是浮层，打开时不会将区块切换键传给底层页面。
+Graph 使用所选捕获接口的计数器。`any` 和 macOS 默认的 `pktap` 汇总所有接口，
+可能重复计算同一流量。计数器不可用时，RX/TX 图暂停，恢复采样后继续。
 
-Activity 在不足 120 列或内容区域不足 25 行时显示 Applications 和 Capture 区块（无额外提示栏时为终端高度 28 行）。即使在 50×12 下也能滚动访问所有保留的应用及其进程。Capture 包含完整的覆盖率和归属信息，宽屏时显示在进程表旁边。
+Graph 和 Details 保留采样到的突发流量，RX/TX 分别使用自动线性刻度，单位为字节/秒
+（KiB/MiB/GiB 使用二进制单位）。比较方向时请看数值。空间允许时，标题显示当前速率、
+窗口峰值和 `2s avg`。`0 B/s` 表示观测到空闲，占位符表示数据不可用。
+Details 和 Top Processes 使用平滑后的连接速率；Graph 使用接口速率。
 
-连接列表的翻页、滚动条和鼠标选择使用表格的实际高度，包括筛选输入行和两行捕获错误栏占用的空间。
+Activity 中按 `s` 选择 `2s Avg TX/RX` 排序，按 `d` 切换 TX/RX。
+占比条覆盖最近 60 秒；虚拟/VPN 接口的占比可能重叠。Overview 的筛选和历史开关
+不限制 Activity。启用 DNS 解析时，两者均隐藏 PTR 流量，除非设置 `--show-ptr-lookups`。
 
 ### 已观察到的 VLAN ID
 
@@ -1018,6 +1034,9 @@ UDP 没有 LISTEN 状态。UDP 表中的每一行都代表一个本地绑定端�
 
 清单每 5 秒刷新一次。由于进程可能在扫描期间退出，或者权限可能隐藏进程详情，进程归属属于尽力而为。无法获得所属进程时，套接字行仍会显示。
 
+Linux 在沙箱启用后为未变化的套接字保留启动时缓存的进程归属。共享套接字、
+已退出的进程、身份变化或权限不足可能使归属未知；新建套接字仍需要 procfs 访问权限。
+
 | 平台 | 套接字来源 |
 |---|---|
 | Linux | `/proc/net/tcp`、`tcp6`、`udp` 和 `udp6`，并通过 `/proc/<pid>/fd` 中的 socket inode 关联进程 |
@@ -1026,6 +1045,18 @@ UDP 没有 LISTEN 状态。UDP 表中的每一行都代表一个本地绑定端�
 | Windows | IP Helper 的 `GetExtendedTcpTable` 和 `GetExtendedUdpTable` owner 表 |
 
 使用 `v` / Shift+`v` 或点击 Sockets / Interfaces / DNS 选择区块。底部显示切换快捷键。Tab / Shift+Tab 和 1-5 切换主标签页。
+
+### 观测到的网络事件（尚未发布）<a id="observed-network-events-unreleased"></a>
+
+Host > Sockets 统计 TCP 重置和 ICMPv4/v6 错误的发送/接收数，包括不可达、禁止访问、
+数据包过大/需要分片、超时和参数问题。计数覆盖启动或清空以来捕获的流量，
+不受显示筛选或连接保留期限影响。这些是观测值，不是防火墙判定或整个系统的计数；
+MTU 和 traceroute 消息也可能是正常行为。
+
+Details > Health 显示计数和最近错误的类型/代码、报告地址、方向、距今时间及可用的通告 MTU。
+通过引用的端点匹配 TCP/UDP 连接，不改变连接状态或流量总数。
+截断的引用、分片、IPv6 扩展头、NAT、缺失或复用的连接可能导致无法匹配或误匹配。
+未匹配的错误仍计入 Host；不保留错误历史。
 
 ## 被动 DNS 分析<a id="passive-dns-analytics"></a>
 
