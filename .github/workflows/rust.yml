@@ -14,6 +14,7 @@ on:
       - 'Dockerfile'
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
+      - '.github/actions/install-cargo-tool/**'
   pull_request:
     paths:
       - 'src/**'
@@ -26,10 +27,15 @@ on:
       - 'Dockerfile'
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
+      - '.github/actions/install-cargo-tool/**'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,6 +51,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y gcc-multilib
         rustup target add i686-unknown-linux-gnu
+    - name: Cache Cargo builds
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        key: parser-i686
+        cache-bin: false
     - name: Test 32-bit parsers with debug overflow checks
       run: cargo test --locked -p rustnet-core --all-features --target i686-unknown-linux-gnu
     - name: Test 32-bit parsers with release arithmetic
@@ -57,6 +68,11 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Setup Linux dependencies
       uses: ./.github/actions/setup-linux-deps
+    - name: Cache Cargo builds
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        key: linux-checks
+        cache-bin: false
     - name: Check formatting
       run: cargo fmt --check
     - name: Validate dependency lockfile
@@ -91,7 +107,10 @@ jobs:
         # Identity changes are isolated to this exact test process.
         sudo timeout 10s "$test_executable" --ignored --exact linux::capabilities::tests::capture_capability_drops_preserve_uid_and_gid_changes
     - name: Install cargo-audit
-      run: cargo install cargo-audit --locked
+      uses: ./.github/actions/install-cargo-tool
+      with:
+        tool: cargo-audit
+        version: '0.22.2'
     - name: Run security audit
       # Fail the build on advisories and on yanked crates so a withdrawn
       # dependency (e.g. a yanked release pinned in Cargo.lock) is caught in CI.
