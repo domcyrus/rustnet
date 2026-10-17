@@ -2,6 +2,14 @@
 
 use std::fmt::Write as _;
 
+/// Normalize process names consistently across packet metadata and host inventories.
+pub fn normalize_process_name(name: &str) -> String {
+    name.split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Encode bytes as a lowercase hex string, with `separator` between bytes
 /// ("" for a compact digest, ":" for MAC/connection-ID style).
 pub fn hex_encode(bytes: &[u8], separator: &str) -> String {
@@ -19,6 +27,16 @@ pub fn hex_encode(bytes: &[u8], separator: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_names_collapse_whitespace_and_control_characters() {
+        assert_eq!(
+            normalize_process_name(" \t日本語\u{2003}helper\0\u{7f} worker\n"),
+            "日本語 helper worker"
+        );
+        assert_eq!(normalize_process_name("\0\t\n"), "");
+        assert_eq!(normalize_process_name("firefox"), "firefox");
+    }
 
     #[test]
     fn test_hex_encode() {

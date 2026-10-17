@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Log cached local listening/bound port status on incoming new TCP/UDP connections (#680)
+- Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
 
 ### Fixed
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0

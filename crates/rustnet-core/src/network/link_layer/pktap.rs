@@ -122,24 +122,7 @@ impl PktapHeader {
     }
 }
 
-/// Normalize a process name by collapsing whitespace and control characters
-/// into single spaces. Used for PKTAP-extracted names and by the macOS lsof
-/// lookup in rustnet-host; the two sides must normalize identically or
-/// attribution matching by name breaks.
-pub fn normalize_process_name(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_whitespace() || c.is_control() {
-                ' ' // Convert whitespace and control characters to space
-            } else {
-                c
-            }
-        })
-        .collect::<String>()
-        .split_whitespace() // Split on any whitespace
-        .collect::<Vec<&str>>()
-        .join(" ") // Join with single spaces
-}
+pub use crate::network::util::normalize_process_name;
 
 /// Extract and normalize process name from raw PKTAP bytes
 /// Handles all types of padding: null bytes, spaces, tabs, and other whitespace

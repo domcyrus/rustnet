@@ -72,7 +72,7 @@ pub enum HostTcpState {
     Unknown,
 }
 
-#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+#[cfg(any(test, target_os = "freebsd", target_os = "macos"))]
 impl HostTcpState {
     /// Parse a state name as printed by `sockstat` or `lsof`, case
     /// insensitively. The two tools spell a few states differently
@@ -448,7 +448,7 @@ where
 /// One pass over the operating system's socket table (`sockstat`, `lsof`):
 /// the attribution lookup keyed by connection tuple, plus every socket for
 /// the host snapshot.
-#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+#[cfg(any(test, target_os = "freebsd", target_os = "macos"))]
 #[derive(Default)]
 pub(crate) struct SocketScan {
     pub(crate) lookup: HashMap<ConnectionKey, SocketOwner>,
@@ -712,6 +712,8 @@ mod command;
 mod freebsd;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(any(test, target_os = "macos"))]
+mod lsof;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
