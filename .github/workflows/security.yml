@@ -18,6 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: ./.github/actions/install-cargo-tool
+        with:
+          tool: cargo-audit
+          version: '0.22.2'
       - name: Check RustSec advisories
         run: cargo audit

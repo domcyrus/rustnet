@@ -1,0 +1,45 @@
+name: Cache Cargo builds
+description: Cache Cargo downloads and build outputs using GitHub's cache service
+
+inputs:
+  key:
+    description: Platform and build configuration discriminator
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Identify Cargo environment
+      id: environment
+      shell: bash
+      run: |
+        cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          cargo_home=$(cygpath -m "$cargo_home")
+        fi
+        echo "cargo-home=$cargo_home" >> "$GITHUB_OUTPUT"
+        hash_command=(sha256sum)
+        if [[ "$RUNNER_OS" == macOS ]]; then
+          hash_command=(shasum -a 256)
+        fi
+        fingerprint=$(
+          {
+            rustc -vV
+            printf '%s\n' "${RUSTFLAGS-}" "${CARGO_ENCODED_RUSTFLAGS-}" \
+              "${CC-}" "${CFLAGS-}" "${CXX-}" "${CXXFLAGS-}"
+          } | "${hash_command[@]}" | cut -d' ' -f1
+        )
+        echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+    - name: Restore Cargo cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        # Cache only downloads and build outputs, never Cargo credentials.
+        # Cargo fingerprints revalidate restored artifacts against the sources.
+        path: |
+          ${{ steps.environment.outputs.cargo-home }}/registry
+          ${{ steps.environment.outputs.cargo-home }}/git
+          target
+          !target/**/incremental
+        key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ inputs.key }}-${{ steps.environment.outputs.fingerprint }}-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', '**/.cargo/config*') }}
+        restore-keys: |
+          cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ inputs.key }}-${{ steps.environment.outputs.fingerprint }}-
