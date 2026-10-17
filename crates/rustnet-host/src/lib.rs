@@ -183,6 +183,9 @@ impl LocalPortStatus {
 pub struct SocketSnapshot {
     pub sockets: Arc<[HostSocket]>,
     local_ports: Option<Arc<HashSet<(Protocol, IpAddr, u16)>>>,
+    /// Start of a complete scan with sufficient visibility to prove absence.
+    /// `None` means this inventory is useful for display/attribution only.
+    pub closure_scan_started: Option<std::time::SystemTime>,
 }
 
 impl SocketSnapshot {
@@ -213,6 +216,7 @@ impl SocketSnapshot {
         Self {
             sockets: sockets.into(),
             local_ports,
+            closure_scan_started: None,
         }
     }
 
@@ -248,6 +252,17 @@ impl SocketSnapshot {
         } else {
             LocalPortStatus::Closed
         }
+    }
+
+    #[cfg(any(
+        test,
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd"
+    ))]
+    pub(crate) fn with_closure_evidence(mut self, started: std::time::SystemTime) -> Self {
+        self.closure_scan_started = Some(started);
+        self
     }
 }
 
@@ -313,6 +328,10 @@ pub struct SocketCgroup {
 pub struct ProcessAttribution {
     /// Thread group id, i.e. the PID as user space understands it.
     pub tgid: u32,
+    /// Opaque process birth identity, comparable only within this platform.
+    pub process_start_id: Option<u64>,
+    /// Linux socket network namespace inode, captured during attribution.
+    pub socket_netns_id: Option<u64>,
     /// Parent process id, resolved from the live process when available.
     pub ppid: Option<u32>,
     /// Process name: `/proc/<tgid>/comm` on Linux, the OS-reported name elsewhere.
@@ -337,6 +356,8 @@ impl ProcessAttribution {
     pub(crate) fn new(tgid: u32, name: impl Into<String>, quality: MatchQuality) -> Self {
         Self {
             tgid,
+            process_start_id: None,
+            socket_netns_id: None,
             ppid: None,
             name: name.into(),
             uid: None,
@@ -462,6 +483,7 @@ where
 pub(crate) struct SocketScan {
     pub(crate) lookup: HashMap<ConnectionKey, SocketOwner>,
     pub(crate) sockets: Vec<HostSocket>,
+    pub(crate) complete: bool,
 }
 
 /// The owner recorded for `key`: an exact tuple hit, else the best
@@ -713,6 +735,9 @@ impl DegradationReason {
         }
     }
 }
+
+mod lifecycle;
+pub use lifecycle::{LifecycleTracker, TrackedConnection};
 
 pub mod procfs;
 

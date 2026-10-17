@@ -43,6 +43,8 @@ pub(super) struct ProcessInfo {
     pub(super) executable: Option<std::path::PathBuf>,
     /// Task birth times use CLOCK_BOOTTIME, matching /proc stat starttime.
     pub(super) start_boottime: u64,
+    /// Network namespace inode of the socket, independent of its owner.
+    pub(super) socket_netns_id: Option<u64>,
     pub(super) parent_start_boottime: u64,
     pub(super) parent: Option<crate::ProcessAncestor>,
     pub(super) socket_cgroup: Option<crate::SocketCgroup>,

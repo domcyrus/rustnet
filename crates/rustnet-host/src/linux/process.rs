@@ -108,7 +108,7 @@ fn boot_time_unix_ms() -> Option<u64> {
     })
 }
 
-fn clock_ticks_per_second() -> Option<u64> {
+pub(super) fn clock_ticks_per_second() -> Option<u64> {
     static CLOCK_TICKS: OnceLock<Option<u64>> = OnceLock::new();
     *CLOCK_TICKS.get_or_init(|| {
         // SAFETY: `sysconf` reads a process-wide constant and has no pointer
@@ -278,7 +278,7 @@ struct SnapshotOwner {
 }
 
 /// Process start time in clock ticks, stable for the life of the process.
-fn process_start_ticks(pid: u32) -> Option<u64> {
+pub(super) fn process_start_ticks(pid: u32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     Some(parse_proc_stat(&stat)?.start_ticks)
 }
@@ -747,7 +747,42 @@ impl LinuxProcessLookup {
 impl ProcessLookup for LinuxProcessLookup {
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (tgid, name, quality) = self.lookup_match(conn)?;
-        Some(self.build_attribution(tgid, name, quality))
+        let mut attribution = self.build_attribution(tgid, name, quality);
+        // A cached tuple/PID alone cannot establish a process generation.
+        // Verify that this incarnation still owns the observed socket.
+        let before = process_start_ticks(tgid);
+        if let Some(start) = before {
+            let snapshot = self.socket_snapshot();
+            let inode = snapshot
+                .sockets
+                .iter()
+                .find(|socket| {
+                    socket.protocol == conn.protocol
+                        && socket.local_addr == conn.local_addr
+                        && socket.remote_addr == Some(conn.remote_addr)
+                })
+                .and_then(|socket| socket.native_id)
+                .filter(|inode| *inode != 0);
+            if let Some(inode) = inode {
+                let expected = format!("socket:[{inode}]");
+                let owns_socket =
+                    fs::read_dir(format!("/proc/{tgid}/fd"))
+                        .ok()
+                        .is_some_and(|entries| {
+                            entries.flatten().any(|entry| {
+                                fs::read_link(entry.path())
+                                    .ok()
+                                    .is_some_and(|link| link == Path::new(&expected))
+                            })
+                        });
+                if owns_socket && process_start_ticks(tgid) == Some(start) {
+                    attribution.process_start_id = Some(start);
+                    // This inode was found in our own network socket table.
+                    attribution.socket_netns_id = super::lifecycle::local_netns_id();
+                }
+            }
+        }
+        Some(attribution)
     }
 
     fn refresh(&self) -> Result<()> {

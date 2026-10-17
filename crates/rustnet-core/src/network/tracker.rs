@@ -1048,6 +1048,34 @@ impl ConnectionTracker {
         }
     }
 
+    /// Retire a connection after external evidence confirms its local socket
+    /// has gone. Reject observations superseded by new packets or tuple reuse.
+    /// The last observed protocol state is preserved: local retirement is not
+    /// evidence of a TCP handshake or QUIC CONNECTION_CLOSE on the wire.
+    pub fn retire_if_unchanged(
+        &self,
+        key: ConnectionKey,
+        created_at: SystemTime,
+        last_activity: SystemTime,
+        packet_counts: (u64, u64),
+        now: SystemTime,
+    ) -> Option<Connection> {
+        let _lifecycle = self
+            .lifecycle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (_, conn) = self.connections.remove_if(&key, |_, conn| {
+            conn.created_at == created_at
+                && conn.last_activity == last_activity
+                && (conn.packets_sent, conn.packets_received) == packet_counts
+        })?;
+        self.archive_snapshot(key, &conn, now);
+        self.retire(key, &conn, now);
+        self.enforce_historic_limit();
+        self.prune_recently_closed(now);
+        Some(conn)
+    }
+
     /// Remove connections whose protocol-aware timeout has elapsed as of `now`.
     ///
     /// Removed connections are archived into the historic table (when
@@ -2544,6 +2572,53 @@ mod tests {
         tracker.clear();
         let b = tracker.ingest(&parse(&udp_frame(40001, 53)));
         assert!(b.created && !b.dropped, "clear() must reset the limit");
+    }
+
+    #[test]
+    fn host_retirement_archives_once_and_rejects_new_packets_and_tuple_reuse() {
+        let tracker = ConnectionTracker::new();
+        let packet = parse(&udp_frame(40000, 9999));
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let key = tracker.ingest_at(&packet, started).key;
+        let observed = tracker.connections().get(&key).unwrap().snapshot_clone();
+        // Even packets with the same timestamp invalidate an observation.
+        tracker.ingest_at(&packet, started);
+        assert!(
+            tracker
+                .retire_if_unchanged(
+                    key,
+                    observed.created_at,
+                    observed.last_activity,
+                    (observed.packets_sent, observed.packets_received),
+                    started
+                )
+                .is_none()
+        );
+        let current = tracker.connections().get(&key).unwrap().snapshot_clone();
+        let now = started + Duration::from_secs(1);
+        let counts = (current.packets_sent, current.packets_received);
+        let retired = tracker
+            .retire_if_unchanged(key, current.created_at, current.last_activity, counts, now)
+            .unwrap();
+        assert!(matches!(retired.protocol_state, ProtocolState::Udp));
+        assert!(tracker.connections().is_empty());
+        assert_eq!(tracker.historic_len(), 1);
+        assert_eq!(
+            tracker.historic().iter().next().unwrap().closed_at,
+            Some(now)
+        );
+        assert!(
+            tracker
+                .retire_if_unchanged(key, current.created_at, current.last_activity, counts, now)
+                .is_none()
+        );
+        tracker.ingest_at(&packet, now);
+        assert!(
+            tracker
+                .retire_if_unchanged(key, current.created_at, current.last_activity, counts, now)
+                .is_none()
+        );
+        assert_eq!(tracker.connections().len(), 1);
     }
 
     #[test]

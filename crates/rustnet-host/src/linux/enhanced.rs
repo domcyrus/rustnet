@@ -188,6 +188,13 @@ impl EnhancedLinuxProcessLookup {
             .with_credentials(info.uid, info.gid)
             .with_executable(info.executable)
             .with_lineage(lineage);
+        attribution.process_start_id = super::process::clock_ticks_per_second()
+            .filter(|_| info.start_boottime != 0)
+            .and_then(|ticks| {
+                u64::try_from(u128::from(info.start_boottime) * u128::from(ticks) / 1_000_000_000)
+                    .ok()
+            });
+        attribution.socket_netns_id = info.socket_netns_id;
         attribution.socket_cgroup = info.socket_cgroup;
         if let Some(ppid) = parent_pid {
             attribution = attribution.with_parent_pid(ppid);
@@ -401,6 +408,7 @@ mod tests {
             comm: "old-process".into(),
             timestamp: 1,
             executable: Some("/old/executable".into()),
+            socket_netns_id: Some(42),
             start_boottime: 1,
             parent_start_boottime: 1,
             parent: Some(parent.clone()),
@@ -411,6 +419,7 @@ mod tests {
             quality: MatchQuality::ExactTuple,
         });
         assert_eq!(got.name, "old-process");
+        assert_eq!(got.socket_netns_id, Some(42));
         assert_eq!(got.executable, Some("/old/executable".into()));
         assert_eq!(got.lineage.unwrap().ancestors, vec![parent]);
     }

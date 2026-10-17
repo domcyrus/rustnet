@@ -246,6 +246,10 @@ mod integration_tests {
         assert!(info.timestamp > 0);
         assert!(!info.comm.is_empty());
         assert!(info.start_boottime > 0);
+        assert_eq!(
+            info.socket_netns_id,
+            crate::linux::lifecycle::local_netns_id()
+        );
         if ids_are_comparable(info) {
             assert_eq!(info.executable, std::env::current_exe().ok());
             assert_eq!(

@@ -6,7 +6,7 @@ use libbpf_rs::MapCore;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 pub(super) const CONN_KEY_SIZE: usize = 40;
-pub(super) const CONN_INFO_SIZE: usize = 848;
+pub(super) const CONN_INFO_SIZE: usize = 856;
 const EXE_PATH_LEN: usize = 256;
 const CGROUP_NAME_LEN: usize = 128;
 
@@ -37,6 +37,7 @@ struct ConnInfo {
     pub cgroup_parent: [u8; CGROUP_NAME_LEN],
     executable: [u8; EXE_PATH_LEN],
     parent_executable: [u8; EXE_PATH_LEN],
+    socket_netns_id: u64,
     start_boottime: u64,
     parent_start_boottime: u64,
     parent_tgid: u32,
@@ -201,6 +202,7 @@ impl From<ConnInfo> for ProcessInfo {
             comm: decode_comm(&info.comm),
             timestamp: info.timestamp,
             executable: decode_executable(&info.executable, info.executable_offset),
+            socket_netns_id: (info.socket_netns_id != 0).then_some(info.socket_netns_id),
             start_boottime: info.start_boottime,
             parent_start_boottime: info.parent_start_boottime,
             parent: (info.parent_tgid != 0 && info.parent_tgid != info.tgid).then(|| {
@@ -375,6 +377,7 @@ mod tests {
             cgroup_parent: [0; CGROUP_NAME_LEN],
             executable: [0; EXE_PATH_LEN],
             parent_executable: [0; EXE_PATH_LEN],
+            socket_netns_id: 42,
             start_boottime: 0,
             parent_start_boottime: 0,
             parent_tgid: 0,
@@ -390,6 +393,15 @@ mod tests {
         assert_eq!(converted.gid, 13);
         assert_eq!(converted.comm, "rustnet");
         assert_eq!(converted.timestamp, 14);
+        assert_eq!(converted.socket_netns_id, Some(42));
+        assert!(
+            ProcessInfo::from(ConnInfo {
+                socket_netns_id: 0,
+                ..raw
+            })
+            .socket_netns_id
+            .is_none()
+        );
         assert!(converted.socket_cgroup.is_none());
     }
 

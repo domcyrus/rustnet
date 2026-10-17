@@ -131,6 +131,53 @@ pub struct K8sInfo {
     pub cgroup_path: Option<String>,
 }
 
+/// Why host lifecycle cleanup is waiting or unavailable for a flow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessExitStatus {
+    IdentityMissing,
+    IdentityUnreadable,
+    IdentityChanged,
+    WatchFailed(i32),
+    WatchLimit,
+    WaitingForSocket,
+    NamespaceUnknown,
+    OtherNamespace,
+    Watching,
+    SocketTableUnreadable,
+    MissedSocket,
+    SocketPresentAfterExit,
+    ConfirmingClosure,
+    WatchingSocket,
+    ConfirmingSocketClosure,
+    SocketScanIncomplete,
+}
+
+impl std::fmt::Display for ProcessExitStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::IdentityMissing => "Timeout only: process identity unavailable",
+            Self::IdentityUnreadable => "Timeout only: process identity unreadable or gone",
+            Self::IdentityChanged => "Timeout only: process identity mismatch",
+            Self::WatchFailed(errno) => {
+                return write!(f, "Timeout only: exit watch failed (errno {errno})");
+            }
+            Self::WatchLimit => "Timeout only: exit watch limit reached",
+            Self::WaitingForSocket => "Waiting to observe local socket",
+            Self::NamespaceUnknown => "Timeout only: socket namespace unavailable",
+            Self::OtherNamespace => "Timeout only: socket is in another namespace",
+            Self::Watching => "Watching process exit",
+            Self::SocketTableUnreadable => "Waiting: socket table unavailable",
+            Self::MissedSocket => "Timeout only: socket not observed before exit",
+            Self::SocketPresentAfterExit => "Process exited; matching socket still present",
+            Self::ConfirmingClosure => "Process exited; confirming socket closure",
+            Self::WatchingSocket => "Watching local socket inventory",
+            Self::ConfirmingSocketClosure => "Socket absent; confirming closure",
+            Self::SocketScanIncomplete => "Timeout only: socket inventory incomplete or restricted",
+        };
+        f.write_str(text)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Connection {
     // Core identification
@@ -156,6 +203,13 @@ pub struct Connection {
 
     // Process information
     pub pid: Option<u32>,
+    /// Opaque process birth identity for host lifecycle checks. Linux uses
+    /// start ticks since boot; this is not a wall-clock timestamp.
+    pub process_start_id: Option<u64>,
+    /// Linux socket network namespace inode, captured during attribution.
+    pub socket_netns_id: Option<u64>,
+    /// Current host lifecycle diagnostic, separate from transport state.
+    pub process_exit_status: Option<ProcessExitStatus>,
     /// Parent process id of the owning process, when it was still available
     /// during attribution.
     pub process_ppid: Option<u32>,
@@ -309,6 +363,9 @@ impl Connection {
             protocol_state: state,
             network_events: None,
             pid: None,
+            process_start_id: None,
+            socket_netns_id: None,
+            process_exit_status: None,
             process_ppid: None,
             process_name: None,
             executable: None,
@@ -393,6 +450,9 @@ impl Connection {
             protocol_state: self.protocol_state.clone(),
             network_events: self.network_events.clone(),
             pid: self.pid,
+            process_start_id: self.process_start_id,
+            socket_netns_id: self.socket_netns_id,
+            process_exit_status: self.process_exit_status,
             process_ppid: self.process_ppid,
             process_name: self.process_name.clone(),
             executable: self.executable.clone(),
