@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::ptr;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 
 const SOCKSTAT_PATH: &str = "/usr/bin/sockstat";
 
@@ -39,12 +40,12 @@ struct FreeBsdProcessDetails {
 
 impl FreeBSDProcessLookup {
     pub(super) fn new() -> Result<Self> {
-        let (scan, complete) = Self::build_process_map(None)?;
-        let snapshot = SocketSnapshot::from_inventory(scan.sockets, complete);
+        let started = SystemTime::now();
+        let scan = Self::build_process_map(None)?;
         Ok(Self {
             cache: RwLock::new(scan.lookup),
             process_details: RwLock::new(HashMap::new()),
-            socket_snapshot: RwLock::new(snapshot),
+            socket_snapshot: RwLock::new(snapshot_from_scan(scan.sockets, scan.complete, started)),
         })
     }
 
@@ -170,9 +171,11 @@ impl FreeBSDProcessLookup {
     /// Build connection -> process mapping using sockstat. The TCP, TCP6,
     /// UDP and UDP6 tables are scanned in that order, so a later table wins
     /// when two report the same tuple.
-    fn build_process_map(cancelled: Option<&AtomicBool>) -> Result<(SocketScan, bool)> {
-        let mut scan = SocketScan::default();
-        let mut complete = true;
+    fn build_process_map(cancelled: Option<&AtomicBool>) -> Result<SocketScan> {
+        let mut scan = SocketScan {
+            complete: true,
+            ..Default::default()
+        };
 
         for (protocol, ipv6) in [
             (Protocol::Tcp, false),
@@ -182,13 +185,14 @@ impl FreeBSDProcessLookup {
         ] {
             match Self::parse_sockstat_output(protocol, ipv6, cancelled) {
                 Ok(table) => {
+                    scan.complete &= table.complete;
                     scan.lookup.extend(table.lookup);
                     scan.sockets.extend(table.sockets);
                 }
                 Err(error) if command_was_interrupted(&error) => return Err(error),
                 Err(error) => {
+                    scan.complete = false;
                     log::debug!("sockstat table scan failed for {protocol:?}: {error}");
-                    complete = false;
                 }
             }
         }
@@ -201,7 +205,7 @@ impl FreeBSDProcessLookup {
             .into());
         }
 
-        Ok((scan, complete))
+        Ok(scan)
     }
 
     /// Parse sockstat output for a given protocol and address family.
@@ -222,18 +226,21 @@ impl FreeBSDProcessLookup {
                 .arg("-n")
                 .args(is_tcp.then_some("-s"))
                 .arg("-P")
-                .arg(if is_tcp { "tcp" } else { "udp" }),
+                .arg(if is_tcp { "tcp" } else { "udp" })
+                .env("LC_ALL", "C"),
             PROCESS_TABLE_COMMAND_TIMEOUT,
             cancelled,
         )
         .context("Failed to execute sockstat")?;
 
         if !output.status.success() {
-            anyhow::bail!("sockstat command failed with status: {}", output.status);
+            anyhow::bail!("sockstat failed: {}", output.status);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(crate::sockstat::parse_output(&stdout, protocol))
+        let mut scan = crate::sockstat::parse_output(&stdout, protocol);
+        scan.complete &= output.stderr.is_empty();
+        Ok(scan)
     }
 }
 
@@ -276,14 +283,15 @@ impl ProcessLookup for FreeBSDProcessLookup {
 
 impl FreeBSDProcessLookup {
     fn refresh_cache(&self, cancelled: Option<&AtomicBool>) -> Result<()> {
-        let (scan, complete) = Self::build_process_map(cancelled)?;
-        let snapshot = SocketSnapshot::from_inventory(scan.sockets, complete);
+        let started = SystemTime::now();
+        let scan = Self::build_process_map(cancelled)?;
 
         *self.cache.write().expect("cache lock poisoned") = scan.lookup;
         *self
             .socket_snapshot
             .write()
-            .expect("socket snapshot lock poisoned") = snapshot;
+            .expect("socket snapshot lock poisoned") =
+            snapshot_from_scan(scan.sockets, scan.complete, started);
         self.process_details
             .write()
             .expect("process details cache lock poisoned")
@@ -301,6 +309,36 @@ fn command_was_interrupted(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<std::io::Error>()
         .is_some_and(|error| error.kind() == std::io::ErrorKind::Interrupted)
+}
+
+fn snapshot_from_scan(
+    sockets: Vec<crate::HostSocket>,
+    complete: bool,
+    started: SystemTime,
+) -> SocketSnapshot {
+    let snapshot = SocketSnapshot::from_inventory(sockets, complete);
+    // Root inside a jail can still have a restricted view of the host.
+    let mut jailed: libc::c_int = 1;
+    let mut length = size_of::<libc::c_int>();
+    // SAFETY: sysctlbyname receives a NUL-terminated name and a correctly sized
+    // writable integer. Null newp makes this a read-only query.
+    let unrestricted = unsafe {
+        libc::geteuid() == 0
+            && libc::sysctlbyname(
+                c"security.jail.jailed".as_ptr(),
+                (&mut jailed as *mut libc::c_int).cast(),
+                &mut length,
+                ptr::null(),
+                0,
+            ) == 0
+            && length == size_of::<libc::c_int>()
+            && jailed == 0
+    };
+    if complete && unrestricted {
+        snapshot.with_closure_evidence(started)
+    } else {
+        snapshot
+    }
 }
 
 #[cfg(test)]

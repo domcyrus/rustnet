@@ -1,9 +1,9 @@
 //! macOS lsof-based process lookup.
 
 use crate::{
-    ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor, ProcessAttribution,
-    ProcessLineage, ProcessLookup, SocketOwner, SocketScan, SocketSnapshot, ancestor_display_name,
-    collect_process_lineage,
+    ConnectionKey, DegradationReason, HostSocket, MatchQuality, ProcessAncestor,
+    ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketScan, SocketSnapshot,
+    ancestor_display_name, collect_process_lineage,
     command::{PROCESS_TABLE_COMMAND_TIMEOUT, output_with_timeout_or_cancel},
     decode_process_name, owner_match, path_from_c_buffer,
 };
@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
+use std::time::SystemTime;
 
 const LSOF_PATH: &str = "/usr/sbin/lsof";
 
@@ -136,16 +137,14 @@ impl MacOSProcessLookup {
         // would abort the whole enrichment thread (including the mid-run
         // PKTAP switch), while an empty scan is retried by the periodic
         // refresh a few seconds later.
-        let (lookup, snapshot) = match Self::parse_lsof(None) {
-            Ok(scan) => (scan.lookup, SocketSnapshot::new(scan.sockets)),
-            Err(e) => {
-                warn!("Initial lsof scan failed, deferring to periodic refresh: {e}");
-                (HashMap::new(), SocketSnapshot::default())
-            }
-        };
+        let started = SystemTime::now();
+        let scan = Self::parse_lsof(None).unwrap_or_else(|e| {
+            warn!("Initial lsof scan failed, deferring to periodic refresh: {e}");
+            SocketScan::default()
+        });
         Ok(Self {
-            cache: RwLock::new(lookup),
-            socket_snapshot: RwLock::new(snapshot),
+            cache: RwLock::new(scan.lookup),
+            socket_snapshot: RwLock::new(snapshot_from_scan(scan.sockets, scan.complete, started)),
         })
     }
 
@@ -161,19 +160,36 @@ impl MacOSProcessLookup {
         info!("Running lsof to get network connections");
 
         let output = output_with_timeout_or_cancel(
-            Command::new(LSOF_PATH).args(["-i", "-n", "-P", "-l", "+c", "0"]),
+            Command::new(LSOF_PATH)
+                .args(["-i", "-n", "-P", "-l", "+c", "0"])
+                .env("LC_ALL", "C"),
             PROCESS_TABLE_COMMAND_TIMEOUT,
             cancelled,
         )?;
 
+        Self::parse_lsof_result(&output)
+    }
+
+    fn parse_lsof_result(output: &std::process::Output) -> Result<SocketScan> {
+        // With one unrestricted Internet selector, exit 1 and no output
+        // means no matching sockets. Actual diagnostics remain failures.
+        if output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty() {
+            return Ok(SocketScan {
+                complete: true,
+                ..Default::default()
+            });
+        }
         if !output.status.success() {
             error!("lsof command failed with status: {}", output.status);
             error!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-            anyhow::bail!("lsof command failed with status: {}", output.status);
+            anyhow::bail!("lsof command failed: {}", output.status);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(crate::lsof::parse_output(&stdout))
+        let mut scan = crate::lsof::parse_output(&stdout);
+        // Warnings can mean hidden processes or sockets, even on exit zero.
+        scan.complete &= output.stderr.is_empty();
+        Ok(scan)
     }
 
     fn lookup_match(&self, conn: &Connection) -> Option<(SocketOwner, MatchQuality)> {
@@ -201,13 +217,15 @@ impl MacOSProcessLookup {
 
     fn refresh_cache(&self, cancelled: Option<&AtomicBool>) -> Result<()> {
         info!("Refreshing macOS process lookup cache");
+        let started = SystemTime::now();
         let scan = Self::parse_lsof(cancelled)?;
         let cache_size = scan.lookup.len();
         *self.cache.write().expect("cache lock poisoned") = scan.lookup;
         *self
             .socket_snapshot
             .write()
-            .expect("socket snapshot lock poisoned") = SocketSnapshot::new(scan.sockets);
+            .expect("socket snapshot lock poisoned") =
+            snapshot_from_scan(scan.sockets, scan.complete, started);
         info!("Process lookup cache refreshed with {} entries", cache_size);
         Ok(())
     }
@@ -256,10 +274,56 @@ impl ProcessLookup for MacOSProcessLookup {
     }
 }
 
+// Unprivileged lsof can silently omit sockets owned by other users.
+fn snapshot_from_scan(
+    sockets: Vec<HostSocket>,
+    complete: bool,
+    started: SystemTime,
+) -> SocketSnapshot {
+    let snapshot = SocketSnapshot::from_inventory(sockets, complete);
+    // SAFETY: geteuid has no arguments or pointer preconditions.
+    if complete && unsafe { libc::geteuid() } == 0 {
+        snapshot.with_closure_evidence(started)
+    } else {
+        snapshot
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::tcp_connection;
+
+    #[test]
+    fn lsof_accepts_single_protocol_and_empty_inventories_but_rejects_failures() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = |code, stdout: &str, stderr: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        };
+        let header = "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n";
+        for row in [
+            "browser 42 501 7u IPv4 0x1 0t0 UDP *:45000\n",
+            "browser 42 501 7u IPv4 0x1 0t0 TCP 192.0.2.1:45000->198.51.100.1:443 (ESTABLISHED)\n",
+        ] {
+            let stdout = format!("{header}{row}");
+            let scan = MacOSProcessLookup::parse_lsof_result(&output(0, &stdout, "")).unwrap();
+            assert!(scan.complete);
+            assert_eq!(scan.sockets.len(), 1);
+            let warned =
+                MacOSProcessLookup::parse_lsof_result(&output(0, &stdout, "warning")).unwrap();
+            assert!(!warned.complete);
+            assert!(MacOSProcessLookup::parse_lsof_result(&output(1, &stdout, "")).is_err());
+        }
+        let empty = MacOSProcessLookup::parse_lsof_result(&output(1, "", "")).unwrap();
+        assert!(empty.complete);
+        assert!(empty.sockets.is_empty());
+        assert!(
+            MacOSProcessLookup::parse_lsof_result(&output(1, "", "permission denied")).is_err()
+        );
+        assert!(MacOSProcessLookup::parse_lsof_result(&output(2, "", "")).is_err());
+    }
 
     #[test]
     fn lsof_numeric_uid_and_exact_match_reach_rich_attribution() {

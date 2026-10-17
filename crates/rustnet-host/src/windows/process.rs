@@ -116,26 +116,26 @@ macro_rules! refresh_table {
             cache: &mut ProcessMap,
             process_names: &mut ProcessNameCache,
             sockets: &mut Vec<HostSocket>,
-        ) -> bool {
+        ) -> Result<()> {
             unsafe {
                 let mut size: u32 = 0;
 
                 let result = $api(None, &mut size, false, $family, $table_class, 0);
 
                 if result == 0 {
-                    return true;
+                    return Ok(());
                 }
                 if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
                     log::debug!(
                         concat!($api_label, " returned no data or error: {}"),
                         result
                     );
-                    return false;
+                    anyhow::bail!(concat!($api_label, " table scan incomplete"));
                 }
 
                 if size == 0 || size > 100_000_000 {
                     log::warn!(concat!($api_label, " returned invalid size: {}"), size);
-                    return false;
+                    anyhow::bail!(concat!($api_label, " table scan incomplete"));
                 }
 
                 let mut table = allocate_table_buffer(size);
@@ -150,20 +150,24 @@ macro_rules! refresh_table {
 
                 if result != 0 {
                     log::debug!(concat!($api_label, " second call failed: {}"), result);
-                    return false;
+                    anyhow::bail!(concat!($api_label, " table scan incomplete"));
                 }
 
-                if table_buffer_len(&table) < std::mem::size_of::<u32>() {
+                if (size as usize) > table_buffer_len(&table)
+                    || (size as usize) < std::mem::size_of::<u32>()
+                {
                     log::warn!(concat!($table_label, " table buffer too small for header"));
-                    return false;
+                    anyhow::bail!(concat!($api_label, " table scan incomplete"));
                 }
 
-                let parsed_table = &*(table.as_ptr() as *const $table_ty);
-                let num_entries = parsed_table.dwNumEntries as usize;
+                let num_entries = table[0] as usize;
+                let rows_offset = std::mem::offset_of!($table_ty, table);
 
-                let required_size =
-                    std::mem::size_of::<u32>() + num_entries * std::mem::size_of::<$row_ty>();
-                if table_buffer_len(&table) < required_size {
+                let required_size = num_entries
+                    .checked_mul(std::mem::size_of::<$row_ty>())
+                    .and_then(|bytes| rows_offset.checked_add(bytes))
+                    .ok_or_else(|| anyhow::anyhow!(concat!($api_label, " table size overflow")))?;
+                if (size as usize) < required_size {
                     log::warn!(
                         concat!(
                             $table_label,
@@ -173,7 +177,7 @@ macro_rules! refresh_table {
                         required_size,
                         num_entries
                     );
-                    return false;
+                    anyhow::bail!(concat!($api_label, " table scan incomplete"));
                 }
 
                 log::debug!(
@@ -181,7 +185,13 @@ macro_rules! refresh_table {
                     num_entries
                 );
 
-                let rows_ptr = &parsed_table.table[0] as *const $row_ty;
+                // An empty table need only contain its count. Do not create a
+                // reference to a struct containing a row before checking it.
+                let rows_ptr = table
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(rows_offset)
+                    .cast::<$row_ty>();
 
                 for i in 0..num_entries {
                     let $row = &*rows_ptr.add(i);
@@ -203,7 +213,7 @@ macro_rules! refresh_table {
                 }
             }
 
-            true
+            Ok(())
         }
     };
 }
@@ -545,18 +555,24 @@ impl ProcessLookup for WindowsProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
+        let started = std::time::SystemTime::now();
         let mut new_cache = HashMap::new();
         let mut process_names = HashMap::new();
         let mut sockets = Vec::new();
 
+        // Keep partial inventories useful for attribution, but never use them
+        // as evidence that a socket closed. Try every family independently.
         let mut complete = true;
-        for refresh in [
+        for scan in [
             Self::refresh_tcp_table_v4,
             Self::refresh_tcp_table_v6,
             Self::refresh_udp_table_v4,
             Self::refresh_udp_table_v6,
         ] {
-            complete &= refresh(self, &mut new_cache, &mut process_names, &mut sockets);
+            if let Err(error) = scan(self, &mut new_cache, &mut process_names, &mut sockets) {
+                log::debug!("Incomplete Windows socket inventory: {error}");
+                complete = false;
+            }
         }
 
         match Self::snapshot_processes() {
@@ -578,7 +594,11 @@ impl ProcessLookup for WindowsProcessLookup {
         *self
             .socket_snapshot
             .write()
-            .expect("socket snapshot lock poisoned") = snapshot;
+            .expect("socket snapshot lock poisoned") = if complete {
+            snapshot.with_closure_evidence(started)
+        } else {
+            snapshot
+        };
 
         log::debug!(
             "Windows process lookup refresh complete: {} entries cached",

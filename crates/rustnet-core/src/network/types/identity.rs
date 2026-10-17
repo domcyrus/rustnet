@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use super::connection::Connection;
 
@@ -309,6 +310,40 @@ impl std::fmt::Display for ConnectionKey {
             "{}:{}-{}:{}",
             self.protocol, self.local_addr, self.protocol, self.remote_addr
         )
+    }
+}
+
+/// Generation and packet activity observed before a host lifecycle scan.
+/// Retirement must recheck this value after collecting external evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionObservation {
+    pub key: ConnectionKey,
+    pub created_at: SystemTime,
+    pub last_activity: SystemTime,
+    pub packet_counts: (u64, u64),
+}
+
+impl ConnectionObservation {
+    /// Host socket inventories support TCP and UDP flows only.
+    pub fn from_connection(conn: &Connection) -> Option<Self> {
+        matches!(conn.protocol, Protocol::Tcp | Protocol::Udp).then_some(Self {
+            key: ConnectionKey::from_connection(conn),
+            created_at: conn.created_at,
+            last_activity: conn.last_activity,
+            packet_counts: (conn.packets_sent, conn.packets_received),
+        })
+    }
+
+    pub fn identity(&self) -> (ConnectionKey, SystemTime) {
+        (self.key, self.created_at)
+    }
+
+    pub fn activity(&self) -> (SystemTime, (u64, u64)) {
+        (self.last_activity, self.packet_counts)
+    }
+
+    pub fn matches(&self, conn: &Connection) -> bool {
+        Self::from_connection(conn) == Some(*self)
     }
 }
 

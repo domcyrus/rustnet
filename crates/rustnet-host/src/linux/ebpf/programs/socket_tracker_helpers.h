@@ -42,6 +42,23 @@ struct task_struct___local
     struct css_set___local *cgroups;
 } __attribute__((preserve_access_index));
 
+/* Bundled BTF can come from a kernel without CONFIG_NET_NS. Describe the
+ * optional socket namespace field locally and let CO-RE check its presence. */
+struct possible_net___local
+{
+    struct net *net;
+} __attribute__((preserve_access_index));
+
+struct sock_common___local
+{
+    struct possible_net___local skc_net;
+} __attribute__((preserve_access_index));
+
+struct sock___local
+{
+    struct sock_common___local __sk_common;
+} __attribute__((preserve_access_index));
+
 /* Metadata exceeds the BPF stack. A nested probe must leave the outer
  * probe's per-CPU scratch untouched. Tracing programs cannot migrate. */
 struct identity_scratch
@@ -164,7 +181,7 @@ static __always_inline void get_process_info(struct conn_info *info)
         info->cgroup_parent[0] = '\0';
 }
 
-static __always_inline int store_connection(struct conn_key *key)
+static __always_inline int store_connection(struct conn_key *key, struct sock *sk)
 {
     __u32 zero = 0;
     struct identity_scratch *scratch = bpf_map_lookup_elem(&identity_buffer, &zero);
@@ -173,6 +190,11 @@ static __always_inline int store_connection(struct conn_key *key)
     scratch->busy = 1;
     __builtin_memset(&scratch->info, 0, sizeof(scratch->info));
     get_process_info(&scratch->info);
+    /* Socket namespace, even when the owner hides /proc/<pid>/ns/net or
+     * has moved into a different namespace since creating the socket. */
+    struct sock___local *socket = (struct sock___local *)sk;
+    if (bpf_core_field_exists(socket->__sk_common.skc_net.net))
+        scratch->info.socket_netns_id = BPF_CORE_READ(socket, __sk_common.skc_net.net, ns.inum);
     int result = bpf_map_update_elem(&socket_map, key, &scratch->info, BPF_ANY);
     scratch->busy = 0;
     return result;
@@ -214,7 +236,7 @@ static __always_inline int track_tcp_v4(struct sock *sk)
     fill_socket_ports(sk, &key);
     key.proto = IPPROTO_TCP;
     key.family = AF_INET;
-    return store_connection(&key);
+    return store_connection(&key, sk);
 }
 
 static __always_inline int track_tcp_v6(struct sock *sk)
@@ -227,7 +249,7 @@ static __always_inline int track_tcp_v6(struct sock *sk)
     fill_socket_ports(sk, &key);
     key.proto = IPPROTO_TCP;
     key.family = AF_INET6;
-    return store_connection(&key);
+    return store_connection(&key, sk);
 }
 
 /*
@@ -302,7 +324,7 @@ static __always_inline int track_dgram_v4(struct sock *sk, struct msghdr *msg,
 
     key.proto = proto;
     key.family = AF_INET;
-    return store_connection(&key);
+    return store_connection(&key, sk);
 }
 
 static __always_inline int track_dgram_v6(struct sock *sk, struct msghdr *msg,
@@ -334,7 +356,7 @@ static __always_inline int track_dgram_v6(struct sock *sk, struct msghdr *msg,
 
     key.proto = proto;
     key.family = AF_INET6;
-    return store_connection(&key);
+    return store_connection(&key, sk);
 }
 
 static __always_inline int track_udp_v4(struct sock *sk, struct msghdr *msg)

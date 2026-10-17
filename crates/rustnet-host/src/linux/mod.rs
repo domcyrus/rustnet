@@ -1,5 +1,6 @@
 // Linux process attribution: eBPF (optional) with a procfs fallback.
 
+pub(crate) mod lifecycle;
 mod process;
 
 #[cfg(feature = "ebpf")]

@@ -965,6 +965,9 @@ pub(in crate::ui) fn sectioned_layout(area: Rect, conn: Option<&Connection>) -> 
     // Connection (11), Network (9), and Attribution (8) have fixed rows.
     // Optional identity cards add a separator, heading, and their fields.
     let mut metadata_rows = 28;
+    if conn.is_some_and(|conn| conn.process_exit_status.is_some()) {
+        metadata_rows += 1;
+    }
     if conn.is_some_and(|conn| conn.container_info.is_some()) {
         metadata_rows += 6;
     }
@@ -1381,6 +1384,10 @@ pub(in crate::ui) fn draw_connection_details(
         conn.attribution_quality.map(|quality| quality.to_string()),
         theme::fg(quality_color),
     );
+
+    if let Some(status) = conn.process_exit_status {
+        details.field("Exit Cleanup", status.to_string());
+    }
 
     if let Some(container) = &conn.container_info {
         details.section("Container");

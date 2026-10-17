@@ -1361,6 +1361,11 @@ observation as the cleanup clock; entering those states or seeing a QUIC close
 frame does not remove the row immediately. A new TCP SYN reusing a closing
 connection's tuple can archive the old generation sooner.
 
+**Development version:** TCP/UDP flows can close earlier using process-exit or
+socket evidence. Details shows the status in `Exit Cleanup`. Shared sockets or
+unavailable evidence retain normal timeouts. macOS requires root visibility;
+FreeBSD also requires running outside a jail.
+
 **Note**: Rate indicators show decaying traffic based on recent activity. A
 connection may show declining bandwidth while it approaches its idle or
 terminal timeout. Historic rows show `n/a` for current bandwidth because a

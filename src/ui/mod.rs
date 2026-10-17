@@ -2315,6 +2315,18 @@ mod snapshot_tests {
     /// card never changes height. Placeholder rows must not register a
     /// click-to-copy target.
     #[test]
+    fn details_tab_explains_process_exit_cleanup() {
+        use crate::network::types::ProcessExitStatus;
+        let app = test_app();
+        let mut connections = sample_connections();
+        connections[0].process_exit_status = Some(ProcessExitStatus::IdentityChanged);
+        app.set_connections_snapshot_for_test(connections.clone());
+        let (output, _) = render_details_frame(&app, &connections, 0, 52);
+        assert!(output.contains("Exit Cleanup"));
+        assert!(output.contains("Timeout only: process identity mismatch"));
+    }
+
+    #[test]
     fn details_tab_renders_partial_attribution() {
         use crate::network::types::MatchQuality;
 

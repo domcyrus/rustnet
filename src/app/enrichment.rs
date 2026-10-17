@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use log::{debug, error, info};
+use rustnet_host::{LifecycleTracker, TrackedConnection};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -118,6 +119,24 @@ impl App {
             } else {
                 ProcessDetectionStatus::with_method(method)
             };
+        let report_closed = {
+            let json_log_file = self.json_log_file.clone();
+            let pcap_sidecar_file = self.pcap_sidecar_file.clone();
+            let dns_resolver = self.dns_resolver.clone();
+            let stats = Arc::clone(&self.stats);
+            move |conn: &Connection, now: SystemTime| {
+                stats
+                    .total_connections_archived
+                    .fetch_add(1, Ordering::Relaxed);
+                super::logging::log_connection_closed(
+                    conn,
+                    now,
+                    json_log_file.as_deref(),
+                    pcap_sidecar_file.as_deref(),
+                    dns_resolver.as_deref(),
+                );
+            }
+        };
         let shutdown = self.runtime.shutdown_signal();
         let failure_shutdown = shutdown.clone();
         #[cfg(feature = "kubernetes")]
@@ -132,6 +151,7 @@ impl App {
                     tracker,
                     shutdown,
                     socket_snapshot,
+                    report_closed,
                     #[cfg(feature = "kubernetes")]
                     kubernetes_mode,
                 ) {
@@ -163,6 +183,7 @@ impl App {
         tracker: Arc<ConnectionTracker>,
         shutdown: ShutdownSignal,
         socket_snapshot: Arc<RwLock<rustnet_host::SocketSnapshot>>,
+        report_closed: impl Fn(&Connection, SystemTime),
         #[cfg(feature = "kubernetes")] kubernetes_mode: crate::network::kubernetes::KubernetesMode,
     ) -> Result<()> {
         if shutdown.is_requested() {
@@ -215,6 +236,7 @@ impl App {
             process_lookup.get_detection_method()
         );
         let mut last_refresh = Instant::now();
+        let mut lifecycle = LifecycleTracker::default();
 
         loop {
             if shutdown.is_requested() {
@@ -228,6 +250,7 @@ impl App {
                     if let Ok(mut snapshot) = socket_snapshot.write() {
                         snapshot.invalidate_port_status();
                     }
+                    lifecycle.refresh_failed();
                 } else if let Ok(mut snapshot) = socket_snapshot.write() {
                     *snapshot = process_lookup.socket_snapshot();
                 }
@@ -292,6 +315,12 @@ impl App {
                             entry.key(),
                             name
                         );
+                    }
+                    if entry.process_start_id.is_none()
+                        && (entry.pid.is_none() || entry.pid == Some(pid))
+                    {
+                        entry.process_start_id = attribution.process_start_id;
+                        entry.socket_netns_id = attribution.socket_netns_id;
                     }
                     if entry.pid.is_none() {
                         entry.pid = Some(pid);
@@ -383,6 +412,29 @@ impl App {
                             entry.k8s_info = Some(k8s);
                         }
                         enriched += 1;
+                    }
+                }
+            }
+
+            {
+                let observed: Vec<_> = tracker
+                    .connections()
+                    .iter()
+                    .filter_map(|entry| TrackedConnection::from_connection(&entry))
+                    .collect();
+                let closed = lifecycle.closed_connections(&observed, process_lookup.as_ref());
+                for mut entry in tracker.connections().iter_mut() {
+                    entry.process_exit_status = lifecycle.connection_status(&entry);
+                }
+                if !closed.is_empty() {
+                    let now = SystemTime::now();
+                    for conn in tracker.retire_if_unchanged(closed, now) {
+                        debug!(
+                            "Host lifecycle retired connection: pid={:?} tuple={:?}",
+                            conn.pid,
+                            conn.key()
+                        );
+                        report_closed(&conn, now);
                     }
                 }
             }

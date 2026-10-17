@@ -183,6 +183,9 @@ impl LocalPortStatus {
 pub struct SocketSnapshot {
     pub sockets: Arc<[HostSocket]>,
     local_ports: Option<Arc<HashSet<(Protocol, IpAddr, u16)>>>,
+    /// Start of a complete scan with sufficient visibility to prove absence.
+    /// `None` means this inventory is useful for display/attribution only.
+    pub closure_scan_started: Option<std::time::SystemTime>,
 }
 
 impl SocketSnapshot {
@@ -213,6 +216,7 @@ impl SocketSnapshot {
         Self {
             sockets: sockets.into(),
             local_ports,
+            closure_scan_started: None,
         }
     }
 
@@ -248,6 +252,17 @@ impl SocketSnapshot {
         } else {
             LocalPortStatus::Closed
         }
+    }
+
+    #[cfg(any(
+        test,
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd"
+    ))]
+    pub(crate) fn with_closure_evidence(mut self, started: std::time::SystemTime) -> Self {
+        self.closure_scan_started = Some(started);
+        self
     }
 }
 
@@ -313,6 +328,10 @@ pub struct SocketCgroup {
 pub struct ProcessAttribution {
     /// Thread group id, i.e. the PID as user space understands it.
     pub tgid: u32,
+    /// Opaque process birth identity, comparable only within this platform.
+    pub process_start_id: Option<u64>,
+    /// Linux socket network namespace inode, captured during attribution.
+    pub socket_netns_id: Option<u64>,
     /// Parent process id, resolved from the live process when available.
     pub ppid: Option<u32>,
     /// Process name: `/proc/<tgid>/comm` on Linux, the OS-reported name elsewhere.
@@ -337,6 +356,8 @@ impl ProcessAttribution {
     pub(crate) fn new(tgid: u32, name: impl Into<String>, quality: MatchQuality) -> Self {
         Self {
             tgid,
+            process_start_id: None,
+            socket_netns_id: None,
             ppid: None,
             name: name.into(),
             uid: None,
@@ -462,11 +483,12 @@ where
 pub(crate) struct SocketScan {
     pub(crate) lookup: HashMap<ConnectionKey, SocketOwner>,
     pub(crate) sockets: Vec<HostSocket>,
+    pub(crate) complete: bool,
 }
 
 /// The owner recorded for `key`: an exact tuple hit, else the best
 /// [`relaxed_lookup`] candidate.
-#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+#[cfg(any(test, target_os = "freebsd", target_os = "macos"))]
 pub(crate) fn owner_match(
     cache: &HashMap<ConnectionKey, SocketOwner>,
     key: &ConnectionKey,
@@ -474,7 +496,24 @@ pub(crate) fn owner_match(
     if let Some(owner) = cache.get(key) {
         return Some((owner.clone(), MatchQuality::ExactTuple));
     }
-    relaxed_lookup(cache, key).map(|(owner, quality)| (owner.clone(), quality))
+    if !matches!(key.protocol, Protocol::Tcp | Protocol::Udp) {
+        return None;
+    }
+    if key.local_addr.is_ipv6() {
+        return relaxed_lookup(cache, key).map(|(owner, quality)| (owner.clone(), quality));
+    }
+    // An IPv6 wildcard can serve IPv4 too. Never let this fallback choose
+    // between different owners reported for the two address families.
+    let dual_stack = key.local_addr.is_ipv4().then_some((
+        ConnectionKey {
+            protocol: key.protocol,
+            local_addr: SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), key.local_addr.port()),
+            remote_addr: SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0),
+        },
+        MatchQuality::ListenerSocket,
+    ));
+    lookup_candidates(cache, relaxed_candidates(key).into_iter().chain(dual_stack))
+        .map(|(owner, quality)| (owner.clone(), quality))
 }
 
 /// Decode a NUL-terminated C char array (`ki_comm`, `pbi_comm`, ...) into a
@@ -714,6 +753,9 @@ impl DegradationReason {
     }
 }
 
+mod lifecycle;
+pub use lifecycle::{LifecycleTracker, TrackedConnection};
+
 pub mod procfs;
 
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
@@ -812,6 +854,11 @@ pub(crate) fn relaxed_lookup<'map, V: PartialEq>(
         return None;
     }
 
+    lookup_candidates(map, relaxed_candidates(key))
+}
+
+/// Socket-table shapes used by both attribution and inode verification.
+pub(crate) fn relaxed_candidates(key: &ConnectionKey) -> [(ConnectionKey, MatchQuality); 3] {
     let zero = |addr: SocketAddr| -> IpAddr {
         match addr {
             SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -835,13 +882,24 @@ pub(crate) fn relaxed_lookup<'map, V: PartialEq>(
         (zlip, lport, zrip, 0, MatchQuality::ListenerSocket),
     ];
 
+    candidates.map(|(l_ip, l_port, r_ip, r_port, quality)| {
+        (
+            ConnectionKey {
+                protocol: key.protocol,
+                local_addr: SocketAddr::new(l_ip, l_port),
+                remote_addr: SocketAddr::new(r_ip, r_port),
+            },
+            quality,
+        )
+    })
+}
+
+fn lookup_candidates<V: PartialEq>(
+    map: &HashMap<ConnectionKey, V>,
+    candidates: impl IntoIterator<Item = (ConnectionKey, MatchQuality)>,
+) -> Option<(&V, MatchQuality)> {
     let mut found: Option<(&V, MatchQuality)> = None;
-    for (l_ip, l_port, r_ip, r_port, quality) in candidates {
-        let candidate = ConnectionKey {
-            protocol: key.protocol,
-            local_addr: SocketAddr::new(l_ip, l_port),
-            remote_addr: SocketAddr::new(r_ip, r_port),
-        };
+    for (candidate, quality) in candidates {
         if let Some(entry) = map.get(&candidate) {
             match found {
                 None => found = Some((entry, quality)),
@@ -956,6 +1014,25 @@ mod tests {
 
     fn owner(pid: u32, name: &str) -> (u32, String) {
         (pid, name.to_string())
+    }
+
+    #[test]
+    fn dual_stack_wildcard_lookup_rejects_conflicting_owners() {
+        let flow = key(Protocol::Udp, "192.0.2.1:45000", "198.51.100.1:443");
+        let v4 = key(Protocol::Udp, "0.0.0.0:45000", "0.0.0.0:0");
+        let v6 = key(Protocol::Udp, "[::]:45000", "[::]:0");
+        let owner = SocketOwner::new(42, "browser", None);
+        let mut cache = HashMap::from([(v6, owner.clone())]);
+        assert_eq!(owner_match(&cache, &flow).unwrap().0, owner);
+        cache.insert(v4, owner.clone());
+        assert_eq!(owner_match(&cache, &flow).unwrap().0, owner);
+        cache.insert(v4, SocketOwner::new(43, "other", None));
+        assert!(owner_match(&cache, &flow).is_none());
+        cache.insert(flow, owner.clone());
+        assert_eq!(
+            owner_match(&cache, &flow).unwrap(),
+            (owner, MatchQuality::ExactTuple)
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@
 
 #define CONN_KEY_SIZE 40
 #define EXE_PATH_LEN 256
-#define CONN_INFO_SIZE 848
+#define CONN_INFO_SIZE 856
 
 /*
  * Map ABI shared with maps_libbpf.rs. Explicit trailing padding keeps the
@@ -44,6 +44,7 @@ struct conn_info
     char cgroup_parent[CGROUP_NAME_LEN];
     char executable[EXE_PATH_LEN];
     char parent_executable[EXE_PATH_LEN];
+    __u64 socket_netns_id;
     __u64 start_boottime;
     __u64 parent_start_boottime;
     __u32 parent_tgid;

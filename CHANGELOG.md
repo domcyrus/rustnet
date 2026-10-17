@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
 - Show observed TCP resets and ICMP errors in Host, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
+- Retire observed TCP/UDP flows after confirmed socket disappearance on macOS, Windows, and FreeBSD; keep timeout fallback for incomplete or restricted inventories (#684)
+- Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
 - Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)

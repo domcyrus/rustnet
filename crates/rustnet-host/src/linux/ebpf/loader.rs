@@ -760,7 +760,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "socket_map value size mismatch: BPF object uses 849 bytes, Rust expects 848"
+            "socket_map value size mismatch: BPF object uses 857 bytes, Rust expects 856"
         );
     }
 
