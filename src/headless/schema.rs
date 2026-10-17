@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::app::{App, AppStats, StopReport};
 use crate::network::types::{AttributionSource, Connection, ConnectionKey};
 
+use super::socket_stats::{KernelSocketSnapshot, SocketInventorySnapshot};
 use super::{SCHEMA_VERSION, TerminationReason};
 
 #[derive(Serialize)]
@@ -23,6 +24,7 @@ pub(super) struct SnapshotEnvelope {
     filter: Option<String>,
     connection_count: usize,
     connections: Vec<ConnectionSnapshot>,
+    host_sockets: SocketInventorySnapshot,
 }
 
 impl SnapshotEnvelope {
@@ -62,6 +64,7 @@ impl SnapshotEnvelope {
                 filter: filter.map(str::to_string),
                 connection_count: connections.len(),
                 connections,
+                host_sockets: app.get_socket_snapshot().into(),
             },
         )
     }
@@ -270,6 +273,7 @@ struct ConnectionSnapshot {
     hostname_source: Option<&'static str>,
     traffic: TrafficSnapshot,
     rtt: RttSnapshot,
+    kernel_stats: Option<KernelSocketSnapshot>,
     geoip: Option<GeoIpSnapshot>,
     kubernetes: Option<KubernetesSnapshot>,
     container: Option<ContainerSnapshot>,
@@ -363,6 +367,10 @@ impl ConnectionSnapshot {
 
         Self {
             id: connection_id(connection),
+            kernel_stats: connection
+                .kernel_stats
+                .as_deref()
+                .map(KernelSocketSnapshot::from),
             protocol: connection.protocol.as_str(),
             state: connection.state().into_owned(),
             local: EndpointSnapshot {
@@ -515,7 +523,7 @@ struct KubernetesSnapshot {
     cgroup_path: Option<String>,
 }
 
-fn timestamp(time: SystemTime) -> String {
+pub(super) fn timestamp(time: SystemTime) -> String {
     DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
@@ -535,7 +543,7 @@ fn finite(value: f64) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
-fn duration_ms(value: Option<Duration>) -> Option<f64> {
+pub(super) fn duration_ms(value: Option<Duration>) -> Option<f64> {
     value.and_then(|duration| finite(duration.as_secs_f64() * 1_000.0))
 }
 
@@ -618,6 +626,7 @@ mod tests {
                 "connection_count",
                 "connections",
                 "filter",
+                "host_sockets",
                 "runtime",
                 "sandbox",
                 "schema_version",
@@ -704,6 +713,7 @@ mod tests {
                 "hostname",
                 "hostname_source",
                 "id",
+                "kernel_stats",
                 "kubernetes",
                 "last_activity",
                 "local",

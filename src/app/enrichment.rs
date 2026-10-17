@@ -17,6 +17,58 @@ use super::sampling::spawn_loop;
 use super::state::App;
 use super::types::ProcessDetectionStatus;
 
+/// Match only exact TCP sockets. UDP counters belong to a socket that can
+/// serve many peers, so they stay in the host inventory. Duplicate tuples and
+/// different socket generations must not overwrite an earlier measurement.
+fn enrich_socket_stats(tracker: &ConnectionTracker, snapshot: &rustnet_host::SocketSnapshot) {
+    use crate::network::types::{ConnectionKey, Protocol};
+    let mut sockets = HashMap::new();
+    for socket in snapshot
+        .sockets
+        .iter()
+        .filter(|s| s.protocol == Protocol::Tcp)
+    {
+        let Some(remote) = socket.remote_addr else {
+            continue;
+        };
+        let key = ConnectionKey::new(socket.protocol, socket.local_addr, remote);
+        sockets
+            .entry(key)
+            .and_modify(|entry| *entry = None)
+            .or_insert(Some(socket));
+    }
+    for mut connection in tracker.connections().iter_mut() {
+        if let Some(Some(socket)) = sockets.get(&ConnectionKey::from_connection(&connection)) {
+            merge_socket_stats(&mut connection, socket);
+        }
+    }
+}
+
+fn merge_socket_stats(connection: &mut Connection, socket: &rustnet_host::HostSocket) {
+    if connection.is_historic || connection.terminal_since.is_some() {
+        return;
+    }
+    let Some(stats) = &socket.kernel_stats else {
+        return;
+    };
+    // A missing cookie cannot distinguish two generations with the same tuple.
+    if stats.socket_cookie.is_none() || stats.is_stale() {
+        return;
+    }
+    if let (Some(pid), Some(owner)) = (connection.pid, &socket.owner)
+        && pid != owner.pid
+    {
+        return;
+    }
+    if let Some(previous) = &connection.kernel_stats
+        && (previous.socket_cookie != stats.socket_cookie
+            || previous.network_namespace != stats.network_namespace)
+    {
+        return;
+    }
+    connection.kernel_stats = Some(Arc::clone(stats));
+}
+
 /// Process-attribution resources initialized during the privileged startup
 /// phase and moved into the long-lived worker after sandboxing.
 ///
@@ -225,8 +277,12 @@ impl App {
             if last_refresh.elapsed() > Duration::from_secs(5) {
                 if let Err(e) = process_lookup.refresh_interruptible(shutdown.requested_flag()) {
                     debug!("Process lookup refresh failed: {}", e);
-                } else if let Ok(mut snapshot) = socket_snapshot.write() {
-                    *snapshot = process_lookup.socket_snapshot();
+                } else {
+                    let fresh = process_lookup.socket_snapshot();
+                    enrich_socket_stats(&tracker, &fresh);
+                    if let Ok(mut snapshot) = socket_snapshot.write() {
+                        *snapshot = fresh;
+                    }
                 }
                 // Refresh pod-name metadata and rebuild the cross-namespace
                 // socket table on the same cadence.
@@ -486,6 +542,128 @@ mod process_enrichment_tests {
             "1.1.1.1:443".parse().unwrap(),
             ProtocolState::Tcp(TcpState::Established),
         )
+    }
+
+    fn socket_sample(cookie: u64) -> rustnet_host::HostSocket {
+        use crate::network::types::{
+            KernelSocketStats, SocketQueueKind, SocketQueues, SocketStatsSource,
+        };
+        let conn = connection();
+        rustnet_host::HostSocket {
+            protocol: Protocol::Tcp,
+            local_addr: conn.local_addr,
+            remote_addr: Some(conn.remote_addr),
+            state: rustnet_host::HostSocketState::Tcp(rustnet_host::HostTcpState::Established),
+            owner: None,
+            native_id: Some(1),
+            kernel_stats: Some(Arc::new(KernelSocketStats {
+                source: SocketStatsSource::LinuxSockDiag,
+                sampled_at: std::time::SystemTime::now(),
+                socket_cookie: Some(cookie),
+                network_namespace: Some(1),
+                state: "ESTABLISHED",
+                queues: SocketQueues {
+                    kind: SocketQueueKind::Bytes,
+                    receive: 42,
+                    send: 0,
+                },
+                tcp: None,
+                memory: None,
+            })),
+        }
+    }
+
+    #[test]
+    fn socket_metrics_refresh_after_attribution_without_changing_capture_counters() {
+        let mut conn = connection();
+        conn.pid = Some(42);
+        conn.process_name = Some("server".into());
+        conn.attribution_quality = Some(MatchQuality::ProcfsExact);
+        conn.bytes_received = 1024;
+        assert!(process_enrichment_complete(&conn));
+        let mut socket = socket_sample(1);
+        super::merge_socket_stats(&mut conn, &socket);
+        assert_eq!(conn.kernel_stats.as_ref().unwrap().queues.receive, 42);
+        Arc::make_mut(socket.kernel_stats.as_mut().unwrap())
+            .queues
+            .receive = 43;
+        super::merge_socket_stats(&mut conn, &socket);
+        assert_eq!(conn.kernel_stats.as_ref().unwrap().queues.receive, 43);
+        assert_eq!(conn.bytes_received, 1024);
+        assert!(Arc::ptr_eq(
+            conn.snapshot_clone().kernel_stats.as_ref().unwrap(),
+            conn.kernel_stats.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
+    fn socket_matching_rejects_duplicate_tuples_and_keeps_udp_at_socket_scope() {
+        let tracker = crate::network::tracker::ConnectionTracker::new();
+        let conn = connection();
+        let key = crate::network::types::ConnectionKey::from_connection(&conn);
+        tracker.connections().insert(key, conn);
+        let snapshot = |sockets: Vec<rustnet_host::HostSocket>| rustnet_host::SocketSnapshot {
+            sockets: sockets.into(),
+            telemetry_status: rustnet_host::SocketTelemetryStatus::Available,
+        };
+        super::enrich_socket_stats(
+            &tracker,
+            &snapshot(vec![socket_sample(1), socket_sample(2)]),
+        );
+        assert!(
+            tracker
+                .connections()
+                .get(&key)
+                .unwrap()
+                .kernel_stats
+                .is_none()
+        );
+        super::enrich_socket_stats(&tracker, &snapshot(vec![socket_sample(1)]));
+        assert!(
+            tracker
+                .connections()
+                .get(&key)
+                .unwrap()
+                .kernel_stats
+                .is_some()
+        );
+        let mut udp_conn = connection();
+        udp_conn.protocol = Protocol::Udp;
+        let udp_key = crate::network::types::ConnectionKey::from_connection(&udp_conn);
+        tracker.connections().insert(udp_key, udp_conn);
+        let mut udp_socket = socket_sample(3);
+        udp_socket.protocol = Protocol::Udp;
+        super::enrich_socket_stats(&tracker, &snapshot(vec![udp_socket]));
+        assert!(
+            tracker
+                .connections()
+                .get(&udp_key)
+                .unwrap()
+                .kernel_stats
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn socket_reuse_stale_samples_and_owner_mismatches_do_not_reassign_metrics() {
+        let mut conn = connection();
+        let mut socket = socket_sample(1);
+        super::merge_socket_stats(&mut conn, &socket);
+        super::merge_socket_stats(&mut conn, &socket_sample(2));
+        assert_eq!(conn.kernel_stats.as_ref().unwrap().socket_cookie, Some(1));
+        conn.kernel_stats = None;
+        conn.pid = Some(42);
+        socket.owner = Some(rustnet_host::SocketOwner::new(43, "different", None));
+        super::merge_socket_stats(&mut conn, &socket);
+        assert!(conn.kernel_stats.is_none());
+        socket.owner = None;
+        Arc::make_mut(socket.kernel_stats.as_mut().unwrap()).sampled_at -=
+            std::time::Duration::from_secs(11);
+        super::merge_socket_stats(&mut conn, &socket);
+        assert!(conn.kernel_stats.is_none());
+        conn.is_historic = true;
+        super::merge_socket_stats(&mut conn, &socket_sample(1));
+        assert!(conn.kernel_stats.is_none());
     }
 
     #[test]

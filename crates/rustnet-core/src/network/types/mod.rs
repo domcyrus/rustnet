@@ -38,6 +38,7 @@ mod identity;
 mod protocol_info;
 mod rates;
 mod rtt;
+mod socket_stats;
 
 pub use connection::*;
 pub use graph::*;
@@ -45,6 +46,7 @@ pub use identity::*;
 pub use protocol_info::*;
 pub use rates::*;
 pub use rtt::*;
+pub use socket_stats::*;
 
 /// Fixture builders shared by the unit tests of this module: socket
 /// addresses and connection keys from `"ip:port"` literals, minimal

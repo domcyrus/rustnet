@@ -1090,6 +1090,9 @@ For a quick security review, sort Egress by the rolling or retained byte count, 
 
 > **Available since v1.7.0.**
 
+Development builds also provide [Linux kernel socket telemetry](SOCKET_TELEMETRY.md)
+in Host, Details and headless JSON, alongside fentry/fexit process attribution.
+
 Press `5` to open the Host tab. Unlike the Overview connection list, this view reads the operating system's socket table and does not require a packet to have been captured for a row to appear.
 
 The Sockets view includes:
@@ -1105,7 +1108,7 @@ The inventory refreshes every 5 seconds. Process ownership is best effort becaus
 
 | Platform | Socket source |
 |---|---|
-| Linux | `/proc/net/tcp`, `tcp6`, `udp`, and `udp6`, joined to socket inodes in `/proc/<pid>/fd` |
+| Linux | Development builds: `NETLINK_SOCK_DIAG` with `/proc/net/tcp`, `tcp6`, `udp`, and `udp6` fallback; ownership uses socket inodes in `/proc/<pid>/fd` |
 | macOS | Numeric `lsof` socket inventory, also used for this view while PKTAP supplies packet process metadata |
 | FreeBSD | `sockstat -s` for native TCP states plus UDP socket rows |
 | Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |

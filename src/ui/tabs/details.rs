@@ -920,8 +920,59 @@ pub(in crate::ui) fn sectioned_layout(area: Rect, conn: Option<&Connection>) -> 
     if conn.is_some_and(|conn| conn.k8s_info.is_some()) {
         metadata_rows += 7;
     }
+    if let Some(stats) = conn.and_then(|c| c.kernel_stats.as_deref()) {
+        let mut kernel = DetailsBuilder::new(Style::default());
+        kernel_socket_details(&mut kernel, stats);
+        metadata_rows =
+            metadata_rows.max((APPLICATION_CARD_ROWS + TRANSPORT_CARD_ROWS + kernel.rows()) as u16);
+    }
     let dashboard_rows = STRIP_HEIGHT + 1 + metadata_rows + 1 + DASHBOARD_TRAFFIC_MIN_ROWS;
     area.width < DETAILS_SPLIT_MIN_WIDTH || area.height < dashboard_rows
+}
+
+fn kernel_socket_details(
+    details: &mut DetailsBuilder<'_>,
+    stats: &crate::network::types::KernelSocketStats,
+) {
+    details.section("Kernel Socket (local)");
+    details.field("Source", stats.source.as_str().to_string());
+    details.field(
+        "Sample Age",
+        format!(
+            "{}s{}",
+            stats.age().as_secs(),
+            if stats.is_stale() { " (stale)" } else { "" }
+        ),
+    );
+    details.field("Kernel State", stats.state.to_string());
+    details.field(
+        "Queue RX / TX",
+        format!("{} / {} B", stats.queues.receive, stats.queues.send),
+    );
+    if let Some(tcp) = &stats.tcp {
+        details.rtt_field("Kernel RTT", tcp.rtt);
+        details.rtt_field("RTT Variation", tcp.rtt_variance);
+        details.rtt_field("Minimum RTT", tcp.min_rtt);
+        details.rtt_field("Retransmit Timeout", tcp.retransmission_timeout);
+        details.field_opt("Congestion Control", tcp.congestion_control.clone());
+        for (label, value) in [
+            ("CWND (segments)", tcp.congestion_window_segments),
+            ("Ssthresh (segments)", tcp.slow_start_threshold_segments),
+            ("Kernel Retransmits", tcp.total_retransmissions),
+        ] {
+            details.field_opt(label, value.map(|v| v.to_string()));
+        }
+        for (label, value) in [
+            ("Unsent Bytes", tcp.not_sent_bytes.map(u64::from)),
+            ("TCP Bytes Sent", tcp.bytes_sent),
+            ("TCP Bytes Acked", tcp.bytes_acked),
+            ("TCP Bytes Received", tcp.bytes_received),
+            ("Retransmitted Bytes", tcp.bytes_retransmitted),
+        ] {
+            details.field_opt(label, value.map(format_bytes));
+        }
+    }
+    details.note("Socket counters are separate from capture totals");
 }
 
 fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
@@ -1934,6 +1985,9 @@ pub(in crate::ui) fn draw_connection_details(
         details.field("Window Size", format_window_sizes(counters));
     }
     details.pad_section(metrics_start, TRANSPORT_CARD_ROWS);
+    if let Some(stats) = &conn.kernel_stats {
+        kernel_socket_details(&mut details, stats);
+    }
     right_ranges.push(metrics_start..details.rows());
 
     // Continuity: the header band echoes the selected row so users feel

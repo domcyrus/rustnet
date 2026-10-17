@@ -158,18 +158,42 @@ pub struct HostSocket {
     /// Platform-native identity when cheaply available, such as a Linux socket
     /// inode. It is not displayed, but can distinguish otherwise equal rows.
     pub native_id: Option<u64>,
+    /// Optional local kernel measurements. Unsupported platforms leave this absent.
+    pub kernel_stats: Option<Arc<rustnet_core::network::types::KernelSocketStats>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SocketTelemetryStatus {
+    #[default]
+    Unsupported,
+    Available,
+    Partial,
+    Unavailable,
+}
+
+impl SocketTelemetryStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::Available => "available",
+            Self::Partial => "partial",
+            Self::Unavailable => "unavailable",
+        }
+    }
 }
 
 /// Point-in-time host socket inventory.
 #[derive(Debug, Clone, Default)]
 pub struct SocketSnapshot {
     pub sockets: Arc<[HostSocket]>,
+    pub telemetry_status: SocketTelemetryStatus,
 }
 
 impl SocketSnapshot {
     pub(crate) fn new(sockets: Vec<HostSocket>) -> Self {
         Self {
             sockets: sockets.into(),
+            telemetry_status: SocketTelemetryStatus::Unsupported,
         }
     }
 }

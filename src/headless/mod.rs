@@ -15,6 +15,7 @@ use crate::app::{App, StopReport};
 
 mod output;
 mod schema;
+mod socket_stats;
 
 use output::AsyncOutput;
 use schema::{RuntimePhase, SnapshotEnvelope};

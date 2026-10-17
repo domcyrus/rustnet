@@ -219,6 +219,9 @@ pub struct Connection {
     // TCP analytics (only for TCP connections)
     pub tcp_analytics: Option<TcpAnalytics>,
 
+    /// Latest exact local-socket sample, independent of packet-derived counters.
+    pub kernel_stats: Option<Arc<super::KernelSocketStats>>,
+
     // Health signals observable without TCP sequence analysis.
     pub protocol_health: ProtocolHealth,
 
@@ -331,6 +334,7 @@ impl Connection {
             current_incoming_rate_bps: 0.0,
             current_outgoing_rate_bps: 0.0,
             tcp_analytics,
+            kernel_stats: None,
             protocol_health: ProtocolHealth::default(),
             initial_rtt: None,
             dns_response_time: None,
@@ -414,6 +418,7 @@ impl Connection {
             current_incoming_rate_bps: self.current_incoming_rate_bps,
             current_outgoing_rate_bps: self.current_outgoing_rate_bps,
             tcp_analytics: self.tcp_analytics.clone(),
+            kernel_stats: self.kernel_stats.clone(),
             protocol_health: self.protocol_health,
             initial_rtt: self.initial_rtt,
             dns_response_time: self.dns_response_time,
