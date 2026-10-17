@@ -73,7 +73,7 @@ impl DirectionalCount {
 /// Fixed-size packet counters, retained until the tracker is cleared.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkEventCounts {
-    counts: [DirectionalCount; 7],
+    counts: [DirectionalCount; NetworkEventKind::ALL.len()],
 }
 
 impl NetworkEventCounts {

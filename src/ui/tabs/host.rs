@@ -555,8 +555,8 @@ fn network_event_lines(
         "Captured packets · since startup/clear · capture interface/filter",
         theme::fg(theme::muted()),
     ))];
-    let observed: Vec<_> = events.observed().collect();
-    if observed.is_empty() {
+    let mut observed = events.observed().peekable();
+    if observed.peek().is_none() {
         lines.push(Line::from("No events observed"));
         return lines;
     }

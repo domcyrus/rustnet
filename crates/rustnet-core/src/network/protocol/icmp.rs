@@ -26,7 +26,8 @@ pub fn parse_v6(
 }
 
 /// Shared ICMPv4/ICMPv6 parse; `echo_types` carries the version's echo
-/// request and reply type values, the only place the two formats differ.
+/// request and reply type values. Error classification and quote parsing also
+/// account for the IP version.
 fn parse_icmp(
     transport_data: &[u8],
     params: TransportParams,
@@ -42,15 +43,14 @@ fn parse_icmp(
 
     // Echo requests and replies carry an identifier plus a sequence number.
     // Both are needed to pair several concurrent requests from one ping flow.
-    let (icmp_id, icmp_sequence) =
-        if transport_data.len() >= 8 && (icmp_type == echo_request || icmp_type == echo_reply) {
-            (
-                Some(u16::from_be_bytes([transport_data[4], transport_data[5]])),
-                Some(u16::from_be_bytes([transport_data[6], transport_data[7]])),
-            )
-        } else {
-            (None, None)
-        };
+    let (icmp_id, icmp_sequence) = if icmp_type == echo_request || icmp_type == echo_reply {
+        (
+            Some(u16::from_be_bytes([transport_data[4], transport_data[5]])),
+            Some(u16::from_be_bytes([transport_data[6], transport_data[7]])),
+        )
+    } else {
+        (None, None)
+    };
 
     let (local_addr, remote_addr, is_outgoing) = orient_endpoints(&params, 0, 0, local_ips);
 

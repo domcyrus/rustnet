@@ -85,6 +85,9 @@ const APPLICATION_CARD_ROWS: usize = 12;
 /// dashboard.
 const TRANSPORT_CARD_ROWS: usize = 9;
 
+/// Maximum event card height, including its separator, heading, and note.
+const NETWORK_EVENT_CARD_MAX_ROWS: usize = 10;
+
 /// Connection metadata and traffic, with section navigation on compact layouts.
 pub(in crate::ui) struct DetailsTab;
 
@@ -327,6 +330,55 @@ fn request_health_fields(details: &mut DetailsBuilder<'_>, conn: &Connection) {
         "Request Timeouts (T)",
         display(conn.protocol_health.request_timeout_count),
     );
+}
+
+fn network_event_fields(details: &mut DetailsBuilder<'_>, conn: &Connection) {
+    if let Some(events) = &conn.network_events {
+        details.section("Observed Network Events");
+        if events.tcp_resets.sent != 0 || events.tcp_resets.received != 0 {
+            details.field(
+                "TCP Resets",
+                format!(
+                    "Sent {} · Received {}",
+                    events.tcp_resets.sent, events.tcp_resets.received
+                ),
+            );
+        }
+        if let Some(last) = events.latest_icmp {
+            details.field(
+                "ICMP Errors",
+                format!(
+                    "Sent {} · Received {}",
+                    events.icmp_errors.sent, events.icmp_errors.received
+                ),
+            );
+            details.field("Latest Error", last.error.kind.to_string());
+            details.field(
+                "Type / Code",
+                format!(
+                    "{} {} / {}",
+                    if last.error.ipv6 { "ICMPv6" } else { "ICMPv4" },
+                    last.error.message_type,
+                    last.error.code
+                ),
+            );
+            details.field("Reported By", last.error.reporter.to_string());
+            details.field(
+                "Observed",
+                format!(
+                    "{} · {}",
+                    if last.outgoing { "sent" } else { "received" },
+                    format_age(last.observed_at.elapsed().unwrap_or_default())
+                ),
+            );
+            if let Some(mtu) = last.error.mtu {
+                details.field("Advertised MTU", mtu.to_string());
+            }
+            if matches!(conn.protocol, Protocol::Tcp | Protocol::Udp) {
+                details.note("ICMP matched by quoted endpoints (best effort)");
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -923,8 +975,9 @@ pub(in crate::ui) fn sectioned_layout(area: Rect, conn: Option<&Connection>) -> 
     // The optional event card extends the right column. Reserve its maximum
     // ten rows so it and the traffic plots remain reachable on small screens.
     if conn.is_some_and(|conn| conn.network_events.is_some()) {
-        metadata_rows =
-            metadata_rows.max((APPLICATION_CARD_ROWS + TRANSPORT_CARD_ROWS + 10 - 1) as u16);
+        metadata_rows = metadata_rows.max(
+            (APPLICATION_CARD_ROWS + TRANSPORT_CARD_ROWS + NETWORK_EVENT_CARD_MAX_ROWS - 1) as u16,
+        );
     }
     let dashboard_rows = STRIP_HEIGHT + 1 + metadata_rows + 1 + DASHBOARD_TRAFFIC_MIN_ROWS;
     area.width < DETAILS_SPLIT_MIN_WIDTH || area.height < dashboard_rows
@@ -1940,52 +1993,7 @@ pub(in crate::ui) fn draw_connection_details(
         details.field("Window Size", format_window_sizes(counters));
     }
     details.pad_section(metrics_start, TRANSPORT_CARD_ROWS);
-    if let Some(events) = &conn.network_events {
-        details.section("Observed Network Events");
-        if events.tcp_resets.sent != 0 || events.tcp_resets.received != 0 {
-            details.field(
-                "TCP Resets",
-                format!(
-                    "Sent {} · Received {}",
-                    events.tcp_resets.sent, events.tcp_resets.received
-                ),
-            );
-        }
-        if let Some(last) = events.latest_icmp {
-            details.field(
-                "ICMP Errors",
-                format!(
-                    "Sent {} · Received {}",
-                    events.icmp_errors.sent, events.icmp_errors.received
-                ),
-            );
-            details.field("Latest Error", last.error.kind.to_string());
-            details.field(
-                "Type / Code",
-                format!(
-                    "{} {} / {}",
-                    if last.error.ipv6 { "ICMPv6" } else { "ICMPv4" },
-                    last.error.message_type,
-                    last.error.code
-                ),
-            );
-            details.field("Reported By", last.error.reporter.to_string());
-            details.field(
-                "Observed",
-                format!(
-                    "{} · {}",
-                    if last.outgoing { "sent" } else { "received" },
-                    format_age(last.observed_at.elapsed().unwrap_or_default())
-                ),
-            );
-            if let Some(mtu) = last.error.mtu {
-                details.field("Advertised MTU", mtu.to_string());
-            }
-            if matches!(conn.protocol, Protocol::Tcp | Protocol::Udp) {
-                details.note("ICMP matched by quoted endpoints (best effort)");
-            }
-        }
-    }
+    network_event_fields(&mut details, conn);
     right_ranges.push(metrics_start..details.rows());
 
     // Continuity: the header band echoes the selected row so users feel
