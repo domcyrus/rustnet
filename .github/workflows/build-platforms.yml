@@ -83,10 +83,9 @@ jobs:
           components: rustfmt
 
       - name: Cache Cargo builds
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: ./.github/actions/cache-cargo
         with:
-          key: ${{ matrix.build }}-${{ inputs.strip-symbols }}-${{ hashFiles('.github/actions/build-rustnet/**', '.github/workflows/build-platforms.yml', 'Cross.toml') }}
-          cache-bin: false
+          key: ${{ matrix.build }}-${{ inputs.strip-symbols }}-${{ hashFiles('.github/actions/build-rustnet/**', '.github/actions/cache-cargo/**', '.github/workflows/build-platforms.yml', 'Cross.toml') }}
 
       - name: Install cross
         if: matrix.cargo == 'cross'
@@ -300,12 +299,11 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Cache Cargo builds
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: ./.github/actions/cache-cargo
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
         with:
-          key: static-${{ matrix.arch }}-${{ hashFiles('.github/workflows/build-platforms.yml') }}
-          cache-bin: false
+          key: static-${{ matrix.arch }}-${{ hashFiles('.github/workflows/build-platforms.yml', '.github/actions/cache-cargo/**') }}
 
       - name: Build static binary
         env:

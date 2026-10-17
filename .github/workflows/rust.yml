@@ -15,6 +15,7 @@ on:
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
       - '.github/actions/install-cargo-tool/**'
+      - '.github/actions/cache-cargo/**'
   pull_request:
     paths:
       - 'src/**'
@@ -28,6 +29,7 @@ on:
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
       - '.github/actions/install-cargo-tool/**'
+      - '.github/actions/cache-cargo/**'
   workflow_dispatch:
 
 permissions:
@@ -52,10 +54,9 @@ jobs:
         sudo apt-get install -y gcc-multilib
         rustup target add i686-unknown-linux-gnu
     - name: Cache Cargo builds
-      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      uses: ./.github/actions/cache-cargo
       with:
-        key: parser-i686
-        cache-bin: false
+        key: parser-i686-${{ hashFiles('.github/workflows/rust.yml', '.github/actions/cache-cargo/**') }}
     - name: Test 32-bit parsers with debug overflow checks
       run: cargo test --locked -p rustnet-core --all-features --target i686-unknown-linux-gnu
     - name: Test 32-bit parsers with release arithmetic
@@ -69,10 +70,9 @@ jobs:
     - name: Setup Linux dependencies
       uses: ./.github/actions/setup-linux-deps
     - name: Cache Cargo builds
-      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      uses: ./.github/actions/cache-cargo
       with:
-        key: linux-checks
-        cache-bin: false
+        key: linux-checks-${{ hashFiles('.github/workflows/rust.yml', '.github/actions/cache-cargo/**') }}
     - name: Check formatting
       run: cargo fmt --check
     - name: Validate dependency lockfile
