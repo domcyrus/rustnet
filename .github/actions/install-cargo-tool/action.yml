@@ -1,0 +1,33 @@
+name: Install cached Cargo tool
+description: Cache a versioned CI tool independently of workspace dependencies
+
+inputs:
+  tool:
+    description: Crate and executable name
+    required: true
+  version:
+    description: Exact crate version (update explicitly when upgrading CI tools)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore tool
+      id: cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/cargo-tools/${{ inputs.tool }}
+        key: cargo-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ inputs.tool }}-${{ inputs.version }}
+    - name: Install tool
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TOOL: ${{ inputs.tool }}
+        VERSION: ${{ inputs.version }}
+        TOOL_ROOT: ${{ runner.temp }}/cargo-tools/${{ inputs.tool }}
+      run: cargo install "$TOOL" --version "$VERSION" --locked --root "$TOOL_ROOT"
+    - name: Add tool to PATH
+      shell: bash
+      env:
+        TOOL_ROOT: ${{ runner.temp }}/cargo-tools/${{ inputs.tool }}
+      run: echo "$TOOL_ROOT/bin" >> "$GITHUB_PATH"
