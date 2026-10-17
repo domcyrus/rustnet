@@ -24,7 +24,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  # DEB installation checks only wait for the GNU/Linux build matrix.
+  build-linux:
     permissions:
       contents: read
     name: build-${{ matrix.build }}
@@ -36,10 +37,6 @@ jobs:
           - linux-x64-gnu
           - linux-aarch64-gnu
           - linux-armv7-gnueabihf
-          - macos-aarch64
-          - macos-x64
-          - windows-x64-msvc
-          - windows-x86-msvc
         include:
           - os: ubuntu-22.04
           - cargo: cargo
@@ -52,21 +49,6 @@ jobs:
           - build: linux-armv7-gnueabihf
             target: armv7-unknown-linux-gnueabihf
             cargo: cross
-          - build: macos-aarch64
-            os: macos-14
-            target: aarch64-apple-darwin
-            run-tests: true
-          - build: macos-x64
-            os: macos-14
-            target: x86_64-apple-darwin
-          - build: windows-x64-msvc
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            run-tests: true
-          - build: windows-x86-msvc
-            os: windows-latest
-            target: i686-pc-windows-msvc
-            run-tests: true
 
     steps:
       - name: Checkout repository
@@ -94,33 +76,6 @@ jobs:
           default-features: ${{ (contains(matrix.target, 'linux') || contains(matrix.target, 'apple')) && 'true' || 'false' }}
           strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
 
-      - name: Configure Windows workspace test linking
-        if: runner.os == 'Windows' && matrix.run-tests
-        shell: powershell
-        run: |
-          # The binary build verifies and extracts the SDK. Standalone crate
-          # tests also need its import libraries and the binary's delay-loading
-          # policy, so unit tests do not require a live Npcap installation.
-          $sdk = Get-ChildItem -Path 'target\${{ matrix.target }}\release\build\rustnet-monitor-*\out\npcap_sdk' -Directory |
-            Select-Object -First 1
-          if (-not $sdk -or
-              -not (Test-Path (Join-Path $sdk.FullName 'wpcap.lib')) -or
-              -not (Test-Path (Join-Path $sdk.FullName 'Packet.lib'))) {
-            throw 'The verified Npcap SDK libraries were not found'
-          }
-          "LIBPCAP_LIBDIR=$($sdk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          # pnet also links Packet.lib in crates without a pcap dependency,
-          # so LIBPCAP_LIBDIR alone does not reach every test executable.
-          # Encoded flags preserve an SDK path containing spaces as one value.
-          $rustflags = @(
-            '-L', "native=$($sdk.FullName)",
-            '-C', 'link-arg=/DELAYLOAD:Packet.dll',
-            '-C', 'link-arg=/DELAYLOAD:wpcap.dll',
-            '-C', 'link-arg=/DEFAULTLIB:delayimp.lib'
-          )
-          "CARGO_ENCODED_RUSTFLAGS=$($rustflags -join [char]0x1f)" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
       - name: Build and validate DEB
         if: contains(matrix.target, 'linux-gnu')
         run: |
@@ -134,6 +89,85 @@ jobs:
           name: deb-${{ matrix.target }}
           path: rustnet.deb
           if-no-files-found: error
+
+      - name: Run workspace tests
+        if: matrix.run-tests
+        run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
+
+      # For test builds: upload raw binary
+      - name: Upload binary artifact
+        if: ${{ !inputs.create-archives }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rustnet-${{ matrix.build }}
+          path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
+          if-no-files-found: error
+
+      # For release builds: create archive with README/LICENSE
+      - name: Create release archive
+        if: ${{ inputs.create-archives }}
+        id: archive
+        uses: ./.github/actions/package-archive
+        with:
+          binary: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
+          target: ${{ matrix.target }}
+          version: ${{ inputs.version }}
+          format: ${{ contains(matrix.os, 'windows') && 'zip' || 'tar' }}
+
+      - name: Upload release archive
+        if: ${{ inputs.create-archives }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: build-${{ matrix.target }}
+          path: ${{ steps.archive.outputs.asset }}
+          if-no-files-found: error
+
+  build:
+    permissions:
+      contents: read
+    name: build-${{ matrix.build }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - macos-aarch64
+          - macos-x64
+          - windows-x64-msvc
+          - windows-x86-msvc
+        include:
+          - cargo: cargo
+          - build: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+            run-tests: true
+          - build: macos-x64
+            os: macos-14
+            target: x86_64-apple-darwin
+          - build: windows-x64-msvc
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - build: windows-x86-msvc
+            os: windows-latest
+            target: i686-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt
+
+      - name: Build
+        uses: ./.github/actions/build-rustnet
+        with:
+          target: ${{ matrix.target }}
+          cargo-command: ${{ matrix.cargo }}
+          default-features: ${{ (contains(matrix.target, 'linux') || contains(matrix.target, 'apple')) && 'true' || 'false' }}
+          strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
 
       - name: Run workspace tests
         if: matrix.run-tests
@@ -177,6 +211,35 @@ jobs:
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
+
+  # Tests prepare their own verified SDK instead of waiting for a release build.
+  test-windows:
+    permissions:
+      contents: read
+    name: test-${{ matrix.build }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: windows-x64-msvc
+            target: x86_64-pc-windows-msvc
+          - build: windows-x86-msvc
+            target: i686-pc-windows-msvc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt
+      - name: Configure Windows workspace test linking
+        uses: ./.github/actions/setup-windows-tests
+        with:
+          target: ${{ matrix.target }}
+      - name: Run workspace tests
+        run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
 
   # x86_64 and the native Android build link against Alpine's static libpcap.
   # armv7 and x86 (i686) are cross-compiled with zig cc as the C compiler and
@@ -399,7 +462,7 @@ jobs:
 
   test-deb:
     name: deb-${{ matrix.arch }}-${{ matrix.image }}
-    needs: build
+    needs: build-linux
     permissions:
       contents: read
     runs-on: ${{ matrix.runner }}
