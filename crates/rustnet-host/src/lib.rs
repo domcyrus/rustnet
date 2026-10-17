@@ -43,7 +43,7 @@ use rustnet_core::network::types::{
     ProcessLineage, Protocol,
 };
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -160,16 +160,84 @@ pub struct HostSocket {
     pub native_id: Option<u64>,
 }
 
-/// Point-in-time host socket inventory.
+/// Local listening/bound state in the latest host inventory, not reachability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalPortStatus {
+    Opened,
+    Closed,
+    Unknown,
+}
+
+impl LocalPortStatus {
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            Self::Opened => "opened",
+            Self::Closed => "closed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Point-in-time host socket inventory. The default has not been collected.
 #[derive(Debug, Clone, Default)]
 pub struct SocketSnapshot {
     pub sockets: Arc<[HostSocket]>,
+    local_ports: Option<Arc<HashSet<(Protocol, IpAddr, u16)>>>,
 }
 
 impl SocketSnapshot {
-    pub(crate) fn new(sockets: Vec<HostSocket>) -> Self {
+    pub fn new(sockets: Vec<HostSocket>) -> Self {
+        let local_ports = sockets
+            .iter()
+            .filter_map(|socket| {
+                matches!(
+                    socket.state,
+                    HostSocketState::Tcp(HostTcpState::Listen) | HostSocketState::UdpBound
+                )
+                .then_some((
+                    socket.protocol,
+                    socket.local_addr.ip().to_canonical(),
+                    socket.local_addr.port(),
+                ))
+            })
+            .collect();
         Self {
             sockets: sockets.into(),
+            local_ports: Some(Arc::new(local_ports)),
+        }
+    }
+
+    /// Keep the last inventory for display after a failed refresh, but do not
+    /// use it to classify newly observed connection attempts.
+    pub fn invalidate_port_status(&mut self) {
+        self.local_ports = None;
+    }
+
+    /// Match a local endpoint without scanning sockets on the capture thread.
+    pub fn local_port_status(&self, protocol: Protocol, local: SocketAddr) -> LocalPortStatus {
+        let Some(ports) = &self.local_ports else {
+            return LocalPortStatus::Unknown;
+        };
+        if !matches!(protocol, Protocol::Tcp | Protocol::Udp) {
+            return LocalPortStatus::Unknown;
+        }
+        let ip = local.ip().to_canonical();
+        let port = local.port();
+        let wildcard = if ip.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        };
+        if ports.contains(&(protocol, ip, port)) || ports.contains(&(protocol, wildcard, port)) {
+            LocalPortStatus::Opened
+        } else if ip.is_ipv4()
+            && ports.contains(&(protocol, IpAddr::V6(Ipv6Addr::UNSPECIFIED), port))
+        {
+            // The inventory does not expose IPV6_V6ONLY, so an IPv6 wildcard
+            // may also accept IPv4. Do not guess that this port is closed.
+            LocalPortStatus::Unknown
+        } else {
+            LocalPortStatus::Closed
         }
     }
 }
@@ -809,6 +877,57 @@ mod tests {
     use super::*;
     use crate::test_support::connection_key as key;
     use std::path::Path;
+
+    #[test]
+    fn local_port_status_matches_bindings_and_keeps_unavailable_unknown() {
+        use HostSocketState::{Tcp, UdpBound};
+        use HostTcpState::{Established, Listen};
+        use LocalPortStatus::{Closed, Opened, Unknown};
+        let mut snapshot = SocketSnapshot::new(
+            [
+                (Protocol::Tcp, "192.0.2.1:80", Tcp(Listen)),
+                (Protocol::Tcp, "0.0.0.0:443", Tcp(Listen)),
+                (Protocol::Tcp, "192.0.2.1:8080", Tcp(Established)),
+                (Protocol::Udp, "0.0.0.0:53", UdpBound),
+                (Protocol::Udp, "[::]:5353", UdpBound),
+            ]
+            .into_iter()
+            .map(|(protocol, addr, state)| HostSocket {
+                protocol,
+                local_addr: addr.parse().unwrap(),
+                remote_addr: None,
+                state,
+                owner: None,
+                native_id: None,
+            })
+            .collect(),
+        );
+        for (protocol, addr, expected) in [
+            (Protocol::Tcp, "192.0.2.1:80", Opened),
+            (Protocol::Tcp, "192.0.2.2:80", Closed),
+            (Protocol::Tcp, "192.0.2.2:443", Opened),
+            (Protocol::Tcp, "192.0.2.1:8080", Closed),
+            (Protocol::Udp, "192.0.2.1:53", Opened),
+            (Protocol::Tcp, "192.0.2.1:53", Closed),
+            (Protocol::Udp, "[2001:db8::1]:5353", Opened),
+            (Protocol::Udp, "192.0.2.1:5353", Unknown),
+        ] {
+            assert_eq!(
+                snapshot.local_port_status(protocol, addr.parse().unwrap()),
+                expected,
+                "{protocol} {addr}"
+            );
+        }
+        let addr = "192.0.2.1:80".parse().unwrap();
+        snapshot.invalidate_port_status();
+        for unavailable in [snapshot, SocketSnapshot::default()] {
+            assert_eq!(unavailable.local_port_status(Protocol::Tcp, addr), Unknown);
+        }
+        assert_eq!(
+            SocketSnapshot::new(vec![]).local_port_status(Protocol::Tcp, addr),
+            Closed
+        );
+    }
 
     fn owner(pid: u32, name: &str) -> (u32, String) {
         (pid, name.to_string())

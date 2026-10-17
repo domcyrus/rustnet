@@ -40,11 +40,15 @@ struct FreeBsdProcessDetails {
 
 impl FreeBSDProcessLookup {
     pub(super) fn new() -> Result<Self> {
-        let scan = Self::build_process_map(None)?;
+        let (scan, complete) = Self::build_process_map(None)?;
+        let mut snapshot = SocketSnapshot::new(scan.sockets);
+        if !complete {
+            snapshot.invalidate_port_status();
+        }
         Ok(Self {
             cache: RwLock::new(scan.lookup),
             process_details: RwLock::new(HashMap::new()),
-            socket_snapshot: RwLock::new(SocketSnapshot::new(scan.sockets)),
+            socket_snapshot: RwLock::new(snapshot),
         })
     }
 
@@ -170,8 +174,9 @@ impl FreeBSDProcessLookup {
     /// Build connection -> process mapping using sockstat. The TCP, TCP6,
     /// UDP and UDP6 tables are scanned in that order, so a later table wins
     /// when two report the same tuple.
-    fn build_process_map(cancelled: Option<&AtomicBool>) -> Result<SocketScan> {
+    fn build_process_map(cancelled: Option<&AtomicBool>) -> Result<(SocketScan, bool)> {
         let mut scan = SocketScan::default();
+        let mut complete = true;
 
         for (protocol, ipv6) in [
             (Protocol::Tcp, false),
@@ -187,6 +192,7 @@ impl FreeBSDProcessLookup {
                 Err(error) if command_was_interrupted(&error) => return Err(error),
                 Err(error) => {
                     log::debug!("sockstat table scan failed for {protocol:?}: {error}");
+                    complete = false;
                 }
             }
         }
@@ -199,7 +205,7 @@ impl FreeBSDProcessLookup {
             .into());
         }
 
-        Ok(scan)
+        Ok((scan, complete))
     }
 
     /// Parse sockstat output for a given protocol and address family.
@@ -227,7 +233,7 @@ impl FreeBSDProcessLookup {
         .context("Failed to execute sockstat")?;
 
         if !output.status.success() {
-            return Ok(SocketScan::default());
+            anyhow::bail!("sockstat command failed with status: {}", output.status);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -353,13 +359,17 @@ impl ProcessLookup for FreeBSDProcessLookup {
 
 impl FreeBSDProcessLookup {
     fn refresh_cache(&self, cancelled: Option<&AtomicBool>) -> Result<()> {
-        let scan = Self::build_process_map(cancelled)?;
+        let (scan, complete) = Self::build_process_map(cancelled)?;
+        let mut snapshot = SocketSnapshot::new(scan.sockets);
+        if !complete {
+            snapshot.invalidate_port_status();
+        }
 
         *self.cache.write().expect("cache lock poisoned") = scan.lookup;
         *self
             .socket_snapshot
             .write()
-            .expect("socket snapshot lock poisoned") = SocketSnapshot::new(scan.sockets);
+            .expect("socket snapshot lock poisoned") = snapshot;
         self.process_details
             .write()
             .expect("process details cache lock poisoned")

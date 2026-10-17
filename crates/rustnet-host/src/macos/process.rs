@@ -138,13 +138,16 @@ impl MacOSProcessLookup {
         // would abort the whole enrichment thread (including the mid-run
         // PKTAP switch), while an empty scan is retried by the periodic
         // refresh a few seconds later.
-        let scan = Self::parse_lsof(None).unwrap_or_else(|e| {
-            warn!("Initial lsof scan failed, deferring to periodic refresh: {e}");
-            SocketScan::default()
-        });
+        let (lookup, snapshot) = match Self::parse_lsof(None) {
+            Ok(scan) => (scan.lookup, SocketSnapshot::new(scan.sockets)),
+            Err(e) => {
+                warn!("Initial lsof scan failed, deferring to periodic refresh: {e}");
+                (HashMap::new(), SocketSnapshot::default())
+            }
+        };
         Ok(Self {
-            cache: RwLock::new(scan.lookup),
-            socket_snapshot: RwLock::new(SocketSnapshot::new(scan.sockets)),
+            cache: RwLock::new(lookup),
+            socket_snapshot: RwLock::new(snapshot),
         })
     }
 
@@ -168,7 +171,7 @@ impl MacOSProcessLookup {
         if !output.status.success() {
             error!("lsof command failed with status: {}", output.status);
             error!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-            return Ok(SocketScan::default());
+            anyhow::bail!("lsof command failed with status: {}", output.status);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
