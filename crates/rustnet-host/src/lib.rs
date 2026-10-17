@@ -187,23 +187,32 @@ pub struct SocketSnapshot {
 
 impl SocketSnapshot {
     pub fn new(sockets: Vec<HostSocket>) -> Self {
-        let local_ports = sockets
-            .iter()
-            .filter_map(|socket| {
-                matches!(
-                    socket.state,
-                    HostSocketState::Tcp(HostTcpState::Listen) | HostSocketState::UdpBound
-                )
-                .then_some((
-                    socket.protocol,
-                    socket.local_addr.ip().to_canonical(),
-                    socket.local_addr.port(),
-                ))
-            })
-            .collect();
+        Self::from_inventory(sockets, true)
+    }
+
+    /// Retain partial inventories for display without classifying local ports.
+    pub(crate) fn from_inventory(sockets: Vec<HostSocket>, complete: bool) -> Self {
+        let local_ports = complete.then(|| {
+            Arc::new(
+                sockets
+                    .iter()
+                    .filter_map(|socket| {
+                        matches!(
+                            socket.state,
+                            HostSocketState::Tcp(HostTcpState::Listen) | HostSocketState::UdpBound
+                        )
+                        .then_some((
+                            socket.protocol,
+                            socket.local_addr.ip().to_canonical(),
+                            socket.local_addr.port(),
+                        ))
+                    })
+                    .collect(),
+            )
+        });
         Self {
             sockets: sockets.into(),
-            local_ports: Some(Arc::new(local_ports)),
+            local_ports,
         }
     }
 
@@ -540,9 +549,10 @@ where
 /// `lsof`): `ip:port`, `*:port` (wildcard), `[ipv6]:port`, or bracketless
 /// IPv6 like `::1:8080` (the last colon splits off the port). A `*` port
 /// (sockstat prints a wildcard peer as `*:*`) parses as port 0, so listener
-/// rows survive and `remote_if_present` reads them as "no peer".
+/// rows survive and `remote_if_present` reads them as "no peer". The caller
+/// supplies the wildcard address family from the inventory row.
 #[cfg(any(test, target_os = "freebsd", target_os = "macos"))]
-pub(crate) fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
+pub(crate) fn parse_socket_addr_text(addr_str: &str, wildcard: IpAddr) -> Option<SocketAddr> {
     fn parse_port(port_str: &str) -> Option<u16> {
         if port_str == "*" {
             return Some(0);
@@ -552,7 +562,7 @@ pub(crate) fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
 
     if let Some(port_str) = addr_str.strip_prefix("*:") {
         let port = parse_port(port_str)?;
-        return Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
+        return Some(SocketAddr::new(wildcard, port));
     }
 
     // Handle IPv6 with brackets: [::1]:8080. Std parsing also accepts scope
@@ -716,6 +726,8 @@ mod linux;
 mod lsof;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(test, target_os = "freebsd"))]
+mod sockstat;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -921,6 +933,17 @@ mod tests {
             );
         }
         let addr = "192.0.2.1:80".parse().unwrap();
+        let partial = SocketSnapshot::from_inventory(snapshot.sockets.to_vec(), false);
+        assert_eq!(partial.sockets.len(), snapshot.sockets.len());
+        assert_eq!(partial.local_port_status(Protocol::Tcp, addr), Unknown);
+        assert_eq!(
+            partial.local_port_status(Protocol::Tcp, "192.0.2.1:81".parse().unwrap()),
+            Unknown
+        );
+        assert_eq!(
+            SocketSnapshot::from_inventory(vec![], false).local_port_status(Protocol::Tcp, addr),
+            Unknown
+        );
         snapshot.invalidate_port_status();
         for unavailable in [snapshot, SocketSnapshot::default()] {
             assert_eq!(unavailable.local_port_status(Protocol::Tcp, addr), Unknown);
@@ -1156,14 +1179,14 @@ mod tests {
     #[test]
     fn socket_addr_text_parses_ipv4() {
         assert_eq!(
-            parse_socket_addr_text("192.168.1.1:8080"),
+            parse_socket_addr_text("192.168.1.1:8080", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
                 8080
             ))
         );
         assert_eq!(
-            parse_socket_addr_text("127.0.0.1:80"),
+            parse_socket_addr_text("127.0.0.1:80", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80))
         );
     }
@@ -1171,23 +1194,23 @@ mod tests {
     #[test]
     fn socket_addr_text_parses_ipv6_with_brackets() {
         assert_eq!(
-            parse_socket_addr_text("[::1]:8080"),
+            parse_socket_addr_text("[::1]:8080", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8080))
         );
         assert_eq!(
-            parse_socket_addr_text("[2001:db8::1]:443"),
+            parse_socket_addr_text("[2001:db8::1]:443", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(
                 IpAddr::V6("2001:db8::1".parse().unwrap()),
                 443
             ))
         );
         assert_eq!(
-            parse_socket_addr_text("[fe80::1]:22"),
+            parse_socket_addr_text("[fe80::1]:22", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(IpAddr::V6("fe80::1".parse().unwrap()), 22))
         );
         // Numeric scope id
         assert_eq!(
-            parse_socket_addr_text("[fe80::1%1]:22"),
+            parse_socket_addr_text("[fe80::1%1]:22", Ipv4Addr::UNSPECIFIED.into()),
             Some("[fe80::1%1]:22".parse().unwrap())
         );
     }
@@ -1195,7 +1218,7 @@ mod tests {
     #[test]
     fn socket_addr_text_parses_ipv4_mapped_ipv6() {
         assert_eq!(
-            parse_socket_addr_text("[::ffff:192.168.1.1]:80"),
+            parse_socket_addr_text("[::ffff:192.168.1.1]:80", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(
                 IpAddr::V6("::ffff:192.168.1.1".parse().unwrap()),
                 80
@@ -1208,7 +1231,7 @@ mod tests {
         // Occurs in some sockstat outputs. Ambiguous, but multiple colons
         // are treated as IPv6 with the last colon splitting off the port.
         assert_eq!(
-            parse_socket_addr_text("::1:8080"),
+            parse_socket_addr_text("::1:8080", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8080))
         );
     }
@@ -1216,17 +1239,17 @@ mod tests {
     #[test]
     fn socket_addr_text_parses_wildcards_as_unspecified() {
         assert_eq!(
-            parse_socket_addr_text("*:80"),
+            parse_socket_addr_text("*:80", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 80))
         );
         assert_eq!(
-            parse_socket_addr_text("*:65535"),
+            parse_socket_addr_text("*:65535", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 65535))
         );
         // sockstat prints a wildcard peer as `*:*`; the port parses as 0 so
         // `remote_if_present` reads the row as "no peer" instead of dropping it.
         assert_eq!(
-            parse_socket_addr_text("*:*"),
+            parse_socket_addr_text("*:*", Ipv4Addr::UNSPECIFIED.into()),
             Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
         );
         assert_eq!(
@@ -1238,13 +1261,28 @@ mod tests {
     #[test]
     fn socket_addr_text_rejects_malformed_input() {
         // Missing port
-        assert_eq!(parse_socket_addr_text("192.168.1.1"), None);
+        assert_eq!(
+            parse_socket_addr_text("192.168.1.1", Ipv4Addr::UNSPECIFIED.into()),
+            None
+        );
         // Missing closing bracket
-        assert_eq!(parse_socket_addr_text("[::1:8080"), None);
+        assert_eq!(
+            parse_socket_addr_text("[::1:8080", Ipv4Addr::UNSPECIFIED.into()),
+            None
+        );
         // Missing ':' after the closing bracket
-        assert_eq!(parse_socket_addr_text("[::1]x80"), None);
+        assert_eq!(
+            parse_socket_addr_text("[::1]x80", Ipv4Addr::UNSPECIFIED.into()),
+            None
+        );
         // Port out of range
-        assert_eq!(parse_socket_addr_text("192.168.1.1:99999"), None);
-        assert_eq!(parse_socket_addr_text(""), None);
+        assert_eq!(
+            parse_socket_addr_text("192.168.1.1:99999", Ipv4Addr::UNSPECIFIED.into()),
+            None
+        );
+        assert_eq!(
+            parse_socket_addr_text("", Ipv4Addr::UNSPECIFIED.into()),
+            None
+        );
     }
 }

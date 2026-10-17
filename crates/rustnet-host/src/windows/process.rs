@@ -338,17 +338,6 @@ impl WindowsProcessLookup {
         })
     }
 
-    fn refresh_tcp_processes(
-        &self,
-        cache: &mut ProcessMap,
-        process_names: &mut ProcessNameCache,
-        sockets: &mut Vec<HostSocket>,
-    ) -> bool {
-        let v4 = self.refresh_tcp_table_v4(cache, process_names, sockets);
-        let v6 = self.refresh_tcp_table_v6(cache, process_names, sockets);
-        v4 && v6
-    }
-
     refresh_table!(
         refresh_tcp_table_v4,
         GetExtendedTcpTable,
@@ -396,17 +385,6 @@ impl WindowsProcessLookup {
         },
         |row| HostSocketState::Tcp(windows_tcp_state(row.dwState))
     );
-
-    fn refresh_udp_processes(
-        &self,
-        cache: &mut ProcessMap,
-        process_names: &mut ProcessNameCache,
-        sockets: &mut Vec<HostSocket>,
-    ) -> bool {
-        let v4 = self.refresh_udp_table_v4(cache, process_names, sockets);
-        let v6 = self.refresh_udp_table_v6(cache, process_names, sockets);
-        v4 && v6
-    }
 
     refresh_table!(
         refresh_udp_table_v4,
@@ -571,10 +549,15 @@ impl ProcessLookup for WindowsProcessLookup {
         let mut process_names = HashMap::new();
         let mut sockets = Vec::new();
 
-        let tcp_complete =
-            self.refresh_tcp_processes(&mut new_cache, &mut process_names, &mut sockets);
-        let udp_complete =
-            self.refresh_udp_processes(&mut new_cache, &mut process_names, &mut sockets);
+        let mut complete = true;
+        for refresh in [
+            Self::refresh_tcp_table_v4,
+            Self::refresh_tcp_table_v6,
+            Self::refresh_udp_table_v4,
+            Self::refresh_udp_table_v6,
+        ] {
+            complete &= refresh(self, &mut new_cache, &mut process_names, &mut sockets);
+        }
 
         match Self::snapshot_processes() {
             Ok(processes) => {
@@ -591,10 +574,7 @@ impl ProcessLookup for WindowsProcessLookup {
         let total_entries = new_cache.len();
         cache.lookup = new_cache;
         cache.last_refresh = Instant::now();
-        let mut snapshot = SocketSnapshot::new(sockets);
-        if !tcp_complete || !udp_complete {
-            snapshot.invalidate_port_status();
-        }
+        let snapshot = SocketSnapshot::from_inventory(sockets, complete);
         *self
             .socket_snapshot
             .write()
@@ -743,9 +723,7 @@ fn cache_process(
             ProcessNameLookup::Denied => Some(UNKNOWN_PROCESS_NAME.to_string()),
             ProcessNameLookup::Gone => None,
         });
-    let Some(process_name) = resolved.clone() else {
-        return None;
-    };
+    let process_name = resolved.clone()?;
 
     log::trace!(
         "Cached: {:?} {} -> {} (PID: {}, {})",

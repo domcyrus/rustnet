@@ -69,14 +69,7 @@ pub(crate) fn parse_output(stdout: &str) -> SocketScan {
 }
 
 fn parse_connection(name: &str, wildcard: IpAddr) -> Option<(SocketAddr, SocketAddr)> {
-    let parse_addr = |text: &str| {
-        let mut addr = parse_socket_addr_text(text)?;
-        // lsof prints both IPv4 and IPv6 wildcard addresses as `*`.
-        if text.starts_with("*:") {
-            addr.set_ip(wildcard);
-        }
-        Some(addr)
-    };
+    let parse_addr = |text| parse_socket_addr_text(text, wildcard);
     if let Some((local, remote)) = name.split_once("->") {
         Some((parse_addr(local)?, parse_addr(remote)?))
     } else {

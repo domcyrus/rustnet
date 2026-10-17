@@ -606,10 +606,7 @@ impl LinuxProcessLookup {
                 &mut sockets,
             );
         }
-        let mut snapshot = SocketSnapshot::new(sockets);
-        if !complete {
-            snapshot.invalidate_port_status();
-        }
+        let snapshot = SocketSnapshot::from_inventory(sockets, complete);
         Ok((process_map, snapshot, shared_inodes))
     }
 
