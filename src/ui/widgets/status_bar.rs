@@ -252,6 +252,13 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             if ui_state.host_view == HostView::Dns {
                 hints.push(Hint::action("o", "sort"));
             }
+            if ui_state.host_view == HostView::Diagnostics {
+                hints.push(Hint::mode(
+                    "a",
+                    "all sockets",
+                    ui_state.host_diagnostics_show_all,
+                ));
+            }
             hints.push(Hint::action("esc", "back"));
             hints
         }

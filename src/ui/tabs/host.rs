@@ -47,6 +47,12 @@ impl Component for HostTab {
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
         if ctx.ui_state.host_view == HostView::Diagnostics && key.modifiers == KeyModifiers::NONE {
+            if key.code == KeyCode::Char('a') {
+                ctx.ui_state.host_diagnostics_show_all = !ctx.ui_state.host_diagnostics_show_all;
+                ctx.ui_state.host_diagnostics_scroll.reset();
+                ctx.ui_state.host_diagnostics_focus_requested.set(false);
+                return Some(Vec::new());
+            }
             let now = std::time::SystemTime::now();
             let affected: Vec<_> = ctx
                 .connections
@@ -815,7 +821,8 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
         area,
         section_title("Diagnostics · n/p select finding · Enter Details"),
     );
-    let mut lines = vec![Line::from("Summary")];
+    let mut lines = vec![Line::from(section_title("Findings"))];
+    let mut has_drop_findings = false;
     if let Some(events) = &snapshot.drop_events {
         for count in events.counts.values() {
             let finding = match count.reason.as_str() {
@@ -826,6 +833,7 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
                 _ => None,
             };
             if let Some(finding) = finding {
+                has_drop_findings = true;
                 lines.push(Line::from(format!(
                     "{finding}: {} since collector startup",
                     count.events
@@ -834,7 +842,6 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
         }
     }
 
-    lines.push(Line::from("Affected connections"));
     let affected: Vec<_> = ctx
         .connections
         .iter()
@@ -843,8 +850,20 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
             (!findings.is_empty()).then_some((c, findings))
         })
         .collect();
-    if affected.is_empty() {
-        lines.push(Line::from("No findings in the observed scope"));
+    if affected.is_empty() && !has_drop_findings {
+        lines.push(Line::from("No diagnostic findings in the observed scope"));
+        let mut tcp_queues = snapshot
+            .diagnostics
+            .values()
+            .filter_map(|s| s.queues.as_ref())
+            .filter(|q| q.kind == QueueKind::TcpBytes)
+            .peekable();
+        if tcp_queues.peek().is_some()
+            && tcp_queues
+                .all(|q| sample_is_fresh(q.sampled_at, now) && q.receive == 0 && q.send == 0)
+        {
+            lines.push(Line::from("All sampled TCP queues are empty."));
+        }
     }
     let selected = affected
         .iter()
@@ -856,11 +875,12 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
     for (index, (conn, findings)) in affected.iter().enumerate() {
         let start = lines.len();
         lines.push(Line::from(format!(
-            "{} {} {} -> {}",
+            "{} {} {} -> {} · {}",
             if index == selected { ">" } else { " " },
             conn.protocol,
             conn.local_addr,
-            conn.remote_addr
+            conn.remote_addr,
+            conn.process_name.as_deref().unwrap_or("Unknown process"),
         )));
         for finding in findings {
             lines.push(Line::from(format!("  {finding}")));
@@ -870,24 +890,87 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
         }
     }
     lines.push(Line::from(""));
+    lines.push(Line::from(section_title("Collection coverage")));
+    let queues = snapshot
+        .diagnostics
+        .values()
+        .filter(|s| {
+            s.queues
+                .as_ref()
+                .is_some_and(|q| sample_is_fresh(q.sampled_at, now))
+        })
+        .count();
+    let tcp = snapshot
+        .diagnostics
+        .values()
+        .filter(|s| {
+            s.tcp
+                .as_ref()
+                .is_some_and(|t| sample_is_fresh(t.sampled_at, now))
+        })
+        .count();
+    lines.push(Line::from(format!(
+        "Inventory sockets: {} · Fresh queue samples: {queues} · Fresh TCP samples: {tcp}",
+        snapshot.sockets.len()
+    )));
+    for (source, status) in [
+        ("Queues", &snapshot.diagnostics_status.queues),
+        ("TCP", &snapshot.diagnostics_status.tcp),
+        ("Reasoned drop events", &snapshot.diagnostics_status.drops),
+    ] {
+        lines.push(Line::from(format!("{source}: {status}")));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(section_title(format!(
+        "Socket measurements · {} [a]",
+        if ctx.ui_state.host_diagnostics_show_all {
+            "Hide empty queues"
+        } else {
+            "Show all sockets"
+        },
+    ))));
     lines.push(Line::from(
-        "Socket measurements (UDP drops are lifetime counters)",
+        "Receive/send queues are queued bytes, not traffic totals.",
     ));
     let mut sockets: Vec<_> = snapshot
         .sockets
         .iter()
         .filter_map(|socket| Some((socket, snapshot.diagnostics.get(socket)?)))
         .collect();
+    let sampled_sockets = sockets.len();
+    if !ctx.ui_state.host_diagnostics_show_all {
+        sockets.retain(|(_, sample)| {
+            // Keep native TCP statistics, drop evidence and stale measurements visible.
+            sample.tcp.is_some()
+                || !sample.queues.as_ref().is_some_and(|q| {
+                    sample_is_fresh(q.sampled_at, now)
+                        && q.receive == 0
+                        && q.send == 0
+                        && q.socket_drops.unwrap_or(0) == 0
+                })
+        });
+    }
+    let hidden = sampled_sockets - sockets.len();
+    if hidden > 0 {
+        lines.push(Line::from(format!(
+            "Sockets with empty queues hidden: {hidden}"
+        )));
+    } else if sampled_sockets == 0 {
+        lines.push(Line::from("No socket measurements available."));
+    }
     sockets.sort_by_key(|(socket, _)| (socket.protocol, socket.local_addr, socket.remote_addr));
     for (socket, sample) in sockets {
         lines.push(Line::from(format!(
-            "{} {} -> {} (socket {})",
+            "{} {} -> {} · {}",
             socket.protocol,
             socket.local_addr,
             socket
                 .remote_addr
                 .map_or_else(|| "*".to_string(), |addr| addr.to_string()),
-            sample.native_id,
+            socket.owner.as_ref().map_or_else(
+                || "Unknown process".to_string(),
+                |owner| format!("{} (PID {})", owner.name, owner.pid),
+            ),
         )));
         if let Some(q) = &sample.queues {
             let unit = if q.kind == QueueKind::TcpBytes {
@@ -896,11 +979,12 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
                 "buffer bytes"
             };
             lines.push(Line::from(format!(
-                "  RX {} / TX {} {unit}{}{} ({})",
+                "  Receive queue: {} {unit}; Send queue: {} {unit}{}{} ({})",
                 q.receive,
                 q.send,
-                q.socket_drops
-                    .map_or_else(String::new, |n| format!("; drops {n} (cause unknown)")),
+                q.socket_drops.map_or_else(String::new, |n| format!(
+                    "; socket drops: {n} lifetime (cause unknown)"
+                )),
                 if sample_is_fresh(q.sampled_at, now) {
                     ""
                 } else {
@@ -931,11 +1015,12 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
             )));
         }
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(
-        "Reasoned drop events (since collector startup; system scope, namespace unknown)",
-    ));
     if let Some(events) = &snapshot.drop_events {
+        lines.push(Line::default());
+        lines.push(Line::from(section_title("Reasoned drop events")));
+        lines.push(Line::from(
+            "Since collector startup; system scope, namespace unknown",
+        ));
         if let Some(time) = events.sampled_at {
             lines.push(Line::from(format!(
                 "Last sampled {}s ago{}",
@@ -971,50 +1056,18 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
                 event.reason, event.ifindex
             )));
         }
-    } else {
-        lines.push(Line::from("Unavailable: no reasoned event sample"));
+        lines.push(Line::from(
+            "Socket counters and reasoned events are separate sources; do not add them.",
+        ));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from("Collection coverage"));
-    let queues = snapshot
-        .diagnostics
-        .values()
-        .filter(|s| {
-            s.queues
-                .as_ref()
-                .is_some_and(|q| sample_is_fresh(q.sampled_at, now))
-        })
-        .count();
-    let tcp = snapshot
-        .diagnostics
-        .values()
-        .filter(|s| {
-            s.tcp
-                .as_ref()
-                .is_some_and(|t| sample_is_fresh(t.sampled_at, now))
-        })
-        .count();
-    lines.push(Line::from(format!(
-        "{} inventory sockets; {queues} fresh queue samples; {tcp} fresh TCP samples",
-        snapshot.sockets.len()
-    )));
-    for (source, status) in [
-        ("Queues", &snapshot.diagnostics_status.queues),
-        ("TCP", &snapshot.diagnostics_status.tcp),
-        ("Reasoned drop events", &snapshot.diagnostics_status.drops),
-    ] {
-        lines.push(Line::from(format!("{source}: {status}")));
+    let captured_events = ctx.app.get_network_event_counts();
+    if captured_events.observed().next().is_some() {
+        lines.push(Line::default());
+        lines.push(Line::from(section_title(
+            "Captured network events (capture interface/filter scope)",
+        )));
+        lines.extend(network_event_lines(&captured_events, area.width < 70));
     }
-    lines.push(Line::from(
-        "Socket counters and reasoned events are separate sources; do not add them.",
-    ));
-    lines.push(Line::from(
-        "Captured network events (capture interface/filter scope)",
-    ));
-    lines.extend(network_event_lines(
-        &ctx.app.get_network_event_counts(),
-        area.width < 70,
-    ));
     if ctx.ui_state.host_diagnostics_focus_requested.replace(false) && !selected_lines.is_empty() {
         let width = inner.width.saturating_sub(2).max(1);
         let rows_before = |end| {

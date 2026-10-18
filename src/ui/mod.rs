@@ -4604,6 +4604,10 @@ mod snapshot_tests {
         assert!(full.contains("Observed: TCP receive queue remained nonempty"));
         assert!(full.contains("RX 2048 / TX 0 bytes (procfs)"));
         assert!(full.contains("cwnd 10 segments"));
+        assert!(!full.contains("Socket ID"));
+        state.diagnostics_status_expanded = true;
+        let expanded = render_app(&app, &mut state, &connections, None, 160, 80);
+        assert!(expanded.contains("Socket ID"));
         for (width, height) in [(40, 12), (80, 24), (140, 40)] {
             state.diagnostics_status_expanded = true;
             render_app(&app, &mut state, &connections, None, width, height);
@@ -4613,7 +4617,12 @@ mod snapshot_tests {
         state.host_view = HostView::Diagnostics;
         let (host, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 40);
         assert!(host.contains("Observed: TCP receive queue remained nonempty"));
-        assert!(host.contains("Unavailable: no reasoned event sample"));
+        assert!(host.contains("browser"));
+        assert!(heading_row(&host, "Findings") < heading_row(&host, "Collection coverage"));
+        assert!(
+            heading_row(&host, "Collection coverage") < heading_row(&host, "Socket measurements")
+        );
+        assert!(host.contains("Reasoned drop events: Unavailable"));
         let mut ctx = HandlerContext {
             app: &app,
             ui_state: &mut state,
@@ -4726,6 +4735,126 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn host_diagnostics_empty_queues_toggle_preserves_useful_evidence() {
+        use crate::network::types::{QueueKind, QueueSample, SocketSample};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::sync::Arc;
+
+        for source in ["procfs", "lsof", "netstat"] {
+            let app = test_app();
+            let now = SystemTime::now();
+            let socket = HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: "127.0.0.1:5000".parse().unwrap(),
+                remote_addr: Some("127.0.0.1:6000".parse().unwrap()),
+                state: HostSocketState::Tcp(HostTcpState::Established),
+                owner: Some(SocketOwner::new(42, "browser", None)),
+                native_id: Some(987654321),
+            };
+            let mut snapshot = SocketSnapshot::new(vec![socket.clone()]);
+            snapshot.diagnostics = Arc::new(
+                [(
+                    socket.clone(),
+                    Arc::new(SocketSample {
+                        native_id: 987654321,
+                        netns: None,
+                        tcp: None,
+                        queues: Some(QueueSample {
+                            source,
+                            sampled_at: now,
+                            kind: QueueKind::TcpBytes,
+                            receive: 0,
+                            send: 0,
+                            socket_drops: None,
+                        }),
+                    }),
+                )]
+                .into(),
+            );
+            snapshot.diagnostics_status.queues = format!("Available: {source} TCP queues");
+            app.set_socket_snapshot_for_test(snapshot.clone());
+            let mut state = UiState {
+                selected_tab: 4,
+                host_view: HostView::Diagnostics,
+                ..Default::default()
+            };
+            let hidden = render_app(&app, &mut state, &[], None, 100, 32);
+            assert!(hidden.contains("No diagnostic findings"), "{hidden}");
+            assert!(
+                hidden.contains("All sampled TCP queues are empty."),
+                "{hidden}"
+            );
+            assert!(
+                hidden.contains("Sockets with empty queues hidden: 1"),
+                "{hidden}"
+            );
+            assert!(hidden.contains("Show all sockets [a]"), "{hidden}");
+            assert!(!hidden.contains("127.0.0.1:5000"));
+            if source == "lsof" {
+                insta::with_settings!({filters => time_filters()}, {
+                    insta::assert_snapshot!("host_diagnostics_empty_queues", hidden);
+                });
+            }
+            assert!(
+                heading_row(&hidden, "Collection coverage")
+                    < heading_row(&hidden, "Socket measurements")
+            );
+            for show_all in [true, false] {
+                let regions = ClickableRegions::default();
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                dispatch_key(
+                    4,
+                    KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+                    &mut ctx,
+                )
+                .unwrap();
+                let output = render_app(&app, &mut state, &[], None, 100, 32);
+                assert_eq!(state.host_diagnostics_show_all, show_all);
+                assert_eq!(output.contains("127.0.0.1:5000"), show_all, "{output}");
+                assert!(!output.contains("987654321"));
+                if show_all {
+                    assert!(output.contains("browser (PID 42)"), "{output}");
+                    assert!(
+                        output.contains("Receive queue: 0 bytes; Send queue: 0 bytes"),
+                        "{output}"
+                    );
+                    assert!(output.contains("Hide empty queues [a]"), "{output}");
+                }
+            }
+            // Queue contents, stale samples and drop evidence must survive the default filter.
+            for (receive, send, age, drops) in [
+                (256, 0, 0, None),
+                (0, 128, 0, None),
+                (0, 0, 30, None),
+                (0, 0, 0, Some(2)),
+            ] {
+                let sample = Arc::make_mut(
+                    Arc::make_mut(&mut snapshot.diagnostics)
+                        .get_mut(&socket)
+                        .unwrap(),
+                );
+                let queue = sample.queues.as_mut().unwrap();
+                queue.receive = receive;
+                queue.send = send;
+                queue.sampled_at = now - Duration::from_secs(age);
+                queue.socket_drops = drops;
+                queue.kind = if drops.is_some() {
+                    QueueKind::UdpMemory
+                } else {
+                    QueueKind::TcpBytes
+                };
+                app.set_socket_snapshot_for_test(snapshot.clone());
+                let output = render_app(&app, &mut state, &[], None, 100, 32);
+                assert!(output.contains("127.0.0.1:5000"), "{output}");
+                assert!(
+                    !output.contains("All sampled TCP queues are empty."),
+                    "{output}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn host_diagnostics_socket_rows_identify_each_peer() {
         use crate::network::types::{QueueKind, QueueSample, SocketSample, TcpSample};
         let app = test_app();
@@ -4736,7 +4865,7 @@ mod snapshot_tests {
                 local_addr: "127.0.0.1:8080".parse().unwrap(),
                 remote_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
                 state: HostSocketState::Tcp(HostTcpState::Established),
-                owner: None,
+                owner: (port == 1000).then(|| SocketOwner::new(42, "browser", None)),
                 native_id: Some(port),
             })
             .collect();
@@ -4775,7 +4904,7 @@ mod snapshot_tests {
                                 source: "procfs",
                                 sampled_at: SystemTime::now(),
                                 kind: QueueKind::TcpBytes,
-                                receive: 1,
+                                receive: 0,
                                 send: 0,
                                 socket_drops: None,
                             }),
@@ -4792,16 +4921,20 @@ mod snapshot_tests {
         };
         let output = render_app(&app, &mut state, &[], None, 140, 40);
         assert!(
-            output.contains("127.0.0.1:8080 -> 127.0.0.1:1000 (socket 1000)"),
+            output.contains("127.0.0.1:8080 -> 127.0.0.1:1000 · browser (PID 42)"),
             "{output}"
         );
         assert!(
-            output.contains("127.0.0.1:8080 -> 127.0.0.1:1001 (socket 1001)"),
+            output.contains("127.0.0.1:8080 -> 127.0.0.1:1001 · Unknown process"),
             "{output}"
         );
         assert!(output.contains("Kernel TCP: RTT 100 us; variation 20 us; cwnd 10 segments; 2 retransmits (lifetime, tcp_bpf_iterator)"), "{output}");
         assert!(output.contains("Kernel TCP: RTT 100 us; variation 20 us; 2 retransmits (since collection enabled, windows_estats) [Stale]"), "{output}");
-        assert!(output.contains("RX 1 / TX 0 bytes"), "{output}");
+        assert!(
+            output.contains("Receive queue: 0 bytes; Send queue: 0 bytes"),
+            "{output}"
+        );
+        assert!(!output.contains("(socket "));
     }
 
     #[test]

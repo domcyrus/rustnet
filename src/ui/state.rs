@@ -618,6 +618,7 @@ pub struct UiState {
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
     pub host_diagnostics_scroll: PaneScroll,
+    pub host_diagnostics_show_all: bool,
     pub host_diagnostics_focus_requested: Cell<bool>,
     pub diagnostics_status_expanded: bool,
     /// Selected Graph section, preserved across terminal resizes.
@@ -691,6 +692,7 @@ impl Default for UiState {
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
             host_diagnostics_scroll: PaneScroll::default(),
+            host_diagnostics_show_all: false,
             host_diagnostics_focus_requested: Cell::new(false),
             diagnostics_status_expanded: false,
             graph_section: GraphSection::default(),

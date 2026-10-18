@@ -998,7 +998,7 @@ pub(in crate::ui) fn sectioned_layout(
     metadata_rows = metadata_rows
         .max((APPLICATION_CARD_ROWS + TRANSPORT_CARD_ROWS + native_rows + event_rows - 1) as u16);
     if status_expanded {
-        metadata_rows += 8;
+        metadata_rows += 9;
     }
     let summary_rows = 5;
     let dashboard_rows =
@@ -2150,6 +2150,7 @@ pub(in crate::ui) fn draw_connection_details(
                     time.map(|time| format!("{}s", time.elapsed().unwrap_or_default().as_secs())),
                 );
             }
+            details.field("Socket ID", d.sample.native_id.to_string());
             details.field_opt("Socket namespace", d.sample.netns.map(|n| n.to_string()));
         }
         if let Some(events) = snapshot.drop_events {

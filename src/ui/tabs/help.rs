@@ -537,6 +537,7 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
                 &[
                     ("n/p", "Select the next/previous affected connection"),
                     ("Enter", "Open the selected connection in Details"),
+                    ("a", "Show all sockets / hide empty queues"),
                     ("j/k", "Scroll diagnostics"),
                     ("Esc", "Return to Overview"),
                 ],

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Put Host diagnostics findings and coverage first, label queues clearly, show process names, and toggle empty queues with `a` (#688)
 - Run Windows CI tests independently and start DEB installation checks after GNU/Linux builds, preserving all existing checks (#686)
 
 ### Added
