@@ -20,9 +20,10 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, FILETIME, HANDLE, WIN32_ERROR,
 };
 use windows::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
-    MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_UDP6ROW_OWNER_PID, MIB_UDP6TABLE_OWNER_PID,
-    MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
+    GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_MODULE, MIB_TCP6TABLE_OWNER_MODULE,
+    MIB_TCPROW_OWNER_MODULE, MIB_TCPTABLE_OWNER_MODULE, MIB_UDP6ROW_OWNER_PID,
+    MIB_UDP6TABLE_OWNER_PID, MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID,
+    TCP_TABLE_OWNER_MODULE_ALL, UDP_TABLE_OWNER_PID,
 };
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -51,13 +52,13 @@ enum ProcessNameLookup {
     Gone,
 }
 
-fn allocate_table_buffer(size: u32) -> Vec<u32> {
-    // IP Helper writes structs aligned to u32. Vec<u8> does not promise that
+fn allocate_table_buffer(size: u32) -> Vec<u64> {
+    // Owner-module tables contain 64-bit creation timestamps. Vec<u8> does not promise that
     // alignment, even though the Windows allocator commonly provides it.
-    vec![0; (size as usize).div_ceil(std::mem::size_of::<u32>())]
+    vec![0; (size as usize).div_ceil(std::mem::size_of::<u64>())]
 }
 
-fn table_buffer_len(table: &[u32]) -> usize {
+fn table_buffer_len(table: &[u64]) -> usize {
     std::mem::size_of_val(table)
 }
 
@@ -109,7 +110,8 @@ macro_rules! refresh_table {
         $table_label:literal,
         $processing_label:literal,
         |$row:ident| $key:expr,
-        |$state_row:ident| $state:expr $(,)?
+        |$state_row:ident| $state:expr,
+        |$id_row:ident| $native_id:expr $(,)?
     ) => {
         fn $fn_name(
             &self,
@@ -160,7 +162,7 @@ macro_rules! refresh_table {
                     anyhow::bail!(concat!($api_label, " table scan incomplete"));
                 }
 
-                let num_entries = table[0] as usize;
+                let num_entries = *table.as_ptr().cast::<u32>() as usize;
                 let rows_offset = std::mem::offset_of!($table_ty, table);
 
                 let required_size = num_entries
@@ -201,6 +203,8 @@ macro_rules! refresh_table {
                     }
                     let $state_row = $row;
                     let state = $state;
+                    let $id_row = $row;
+                    let native_id = $native_id;
                     let owner = cache_process(cache, process_names, key, $row.dwOwningPid);
                     sockets.push(HostSocket {
                         protocol: key.protocol,
@@ -208,7 +212,7 @@ macro_rules! refresh_table {
                         remote_addr: remote_if_present(key.remote_addr),
                         state,
                         owner,
-                        native_id: None,
+                        native_id,
                     });
                 }
             }
@@ -352,9 +356,9 @@ impl WindowsProcessLookup {
         refresh_tcp_table_v4,
         GetExtendedTcpTable,
         AF_INET.0 as u32,
-        TCP_TABLE_OWNER_PID_ALL,
-        MIB_TCPTABLE_OWNER_PID,
-        MIB_TCPROW_OWNER_PID,
+        TCP_TABLE_OWNER_MODULE_ALL,
+        MIB_TCPTABLE_OWNER_MODULE,
+        MIB_TCPROW_OWNER_MODULE,
         "GetExtendedTcpTable (IPv4)",
         "TCP",
         "TCP IPv4",
@@ -369,31 +373,41 @@ impl WindowsProcessLookup {
                 u16::from_be(row.dwRemotePort as u16),
             ),
         },
-        |row| HostSocketState::Tcp(windows_tcp_state(row.dwState))
+        |row| HostSocketState::Tcp(windows_tcp_state(row.dwState)),
+        |row| u64::try_from(row.liCreateTimestamp)
+            .ok()
+            .filter(|id| *id != 0)
     );
 
     refresh_table!(
         refresh_tcp_table_v6,
         GetExtendedTcpTable,
         AF_INET6.0 as u32,
-        TCP_TABLE_OWNER_PID_ALL,
-        MIB_TCP6TABLE_OWNER_PID,
-        MIB_TCP6ROW_OWNER_PID,
+        TCP_TABLE_OWNER_MODULE_ALL,
+        MIB_TCP6TABLE_OWNER_MODULE,
+        MIB_TCP6ROW_OWNER_MODULE,
         "GetExtendedTcpTable (IPv6)",
         "TCP IPv6",
         "TCP IPv6",
         |row| ConnectionKey {
             protocol: Protocol::Tcp,
-            local_addr: SocketAddr::new(
-                IpAddr::V6(Ipv6Addr::from(row.ucLocalAddr)),
+            local_addr: SocketAddr::V6(std::net::SocketAddrV6::new(
+                Ipv6Addr::from(row.ucLocalAddr),
                 u16::from_be(row.dwLocalPort as u16),
-            ),
-            remote_addr: SocketAddr::new(
-                IpAddr::V6(Ipv6Addr::from(row.ucRemoteAddr)),
+                0,
+                row.dwLocalScopeId,
+            )),
+            remote_addr: SocketAddr::V6(std::net::SocketAddrV6::new(
+                Ipv6Addr::from(row.ucRemoteAddr),
                 u16::from_be(row.dwRemotePort as u16),
-            ),
+                0,
+                row.dwRemoteScopeId,
+            )),
         },
-        |row| HostSocketState::Tcp(windows_tcp_state(row.dwState))
+        |row| HostSocketState::Tcp(windows_tcp_state(row.dwState)),
+        |row| u64::try_from(row.liCreateTimestamp)
+            .ok()
+            .filter(|id| *id != 0)
     );
 
     refresh_table!(
@@ -415,7 +429,8 @@ impl WindowsProcessLookup {
             // UDP doesn't have remote address in the table
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
         },
-        |_row| HostSocketState::UdpBound
+        |_row| HostSocketState::UdpBound,
+        |_row| None
     );
 
     refresh_table!(
@@ -430,14 +445,17 @@ impl WindowsProcessLookup {
         "UDP IPv6",
         |row| ConnectionKey {
             protocol: Protocol::Udp,
-            local_addr: SocketAddr::new(
-                IpAddr::V6(Ipv6Addr::from(row.ucLocalAddr)),
+            local_addr: SocketAddr::V6(std::net::SocketAddrV6::new(
+                Ipv6Addr::from(row.ucLocalAddr),
                 u16::from_be(row.dwLocalPort as u16),
-            ),
+                0,
+                row.dwLocalScopeId,
+            )),
             // UDP doesn't have remote address in the table
             remote_addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
         },
-        |_row| HostSocketState::UdpBound
+        |_row| HostSocketState::UdpBound,
+        |_row| None
     );
 }
 
@@ -585,12 +603,14 @@ impl ProcessLookup for WindowsProcessLookup {
             Err(error) => log::debug!("Windows process snapshot failed: {}", error),
         }
 
-        let mut cache = write_recovering(&self.cache, CACHE_LOCK);
-
+        let mut snapshot = SocketSnapshot::from_inventory(sockets, complete);
+        super::tcp_stats::sample(&mut snapshot);
         let total_entries = new_cache.len();
-        cache.lookup = new_cache;
-        cache.last_refresh = Instant::now();
-        let snapshot = SocketSnapshot::from_inventory(sockets, complete);
+        {
+            let mut cache = write_recovering(&self.cache, CACHE_LOCK);
+            cache.lookup = new_cache;
+            cache.last_refresh = Instant::now();
+        }
         *self
             .socket_snapshot
             .write()

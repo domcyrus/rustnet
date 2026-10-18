@@ -11,6 +11,9 @@ expression: output
                                                                                                                                             
                                                                                                                                             
 ▎ proc → 203.0.113.7:4433 [NTP] · click a field to copy ────────────────────────────────────────────────────────────────────────────────────
+Diagnostics                                                                                                                                 
+Unavailable: no unambiguous socket sample; capture evidence only                                                                            
+Observation status [d]                                                                                                                      
 Connection                                                            Application: NTP                                                      
 Protocol              UDP                                             NTP Version           4                                               
 Status                Active (last seen <T> ago)                       NTP Mode              Server                                          
@@ -44,6 +47,9 @@ Match                 -
 ↓ RX Now 0 B/s       →                             peak       0 B/s   ↑ TX Now 0 B/s       →                             peak       0 B/s   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
 Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

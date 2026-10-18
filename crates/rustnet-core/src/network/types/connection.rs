@@ -208,6 +208,8 @@ pub struct Connection {
     pub process_start_id: Option<u64>,
     /// Linux socket network namespace inode, captured during attribution.
     pub socket_netns_id: Option<u64>,
+    /// Optional host measurements, independent of packet-derived state.
+    pub diagnostics: Option<super::ConnectionDiagnostics>,
     /// Current host lifecycle diagnostic, separate from transport state.
     pub process_exit_status: Option<ProcessExitStatus>,
     /// Parent process id of the owning process, when it was still available
@@ -365,6 +367,7 @@ impl Connection {
             pid: None,
             process_start_id: None,
             socket_netns_id: None,
+            diagnostics: None,
             process_exit_status: None,
             process_ppid: None,
             process_name: None,
@@ -452,6 +455,7 @@ impl Connection {
             pid: self.pid,
             process_start_id: self.process_start_id,
             socket_netns_id: self.socket_netns_id,
+            diagnostics: self.diagnostics.clone(),
             process_exit_status: self.process_exit_status,
             process_ppid: self.process_ppid,
             process_name: self.process_name.clone(),

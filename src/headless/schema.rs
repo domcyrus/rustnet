@@ -7,7 +7,10 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 
 use crate::app::{App, AppStats, StopReport};
-use crate::network::types::{AttributionSource, Connection, ConnectionKey};
+use crate::network::types::{
+    AttributionSource, Connection, ConnectionKey, QueueKind, QueueSample, TcpSample,
+    sample_is_fresh,
+};
 
 use super::{SCHEMA_VERSION, TerminationReason};
 
@@ -23,6 +26,7 @@ pub(super) struct SnapshotEnvelope {
     filter: Option<String>,
     connection_count: usize,
     connections: Vec<ConnectionSnapshot>,
+    host_diagnostics: HostDiagnosticsSnapshot,
 }
 
 impl SnapshotEnvelope {
@@ -62,6 +66,10 @@ impl SnapshotEnvelope {
                 filter: filter.map(str::to_string),
                 connection_count: connections.len(),
                 connections,
+                host_diagnostics: HostDiagnosticsSnapshot::new(
+                    app.get_socket_snapshot(),
+                    SystemTime::now(),
+                ),
             },
         )
     }
@@ -277,6 +285,8 @@ struct ConnectionSnapshot {
     last_activity: String,
     historic: bool,
     closed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<ConnectionDiagnosticsSnapshot>,
 }
 
 impl ConnectionSnapshot {
@@ -427,8 +437,216 @@ impl ConnectionSnapshot {
             last_activity: timestamp(connection.last_activity),
             historic: connection.is_historic,
             closed_at: connection.closed_at.map(timestamp),
+            diagnostics: ConnectionDiagnosticsSnapshot::from_connection(
+                connection,
+                SystemTime::now(),
+            ),
         }
     }
+}
+
+#[derive(Serialize)]
+struct QueueSnapshot {
+    source: &'static str,
+    sampled_at: String,
+    fresh: bool,
+    unit: &'static str,
+    receive: u64,
+    send: u64,
+    socket_drops: Option<u64>,
+    socket_drop_increase: Option<u64>,
+}
+
+impl QueueSnapshot {
+    fn new(sample: &QueueSample, now: SystemTime, socket_drop_increase: Option<u64>) -> Self {
+        Self {
+            source: sample.source,
+            sampled_at: timestamp(sample.sampled_at),
+            fresh: sample_is_fresh(sample.sampled_at, now),
+            unit: match sample.kind {
+                QueueKind::TcpBytes => "bytes",
+                QueueKind::UdpMemory => "buffer_bytes",
+            },
+            receive: sample.receive,
+            send: sample.send,
+            socket_drops: sample.socket_drops,
+            socket_drop_increase,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct TcpSnapshot {
+    source: &'static str,
+    sampled_at: String,
+    fresh: bool,
+    rtt_us: u32,
+    rtt_variation_us: u32,
+    congestion_window_segments: Option<u32>,
+    retransmissions: u32,
+    retransmission_increase: Option<u32>,
+    counter_scope: &'static str,
+}
+
+impl TcpSnapshot {
+    fn new(sample: &TcpSample, now: SystemTime, retransmission_increase: Option<u32>) -> Self {
+        Self {
+            source: sample.source,
+            sampled_at: timestamp(sample.sampled_at),
+            fresh: sample_is_fresh(sample.sampled_at, now),
+            rtt_us: sample.rtt_us,
+            rtt_variation_us: sample.rtt_variation_us,
+            congestion_window_segments: sample.congestion_window_segments,
+            retransmissions: sample.retransmissions,
+            retransmission_increase,
+            counter_scope: if sample.source == "windows_estats" {
+                "since_collection_enabled"
+            } else {
+                "socket_lifetime"
+            },
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ConnectionDiagnosticsSnapshot {
+    native_id: Option<u64>,
+    netns: Option<u64>,
+    queues: Option<QueueSnapshot>,
+    tcp: Option<TcpSnapshot>,
+    findings: Vec<&'static str>,
+}
+
+impl ConnectionDiagnosticsSnapshot {
+    fn from_connection(connection: &Connection, now: SystemTime) -> Option<Self> {
+        let findings = connection.diagnostic_findings(now);
+        let diagnostics = connection.diagnostics.as_ref();
+        let sample = diagnostics.map(|d| &d.sample);
+        (sample.is_some() || !findings.is_empty()).then(|| Self {
+            native_id: sample.map(|s| s.native_id),
+            netns: sample.and_then(|s| s.netns),
+            queues: sample.and_then(|s| s.queues.as_ref()).map(|q| {
+                QueueSnapshot::new(q, now, diagnostics.and_then(|d| d.socket_drop_increase))
+            }),
+            tcp: sample.and_then(|s| s.tcp.as_ref()).map(|t| {
+                TcpSnapshot::new(t, now, diagnostics.and_then(|d| d.retransmission_increase))
+            }),
+            findings,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct HostDiagnosticsSnapshot {
+    scope: &'static str,
+    queues_status: String,
+    tcp_status: String,
+    drops_status: String,
+    inventory_sockets: usize,
+    sockets: Vec<SocketDiagnosticsSnapshot>,
+    drop_events: Option<DropSnapshot>,
+}
+
+impl HostDiagnosticsSnapshot {
+    fn new(snapshot: rustnet_host::SocketSnapshot, now: SystemTime) -> Self {
+        Self {
+            scope: "socket samples: visible local sockets; Linux current network namespace; drop events: system, namespace unknown",
+            queues_status: snapshot.diagnostics_status.queues,
+            tcp_status: snapshot.diagnostics_status.tcp,
+            drops_status: snapshot.diagnostics_status.drops,
+            inventory_sockets: snapshot.sockets.len(),
+            sockets: snapshot
+                .sockets
+                .iter()
+                .filter_map(|socket| {
+                    let sample = snapshot.diagnostics.get(socket)?;
+                    Some(SocketDiagnosticsSnapshot {
+                        native_id: sample.native_id,
+                        netns: sample.netns,
+                        protocol: socket.protocol.as_str(),
+                        local: socket.local_addr.to_string(),
+                        remote: socket.remote_addr.map(|a| a.to_string()),
+                        queues: sample
+                            .queues
+                            .as_ref()
+                            .map(|q| QueueSnapshot::new(q, now, None)),
+                        tcp: sample.tcp.as_ref().map(|t| TcpSnapshot::new(t, now, None)),
+                    })
+                })
+                .collect(),
+            drop_events: snapshot.drop_events.as_deref().map(DropSnapshot::new),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SocketDiagnosticsSnapshot {
+    native_id: u64,
+    netns: Option<u64>,
+    protocol: &'static str,
+    local: String,
+    remote: Option<String>,
+    queues: Option<QueueSnapshot>,
+    tcp: Option<TcpSnapshot>,
+}
+
+#[derive(Serialize)]
+struct DropSnapshot {
+    source: &'static str,
+    sampled_at: Option<String>,
+    matched: u64,
+    unmatched: u64,
+    delivery_lost: u64,
+    discarded: u64,
+    backlog_possible: bool,
+    reasons: Vec<DropReasonSnapshot>,
+    recent: Vec<DropObservationSnapshot>,
+}
+
+impl DropSnapshot {
+    fn new(events: &rustnet_host::DropSnapshot) -> Self {
+        Self {
+            source: "tp_btf/kfree_skb",
+            sampled_at: events.sampled_at.map(timestamp),
+            matched: 0,
+            unmatched: events.counts.values().map(|r| r.events).sum(),
+            delivery_lost: events.delivery_lost,
+            discarded: events.malformed,
+            backlog_possible: events.backlog_possible,
+            reasons: events
+                .counts
+                .iter()
+                .map(|(id, r)| DropReasonSnapshot {
+                    native_reason: *id,
+                    reason: r.reason.clone(),
+                    events: r.events,
+                })
+                .collect(),
+            recent: events
+                .recent
+                .iter()
+                .map(|e| DropObservationSnapshot {
+                    observed_at: timestamp(e.observed_at),
+                    native_reason: e.reason,
+                    ifindex: e.ifindex,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DropReasonSnapshot {
+    native_reason: u32,
+    reason: String,
+    events: u64,
+}
+
+#[derive(Serialize)]
+struct DropObservationSnapshot {
+    observed_at: String,
+    native_reason: u32,
+    ifindex: u32,
 }
 
 #[derive(Serialize)]
@@ -607,6 +825,232 @@ mod tests {
     }
 
     #[test]
+    fn host_diagnostics_preserves_status_without_samples() {
+        let app = app_with_connections();
+        for statuses in [
+            rustnet_host::DiagnosticsStatus::default(),
+            rustnet_host::DiagnosticsStatus {
+                queues: "Partial: one or more procfs tables unreadable".into(),
+                tcp: "Unavailable: open TCP iterator reader".into(),
+                drops: "Unavailable: attach typed drop collector".into(),
+            },
+            rustnet_host::DiagnosticsStatus {
+                queues: "Available: procfs, current network namespace".into(),
+                tcp: "Available: TCP iterator, established sockets in current namespace".into(),
+                drops: "Unavailable: native drop collector not enabled".into(),
+            },
+        ] {
+            let mut snapshot = rustnet_host::SocketSnapshot::default();
+            snapshot.diagnostics_status = statuses.clone();
+            app.set_socket_snapshot_for_test(snapshot);
+            let (_, snapshot) =
+                SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None);
+            let value = serde_json::to_value(snapshot).unwrap();
+            let host = &value["host_diagnostics"];
+            assert_eq!(host["queues_status"], statuses.queues);
+            assert_eq!(host["tcp_status"], statuses.tcp);
+            assert_eq!(host["drops_status"], statuses.drops);
+            assert_eq!(host["inventory_sockets"], 0);
+            assert_eq!(host["sockets"], serde_json::json!([]));
+            assert!(host["drop_events"].is_null());
+        }
+    }
+
+    #[test]
+    fn host_diagnostics_exports_unassociated_tcp_and_shares_sample_schema() {
+        use crate::network::types::{ConnectionDiagnostics, SocketSample};
+        use rustnet_host::{HostSocket, HostSocketState, HostTcpState, SocketSnapshot};
+        use std::sync::Arc;
+
+        let app = app_with_connections();
+        let mut connection = app.get_connections()[0].clone();
+        let now = SystemTime::now();
+        for queues in [
+            Some(QueueSample {
+                source: "procfs",
+                sampled_at: now,
+                kind: QueueKind::TcpBytes,
+                receive: 512,
+                send: 128,
+                socket_drops: None,
+            }),
+            None,
+        ] {
+            let source = if queues.is_some() {
+                "tcp_bpf_iterator"
+            } else {
+                "windows_estats"
+            };
+            let cwnd = queues.as_ref().map(|_| 10);
+            let sample = Arc::new(SocketSample {
+                native_id: 42,
+                netns: Some(7),
+                queues,
+                tcp: Some(TcpSample {
+                    counter_reset: false,
+                    source,
+                    sampled_at: now - Duration::from_secs(30),
+                    rtt_us: 100,
+                    rtt_variation_us: 20,
+                    congestion_window_segments: cwnd,
+                    retransmissions: 3,
+                }),
+            });
+            let mut snapshot = SocketSnapshot::new(vec![HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: "127.0.0.1:60000".parse().unwrap(),
+                remote_addr: Some("127.0.0.1:60001".parse().unwrap()),
+                state: HostSocketState::Tcp(HostTcpState::Established),
+                owner: None,
+                native_id: Some(42),
+            }]);
+            snapshot.diagnostics =
+                Arc::new([(snapshot.sockets[0].clone(), Arc::clone(&sample))].into());
+            app.set_socket_snapshot_for_test(snapshot);
+            let (_, envelope) =
+                SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None);
+            let value = serde_json::to_value(envelope).unwrap();
+            let sockets = value["host_diagnostics"]["sockets"].as_array().unwrap();
+            assert_eq!(sockets.len(), 1);
+            let socket = &sockets[0];
+            assert_eq!(socket["local"], "127.0.0.1:60000");
+            assert_eq!(socket["native_id"], 42);
+            assert_eq!(socket["netns"], 7);
+            assert_eq!(
+                socket["tcp"],
+                serde_json::json!({
+                    "source": source,
+                    "sampled_at": timestamp(now - Duration::from_secs(30)),
+                    "fresh": false,
+                    "rtt_us": 100,
+                    "rtt_variation_us": 20,
+                    "congestion_window_segments": cwnd,
+                    "retransmissions": 3,
+                    "retransmission_increase": null,
+                    "counter_scope": if source == "windows_estats" { "since_collection_enabled" } else { "socket_lifetime" },
+                })
+            );
+            assert!(
+                value["connections"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|c| c.get("diagnostics").is_none())
+            );
+            if sample.queues.is_some() {
+                assert_eq!(socket["queues"]["fresh"], true);
+                assert_eq!(socket["queues"]["unit"], "bytes");
+                assert_eq!(socket["queues"]["receive"], 512);
+                assert_eq!(socket["queues"]["send"], 128);
+            } else {
+                assert!(socket["queues"].is_null());
+            }
+            connection.diagnostics = Some(ConnectionDiagnostics::update(None, sample));
+            let connection =
+                serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
+            assert_eq!(socket["queues"], connection["diagnostics"]["queues"]);
+            assert_eq!(socket["tcp"], connection["diagnostics"]["tcp"]);
+        }
+    }
+
+    #[test]
+    fn host_diagnostics_preserves_drop_event_evidence() {
+        let app = app_with_connections();
+        let mut snapshot = rustnet_host::SocketSnapshot::default();
+        snapshot.drop_events = Some(std::sync::Arc::new(rustnet_host::DropSnapshot {
+            sampled_at: Some(SystemTime::UNIX_EPOCH),
+            counts: [(
+                42,
+                rustnet_host::DropReasonCount {
+                    reason: "Unknown native reason 42".into(),
+                    events: 3,
+                },
+            )]
+            .into(),
+            recent: [rustnet_host::DropObservation {
+                observed_at: SystemTime::UNIX_EPOCH,
+                reason: 42,
+                ifindex: 2,
+            }]
+            .into(),
+            delivery_lost: 4,
+            malformed: 5,
+            backlog_possible: true,
+        }));
+        app.set_socket_snapshot_for_test(snapshot);
+        let (_, snapshot) = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None);
+        let value = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(
+            value["host_diagnostics"]["drop_events"],
+            serde_json::json!({
+                "source": "tp_btf/kfree_skb", "sampled_at": timestamp(SystemTime::UNIX_EPOCH),
+                "matched": 0, "unmatched": 3, "delivery_lost": 4, "discarded": 5,
+                "backlog_possible": true,
+                "reasons": [{"native_reason": 42, "reason": "Unknown native reason 42", "events": 3}],
+                "recent": [{"observed_at": timestamp(SystemTime::UNIX_EPOCH), "native_reason": 42, "ifindex": 2}],
+            })
+        );
+    }
+
+    #[test]
+    fn diagnostics_exports_capture_findings_without_a_socket_sample() {
+        let app = app_with_connections();
+        let mut connection = app.get_connections()[0].clone();
+        connection.diagnostics = None;
+        connection.protocol_state = ProtocolState::Tcp(TcpState::SynSent);
+        connection.created_at = SystemTime::now() - Duration::from_secs(30);
+        connection.packets_received = 0;
+        let value = serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
+        let diagnostics = &value["diagnostics"];
+        assert!(diagnostics["native_id"].is_null());
+        assert!(diagnostics["queues"].is_null());
+        assert_eq!(
+            diagnostics["findings"],
+            serde_json::json!(connection.diagnostic_findings(SystemTime::now()))
+        );
+        assert!(!diagnostics["findings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn diagnostics_exports_optional_units_age_and_historical_evidence() {
+        use crate::network::types::{ConnectionDiagnostics, QueueKind, QueueSample, SocketSample};
+        let app = app_with_connections();
+        let mut conn = app.get_connections()[0].clone();
+        assert!(
+            serde_json::to_value(ConnectionSnapshot::from_connection(&conn))
+                .unwrap()
+                .get("diagnostics")
+                .is_none()
+        );
+        conn.diagnostics = Some(ConnectionDiagnostics::update(
+            None,
+            std::sync::Arc::new(SocketSample {
+                native_id: 42,
+                netns: Some(7),
+                tcp: None,
+                queues: Some(QueueSample {
+                    source: "procfs",
+                    sampled_at: SystemTime::UNIX_EPOCH,
+                    kind: QueueKind::UdpMemory,
+                    receive: 512,
+                    send: 0,
+                    socket_drops: Some(9),
+                }),
+            }),
+        ));
+        conn.is_historic = true;
+        let value =
+            serde_json::to_value(ConnectionSnapshot::from_connection(&conn.snapshot_clone()))
+                .unwrap();
+        let diagnostic = &value["diagnostics"];
+        assert_eq!(diagnostic["queues"]["unit"], "buffer_bytes");
+        assert_eq!(diagnostic["queues"]["socket_drops"], 9);
+        assert_eq!(diagnostic["queues"]["fresh"], false);
+        assert!(diagnostic["tcp"].is_null());
+        assert!(diagnostic["findings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn version_one_schema_keys_and_protocol_timings_are_stable() {
         let app = app_with_connections();
         let (_, snapshot) = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None);
@@ -618,6 +1062,7 @@ mod tests {
                 "connection_count",
                 "connections",
                 "filter",
+                "host_diagnostics",
                 "runtime",
                 "sandbox",
                 "schema_version",

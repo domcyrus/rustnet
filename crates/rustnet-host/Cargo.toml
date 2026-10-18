@@ -20,6 +20,8 @@ path = "src/lib.rs"
 [features]
 # eBPF-based process attribution on Linux (libbpf). No effect on other platforms.
 ebpf = ["dep:bitflags", "dep:libbpf-rs", "dep:libbpf-cargo"]
+# Opt-in while broader compatibility and event-burst checks remain.
+drop-events = ["ebpf"]
 
 [dependencies]
 rustnet-core.workspace = true

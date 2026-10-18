@@ -4,11 +4,11 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────────────────────────────────────────────
-Sockets   Interfaces   DNS                                                                                                                  
+Sockets   Interfaces   DNS   Diagnostics                                                                                                    
 ━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Host Socket States ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 TCP 0   LISTEN 0   ESTAB 0   OPENING 0   CLOSING 0   TIME_WAIT 0   OTHER 0   UDP BOUND 0                                                    
-Observed RTT  no samples                                                                                                                    
+Observed RTT  no samples   Diagnostics: 0 affected connections (v/V)                                                                        
                                                                                                                                             
 ▎ Observed network events ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Captured packets · since startup/clear · capture interface/filter                                                                           

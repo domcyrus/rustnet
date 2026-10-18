@@ -11,6 +11,9 @@ expression: output
                                                                                                                                             
                                                                                                                                             
 ▎ ? → 224.0.0.251:0 [REPORT_V2(224.0.0.251)] · click a field to copy ───────────────────────────────────────────────────────────────────────
+Diagnostics                                                                                                                                 
+Unavailable: no unambiguous socket sample; capture evidence only                                                                            
+Observation status [d]                                                                                                                      
 Connection                                                            Application: IGMP                                                     
 Protocol              IGMP                                            Message               Membership Report v2                            
 Status                Active (last seen <T> ago)                       Group Address         224.0.0.251                                     
@@ -44,6 +47,9 @@ Match                 -
 ↓ RX Now 0 B/s       →                             peak       0 B/s   ↑ TX Now 0 B/s       →                             peak       0 B/s   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
 Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

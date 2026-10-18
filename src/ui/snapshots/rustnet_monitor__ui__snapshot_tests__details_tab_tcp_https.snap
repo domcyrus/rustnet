@@ -11,6 +11,9 @@ expression: output
   sshd (1500)           10.0.0.5:51022          192.168.1.10:22    ssh        TCP                      ESTABLISHED       - ok            -/-
                                                                                                                                             
 ▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────────────────────────────────────────────────────────────────
+Diagnostics                                                                                                                                 
+Unavailable: no unambiguous socket sample; capture evidence only                                                                            
+Observation status [d]                                                                                                                      
 Connection                                                            Application                                                           
 Protocol              TCP                                             Detected              -                                               
 Status                Active (last seen <T> ago)                                                                                             
@@ -44,6 +47,9 @@ Match                 -
 ↓ RX Now 0 B/s       →                             peak       0 B/s   ↑ TX Now 0 B/s       →                             peak       0 B/s   
 Total 234.38 KiB  ·  234 packets                                      Total 12.21 KiB  ·  12 packets                                        
 Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

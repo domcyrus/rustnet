@@ -71,7 +71,7 @@ pub(crate) fn parse_output(stdout: &str) -> SocketScan {
         } else {
             HostSocketState::UdpBound
         };
-        scan.sockets.push(HostSocket {
+        let socket = HostSocket {
             protocol,
             local_addr: local,
             remote_addr: remote_if_present(remote),
@@ -80,9 +80,45 @@ pub(crate) fn parse_output(stdout: &str) -> SocketScan {
             native_id: parts[5]
                 .strip_prefix("0x")
                 .and_then(|hex| u64::from_str_radix(hex, 16).ok()),
-        });
+        };
+        // -Tqs supplies byte queues beside state. Missing or malformed fields
+        // disable only measurements, never inventory or ownership.
+        if protocol == Protocol::Tcp
+            && state != HostSocketState::Tcp(HostTcpState::Listen)
+            && let Some(native_id) = socket.native_id.filter(|id| *id != 0)
+            && let (Some(receive), Some(send)) =
+                (queue_value(&parts, "QR="), queue_value(&parts, "QS="))
+        {
+            use rustnet_core::network::types::{QueueKind, QueueSample, SocketSample};
+            scan.diagnostics.insert(
+                socket.clone(),
+                std::sync::Arc::new(SocketSample {
+                    native_id,
+                    netns: None,
+                    tcp: None,
+                    queues: Some(QueueSample {
+                        source: "lsof",
+                        sampled_at: std::time::SystemTime::now(),
+                        kind: QueueKind::TcpBytes,
+                        receive,
+                        send,
+                        socket_drops: None,
+                    }),
+                }),
+            );
+        }
+        scan.sockets.push(socket);
     }
     scan
+}
+
+fn queue_value(parts: &[&str], prefix: &str) -> Option<u64> {
+    let mut values = parts
+        .iter()
+        .skip(9)
+        .filter_map(|value| value.trim_matches(['(', ')']).strip_prefix(prefix));
+    let value = values.next()?.parse().ok()?;
+    values.next().is_none().then_some(value)
 }
 
 fn parse_connection(name: &str, wildcard: IpAddr) -> Option<(SocketAddr, SocketAddr)> {
@@ -127,6 +163,38 @@ fn decode_lsof_string(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::{LocalPortStatus, SocketSnapshot};
+
+    #[test]
+    fn optional_byte_queues_preserve_state_and_reject_incomplete_values() {
+        for (fields, expected) in [
+            ("QR=8192 QS=0", Some(8192)),
+            ("QR=0 QS=0", Some(0)),
+            ("QR=bad QS=0", None),
+            ("QR=1", None),
+            ("QR=1 QR=2 QS=0", None),
+        ] {
+            let scan = parse_output(&format!(
+                "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nclient 42 1000 3u IPv4 0xabc 0t0 TCP 127.0.0.1:5000->127.0.0.1:8080 (ESTABLISHED {fields})\n"
+            ));
+            assert!(scan.complete);
+            assert_eq!(
+                scan.sockets[0].state,
+                HostSocketState::Tcp(HostTcpState::Established)
+            );
+            assert_eq!(
+                scan.diagnostics
+                    .values()
+                    .next()
+                    .and_then(|s| s.queues.as_ref())
+                    .map(|q| q.receive),
+                expected
+            );
+        }
+        let scan = parse_output(
+            "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nserver 42 1000 3u IPv4 0xabc 0t0 TCP *:8080 (LISTEN QR=1 QS=2)\n",
+        );
+        assert!(scan.diagnostics.is_empty());
+    }
 
     #[test]
     fn wildcard_inventory_preserves_family_for_port_status() {

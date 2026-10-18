@@ -8,15 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Put Host diagnostics findings and coverage first, label queues clearly, show process names, and toggle empty queues with `a` (#688)
 - Run Windows CI tests independently and start DEB installation checks after GNU/Linux builds, preserving all existing checks (#686)
 
 ### Added
+- Add summary-first socket diagnostics in Details and Host, Linux procfs queues and drops, optional TCP iterator statistics and host-scope drop reasons, Windows EStats, macOS/FreeBSD TCP queues, source-aware findings, and JSON evidence (#688)
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
 - Show observed TCP resets and ICMP errors in Host, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
 - Retire observed TCP/UDP flows after confirmed socket disappearance on macOS, Windows, and FreeBSD; keep timeout fallback for incomplete or restricted inventories (#684)
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Preserve empty diagnostics source status in JSON and expose unassociated Host TCP measurements (#688)
+- Include example sources in Docker builds and use the checksum-verified libpcap mirror for Windows SDK downloads (#688)
 - Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0
 

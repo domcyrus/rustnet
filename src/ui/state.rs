@@ -178,6 +178,7 @@ pub enum HostView {
     Sockets,
     Interfaces,
     Dns,
+    Diagnostics,
 }
 
 /// Sort modes for the Host DNS question table.
@@ -314,30 +315,31 @@ impl ActivitySort {
 /// against what is actually on screen.
 #[derive(Debug, Default)]
 pub struct PaneScroll {
-    offset: u16,
+    offset: Cell<u16>,
     max: Cell<u16>,
     viewport: Cell<u16>,
 }
 
 impl PaneScroll {
     pub fn scroll_up(&mut self, lines: u16) {
-        self.offset = self.offset.saturating_sub(lines);
+        self.offset.set(self.offset.get().saturating_sub(lines));
     }
 
     pub fn scroll_down(&mut self, lines: u16) {
-        self.offset = self.offset.saturating_add(lines).min(self.max.get());
+        self.offset
+            .set(self.offset.get().saturating_add(lines).min(self.max.get()));
     }
 
     pub fn scroll_to_top(&mut self) {
-        self.offset = 0;
+        self.offset.set(0);
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.offset = self.max.get();
+        self.offset.set(self.max.get());
     }
 
     pub fn reset(&mut self) {
-        self.offset = 0;
+        self.offset.set(0);
         // Forget the last render's extent too, so the hint gating does not
         // keep advertising scroll for content that is gone; the next render
         // reports the real extent again.
@@ -354,7 +356,7 @@ impl PaneScroll {
     /// (clamped) offset to draw with.
     pub fn clamp_for_render(&self, max: u16) -> u16 {
         self.max.set(max);
-        self.offset.min(max)
+        self.offset.get().min(max)
     }
 
     /// Record this render's viewport height so page-wise scrolling can
@@ -362,6 +364,19 @@ impl PaneScroll {
     /// stale height from the previous render beats stepping by one line.
     pub fn record_viewport(&self, rows: u16) {
         self.viewport.set(rows);
+    }
+
+    /// Reveal a selected text block using its rendered, wrapped row bounds.
+    pub fn reveal_range(&self, start: u16, end: u16, viewport: u16) {
+        let offset = self.offset.get().min(self.max.get());
+        let next = if start < offset || end.saturating_sub(start) > viewport {
+            start
+        } else if end > offset.saturating_add(viewport) {
+            end.saturating_sub(viewport)
+        } else {
+            offset
+        };
+        self.offset.set(next);
     }
 
     /// Viewport height reported by the last render (0 before the first).
@@ -602,6 +617,10 @@ pub struct UiState {
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
+    pub host_diagnostics_scroll: PaneScroll,
+    pub host_diagnostics_show_all: bool,
+    pub host_diagnostics_focus_requested: Cell<bool>,
+    pub diagnostics_status_expanded: bool,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
     pub graph_states_scroll: PaneScroll,
@@ -672,6 +691,10 @@ impl Default for UiState {
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
+            host_diagnostics_scroll: PaneScroll::default(),
+            host_diagnostics_show_all: false,
+            host_diagnostics_focus_requested: Cell::new(false),
+            diagnostics_status_expanded: false,
             graph_section: GraphSection::default(),
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),

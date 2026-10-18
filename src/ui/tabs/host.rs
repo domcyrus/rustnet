@@ -41,10 +41,58 @@ impl Component for HostTab {
             HostView::Sockets => draw_sockets(f, content, ctx),
             HostView::Interfaces => draw_interface_stats(f, ctx.app, ctx.ui_state, content),
             HostView::Dns => draw_dns_analytics(f, content, ctx),
+            HostView::Diagnostics => draw_diagnostics(f, content, ctx),
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        if ctx.ui_state.host_view == HostView::Diagnostics && key.modifiers == KeyModifiers::NONE {
+            if key.code == KeyCode::Char('a') {
+                ctx.ui_state.host_diagnostics_show_all = !ctx.ui_state.host_diagnostics_show_all;
+                ctx.ui_state.host_diagnostics_scroll.reset();
+                ctx.ui_state.host_diagnostics_focus_requested.set(false);
+                return Some(Vec::new());
+            }
+            let now = std::time::SystemTime::now();
+            let affected: Vec<_> = ctx
+                .connections
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| !c.diagnostic_findings(now).is_empty())
+                .collect();
+            let selected = affected
+                .iter()
+                .position(|(_, conn)| {
+                    ctx.ui_state.selected_connection_key.as_deref() == Some(conn.key().as_str())
+                })
+                .unwrap_or(0);
+            match key.code {
+                KeyCode::Char('n' | 'p') => {
+                    let next = if key.code == KeyCode::Char('n') {
+                        selected
+                            .saturating_add(1)
+                            .min(affected.len().saturating_sub(1))
+                    } else {
+                        selected.saturating_sub(1)
+                    };
+                    if next != selected
+                        && let Some((index, _)) = affected.get(next)
+                    {
+                        ctx.ui_state.set_selected_by_index(ctx.connections, *index);
+                        ctx.ui_state.host_diagnostics_focus_requested.set(true);
+                    }
+                    return Some(Vec::new());
+                }
+                KeyCode::Enter => {
+                    if let Some((index, _)) = affected.get(selected) {
+                        ctx.ui_state.set_selected_by_index(ctx.connections, *index);
+                        ctx.ui_state.jump_to_tab(1);
+                    }
+                    return Some(Vec::new());
+                }
+                _ => {}
+            }
+        }
         if key.code == KeyCode::Char('o')
             && key.modifiers == KeyModifiers::NONE
             && ctx.ui_state.host_view == HostView::Dns
@@ -63,6 +111,11 @@ impl Component for HostTab {
                 key,
                 usize::from(ctx.ui_state.interfaces_scroll.viewport_rows()),
                 &mut ctx.ui_state.interfaces_scroll,
+            ),
+            HostView::Diagnostics => try_handle_pane_scroll(
+                key,
+                usize::from(ctx.ui_state.host_diagnostics_scroll.viewport_rows()),
+                &mut ctx.ui_state.host_diagnostics_scroll,
             ),
             HostView::Dns => try_handle_pane_scroll(
                 key,
@@ -85,6 +138,9 @@ impl Component for HostTab {
                 try_handle_pane_wheel(mouse, &mut ctx.ui_state.interfaces_scroll)
             }
             HostView::Dns => try_handle_pane_wheel(mouse, &mut ctx.ui_state.dns_questions_scroll),
+            HostView::Diagnostics => {
+                try_handle_pane_wheel(mouse, &mut ctx.ui_state.host_diagnostics_scroll)
+            }
         }
     }
 }
@@ -663,6 +719,17 @@ fn socket_summary_lines(
             Span::styled(format_rtt_compact(maximum), theme::fg(theme::warn())),
         ])
     };
+    let mut rtt_line = rtt_line;
+    let affected = connections
+        .iter()
+        .filter(|c| {
+            !c.diagnostic_findings(std::time::SystemTime::now())
+                .is_empty()
+        })
+        .count();
+    rtt_line.spans.push(Span::raw(format!(
+        "   Diagnostics: {affected} affected connections (v/V)"
+    )));
     vec![state_line, rtt_line]
 }
 
@@ -743,4 +810,285 @@ fn draw_endpoint_table(
         widths,
         &ctx.ui_state.host_sockets_scroll,
     );
+}
+
+fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result<()> {
+    use crate::network::types::{QueueKind, sample_is_fresh};
+    let snapshot = ctx.app.get_socket_snapshot();
+    let now = std::time::SystemTime::now();
+    let inner = section_header(
+        f,
+        area,
+        section_title("Diagnostics · n/p select finding · Enter Details"),
+    );
+    let mut lines = vec![Line::from(section_title("Findings"))];
+    let mut has_drop_findings = false;
+    if let Some(events) = &snapshot.drop_events {
+        for count in events.counts.values() {
+            let finding = match count.reason.as_str() {
+                "SKB_DROP_REASON_NETFILTER_DROP" => Some("Observed: local policy drop events"),
+                "SKB_DROP_REASON_SOCKET_RCVBUFF" => {
+                    Some("Observed: socket receive-buffer drop events")
+                }
+                _ => None,
+            };
+            if let Some(finding) = finding {
+                has_drop_findings = true;
+                lines.push(Line::from(format!(
+                    "{finding}: {} since collector startup",
+                    count.events
+                )));
+            }
+        }
+    }
+
+    let affected: Vec<_> = ctx
+        .connections
+        .iter()
+        .filter_map(|c| {
+            let findings = c.diagnostic_findings(now);
+            (!findings.is_empty()).then_some((c, findings))
+        })
+        .collect();
+    if affected.is_empty() && !has_drop_findings {
+        lines.push(Line::from("No diagnostic findings in the observed scope"));
+        let mut tcp_queues = snapshot
+            .diagnostics
+            .values()
+            .filter_map(|s| s.queues.as_ref())
+            .filter(|q| q.kind == QueueKind::TcpBytes)
+            .peekable();
+        if tcp_queues.peek().is_some()
+            && tcp_queues
+                .all(|q| sample_is_fresh(q.sampled_at, now) && q.receive == 0 && q.send == 0)
+        {
+            lines.push(Line::from("All sampled TCP queues are empty."));
+        }
+    }
+    let selected = affected
+        .iter()
+        .position(|(conn, _)| {
+            ctx.ui_state.selected_connection_key.as_deref() == Some(conn.key().as_str())
+        })
+        .unwrap_or(0);
+    let mut selected_lines = 0..0;
+    for (index, (conn, findings)) in affected.iter().enumerate() {
+        let start = lines.len();
+        lines.push(Line::from(format!(
+            "{} {} {} -> {} · {}",
+            if index == selected { ">" } else { " " },
+            conn.protocol,
+            conn.local_addr,
+            conn.remote_addr,
+            conn.process_name.as_deref().unwrap_or("Unknown process"),
+        )));
+        for finding in findings {
+            lines.push(Line::from(format!("  {finding}")));
+        }
+        if index == selected {
+            selected_lines = start..lines.len();
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(section_title("Collection coverage")));
+    let queues = snapshot
+        .diagnostics
+        .values()
+        .filter(|s| {
+            s.queues
+                .as_ref()
+                .is_some_and(|q| sample_is_fresh(q.sampled_at, now))
+        })
+        .count();
+    let tcp = snapshot
+        .diagnostics
+        .values()
+        .filter(|s| {
+            s.tcp
+                .as_ref()
+                .is_some_and(|t| sample_is_fresh(t.sampled_at, now))
+        })
+        .count();
+    lines.push(Line::from(format!(
+        "Inventory sockets: {} · Fresh queue samples: {queues} · Fresh TCP samples: {tcp}",
+        snapshot.sockets.len()
+    )));
+    for (source, status) in [
+        ("Queues", &snapshot.diagnostics_status.queues),
+        ("TCP", &snapshot.diagnostics_status.tcp),
+        ("Reasoned drop events", &snapshot.diagnostics_status.drops),
+    ] {
+        lines.push(Line::from(format!("{source}: {status}")));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(section_title(format!(
+        "Socket measurements · {} [a]",
+        if ctx.ui_state.host_diagnostics_show_all {
+            "Hide empty queues"
+        } else {
+            "Show all sockets"
+        },
+    ))));
+    lines.push(Line::from(
+        "Receive/send queues are queued bytes, not traffic totals.",
+    ));
+    let mut sockets: Vec<_> = snapshot
+        .sockets
+        .iter()
+        .filter_map(|socket| Some((socket, snapshot.diagnostics.get(socket)?)))
+        .collect();
+    let sampled_sockets = sockets.len();
+    if !ctx.ui_state.host_diagnostics_show_all {
+        sockets.retain(|(_, sample)| {
+            // Keep native TCP statistics, drop evidence and stale measurements visible.
+            sample.tcp.is_some()
+                || !sample.queues.as_ref().is_some_and(|q| {
+                    sample_is_fresh(q.sampled_at, now)
+                        && q.receive == 0
+                        && q.send == 0
+                        && q.socket_drops.unwrap_or(0) == 0
+                })
+        });
+    }
+    let hidden = sampled_sockets - sockets.len();
+    if hidden > 0 {
+        lines.push(Line::from(format!(
+            "Sockets with empty queues hidden: {hidden}"
+        )));
+    } else if sampled_sockets == 0 {
+        lines.push(Line::from("No socket measurements available."));
+    }
+    sockets.sort_by_key(|(socket, _)| (socket.protocol, socket.local_addr, socket.remote_addr));
+    for (socket, sample) in sockets {
+        lines.push(Line::from(format!(
+            "{} {} -> {} · {}",
+            socket.protocol,
+            socket.local_addr,
+            socket
+                .remote_addr
+                .map_or_else(|| "*".to_string(), |addr| addr.to_string()),
+            socket.owner.as_ref().map_or_else(
+                || "Unknown process".to_string(),
+                |owner| format!("{} (PID {})", owner.name, owner.pid),
+            ),
+        )));
+        if let Some(q) = &sample.queues {
+            let unit = if q.kind == QueueKind::TcpBytes {
+                "bytes"
+            } else {
+                "buffer bytes"
+            };
+            lines.push(Line::from(format!(
+                "  Receive queue: {} {unit}; Send queue: {} {unit}{}{} ({})",
+                q.receive,
+                q.send,
+                q.socket_drops.map_or_else(String::new, |n| format!(
+                    "; socket drops: {n} lifetime (cause unknown)"
+                )),
+                if sample_is_fresh(q.sampled_at, now) {
+                    ""
+                } else {
+                    " [Stale]"
+                },
+                q.source,
+            )));
+        }
+        if let Some(tcp) = &sample.tcp {
+            lines.push(Line::from(format!(
+                "  Kernel TCP: RTT {} us; variation {} us{}; {} retransmits ({}, {}){}",
+                tcp.rtt_us,
+                tcp.rtt_variation_us,
+                tcp.congestion_window_segments
+                    .map_or_else(String::new, |n| format!("; cwnd {n} segments")),
+                tcp.retransmissions,
+                if tcp.source == "windows_estats" {
+                    "since collection enabled"
+                } else {
+                    "lifetime"
+                },
+                tcp.source,
+                if sample_is_fresh(tcp.sampled_at, now) {
+                    ""
+                } else {
+                    " [Stale]"
+                },
+            )));
+        }
+    }
+    if let Some(events) = &snapshot.drop_events {
+        lines.push(Line::default());
+        lines.push(Line::from(section_title("Reasoned drop events")));
+        lines.push(Line::from(
+            "Since collector startup; system scope, namespace unknown",
+        ));
+        if let Some(time) = events.sampled_at {
+            lines.push(Line::from(format!(
+                "Last sampled {}s ago{}",
+                now.duration_since(time).unwrap_or_default().as_secs(),
+                if sample_is_fresh(time, now) {
+                    ""
+                } else {
+                    " [Stale]"
+                }
+            )));
+        }
+        let total: u64 = events.counts.values().map(|r| r.events).sum();
+        lines.push(Line::from(format!(
+            "Matched 0; unmatched {total}; delivery lost {}; discarded {}; backlog possible {}",
+            events.delivery_lost, events.malformed, events.backlog_possible
+        )));
+        for (id, count) in &events.counts {
+            lines.push(Line::from(format!(
+                "{} ({id}): {} events",
+                count.reason, count.events
+            )));
+        }
+        lines.push(Line::from(
+            "Recent unmatched events (native interface index is not capture scope)",
+        ));
+        for event in events.recent.iter().rev() {
+            let age = now
+                .duration_since(event.observed_at)
+                .unwrap_or_default()
+                .as_secs();
+            lines.push(Line::from(format!(
+                "{age}s ago: reason {}, interface index {}",
+                event.reason, event.ifindex
+            )));
+        }
+        lines.push(Line::from(
+            "Socket counters and reasoned events are separate sources; do not add them.",
+        ));
+    }
+    let captured_events = ctx.app.get_network_event_counts();
+    if captured_events.observed().next().is_some() {
+        lines.push(Line::default());
+        lines.push(Line::from(section_title(
+            "Captured network events (capture interface/filter scope)",
+        )));
+        lines.extend(network_event_lines(&captured_events, area.width < 70));
+    }
+    if ctx.ui_state.host_diagnostics_focus_requested.replace(false) && !selected_lines.is_empty() {
+        let width = inner.width.saturating_sub(2).max(1);
+        let rows_before = |end| {
+            u16::try_from(
+                Paragraph::new(lines[..end].to_vec())
+                    .wrap(Wrap { trim: false })
+                    .line_count(width),
+            )
+            .unwrap_or(u16::MAX)
+        };
+        ctx.ui_state.host_diagnostics_scroll.reveal_range(
+            rows_before(selected_lines.start),
+            rows_before(selected_lines.end),
+            inner.height,
+        );
+    }
+    draw_scrolled_text(
+        f,
+        inner,
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        &ctx.ui_state.host_diagnostics_scroll,
+    );
+    Ok(())
 }

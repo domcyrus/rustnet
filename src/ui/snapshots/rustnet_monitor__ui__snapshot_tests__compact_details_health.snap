@@ -7,6 +7,9 @@ expression: output
 Connection   Network   Process   Application   Health   Traffic                 
 ───────────────────────────────────────────────━━━━━━───────────────────────────
 ▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────
+Diagnostics                                                                     
+Unavailable: no unambiguous socket sample; capture evidence only                
+Observation status [d]                                                          
 ▎ Transport Health ─────────────────────────────────────────────────────────────
 Initial RTT           -                                                         
 Live RTT              23.4ms                                                    
@@ -15,9 +18,6 @@ Out-of-Order (O)      1
 Duplicate ACKs        0                                                         
 Fast Retransmits      0                                                         
 Window Size           -                                                         
-                                                                                
-                                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 

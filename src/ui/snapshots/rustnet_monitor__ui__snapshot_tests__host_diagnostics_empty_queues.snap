@@ -1,0 +1,36 @@
+---
+source: src/ui/mod.rs
+expression: hidden
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                            ● eth0
+────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────
+Sockets   Interfaces   DNS   Diagnostics                                                            
+─────────────────────────────━━━━━━━━━━━────────────────────────────────────────────────────────────
+▎ Diagnostics · n/p select finding · Enter Details ─────────────────────────────────────────────────
+Findings                                                                                            
+No diagnostic findings in the observed scope                                                        
+All sampled TCP queues are empty.                                                                   
+                                                                                                    
+Collection coverage                                                                                 
+Inventory sockets: 1 · Fresh queue samples: 1 · Fresh TCP samples: 0                                
+Queues: Available: lsof TCP queues                                                                  
+TCP: Unavailable on this platform                                                                   
+Reasoned drop events: Unavailable: native drop collector not enabled                                
+                                                                                                    
+Socket measurements · Show all sockets [a]                                                          
+Receive/send queues are queued bytes, not traffic totals.                                           
+Sockets with empty queues hidden: 1                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ v/V section  a all sockets  esc back                                                h help  q quit
