@@ -27,6 +27,7 @@ on:
       - 'src/**'
       - 'crates/**'
       - 'tests/**'
+      - 'examples/**'
       - '.github/workflows/test-platform-builds.yml'
       - '.github/workflows/build-platforms.yml'
       - '.github/actions/**'

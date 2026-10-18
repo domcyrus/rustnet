@@ -124,7 +124,8 @@ fn download_windows_npcap_sdk() -> Result<()> {
     const NPCAP_SDK_SHA256: &str =
         "52c7b9fb4abee3ad9fe739bb545c3efe77b731c8e127122bdf328eafdae3ed4f";
 
-    let npcap_sdk_download_url = format!("https://npcap.com/dist/{NPCAP_SDK}");
+    // Use libpcap's mirror while retaining the pinned archive checksum.
+    let npcap_sdk_download_url = format!("https://www.tcpdump.org/depends/{NPCAP_SDK}");
     let cache_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("target");
     let npcap_sdk_cache_path = cache_dir.join(NPCAP_SDK);
 
