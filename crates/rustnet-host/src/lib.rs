@@ -186,6 +186,50 @@ pub struct SocketSnapshot {
     /// Start of a complete scan with sufficient visibility to prove absence.
     /// `None` means this inventory is useful for display/attribution only.
     pub closure_scan_started: Option<std::time::SystemTime>,
+    /// Per-socket evidence, separate from inventory identity and completeness.
+    pub diagnostics: Arc<HashMap<u64, Arc<rustnet_core::network::types::SocketSample>>>,
+    pub diagnostics_status: DiagnosticsStatus,
+    pub drop_events: Option<Arc<DropSnapshot>>,
+}
+
+/// Bounded, host-scope reasoned observations, independent of capture counters.
+#[derive(Debug, Clone, Default)]
+pub struct DropSnapshot {
+    pub sampled_at: Option<std::time::SystemTime>,
+    pub counts: std::collections::BTreeMap<u32, DropReasonCount>,
+    pub recent: std::collections::VecDeque<DropObservation>,
+    pub delivery_lost: u64,
+    pub malformed: u64,
+    pub backlog_possible: bool,
+}
+#[derive(Debug, Clone)]
+pub struct DropReasonCount {
+    pub reason: String,
+    pub events: u64,
+}
+#[derive(Debug, Clone)]
+pub struct DropObservation {
+    pub observed_at: std::time::SystemTime,
+    pub reason: u32,
+    /// Native index only. Without namespace evidence it is not a capture-interface match.
+    pub ifindex: u32,
+}
+
+/// Independent source availability. A missing collector never means zero events.
+#[derive(Debug, Clone)]
+pub struct DiagnosticsStatus {
+    pub queues: String,
+    pub tcp: String,
+    pub drops: String,
+}
+impl Default for DiagnosticsStatus {
+    fn default() -> Self {
+        Self {
+            queues: "Unavailable on this platform".into(),
+            tcp: "Unavailable on this platform".into(),
+            drops: "Unavailable: native drop collector not enabled".into(),
+        }
+    }
 }
 
 impl SocketSnapshot {
@@ -217,6 +261,9 @@ impl SocketSnapshot {
             sockets: sockets.into(),
             local_ports,
             closure_scan_started: None,
+            diagnostics: Arc::default(),
+            diagnostics_status: DiagnosticsStatus::default(),
+            drop_events: None,
         }
     }
 

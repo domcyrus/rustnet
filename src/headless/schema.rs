@@ -23,6 +23,8 @@ pub(super) struct SnapshotEnvelope {
     filter: Option<String>,
     connection_count: usize,
     connections: Vec<ConnectionSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host_diagnostics: Option<serde_json::Value>,
 }
 
 impl SnapshotEnvelope {
@@ -62,6 +64,34 @@ impl SnapshotEnvelope {
                 filter: filter.map(str::to_string),
                 connection_count: connections.len(),
                 connections,
+                host_diagnostics: {
+                    let snapshot = app.get_socket_snapshot();
+                    (!snapshot.diagnostics.is_empty() || snapshot.drop_events.is_some()).then(|| serde_json::json!({
+                        "scope": "socket samples: current network namespace; drop events: system, namespace unknown",
+                        "queues_status": snapshot.diagnostics_status.queues,
+                        "tcp_status": snapshot.diagnostics_status.tcp,
+                        "drops_status": snapshot.diagnostics_status.drops,
+                        "inventory_sockets": snapshot.sockets.len(),
+                        "sockets": snapshot.sockets.iter().filter_map(|socket| {
+                            let sample = snapshot.diagnostics.get(&socket.native_id?)?;
+                            Some(serde_json::json!({"native_id": sample.native_id, "netns": sample.netns,
+                                "protocol": socket.protocol.as_str(), "local": socket.local_addr.to_string(), "remote": socket.remote_addr.map(|a| a.to_string()),
+                                "queues": sample.queues.as_ref().map(|q| serde_json::json!({
+                                    "sampled_at": timestamp(q.sampled_at), "fresh": crate::network::types::sample_is_fresh(q.sampled_at, SystemTime::now()),
+                                    "unit": match q.kind { crate::network::types::QueueKind::TcpBytes => "bytes", crate::network::types::QueueKind::UdpMemory => "buffer_bytes" },
+                                    "receive": q.receive, "send": q.send, "socket_drops": q.socket_drops,
+                                })),
+                            }))
+                        }).collect::<Vec<_>>(),
+                        "drop_events": snapshot.drop_events.as_ref().map(|events| serde_json::json!({
+                            "source": "tp_btf/kfree_skb", "sampled_at": events.sampled_at.map(timestamp),
+                            "matched": 0, "unmatched": events.counts.values().map(|r| r.events).sum::<u64>(),
+                            "delivery_lost": events.delivery_lost, "discarded": events.malformed, "backlog_possible": events.backlog_possible,
+                            "reasons": events.counts.iter().map(|(id, r)| serde_json::json!({"native_reason": id, "reason": r.reason, "events": r.events})).collect::<Vec<_>>(),
+                            "recent": events.recent.iter().map(|e| serde_json::json!({"observed_at": timestamp(e.observed_at), "native_reason": e.reason, "ifindex": e.ifindex})).collect::<Vec<_>>(),
+                        })),
+                    }))
+                },
             },
         )
     }
@@ -277,6 +307,8 @@ struct ConnectionSnapshot {
     last_activity: String,
     historic: bool,
     closed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<serde_json::Value>,
 }
 
 impl ConnectionSnapshot {
@@ -427,6 +459,28 @@ impl ConnectionSnapshot {
             last_activity: timestamp(connection.last_activity),
             historic: connection.is_historic,
             closed_at: connection.closed_at.map(timestamp),
+            diagnostics: {
+                let now = SystemTime::now();
+                let findings = connection.diagnostic_findings(now);
+                let sample = connection.diagnostics.as_ref().map(|d| &d.sample);
+                (sample.is_some() || !findings.is_empty()).then(|| serde_json::json!({
+                    "native_id": sample.map(|s| s.native_id), "netns": sample.and_then(|s| s.netns),
+                    "queues": sample.and_then(|s| s.queues.as_ref()).map(|q| serde_json::json!({
+                        "source": "procfs", "sampled_at": timestamp(q.sampled_at),
+                        "fresh": crate::network::types::sample_is_fresh(q.sampled_at, now),
+                        "unit": match q.kind { crate::network::types::QueueKind::TcpBytes => "bytes", crate::network::types::QueueKind::UdpMemory => "buffer_bytes" },
+                        "receive": q.receive, "send": q.send, "socket_drops": q.socket_drops,
+                        "socket_drop_increase": connection.diagnostics.as_ref().and_then(|d| d.socket_drop_increase),
+                    })),
+                    "tcp": sample.and_then(|s| s.tcp.as_ref()).map(|t| serde_json::json!({
+                        "source": "tcp_bpf_iterator", "sampled_at": timestamp(t.sampled_at),
+                        "fresh": crate::network::types::sample_is_fresh(t.sampled_at, now),
+                        "rtt_us": t.rtt_us, "rtt_variation_us": t.rtt_variation_us,
+                        "congestion_window_segments": t.congestion_window_segments, "retransmissions": t.retransmissions,
+                    })),
+                    "findings": findings,
+                }))
+            },
         }
     }
 }
@@ -604,6 +658,63 @@ mod tests {
             let snapshot = ConnectionSnapshot::from_connection(&connection);
             assert_eq!(serde_json::to_value(snapshot).unwrap()["application"], name);
         }
+    }
+
+    #[test]
+    fn diagnostics_exports_capture_findings_without_a_socket_sample() {
+        let app = app_with_connections();
+        let mut connection = app.get_connections()[0].clone();
+        connection.diagnostics = None;
+        connection.protocol_state = ProtocolState::Tcp(TcpState::SynSent);
+        connection.created_at = SystemTime::now() - Duration::from_secs(30);
+        connection.packets_received = 0;
+        let value = serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
+        let diagnostics = &value["diagnostics"];
+        assert!(diagnostics["native_id"].is_null());
+        assert!(diagnostics["queues"].is_null());
+        assert_eq!(
+            diagnostics["findings"],
+            serde_json::json!(connection.diagnostic_findings(SystemTime::now()))
+        );
+        assert!(!diagnostics["findings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn diagnostics_exports_optional_units_age_and_historical_evidence() {
+        use crate::network::types::{ConnectionDiagnostics, QueueKind, QueueSample, SocketSample};
+        let app = app_with_connections();
+        let mut conn = app.get_connections()[0].clone();
+        assert!(
+            serde_json::to_value(ConnectionSnapshot::from_connection(&conn))
+                .unwrap()
+                .get("diagnostics")
+                .is_none()
+        );
+        conn.diagnostics = Some(ConnectionDiagnostics::update(
+            None,
+            std::sync::Arc::new(SocketSample {
+                native_id: 42,
+                netns: Some(7),
+                tcp: None,
+                queues: Some(QueueSample {
+                    sampled_at: SystemTime::UNIX_EPOCH,
+                    kind: QueueKind::UdpMemory,
+                    receive: 512,
+                    send: 0,
+                    socket_drops: Some(9),
+                }),
+            }),
+        ));
+        conn.is_historic = true;
+        let value =
+            serde_json::to_value(ConnectionSnapshot::from_connection(&conn.snapshot_clone()))
+                .unwrap();
+        let diagnostic = &value["diagnostics"];
+        assert_eq!(diagnostic["queues"]["unit"], "buffer_bytes");
+        assert_eq!(diagnostic["queues"]["socket_drops"], 9);
+        assert_eq!(diagnostic["queues"]["fresh"], false);
+        assert!(diagnostic["tcp"].is_null());
+        assert!(diagnostic["findings"].as_array().unwrap().is_empty());
     }
 
     #[test]

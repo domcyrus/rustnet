@@ -8,11 +8,13 @@ use crate::{
 };
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
+use rustnet_core::network::types::{QueueKind, QueueSample, SocketSample};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::SystemTime;
 
 /// Resolve the executable path of a TGID from `/proc/<tgid>/exe`.
 ///
@@ -453,6 +455,10 @@ pub(super) struct LinuxProcessLookup {
     // once per refresh instead of once each. Failures are memoized too.
     lineages: RwLock<HashMap<u32, Option<ProcessLineage>>>,
     socket_snapshot: RwLock<SocketSnapshot>,
+    #[cfg(feature = "ebpf")]
+    tcp_iterator: std::sync::Mutex<Result<super::ebpf::tcp_stats::TcpIterator, String>>,
+    #[cfg(feature = "drop-events")]
+    drop_collector: std::sync::Mutex<Result<super::ebpf::drops::DropCollector, String>>,
 }
 
 impl LinuxProcessLookup {
@@ -477,6 +483,14 @@ impl LinuxProcessLookup {
             )),
             cache: RwLock::new(process_map),
             lineages: RwLock::new(HashMap::new()),
+            #[cfg(feature = "ebpf")]
+            tcp_iterator: std::sync::Mutex::new(
+                super::ebpf::tcp_stats::TcpIterator::load().map_err(|e| format!("{e:#}")),
+            ),
+            #[cfg(feature = "drop-events")]
+            drop_collector: std::sync::Mutex::new(
+                super::ebpf::drops::DropCollector::load().map_err(|e| format!("{e:#}")),
+            ),
             socket_snapshot: RwLock::new(socket_snapshot),
         })
     }
@@ -490,6 +504,10 @@ impl LinuxProcessLookup {
             retained_socket_owners: RwLock::new(HashMap::new()),
             cache: RwLock::new(lookup),
             lineages: RwLock::new(HashMap::new()),
+            #[cfg(feature = "ebpf")]
+            tcp_iterator: std::sync::Mutex::new(Err("not initialized".into())),
+            #[cfg(feature = "drop-events")]
+            drop_collector: std::sync::Mutex::new(Err("not initialized".into())),
             socket_snapshot: RwLock::new(SocketSnapshot::default()),
         }
     }
@@ -597,6 +615,7 @@ impl LinuxProcessLookup {
     ) -> Result<(ConnectionProcessMap, SocketSnapshot, HashSet<u64>)> {
         let mut process_map = HashMap::new();
         let mut sockets = Vec::new();
+        let mut diagnostics = HashMap::new();
 
         let (inode_to_process, shared_inodes) = Self::build_inode_map(startup_owners)?;
 
@@ -608,9 +627,18 @@ impl LinuxProcessLookup {
                 &inode_to_process,
                 &mut process_map,
                 &mut sockets,
+                &mut diagnostics,
             );
         }
-        let snapshot = SocketSnapshot::from_inventory(sockets, complete);
+        let mut snapshot = SocketSnapshot::from_inventory(sockets, complete);
+        snapshot.diagnostics = Arc::new(diagnostics);
+        snapshot.diagnostics_status.queues = if complete {
+            "Available: procfs, current network namespace"
+        } else {
+            "Partial: one or more procfs tables unreadable"
+        }
+        .into();
+        snapshot.diagnostics_status.tcp = "Unavailable: built without eBPF".into();
         Ok((process_map, snapshot, shared_inodes))
     }
 
@@ -669,6 +697,7 @@ impl LinuxProcessLookup {
         inode_map: &InodeProcessMap,
         result: &mut ConnectionProcessMap,
         sockets: &mut Vec<HostSocket>,
+        diagnostics: &mut HashMap<u64, Arc<SocketSample>>,
     ) -> bool {
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
@@ -676,7 +705,7 @@ impl LinuxProcessLookup {
             Err(e) => return e.kind() == std::io::ErrorKind::NotFound && path.ends_with('6'),
         };
 
-        Self::parse_and_map_content(&content, protocol, inode_map, result, sockets);
+        Self::parse_and_map_content(&content, protocol, inode_map, result, sockets, diagnostics);
         true
     }
 
@@ -686,7 +715,10 @@ impl LinuxProcessLookup {
         inode_map: &InodeProcessMap,
         result: &mut ConnectionProcessMap,
         sockets: &mut Vec<HostSocket>,
+        diagnostics: &mut HashMap<u64, Arc<SocketSample>>,
     ) {
+        let sampled_at = SystemTime::now();
+        let netns = super::lifecycle::local_netns_id();
         for (i, line) in content.lines().enumerate() {
             if i == 0 {
                 continue;
@@ -727,6 +759,36 @@ impl LinuxProcessLookup {
                 result.insert(key, (owner.pid, owner.name.clone()));
             }
 
+            if let Some(native_id) = inode.filter(|inode| *inode != 0)
+                && state != HostSocketState::Tcp(HostTcpState::Listen)
+                && let Some((send, receive)) = parts[4].split_once(':')
+                && let (Ok(send), Ok(receive)) = (
+                    u64::from_str_radix(send, 16),
+                    u64::from_str_radix(receive, 16),
+                )
+            {
+                diagnostics.insert(
+                    native_id,
+                    Arc::new(SocketSample {
+                        native_id,
+                        netns,
+                        tcp: None,
+                        queues: Some(QueueSample {
+                            sampled_at,
+                            send,
+                            receive,
+                            kind: if protocol == Protocol::Tcp {
+                                QueueKind::TcpBytes
+                            } else {
+                                QueueKind::UdpMemory
+                            },
+                            socket_drops: (protocol == Protocol::Udp)
+                                .then(|| parts.get(12).and_then(|value| value.parse().ok()))
+                                .flatten(),
+                        }),
+                    }),
+                );
+            }
             sockets.push(HostSocket {
                 protocol,
                 local_addr,
@@ -832,9 +894,50 @@ impl ProcessLookup for LinuxProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
+        self.refresh_interruptible(&std::sync::atomic::AtomicBool::new(false))
+    }
+
+    fn refresh_interruptible(&self, cancelled: &std::sync::atomic::AtomicBool) -> Result<()> {
+        anyhow::ensure!(
+            !cancelled.load(std::sync::atomic::Ordering::Relaxed),
+            "refresh cancelled"
+        );
         let (process_map, mut socket_snapshot, shared_inodes) =
             Self::build_process_map(StartupSocketOwners::default())?;
 
+        #[cfg(feature = "ebpf")]
+        {
+            let iterator = self
+                .tcp_iterator
+                .lock()
+                .expect("TCP iterator lock poisoned");
+            socket_snapshot.diagnostics_status.tcp = match iterator.as_ref() {
+                Ok(iterator) => match iterator.sample(&mut socket_snapshot, cancelled) {
+                    Ok(()) => {
+                        "Available: TCP iterator, established sockets in current namespace".into()
+                    }
+                    Err(error) => format!("Unavailable: {error:#}"),
+                },
+                Err(error) => format!("Unavailable: {error}"),
+            };
+        }
+        #[cfg(feature = "drop-events")]
+        {
+            let collector = self
+                .drop_collector
+                .lock()
+                .expect("drop collector lock poisoned");
+            socket_snapshot.diagnostics_status.drops = match collector.as_ref() {
+                Ok(collector) => match collector.sample() {
+                    Ok(events) => {
+                        socket_snapshot.drop_events = Some(events);
+                        "Available: typed kfree_skb events, system scope; connection and namespace unknown".into()
+                    }
+                    Err(error) => format!("Unavailable: {error:#}"),
+                },
+                Err(error) => format!("Unavailable: {error}"),
+            };
+        }
         restore_socket_owners(
             &mut self
                 .retained_socket_owners
@@ -875,6 +978,46 @@ mod tests {
     use super::*;
     use crate::test_support::{tcp_connection, tcp_key as key};
     use rustnet_core::network::types::{ProtocolState, TcpState};
+
+    #[test]
+    fn queue_parser_keeps_units_drops_and_inventory_independent() {
+        let mut inventory = Vec::new();
+        let mut samples = HashMap::new();
+        let mut owners = HashMap::new();
+        let table = "header\n0: 0100007F:1F90 00000000:0000 07 00000020:00000100 00:00000000 00000000 1000 0 123 2 0 42\n1: 0100007F:1F91 00000000:0000 07 invalid 00:00000000 00000000 1000 0 124 2 0 99\n";
+        LinuxProcessLookup::parse_and_map_content(
+            table,
+            Protocol::Udp,
+            &HashMap::new(),
+            &mut owners,
+            &mut inventory,
+            &mut samples,
+        );
+        assert_eq!(inventory.len(), 2);
+        assert_eq!(samples.len(), 1);
+        let q = samples[&123].queues.as_ref().unwrap();
+        assert_eq!((q.send, q.receive, q.socket_drops), (32, 256, Some(42)));
+        assert_eq!(q.kind, QueueKind::UdpMemory);
+        inventory.clear();
+        samples.clear();
+        let table = "header\n0: 0100007F:1F90 00000000:0000 0A 00000020:00000100 00:00000000 00000000 1000 0 125\n1: 0100007F:1F91 0100007F:1F92 01 00000010:00000200 00:00000000 00000000 1000 0 126\n";
+        LinuxProcessLookup::parse_and_map_content(
+            table,
+            Protocol::Tcp,
+            &HashMap::new(),
+            &mut owners,
+            &mut inventory,
+            &mut samples,
+        );
+        assert_eq!(inventory.len(), 2);
+        assert!(
+            !samples.contains_key(&125),
+            "listener backlog must not become byte queues"
+        );
+        let q = samples[&126].queues.as_ref().unwrap();
+        assert_eq!((q.send, q.receive, q.socket_drops), (16, 512, None));
+        assert_eq!(q.kind, QueueKind::TcpBytes);
+    }
 
     #[test]
     fn lifecycle_inode_lookup_preserves_matching_shape_and_rejects_ambiguity() {
@@ -991,6 +1134,7 @@ mod tests {
             &inode_map,
             &mut process_map,
             &mut sockets,
+            &mut HashMap::new(),
         );
 
         let socket = sockets.first().expect("socket row must parse");
@@ -1059,6 +1203,10 @@ mod tests {
             retained_socket_owners: RwLock::new(HashMap::new()),
             cache: RwLock::new(ConnectionProcessMap::new()),
             lineages: RwLock::new(HashMap::new()),
+            #[cfg(feature = "ebpf")]
+            tcp_iterator: std::sync::Mutex::new(Err("not initialized".into())),
+            #[cfg(feature = "drop-events")]
+            drop_collector: std::sync::Mutex::new(Err("not initialized".into())),
             socket_snapshot: RwLock::new(SocketSnapshot::new(inventory)),
         }
     }
@@ -1361,6 +1509,10 @@ mod tests {
             retained_socket_owners: RwLock::new(HashMap::new()),
             cache: RwLock::new(ConnectionProcessMap::new()),
             lineages: RwLock::new(HashMap::new()),
+            #[cfg(feature = "ebpf")]
+            tcp_iterator: std::sync::Mutex::new(Err("not initialized".into())),
+            #[cfg(feature = "drop-events")]
+            drop_collector: std::sync::Mutex::new(Err("not initialized".into())),
             socket_snapshot: RwLock::new(SocketSnapshot::new(vec![host_socket(
                 "192.168.1.10:44444",
                 "203.0.113.5:22",
@@ -1408,6 +1560,10 @@ mod tests {
             retained_socket_owners: RwLock::new(HashMap::new()),
             cache: RwLock::new(live),
             lineages: RwLock::new(HashMap::new()),
+            #[cfg(feature = "ebpf")]
+            tcp_iterator: std::sync::Mutex::new(Err("not initialized".into())),
+            #[cfg(feature = "drop-events")]
+            drop_collector: std::sync::Mutex::new(Err("not initialized".into())),
             socket_snapshot: RwLock::new(SocketSnapshot::default()),
         };
 

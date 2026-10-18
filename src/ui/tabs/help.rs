@@ -30,6 +30,7 @@ enum HelpContext {
     HostSockets,
     HostInterfaces,
     HostDns,
+    HostDiagnostics,
 }
 
 impl HelpContext {
@@ -41,6 +42,7 @@ impl HelpContext {
             3 => Self::Graph,
             4 => match ui_state.host_view {
                 HostView::Sockets => Self::HostSockets,
+                HostView::Diagnostics => Self::HostDiagnostics,
                 HostView::Interfaces => Self::HostInterfaces,
                 HostView::Dns => Self::HostDns,
             },
@@ -59,6 +61,7 @@ impl HelpContext {
             Self::HostSockets => "Host · Sockets",
             Self::HostInterfaces => "Host · Interfaces",
             Self::HostDns => "Host · DNS",
+            Self::HostDiagnostics => "Host · Diagnostics",
         }
     }
 
@@ -88,6 +91,10 @@ impl HelpContext {
             Self::HostInterfaces => &[
                 "Host shows the operating system's network interfaces and their counters.",
                 "Interfaces lists addresses, traffic rates, packet totals, errors, and drops.",
+            ],
+            Self::HostDiagnostics => &[
+                "Diagnostics separates capture evidence, socket samples, and reasoned drop events.",
+                "No finding does not prove health; unsupported sources remain unavailable.",
             ],
             Self::HostDns => &[
                 "DNS tracks lookups and replies seen in captured unicast UDP traffic.",
@@ -251,6 +258,7 @@ const CONNECTION_DISPLAY: &[HelpRow] = &[
 ];
 
 const DETAILS_KEYS: &[HelpRow] = &[
+    ("d", "Expand/collapse diagnostics observation status"),
     ("↑/k, ↓/j", "Show the previous or next connection"),
     ("g, G", "Show the first or last connection"),
     ("Page Up/Down", "Move through connections by one page"),
@@ -522,6 +530,18 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
         HelpContext::Graph => {
             push_section(&mut lines, "Graph", GRAPH_KEYS);
         }
+        HelpContext::HostDiagnostics => {
+            push_section(
+                &mut lines,
+                "Diagnostics",
+                &[
+                    ("n/p", "Select the next/previous affected connection"),
+                    ("Enter", "Open the selected connection in Details"),
+                    ("j/k", "Scroll diagnostics"),
+                    ("Esc", "Return to Overview"),
+                ],
+            );
+        }
         HelpContext::HostSockets => {
             let rows = host_pane_rows(
                 HOST_SOCKET_KEYS,
@@ -728,6 +748,7 @@ mod tests {
                 HostView::Sockets => &state.host_sockets_scroll,
                 HostView::Interfaces => &state.interfaces_scroll,
                 HostView::Dns => &state.dns_questions_scroll,
+                HostView::Diagnostics => &state.host_diagnostics_scroll,
             };
             scroll.clamp_for_render(3);
             let outgrown = plain_text(&state);

@@ -1081,6 +1081,24 @@ Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the def
 
 For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
 
+## Socket diagnostics (development)
+
+Unreleased diagnostics appear before the connection cards in Details. At most three findings summarize observed evidence or possible causes. Press `d` to expand observation status in Health. Transport Health keeps captured RTT/retransmissions separate from kernel measurements. When the full dashboard does not fit, use the existing section controls to reach Health and Traffic.
+
+Host > Diagnostics shows the same affected-connection findings, socket measurements, reasoned drop events, and collection coverage. Use `n`/`p` to select an affected connection and Enter to open Details; `j`/`k` scroll the report. Host > Sockets retains its inventory and links to diagnostics through the section controls.
+
+On Linux, the existing five-second procfs scan supplies TCP queue bytes, UDP socket-buffer memory, and UDP lifetime socket-drop counters. Listener backlog is not displayed as byte queues. Shared/unconnected UDP counters remain at Host scope. Connection matching requires unique canonical endpoints and a verified namespace, then pins the socket identity. The first association is best effort: tuple reuse before that sample cannot prove that the native socket belongs to the original captured session. A socket drop counter does not identify a firewall or application cause and must not be added to reasoned event counts. Connection findings use differences between distinct samples; the first sample establishes a baseline. Three consecutive fresh nonempty TCP receive queues produce an observation with an unknown cause. The queue can include a pending EOF, so this does not diagnose slow application consumption. Samples older than 15 seconds are marked stale and stop supporting current queue findings.
+
+With the `ebpf` build feature, one optional TCP iterator supplies kernel RTT, RTT variation, congestion window (segments), and lifetime retransmissions for established sockets. It is loaded before sandboxing, with a fresh reader per scan afterward. Linux startup requires the existing `CAP_NET_RAW`, `CAP_BPF`, and `CAP_PERFMON` setup for capture and BPF. Procfs needs no new capabilities. Missing privileges, BTF, kernel support, or a failed read leave the source unavailable without disabling inventory or packet capture. No privileges are retained for diagnostics.
+
+The experimental `drop-events` build feature enables an optional Linux typed `kfree_skb` hook, which records native drop reasons at Host scope. All these events are unmatched initially: RustNet does not guess a connection, namespace, firewall rule, or process from the current kernel task. It shows runtime kernel reason names, recent events, delivery loss, discarded records, and possible backlog. Counts cover the system since collector startup, independently of the capture filter and TUI clear. An interface index alone does not establish capture scope. A bounded buffer may lose observations during bursts. Missing events never prove that a path is healthy.
+
+JSON schema version 1 gains optional `diagnostics` on connections and `host_diagnostics` on snapshots. These additive objects carry units, independent sampling times, freshness, and source availability. Archived connections retain their measurements as historical evidence. The collector does not feed normal traffic counters or DPI.
+
+Windows, macOS, and FreeBSD currently expose unavailable native diagnostic sources. The shared screens and model support partial coverage; their existing inventory continues to work. Native EStats/WFP, version-checked macOS PCB/DropTap, and FreeBSD PCB/configured PFLOG adapters remain gated on native permission and post-sandbox tests. No privileged helper, global firewall logging change, second Linux statistics backend, or UDP BPF iterator is added.
+
+The integrated capability/sandbox probe passed on the tested Linux x86-64 host, including IPv4/IPv6 TCP statistics and UDP receive-buffer drops. Release checks still include controlled nonzero TCP retransmissions, root-to-user and other-user coverage, supported kernels/architectures, event bursts, and many-socket performance. Retransmission-delta diagnoses and per-connection reasoned-drop correlation remain disabled until validated. Run `cargo build --locked --example diagnostics_probe --all-features` for the loopback integration fixture; apply the ordinary RustNet file capabilities to that executable before running it in a native terminal. The fixture changes no firewall or system policy.
+
 ## Host Socket Inventory
 
 > **Available since v1.7.0.**

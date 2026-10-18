@@ -56,7 +56,10 @@ fn compile_ebpf_programs() {
     let vmlinux_include_path =
         get_vmlinux_header(vmlinux_arch).expect("Failed to locate bundled vmlinux.h");
 
-    for program in ["fentry", "kprobe", "task_file"] {
+    for program in ["fentry", "kprobe", "task_file", "tcp_stats", "drops"] {
+        if program == "drops" && env::var("CARGO_FEATURE_DROP_EVENTS").is_err() {
+            continue;
+        }
         let src = format!("src/linux/ebpf/programs/socket_tracker_{program}.bpf.c");
         let out = out_dir.join(format!("socket_tracker_{program}.skel.rs"));
 
@@ -64,6 +67,7 @@ fn compile_ebpf_programs() {
 
         SkeletonBuilder::new()
             .source(&src)
+            .obj(out_dir.join(format!("socket_tracker_{program}.bpf.o")))
             .clang_args([
                 OsStr::new("-I"),
                 vmlinux_include_path.as_os_str(),

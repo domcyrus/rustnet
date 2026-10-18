@@ -340,7 +340,11 @@ impl ProcessLookup for EnhancedLinuxProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
-        self.procfs_lookup.refresh()?;
+        self.refresh_interruptible(&std::sync::atomic::AtomicBool::new(false))
+    }
+
+    fn refresh_interruptible(&self, cancelled: &std::sync::atomic::AtomicBool) -> Result<()> {
+        self.procfs_lookup.refresh_interruptible(cancelled)?;
 
         {
             let mut cache = self

@@ -33,6 +33,7 @@ macro_rules! static_names {
 }
 
 mod connection;
+mod diagnostics;
 mod graph;
 mod identity;
 mod network_events;
@@ -41,6 +42,7 @@ mod rates;
 mod rtt;
 
 pub use connection::*;
+pub use diagnostics::*;
 pub use graph::*;
 pub use identity::*;
 pub use network_events::*;

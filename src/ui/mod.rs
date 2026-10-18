@@ -417,7 +417,8 @@ pub fn draw(
         let conn = ui_state
             .get_selected_index(connections)
             .and_then(|index| connections.get(index));
-        let sectioned = tabs::details::sectioned_layout(chunks[1], conn);
+        let sectioned =
+            tabs::details::sectioned_layout(chunks[1], conn, ui_state.diagnostics_status_expanded);
         if ui_state.details_compact.replace(sectioned) != sectioned {
             ui_state.details_page.set(0);
             ui_state.details_page_count.set(1);
@@ -1745,9 +1746,9 @@ mod snapshot_tests {
         render_app_frame(app, &mut ui_state, connections, None, 140, height)
     }
 
-    /// Standard Details render at the 140x50 dashboard size.
+    /// Standard Details render at the 140x56 dashboard size.
     fn render_details(app: &App, connections: &[Connection], selected: usize) -> String {
-        render_details_frame(app, connections, selected, 50).0
+        render_details_frame(app, connections, selected, 56).0
     }
 
     /// Row index of the first rendered line containing `heading`.
@@ -2701,13 +2702,13 @@ mod snapshot_tests {
             ..Default::default()
         };
         for (width, height) in [
-            (140, 46),
-            (140, 50),
+            (140, 52),
+            (140, 56),
             (200, 70),
             (320, 80),
             (321, 90),
             (200, 120),
-            (140, 50),
+            (140, 56),
         ] {
             let (output, regions) =
                 render_app_frame(&app, &mut state, &connections, None, width, height);
@@ -4558,6 +4559,220 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn diagnostics_summary_native_units_staleness_and_host_navigation() {
+        use crate::network::types::{
+            ConnectionDiagnostics, QueueKind, QueueSample, SocketSample, TcpSample,
+        };
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let mut conn = test_support::local_tcp(1000, "browser");
+        let now = SystemTime::now();
+        let sample = std::sync::Arc::new(SocketSample {
+            native_id: 7,
+            netns: Some(1),
+            queues: Some(QueueSample {
+                sampled_at: now,
+                kind: QueueKind::TcpBytes,
+                receive: 2048,
+                send: 0,
+                socket_drops: None,
+            }),
+            tcp: Some(TcpSample {
+                sampled_at: now,
+                rtt_us: 100,
+                rtt_variation_us: 20,
+                congestion_window_segments: 10,
+                retransmissions: 0,
+            }),
+        });
+        conn.diagnostics = Some(ConnectionDiagnostics {
+            sample,
+            nonempty_receive_samples: 3,
+            socket_drop_increase: None,
+        });
+        let connections = [conn];
+        let mut state = UiState {
+            selected_tab: 1,
+            ..Default::default()
+        };
+        let full = render_app(&app, &mut state, &connections, None, 160, 60);
+        assert!(heading_row(&full, "Diagnostics") < heading_row(&full, "Protocol"));
+        assert!(full.contains("Observed: TCP receive queue remained nonempty"));
+        assert!(full.contains("RX 2048 / TX 0 bytes (procfs)"));
+        assert!(full.contains("cwnd 10 segments"));
+        for (width, height) in [(40, 12), (80, 24), (140, 40)] {
+            state.diagnostics_status_expanded = true;
+            render_app(&app, &mut state, &connections, None, width, height);
+            assert!(state.details_compact.get());
+        }
+        state.selected_tab = 4;
+        state.host_view = HostView::Diagnostics;
+        let (host, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 40);
+        assert!(host.contains("Observed: TCP receive queue remained nonempty"));
+        assert!(host.contains("Unavailable: no reasoned event sample"));
+        let mut ctx = HandlerContext {
+            app: &app,
+            ui_state: &mut state,
+            connections: &connections,
+            grouped_rows: None,
+            click_regions: &regions,
+        };
+        dispatch_key(
+            4,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut ctx,
+        )
+        .unwrap();
+        assert_eq!(ctx.ui_state.selected_tab, 1);
+        assert_eq!(
+            ctx.ui_state.selected_connection_key,
+            Some(connections[0].key())
+        );
+        let mut stale = connections[0].clone();
+        let d = stale.diagnostics.as_mut().unwrap();
+        let sample = std::sync::Arc::make_mut(&mut d.sample);
+        sample.queues.as_mut().unwrap().sampled_at = now - Duration::from_secs(30);
+        sample.tcp.as_mut().unwrap().sampled_at = now - Duration::from_secs(30);
+        let text = render_details(&app, std::slice::from_ref(&stale), 0);
+        assert!(!text.contains("Observed: TCP receive queue remained nonempty"));
+        assert!(text.contains("stale procfs"));
+        assert!(text.contains("Stale: socket measurements are not current"));
+        assert!(text.contains("Socket queues (stale)"));
+        assert!(text.contains("Kernel RTT (stale)"));
+        assert!(text.contains("Kernel TCP (stale)"));
+        stale.is_historic = true;
+        let text = render_details(&app, &[stale], 0);
+        assert!(text.contains("Historical connection; retained measurements are not current"));
+    }
+
+    #[test]
+    fn host_diagnostics_navigation_reveals_wrapped_findings_and_stops_at_boundaries() {
+        use crate::network::types::{ConnectionDiagnostics, QueueKind, QueueSample, SocketSample};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let now = SystemTime::now();
+        let connections: Vec<_> = (1000..1005)
+            .map(|port| {
+                let mut conn = test_support::local_tcp(port, "browser");
+                conn.protocol_state = ProtocolState::Tcp(TcpState::SynSent);
+                conn.created_at = now - Duration::from_secs(30);
+                conn.diagnostics = Some(ConnectionDiagnostics {
+                    sample: std::sync::Arc::new(SocketSample {
+                        native_id: port.into(),
+                        netns: Some(1),
+                        tcp: None,
+                        queues: Some(QueueSample {
+                            sampled_at: now,
+                            kind: QueueKind::TcpBytes,
+                            receive: 100,
+                            send: 0,
+                            socket_drops: Some(2),
+                        }),
+                    }),
+                    nonempty_receive_samples: 3,
+                    socket_drop_increase: Some(1),
+                });
+                assert_eq!(conn.diagnostic_findings(now).len(), 3);
+                conn
+            })
+            .collect();
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Diagnostics,
+            ..Default::default()
+        };
+        render_app(&app, &mut state, &connections, None, 50, 18);
+        for (key, ports) in [
+            (KeyCode::Char('n'), vec![1001, 1002, 1003, 1004]),
+            (KeyCode::Char('p'), vec![1003, 1002, 1001, 1000]),
+        ] {
+            for port in ports {
+                let regions = ClickableRegions::default();
+                let mut ctx = HandlerContext {
+                    app: &app,
+                    ui_state: &mut state,
+                    connections: &connections,
+                    grouped_rows: None,
+                    click_regions: &regions,
+                };
+                dispatch_key(4, KeyEvent::new(key, KeyModifiers::NONE), &mut ctx).unwrap();
+                let output = render_app(&app, &mut state, &connections, None, 50, 18);
+                assert!(
+                    output.contains(&format!("> TCP 127.0.0.1:{port}")),
+                    "{output}"
+                );
+            }
+            let before = render_app(&app, &mut state, &connections, None, 50, 18);
+            let regions = ClickableRegions::default();
+            let mut ctx = HandlerContext {
+                app: &app,
+                ui_state: &mut state,
+                connections: &connections,
+                grouped_rows: None,
+                click_regions: &regions,
+            };
+            dispatch_key(4, KeyEvent::new(key, KeyModifiers::NONE), &mut ctx).unwrap();
+            assert_eq!(
+                render_app(&app, &mut state, &connections, None, 50, 18),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn host_diagnostics_socket_rows_identify_each_peer() {
+        use crate::network::types::{QueueKind, QueueSample, SocketSample};
+        let app = test_app();
+        let sockets: Vec<_> = (1000..1002)
+            .map(|port| HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: "127.0.0.1:8080".parse().unwrap(),
+                remote_addr: Some(format!("127.0.0.1:{port}").parse().unwrap()),
+                state: HostSocketState::Tcp(HostTcpState::Established),
+                owner: None,
+                native_id: Some(port),
+            })
+            .collect();
+        let mut snapshot = SocketSnapshot::new(sockets);
+        snapshot.diagnostics = std::sync::Arc::new(
+            (1000..1002)
+                .map(|native_id| {
+                    (
+                        native_id,
+                        std::sync::Arc::new(SocketSample {
+                            native_id,
+                            netns: Some(1),
+                            tcp: None,
+                            queues: Some(QueueSample {
+                                sampled_at: SystemTime::now(),
+                                kind: QueueKind::TcpBytes,
+                                receive: 1,
+                                send: 0,
+                                socket_drops: None,
+                            }),
+                        }),
+                    )
+                })
+                .collect(),
+        );
+        app.set_socket_snapshot_for_test(snapshot);
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Diagnostics,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &[], None, 140, 40);
+        assert!(
+            output.contains("127.0.0.1:8080 -> 127.0.0.1:1000 (socket 1000)"),
+            "{output}"
+        );
+        assert!(
+            output.contains("127.0.0.1:8080 -> 127.0.0.1:1001 (socket 1001)"),
+            "{output}"
+        );
+    }
+
+    #[test]
     fn details_dashboard_pages_before_optional_identity_cards_are_clipped() {
         use crate::network::types::{ContainerInfo, ContainerRuntime};
         let app = test_app();
@@ -4569,12 +4784,12 @@ mod snapshot_tests {
             name: Some("web-worker".into()),
             cgroup_path: None,
         });
-        let cases = vec![(base, 46), (container.clone(), 52)];
+        let cases = vec![(base, 51), (container.clone(), 57)];
         #[cfg(feature = "kubernetes")]
         let cases = {
             let mut cases = cases;
             container.k8s_info = Some(crate::network::types::K8sInfo::default());
-            cases.push((container, 59));
+            cases.push((container, 64));
             cases
         };
         for (connection, height) in cases {
@@ -4948,7 +5163,7 @@ mod snapshot_tests {
         };
         for tab in [0, 1, 2, 3] {
             state.selected_tab = tab;
-            for (width, height, compact) in [(140, 50, false), (80, 24, true), (140, 50, false)] {
+            for (width, height, compact) in [(140, 56, false), (80, 24, true), (140, 56, false)] {
                 let output = render_app(&app, &mut state, &connections, None, width, height);
                 assert_eq!(
                     output.contains(sections::SECTION_KEYS),
@@ -4960,7 +5175,7 @@ mod snapshot_tests {
         }
         // Host keeps its selectable sections on a wide terminal.
         state.selected_tab = 4;
-        let output = render_app(&app, &mut state, &connections, None, 140, 50);
+        let output = render_app(&app, &mut state, &connections, None, 140, 56);
         assert!(output.contains(sections::SECTION_KEYS));
     }
 
@@ -5003,17 +5218,17 @@ mod snapshot_tests {
                 ..Default::default()
             };
             let count = state.sections().0.len();
-            let baseline = render_app(&app, &mut state, &connections, None, 140, 50);
+            let baseline = render_app(&app, &mut state, &connections, None, 140, 56);
             for index in 0..count {
                 state.select_section(index);
                 let (output, regions) =
-                    render_app_frame(&app, &mut state, &connections, None, 140, 50);
+                    render_app_frame(&app, &mut state, &connections, None, 140, 56);
                 assert!(!state.section_navigation);
                 assert_eq!(
                     output, baseline,
                     "wide tab {tab} changed with compact section {index}"
                 );
-                for y in 0..50 {
+                for y in 0..56 {
                     for x in 0..140 {
                         assert!(!matches!(
                             regions.hit_test(x, y),
