@@ -6,6 +6,7 @@ fn main() -> anyhow::Result<()> {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
     use std::time::Duration;
+    let test_loss = std::env::args().any(|arg| arg == "--loss");
     let mut child = Command::new("python3")
         .args(["-u", "-c", FIXTURE])
         .stdin(Stdio::piped())
@@ -39,7 +40,12 @@ fn main() -> anyhow::Result<()> {
                 "capabilities not dropped"
             );
         }
-        for command in ["initial", "late", "drain", "overflow", "closed"] {
+        let mut histories = std::collections::HashMap::new();
+        let commands = ["initial", "late", "drain", "overflow", "loss", "closed"];
+        for command in commands
+            .into_iter()
+            .filter(|command| *command != "loss" || test_loss)
+        {
             if command != "initial" {
                 writeln!(input, "{command}")?;
                 input.flush()?;
@@ -54,7 +60,8 @@ fn main() -> anyhow::Result<()> {
                 let inode = entry["inode"].as_u64().context("inode")?;
                 let sample = snapshot
                     .diagnostics
-                    .get(&inode)
+                    .values()
+                    .find(|s| s.native_id == inode)
                     .context("missing TCP socket sample")?;
                 let q = sample.queues.as_ref().context("missing queues")?;
                 ensure!(
@@ -71,11 +78,37 @@ fn main() -> anyhow::Result<()> {
                     "RTT variation mismatch"
                 );
                 ensure!(
-                    u64::from(tcp.congestion_window_segments) == entry["cwnd"].as_u64().unwrap(),
+                    tcp.congestion_window_segments.map(u64::from) == entry["cwnd"].as_u64(),
                     "cwnd mismatch"
                 );
+                ensure!(
+                    u64::from(tcp.retransmissions) == entry["retransmissions"].as_u64().unwrap(),
+                    "TCP retransmission mismatch"
+                );
+                let history = rustnet_core::network::types::ConnectionDiagnostics::update(
+                    histories.get(&inode),
+                    std::sync::Arc::clone(sample),
+                );
+                if command == "loss" && entry["sending"].as_bool() == Some(true) {
+                    ensure!(
+                        tcp.retransmissions > 0 && q.send > 0,
+                        "loss fixture must retransmit outstanding data"
+                    );
+                    ensure!(
+                        history.retransmission_increase.is_some_and(|n| n > 0),
+                        "missing retransmission delta"
+                    );
+                    ensure!(
+                        history
+                            .findings(std::time::SystemTime::now())
+                            .iter()
+                            .any(|s| s.contains("retransmissions increased")),
+                        "missing finding"
+                    );
+                }
+                histories.insert(inode, history);
                 println!(
-                    "TCP inode={inode} rx={} RTT={} cwnd={}",
+                    "TCP inode={inode} rx={} RTT={} cwnd={:?}",
                     q.receive, tcp.rtt_us, tcp.congestion_window_segments
                 );
             }
@@ -83,7 +116,8 @@ fn main() -> anyhow::Result<()> {
                 let inode = expected["udp"].as_u64().context("UDP inode")?;
                 let drops = snapshot
                     .diagnostics
-                    .get(&inode)
+                    .values()
+                    .find(|s| s.native_id == inode)
                     .and_then(|s| s.queues.as_ref())
                     .and_then(|q| q.socket_drops)
                     .context("missing UDP drops")?;
@@ -104,7 +138,10 @@ fn main() -> anyhow::Result<()> {
             if command == "closed" {
                 for inode in expected["closed"].as_array().context("closed inodes")? {
                     ensure!(
-                        !snapshot.diagnostics.contains_key(&inode.as_u64().unwrap()),
+                        !snapshot
+                            .diagnostics
+                            .values()
+                            .any(|s| s.native_id == inode.as_u64().unwrap()),
                         "closed socket retained"
                     );
                 }
@@ -127,7 +164,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 const FIXTURE: &str = r#"
-import socket, os, sys, json, struct, time
+import socket, os, sys, json, struct, time, ctypes
 pairs=[]
 closed=[]
 def inode(s): return int(os.readlink('/proc/self/fd/%d'%s.fileno())[8:-1])
@@ -145,7 +182,7 @@ def report():
     for sender,receiver,rx in pairs:
         for s,q in [(sender,0),(receiver,rx)]:
             info=s.getsockopt(socket.IPPROTO_TCP,socket.TCP_INFO,104)
-            entries.append(dict(inode=inode(s),rx=q,rtt=struct.unpack_from('I',info,68)[0],rttvar=struct.unpack_from('I',info,72)[0],cwnd=struct.unpack_from('I',info,80)[0]))
+            entries.append(dict(inode=inode(s),rx=q,rtt=struct.unpack_from('I',info,68)[0],rttvar=struct.unpack_from('I',info,72)[0],cwnd=struct.unpack_from('I',info,80)[0],retransmissions=struct.unpack_from('I',info,100)[0],sending=s is sender))
     print(json.dumps(dict(tcp=entries,udp=inode(udp),closed=closed)),flush=True)
 report()
 for command in sys.stdin:
@@ -158,6 +195,23 @@ for command in sys.stdin:
             pairs[i]=(s,r,0)
     elif command=='overflow':
         for i in range(100): send.sendto(b'x'*512,udp.getsockname())
+    elif command=='loss':
+        class Filter(ctypes.Structure):
+            _fields_=[('code',ctypes.c_ushort),('jt',ctypes.c_ubyte),('jf',ctypes.c_ubyte),('k',ctypes.c_uint)]
+        class Program(ctypes.Structure):
+            _fields_=[('length',ctypes.c_ushort),('filter',ctypes.POINTER(Filter))]
+        instruction=Filter(6,0,0,0) # BPF_RET | BPF_K, discard only on this fixture socket.
+        program=Program(1,ctypes.pointer(instruction))
+        libc=ctypes.CDLL(None,use_errno=True)
+        for s,r,_ in pairs:
+            if libc.setsockopt(r.fileno(),socket.SOL_SOCKET,26,ctypes.byref(program),ctypes.sizeof(program)):
+                raise OSError(ctypes.get_errno(),'fixture SO_ATTACH_FILTER')
+            s.sendall(b'lost'*256)
+        # Bound the control and stop before a second retransmission interval.
+        deadline=time.monotonic()+3
+        while any(struct.unpack_from('I',s.getsockopt(socket.IPPROTO_TCP,socket.TCP_INFO,104),100)[0]==0 for s,_,_ in pairs):
+            if time.monotonic()>deadline: raise RuntimeError('no retransmissions observed')
+            time.sleep(.01)
     elif command=='closed':
         for s,r,_ in pairs:
             closed.extend([inode(s),inode(r)]); s.close(); r.close()

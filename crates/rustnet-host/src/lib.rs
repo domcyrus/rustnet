@@ -187,7 +187,7 @@ pub struct SocketSnapshot {
     /// `None` means this inventory is useful for display/attribution only.
     pub closure_scan_started: Option<std::time::SystemTime>,
     /// Per-socket evidence, separate from inventory identity and completeness.
-    pub diagnostics: Arc<HashMap<u64, Arc<rustnet_core::network::types::SocketSample>>>,
+    pub diagnostics: Arc<HashMap<HostSocket, Arc<rustnet_core::network::types::SocketSample>>>,
     pub diagnostics_status: DiagnosticsStatus,
     pub drop_events: Option<Arc<DropSnapshot>>,
 }
@@ -530,6 +530,9 @@ where
 pub(crate) struct SocketScan {
     pub(crate) lookup: HashMap<ConnectionKey, SocketOwner>,
     pub(crate) sockets: Vec<HostSocket>,
+    #[cfg(target_os = "freebsd")]
+    pub(crate) diagnostics_status: String,
+    pub(crate) diagnostics: HashMap<HostSocket, Arc<rustnet_core::network::types::SocketSample>>,
     pub(crate) complete: bool,
 }
 
@@ -817,6 +820,9 @@ mod lsof;
 mod macos;
 #[cfg(any(test, target_os = "freebsd"))]
 mod sockstat;
+
+#[cfg(any(test, target_os = "freebsd"))]
+mod netstat;
 #[cfg(target_os = "windows")]
 mod windows;
 

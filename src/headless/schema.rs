@@ -67,19 +67,26 @@ impl SnapshotEnvelope {
                 host_diagnostics: {
                     let snapshot = app.get_socket_snapshot();
                     (!snapshot.diagnostics.is_empty() || snapshot.drop_events.is_some()).then(|| serde_json::json!({
-                        "scope": "socket samples: current network namespace; drop events: system, namespace unknown",
+                        "scope": "socket samples: visible local sockets; Linux current network namespace; drop events: system, namespace unknown",
                         "queues_status": snapshot.diagnostics_status.queues,
                         "tcp_status": snapshot.diagnostics_status.tcp,
                         "drops_status": snapshot.diagnostics_status.drops,
                         "inventory_sockets": snapshot.sockets.len(),
                         "sockets": snapshot.sockets.iter().filter_map(|socket| {
-                            let sample = snapshot.diagnostics.get(&socket.native_id?)?;
+                            let sample = snapshot.diagnostics.get(socket)?;
                             Some(serde_json::json!({"native_id": sample.native_id, "netns": sample.netns,
                                 "protocol": socket.protocol.as_str(), "local": socket.local_addr.to_string(), "remote": socket.remote_addr.map(|a| a.to_string()),
                                 "queues": sample.queues.as_ref().map(|q| serde_json::json!({
-                                    "sampled_at": timestamp(q.sampled_at), "fresh": crate::network::types::sample_is_fresh(q.sampled_at, SystemTime::now()),
+                                    "source": q.source, "sampled_at": timestamp(q.sampled_at), "fresh": crate::network::types::sample_is_fresh(q.sampled_at, SystemTime::now()),
                                     "unit": match q.kind { crate::network::types::QueueKind::TcpBytes => "bytes", crate::network::types::QueueKind::UdpMemory => "buffer_bytes" },
                                     "receive": q.receive, "send": q.send, "socket_drops": q.socket_drops,
+                                })),
+                                "tcp": sample.tcp.as_ref().map(|t| serde_json::json!({
+                                    "source": t.source, "sampled_at": timestamp(t.sampled_at),
+                                    "fresh": crate::network::types::sample_is_fresh(t.sampled_at, SystemTime::now()),
+                                    "rtt_us": t.rtt_us, "rtt_variation_us": t.rtt_variation_us,
+                                    "congestion_window_segments": t.congestion_window_segments, "retransmissions": t.retransmissions,
+                                    "counter_scope": if t.source == "windows_estats" { "since_collection_enabled" } else { "socket_lifetime" },
                                 })),
                             }))
                         }).collect::<Vec<_>>(),
@@ -466,17 +473,19 @@ impl ConnectionSnapshot {
                 (sample.is_some() || !findings.is_empty()).then(|| serde_json::json!({
                     "native_id": sample.map(|s| s.native_id), "netns": sample.and_then(|s| s.netns),
                     "queues": sample.and_then(|s| s.queues.as_ref()).map(|q| serde_json::json!({
-                        "source": "procfs", "sampled_at": timestamp(q.sampled_at),
+                        "source": q.source, "sampled_at": timestamp(q.sampled_at),
                         "fresh": crate::network::types::sample_is_fresh(q.sampled_at, now),
                         "unit": match q.kind { crate::network::types::QueueKind::TcpBytes => "bytes", crate::network::types::QueueKind::UdpMemory => "buffer_bytes" },
                         "receive": q.receive, "send": q.send, "socket_drops": q.socket_drops,
                         "socket_drop_increase": connection.diagnostics.as_ref().and_then(|d| d.socket_drop_increase),
                     })),
                     "tcp": sample.and_then(|s| s.tcp.as_ref()).map(|t| serde_json::json!({
-                        "source": "tcp_bpf_iterator", "sampled_at": timestamp(t.sampled_at),
+                        "source": t.source, "sampled_at": timestamp(t.sampled_at),
                         "fresh": crate::network::types::sample_is_fresh(t.sampled_at, now),
                         "rtt_us": t.rtt_us, "rtt_variation_us": t.rtt_variation_us,
                         "congestion_window_segments": t.congestion_window_segments, "retransmissions": t.retransmissions,
+                        "retransmission_increase": connection.diagnostics.as_ref().and_then(|d| d.retransmission_increase),
+                        "counter_scope": if t.source == "windows_estats" { "since_collection_enabled" } else { "socket_lifetime" },
                     })),
                     "findings": findings,
                 }))
@@ -697,6 +706,7 @@ mod tests {
                 netns: Some(7),
                 tcp: None,
                 queues: Some(QueueSample {
+                    source: "procfs",
                     sampled_at: SystemTime::UNIX_EPOCH,
                     kind: QueueKind::UdpMemory,
                     receive: 512,

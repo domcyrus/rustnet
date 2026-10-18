@@ -63,7 +63,7 @@ impl TcpIterator {
             {
                 continue;
             }
-            let Some(sample) = samples.get_mut(&inode) else {
+            let Some(sample) = samples.get_mut(*socket) else {
                 continue;
             };
             if sample.netns != Some(netns) {
@@ -130,10 +130,11 @@ fn decode(
             remote_addr: SocketAddr::new(addr(32)?, u16::from_ne_bytes(record[50..52].try_into()?)),
         },
         TcpSample {
+            source: "tcp_bpf_iterator",
             sampled_at,
             rtt_us: u32_at(52),
             rtt_variation_us: u32_at(56),
-            congestion_window_segments: u32_at(60),
+            congestion_window_segments: Some(u32_at(60)),
             retransmissions: u32_at(64),
         },
     ))

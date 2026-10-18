@@ -192,6 +192,11 @@ jobs:
         if: matrix.run-tests
         run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
 
+      - name: Test native socket diagnostics after sandboxing
+        if: matrix.run-tests && runner.os == 'macOS'
+        timeout-minutes: 3
+        run: cargo run --locked --example native_diagnostics_probe --all-features --target ${{ matrix.target }}
+
       - name: Test macOS capture idle waits and packet arrival
         if: matrix.run-tests && runner.os == 'macOS'
         timeout-minutes: 2
@@ -263,6 +268,10 @@ jobs:
           key: ${{ matrix.build }}-tests-${{ hashFiles('.github/actions/setup-windows-tests/**', '.github/actions/cache-cargo/**', '.github/workflows/build-platforms.yml') }}
       - name: Run workspace tests
         run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
+
+      - name: Test native socket diagnostics after sandboxing
+        timeout-minutes: 3
+        run: cargo run --locked --example native_diagnostics_probe --all-features --target ${{ matrix.target }}
 
   # x86_64 and the native Android build link against Alpine's static libpcap.
   # armv7 and x86 (i686) are cross-compiled with zig cc as the C compiler and

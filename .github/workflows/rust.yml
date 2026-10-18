@@ -92,6 +92,14 @@ jobs:
       run: cargo build --locked --workspace --all-targets --verbose
     - name: Run tests
       run: cargo test --locked --workspace --all-features --verbose
+    - name: Test Linux diagnostics with the normal capabilities
+      timeout-minutes: 3
+      run: |
+        cargo build --locked --example diagnostics_probe --all-features
+        probe=target/debug/examples/diagnostics_probe
+        sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' "$probe"
+        trap 'sudo setcap -r "$probe"' EXIT
+        timeout 60s "$probe" --loss
     - name: Test capture shutdown and readiness with loopback traffic
       run: |
         test_executable=$(cargo test --locked -p rustnet-capture --test live_capture --no-run --message-format=json |

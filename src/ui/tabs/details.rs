@@ -2068,7 +2068,7 @@ pub(in crate::ui) fn draw_connection_details(
         let now = std::time::SystemTime::now();
         if let Some(q) = &diagnostics.sample.queues {
             let fresh = crate::network::types::sample_is_fresh(q.sampled_at, now);
-            let status = if fresh { "procfs" } else { "stale procfs" };
+            let status = format!("{}{}", if fresh { "" } else { "stale " }, q.source);
             let unit = match q.kind {
                 crate::network::types::QueueKind::TcpBytes => "bytes",
                 crate::network::types::QueueKind::UdpMemory => "buffer bytes",
@@ -2094,7 +2094,7 @@ pub(in crate::ui) fn draw_connection_details(
         }
         if let Some(tcp) = &diagnostics.sample.tcp {
             let fresh = crate::network::types::sample_is_fresh(tcp.sampled_at, now);
-            let status = if fresh { "iterator" } else { "stale iterator" };
+            let status = format!("{}{}", if fresh { "" } else { "stale " }, tcp.source);
             details.field(
                 if fresh {
                     "Kernel RTT"
@@ -2113,8 +2113,15 @@ pub(in crate::ui) fn draw_connection_details(
                     "Kernel TCP (stale)"
                 },
                 format!(
-                    "cwnd {} segments; {} lifetime retransmits ({status})",
-                    tcp.congestion_window_segments, tcp.retransmissions
+                    "{}{} retransmits ({}, {status})",
+                    tcp.congestion_window_segments
+                        .map_or_else(String::new, |cwnd| format!("cwnd {cwnd} segments; ")),
+                    tcp.retransmissions,
+                    if tcp.source == "windows_estats" {
+                        "since collection enabled"
+                    } else {
+                        "lifetime"
+                    }
                 ),
             );
         }
@@ -2125,7 +2132,7 @@ pub(in crate::ui) fn draw_connection_details(
         details.section("Observation status [d]");
         let snapshot = ctx.app.get_socket_snapshot();
         details.field("Queues", snapshot.diagnostics_status.queues);
-        details.field("TCP iterator", snapshot.diagnostics_status.tcp);
+        details.field("Native TCP", snapshot.diagnostics_status.tcp);
         details.field("Drop events (Host)", snapshot.diagnostics_status.drops);
         if let Some(d) = &conn.diagnostics {
             for (source, time) in [

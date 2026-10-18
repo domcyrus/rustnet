@@ -4571,6 +4571,7 @@ mod snapshot_tests {
             native_id: 7,
             netns: Some(1),
             queues: Some(QueueSample {
+                source: "procfs",
                 sampled_at: now,
                 kind: QueueKind::TcpBytes,
                 receive: 2048,
@@ -4578,16 +4579,18 @@ mod snapshot_tests {
                 socket_drops: None,
             }),
             tcp: Some(TcpSample {
+                source: "tcp_bpf_iterator",
                 sampled_at: now,
                 rtt_us: 100,
                 rtt_variation_us: 20,
-                congestion_window_segments: 10,
+                congestion_window_segments: Some(10),
                 retransmissions: 0,
             }),
         });
         conn.diagnostics = Some(ConnectionDiagnostics {
             sample,
             nonempty_receive_samples: 3,
+            retransmission_increase: None,
             socket_drop_increase: None,
         });
         let connections = [conn];
@@ -4662,6 +4665,7 @@ mod snapshot_tests {
                         netns: Some(1),
                         tcp: None,
                         queues: Some(QueueSample {
+                            source: "procfs",
                             sampled_at: now,
                             kind: QueueKind::TcpBytes,
                             receive: 100,
@@ -4670,6 +4674,7 @@ mod snapshot_tests {
                         }),
                     }),
                     nonempty_receive_samples: 3,
+                    retransmission_increase: None,
                     socket_drop_increase: Some(1),
                 });
                 assert_eq!(conn.diagnostic_findings(now).len(), 3);
@@ -4738,12 +4743,18 @@ mod snapshot_tests {
             (1000..1002)
                 .map(|native_id| {
                     (
-                        native_id,
+                        snapshot
+                            .sockets
+                            .iter()
+                            .find(|s| s.native_id == Some(native_id))
+                            .unwrap()
+                            .clone(),
                         std::sync::Arc::new(SocketSample {
                             native_id,
                             netns: Some(1),
                             tcp: None,
                             queues: Some(QueueSample {
+                                source: "procfs",
                                 sampled_at: SystemTime::now(),
                                 kind: QueueKind::TcpBytes,
                                 receive: 1,

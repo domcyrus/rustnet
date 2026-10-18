@@ -13,6 +13,7 @@ pub enum QueueKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueSample {
+    pub source: &'static str,
     pub sampled_at: SystemTime,
     pub kind: QueueKind,
     pub receive: u64,
@@ -22,10 +23,11 @@ pub struct QueueSample {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcpSample {
+    pub source: &'static str,
     pub sampled_at: SystemTime,
     pub rtt_us: u32,
     pub rtt_variation_us: u32,
-    pub congestion_window_segments: u32,
+    pub congestion_window_segments: Option<u32>,
     pub retransmissions: u32,
 }
 
@@ -48,6 +50,7 @@ pub struct ConnectionDiagnostics {
     pub sample: Arc<SocketSample>,
     pub nonempty_receive_samples: u8,
     pub socket_drop_increase: Option<u64>,
+    pub retransmission_increase: Option<u32>,
 }
 
 impl ConnectionDiagnostics {
@@ -60,18 +63,29 @@ impl ConnectionDiagnostics {
         {
             Arc::make_mut(&mut sample).tcp = old.sample.tcp.clone();
         }
+        let retransmission_increase = sample.tcp.as_ref().and_then(|tcp| {
+            let old = previous?;
+            let before = old.sample.tcp.as_ref()?;
+            if tcp.source != before.source {
+                return None;
+            }
+            if tcp == before {
+                return old.retransmission_increase;
+            }
+            (before.sampled_at < tcp.sampled_at
+                && sample_is_fresh(before.sampled_at, tcp.sampled_at))
+            .then(|| tcp.retransmissions.checked_sub(before.retransmissions))
+            .flatten()
+        });
         let mut nonempty_receive_samples = 0;
         let mut socket_drop_increase = None;
         if let Some(queue) = &sample.queues {
             if let Some(old) = previous
-                && old
-                    .sample
-                    .queues
-                    .as_ref()
-                    .is_some_and(|q| q.sampled_at == queue.sampled_at)
+                && old.sample.queues.as_ref().is_some_and(|q| q == queue)
             {
                 return Self {
                     sample,
+                    retransmission_increase,
                     ..old.clone()
                 };
             }
@@ -79,13 +93,15 @@ impl ConnectionDiagnostics {
                 nonempty_receive_samples = previous
                     .filter(|old| {
                         old.sample.queues.as_ref().is_some_and(|q| {
-                            q.sampled_at < queue.sampled_at
+                            q.source == queue.source
+                                && q.sampled_at < queue.sampled_at
                                 && sample_is_fresh(q.sampled_at, queue.sampled_at)
                         })
                     })
                     .map_or(1, |old| old.nonempty_receive_samples.saturating_add(1));
             }
             if let Some(old) = previous.and_then(|p| p.sample.queues.as_ref())
+                && old.source == queue.source
                 && old.sampled_at < queue.sampled_at
                 && sample_is_fresh(old.sampled_at, queue.sampled_at)
             {
@@ -99,6 +115,7 @@ impl ConnectionDiagnostics {
             sample,
             nonempty_receive_samples,
             socket_drop_increase,
+            retransmission_increase,
         }
     }
 
@@ -118,6 +135,15 @@ impl ConnectionDiagnostics {
                     "Observed: TCP receive queue remained nonempty across samples; cause unknown",
                 );
             }
+        }
+        if self.retransmission_increase.is_some_and(|n| n > 0)
+            && self
+                .sample
+                .tcp
+                .as_ref()
+                .is_some_and(|t| sample_is_fresh(t.sampled_at, now))
+        {
+            findings.push("Observed: kernel TCP retransmissions increased; loss location unknown");
         }
         findings
     }
@@ -166,6 +192,7 @@ mod tests {
             netns: Some(1),
             tcp: None,
             queues: Some(QueueSample {
+                source: "procfs",
                 sampled_at: SystemTime::UNIX_EPOCH + Duration::from_secs(second),
                 kind: QueueKind::TcpBytes,
                 receive,
@@ -174,6 +201,62 @@ mod tests {
             }),
         })
     }
+    #[test]
+    fn tcp_deltas_require_same_source_identity_and_fresh_ordered_samples() {
+        let tcp = |second, id, source, total| {
+            Arc::new(SocketSample {
+                native_id: id,
+                netns: Some(1),
+                queues: None,
+                tcp: Some(TcpSample {
+                    source,
+                    sampled_at: SystemTime::UNIX_EPOCH + Duration::from_secs(second),
+                    rtt_us: 100,
+                    rtt_variation_us: 10,
+                    congestion_window_segments: None,
+                    retransmissions: total,
+                }),
+            })
+        };
+        let a = ConnectionDiagnostics::update(None, tcp(10, 1, "windows_estats", 40));
+        assert_eq!(a.retransmission_increase, None);
+        let b = ConnectionDiagnostics::update(Some(&a), tcp(15, 1, "windows_estats", 43));
+        assert_eq!(b.retransmission_increase, Some(3));
+        assert_eq!(
+            b.findings(SystemTime::UNIX_EPOCH + Duration::from_secs(15)),
+            vec!["Observed: kernel TCP retransmissions increased; loss location unknown"]
+        );
+        assert!(
+            b.findings(SystemTime::UNIX_EPOCH + Duration::from_secs(31))
+                .is_empty()
+        );
+        assert_eq!(
+            ConnectionDiagnostics::update(Some(&b), Arc::clone(&b.sample)).retransmission_increase,
+            Some(3)
+        );
+        for next in [
+            tcp(20, 2, "windows_estats", 50),
+            tcp(20, 1, "tcp_bpf_iterator", 50),
+            tcp(20, 1, "windows_estats", 1),
+            tcp(14, 1, "windows_estats", 50),
+            tcp(40, 1, "windows_estats", 50),
+        ] {
+            assert_eq!(
+                ConnectionDiagnostics::update(Some(&b), next).retransmission_increase,
+                None
+            );
+        }
+        let mut with_queue = (*a.sample).clone();
+        with_queue.queues = sample(10, 1, 0, 0).queues.clone();
+        let a = ConnectionDiagnostics::update(None, Arc::new(with_queue.clone()));
+        with_queue.tcp = b.sample.tcp.clone();
+        // A repeated queue group must not hide a new independent TCP sample.
+        assert_eq!(
+            ConnectionDiagnostics::update(Some(&a), Arc::new(with_queue)).retransmission_increase,
+            Some(3)
+        );
+    }
+
     #[test]
     fn persistence_requires_distinct_fresh_samples_and_resets_on_identity_change() {
         let a = ConnectionDiagnostics::update(None, sample(10, 1, 100, 20));

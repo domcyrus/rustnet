@@ -876,7 +876,7 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
     let mut sockets: Vec<_> = snapshot
         .sockets
         .iter()
-        .filter_map(|socket| Some((socket, snapshot.diagnostics.get(&socket.native_id?)?)))
+        .filter_map(|socket| Some((socket, snapshot.diagnostics.get(socket)?)))
         .collect();
     sockets.sort_by_key(|(socket, _)| (socket.protocol, socket.local_addr, socket.remote_addr));
     for (socket, sample) in sockets {
@@ -887,7 +887,7 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
                 "buffer bytes"
             };
             lines.push(Line::from(format!(
-                "{} {} -> {} (socket {})  RX {} / TX {} {unit}{}{}",
+                "{} {} -> {} (socket {})  RX {} / TX {} {unit}{}{} ({})",
                 socket.protocol,
                 socket.local_addr,
                 socket
@@ -902,7 +902,33 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
                     ""
                 } else {
                     " [Stale]"
-                }
+                },
+                q.source,
+            )));
+        }
+        if let Some(tcp) = &sample.tcp {
+            lines.push(Line::from(format!(
+                "{} {} -> {} (socket {})  RTT {} us; variation {} us; {} retransmits ({}, {}){}",
+                socket.protocol,
+                socket.local_addr,
+                socket
+                    .remote_addr
+                    .map_or_else(|| "*".into(), |a| a.to_string()),
+                sample.native_id,
+                tcp.rtt_us,
+                tcp.rtt_variation_us,
+                tcp.retransmissions,
+                if tcp.source == "windows_estats" {
+                    "since collection enabled"
+                } else {
+                    "lifetime"
+                },
+                tcp.source,
+                if sample_is_fresh(tcp.sampled_at, now) {
+                    ""
+                } else {
+                    " [Stale]"
+                },
             )));
         }
     }

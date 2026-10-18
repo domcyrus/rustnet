@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::mem::{MaybeUninit, size_of};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 const SOCKSTAT_PATH: &str = "/usr/bin/sockstat";
@@ -45,7 +45,13 @@ impl FreeBSDProcessLookup {
         Ok(Self {
             cache: RwLock::new(scan.lookup),
             process_details: RwLock::new(HashMap::new()),
-            socket_snapshot: RwLock::new(snapshot_from_scan(scan.sockets, scan.complete, started)),
+            socket_snapshot: RwLock::new(snapshot_from_scan(
+                scan.sockets,
+                scan.diagnostics,
+                scan.diagnostics_status,
+                scan.complete,
+                started,
+            )),
         })
     }
 
@@ -205,6 +211,28 @@ impl FreeBSDProcessLookup {
             .into());
         }
 
+        // A single system reader avoids binding Rust to versioned PCB layouts.
+        let queues = output_with_timeout_or_cancel(
+            std::process::Command::new("/usr/bin/netstat")
+                .args(["-AanW", "-p", "tcp"])
+                .env("LC_ALL", "C"),
+            PROCESS_TABLE_COMMAND_TIMEOUT,
+            cancelled,
+        )
+        .map_err(anyhow::Error::from)
+        .and_then(|output| {
+            anyhow::ensure!(
+                output.status.success() && output.stderr.is_empty(),
+                "netstat failed: {}",
+                output.status
+            );
+            crate::netstat::apply_queues(&String::from_utf8_lossy(&output.stdout), &mut scan)
+        });
+        scan.diagnostics_status = match queues {
+            Ok(()) => "netstat TCP byte queues; current credential/jail visibility; hidden PCB identities unavailable".into(),
+            Err(error) if command_was_interrupted(&error) => return Err(error),
+            Err(error) => format!("Unavailable: netstat queues: {error}"),
+        };
         Ok(scan)
     }
 
@@ -290,8 +318,13 @@ impl FreeBSDProcessLookup {
         *self
             .socket_snapshot
             .write()
-            .expect("socket snapshot lock poisoned") =
-            snapshot_from_scan(scan.sockets, scan.complete, started);
+            .expect("socket snapshot lock poisoned") = snapshot_from_scan(
+            scan.sockets,
+            scan.diagnostics,
+            scan.diagnostics_status,
+            scan.complete,
+            started,
+        );
         self.process_details
             .write()
             .expect("process details cache lock poisoned")
@@ -313,10 +346,14 @@ fn command_was_interrupted(error: &anyhow::Error) -> bool {
 
 fn snapshot_from_scan(
     sockets: Vec<crate::HostSocket>,
+    diagnostics: HashMap<crate::HostSocket, Arc<rustnet_core::network::types::SocketSample>>,
+    diagnostics_status: String,
     complete: bool,
     started: SystemTime,
 ) -> SocketSnapshot {
-    let snapshot = SocketSnapshot::from_inventory(sockets, complete);
+    let mut snapshot = SocketSnapshot::from_inventory(sockets, complete);
+    snapshot.diagnostics = Arc::new(diagnostics);
+    snapshot.diagnostics_status.queues = diagnostics_status;
     // Root inside a jail can still have a restricted view of the host.
     let mut jailed: libc::c_int = 1;
     let mut length = size_of::<libc::c_int>();

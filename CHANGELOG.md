@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run Windows CI tests independently and start DEB installation checks after GNU/Linux builds, preserving all existing checks (#686)
 
 ### Added
-- Add summary-first socket diagnostics in Details and Host, Linux procfs queues and drops, optional TCP iterator statistics and host-scope drop reasons, and JSON evidence (#688)
+- Add summary-first socket diagnostics in Details and Host, Linux procfs queues and drops, optional TCP iterator statistics and host-scope drop reasons, Windows EStats, macOS/FreeBSD TCP queues, source-aware findings, and JSON evidence (#688)
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
 - Show observed TCP resets and ICMP errors in Host, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
 - Retire observed TCP/UDP flows after confirmed socket disappearance on macOS, Windows, and FreeBSD; keep timeout fallback for incomplete or restricted inventories (#684)

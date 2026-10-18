@@ -74,10 +74,13 @@ fn apply_socket_diagnostics(tracker: &ConnectionTracker, snapshot: &rustnet_host
     };
     let mut candidates = HashMap::new();
     for socket in snapshot.sockets.iter() {
-        let (Some(remote), Some(inode)) = (socket.remote_addr, socket.native_id) else {
+        let (Some(remote), Some(_)) = (socket.remote_addr, socket.native_id) else {
             continue;
         };
-        let sample = snapshot.diagnostics.get(&inode);
+        let sample = snapshot
+            .diagnostics
+            .get(socket)
+            .map(|sample| (sample, socket.owner.as_ref().map(|o| o.pid)));
         let key = canonical_key(ConnectionKey::new(
             socket.protocol,
             socket.local_addr,
@@ -89,21 +92,27 @@ fn apply_socket_diagnostics(tracker: &ConnectionTracker, snapshot: &rustnet_host
             .or_insert(sample);
     }
     for mut conn in tracker.connections().iter_mut() {
-        let Some(Some(sample)) =
+        let Some(Some((sample, owner_pid))) =
             candidates.get(&canonical_key(ConnectionKey::from_connection(&conn)))
         else {
             continue;
         };
         if conn.is_historic
-            || conn.socket_netns_id.is_none()
             || conn.socket_netns_id != sample.netns
+            || (cfg!(target_os = "linux") && sample.netns.is_none())
+            || conn
+                .pid
+                .zip(*owner_pid)
+                .is_some_and(|(captured, native)| captured != native)
         {
             continue;
         }
-        let Some(queues) = &sample.queues else {
-            continue;
-        };
-        if queues.sampled_at < conn.created_at {
+        let sampled_at = sample
+            .queues
+            .as_ref()
+            .map(|q| q.sampled_at)
+            .or_else(|| sample.tcp.as_ref().map(|t| t.sampled_at));
+        if sampled_at.is_none_or(|time| time < conn.created_at) {
             continue;
         }
         // A different socket cannot silently replace evidence on the same captured generation.
@@ -601,6 +610,7 @@ mod process_enrichment_tests {
             netns: Some(1),
             tcp: None,
             queues: Some(QueueSample {
+                source: "procfs",
                 sampled_at: time,
                 kind: QueueKind::TcpBytes,
                 receive: 100,
@@ -609,7 +619,7 @@ mod process_enrichment_tests {
             }),
         });
         let mut snapshot = SocketSnapshot::new(vec![socket.clone(), socket.clone()]);
-        snapshot.diagnostics = Arc::new(HashMap::from([(7, sample)]));
+        snapshot.diagnostics = Arc::new(HashMap::from([(socket.clone(), sample)]));
         super::apply_socket_diagnostics(&tracker, &snapshot);
         assert!(
             tracker
@@ -675,12 +685,13 @@ mod process_enrichment_tests {
         };
         let mut snapshot = SocketSnapshot::new(vec![mapped.clone()]);
         snapshot.diagnostics = Arc::new(HashMap::from([(
-            7,
+            mapped.clone(),
             Arc::new(SocketSample {
                 native_id: 7,
                 netns: Some(1),
                 tcp: None,
                 queues: Some(QueueSample {
+                    source: "procfs",
                     sampled_at: SystemTime::now(),
                     kind: QueueKind::TcpBytes,
                     receive: 100,

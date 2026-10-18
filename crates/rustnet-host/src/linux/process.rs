@@ -697,7 +697,7 @@ impl LinuxProcessLookup {
         inode_map: &InodeProcessMap,
         result: &mut ConnectionProcessMap,
         sockets: &mut Vec<HostSocket>,
-        diagnostics: &mut HashMap<u64, Arc<SocketSample>>,
+        diagnostics: &mut HashMap<HostSocket, Arc<SocketSample>>,
     ) -> bool {
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
@@ -715,7 +715,7 @@ impl LinuxProcessLookup {
         inode_map: &InodeProcessMap,
         result: &mut ConnectionProcessMap,
         sockets: &mut Vec<HostSocket>,
-        diagnostics: &mut HashMap<u64, Arc<SocketSample>>,
+        diagnostics: &mut HashMap<HostSocket, Arc<SocketSample>>,
     ) {
         let sampled_at = SystemTime::now();
         let netns = super::lifecycle::local_netns_id();
@@ -759,6 +759,14 @@ impl LinuxProcessLookup {
                 result.insert(key, (owner.pid, owner.name.clone()));
             }
 
+            let socket = HostSocket {
+                protocol,
+                local_addr,
+                remote_addr: remote_if_present(remote_addr),
+                state,
+                owner,
+                native_id: inode,
+            };
             if let Some(native_id) = inode.filter(|inode| *inode != 0)
                 && state != HostSocketState::Tcp(HostTcpState::Listen)
                 && let Some((send, receive)) = parts[4].split_once(':')
@@ -768,12 +776,13 @@ impl LinuxProcessLookup {
                 )
             {
                 diagnostics.insert(
-                    native_id,
+                    socket.clone(),
                     Arc::new(SocketSample {
                         native_id,
                         netns,
                         tcp: None,
                         queues: Some(QueueSample {
+                            source: "procfs",
                             sampled_at,
                             send,
                             receive,
@@ -789,14 +798,7 @@ impl LinuxProcessLookup {
                     }),
                 );
             }
-            sockets.push(HostSocket {
-                protocol,
-                local_addr,
-                remote_addr: remote_if_present(remote_addr),
-                state,
-                owner,
-                native_id: inode,
-            });
+            sockets.push(socket);
         }
     }
 
@@ -995,7 +997,13 @@ mod tests {
         );
         assert_eq!(inventory.len(), 2);
         assert_eq!(samples.len(), 1);
-        let q = samples[&123].queues.as_ref().unwrap();
+        let q = samples
+            .values()
+            .find(|s| s.native_id == 123)
+            .unwrap()
+            .queues
+            .as_ref()
+            .unwrap();
         assert_eq!((q.send, q.receive, q.socket_drops), (32, 256, Some(42)));
         assert_eq!(q.kind, QueueKind::UdpMemory);
         inventory.clear();
@@ -1011,10 +1019,16 @@ mod tests {
         );
         assert_eq!(inventory.len(), 2);
         assert!(
-            !samples.contains_key(&125),
+            !samples.values().any(|s| s.native_id == 125),
             "listener backlog must not become byte queues"
         );
-        let q = samples[&126].queues.as_ref().unwrap();
+        let q = samples
+            .values()
+            .find(|s| s.native_id == 126)
+            .unwrap()
+            .queues
+            .as_ref()
+            .unwrap();
         assert_eq!((q.send, q.receive, q.socket_drops), (16, 512, None));
         assert_eq!(q.kind, QueueKind::TcpBytes);
     }
