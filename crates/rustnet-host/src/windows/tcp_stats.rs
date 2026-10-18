@@ -52,7 +52,9 @@ pub(super) fn sample(snapshot: &mut SocketSnapshot) {
     snapshot.diagnostics_status.tcp = format!(
         "EStats Path: {} sampled, {unavailable} unavailable{}{}; enabling collection requires elevation",
         samples.len(),
-        last_error.map_or_else(String::new, |code| format!(" (Win32 {code})")),
+        last_error.map_or_else(String::new, |(stage, code)| format!(
+            " ({stage}: Win32 {code})"
+        )),
         if truncated {
             "; refresh deadline reached"
         } else {
@@ -61,19 +63,21 @@ pub(super) fn sample(snapshot: &mut SocketSnapshot) {
     );
 }
 
-fn path_sample(socket: &HostSocket) -> Result<TcpSample, u32> {
-    let remote = socket.remote_addr.ok_or(87u32)?;
+fn path_sample(socket: &HostSocket) -> Result<TcpSample, (&'static str, u32)> {
+    let remote = socket.remote_addr.ok_or(("endpoints", 87u32))?;
     // SAFETY: rows are initialized from numeric IP Helper inventory, including
     // IPv6 scope IDs and network-order ports. Buffers have exact v0 sizes.
     unsafe {
         match (socket.local_addr, remote) {
             (SocketAddr::V4(local), SocketAddr::V4(remote)) => {
                 let row = MIB_TCPROW_LH {
+                    Anonymous: windows::Win32::NetworkManagement::IpHelper::MIB_TCPROW_LH_0 {
+                        dwState: 5,
+                    },
                     dwLocalAddr: u32::from_ne_bytes(local.ip().octets()),
                     dwRemoteAddr: u32::from_ne_bytes(remote.ip().octets()),
                     dwLocalPort: u32::from(local.port().to_be()),
                     dwRemotePort: u32::from(remote.port().to_be()),
-                    ..Default::default()
                 };
                 read_path(
                     |rw, rod| {
@@ -88,7 +92,7 @@ fn path_sample(socket: &HostSocket) -> Result<TcpSample, u32> {
                             0,
                         )
                     },
-                    || SetPerTcpConnectionEStats(&row, TcpConnectionEstatsPath, &[1], 0, 0),
+                    |rw| SetPerTcpConnectionEStats(&row, TcpConnectionEstatsPath, rw, 0, 0),
                 )
             }
             (SocketAddr::V6(local), SocketAddr::V6(remote)) => {
@@ -115,19 +119,30 @@ fn path_sample(socket: &HostSocket) -> Result<TcpSample, u32> {
                             0,
                         )
                     },
-                    || SetPerTcp6ConnectionEStats(&row, TcpConnectionEstatsPath, &[1], 0, 0),
+                    |rw| SetPerTcp6ConnectionEStats(&row, TcpConnectionEstatsPath, rw, 0, 0),
                 )
             }
-            _ => Err(87),
+            _ => Err(("endpoints", 87)),
         }
     }
 }
 
 fn read_path(
     mut get: impl FnMut(&mut [u8], &mut [u8]) -> u32,
-    enable: impl FnOnce() -> u32,
-) -> Result<TcpSample, u32> {
-    let mut rw = [0u8]; // TCP_ESTATS_PATH_RW_v0 is a single BOOLEAN.
+    enable: impl FnOnce(&[u8]) -> u32,
+) -> Result<TcpSample, (&'static str, u32)> {
+    // Keep even the one-byte RW group in aligned writable storage for
+    // native IP Helper buffer probing.
+    let mut enabled = 0u32;
+    // SAFETY: the first byte of this aligned initialized integer is writable,
+    // and the v0 RW group contains exactly one BOOLEAN.
+    let rw = unsafe {
+        std::slice::from_raw_parts_mut(
+            (&mut enabled as *mut u32).cast::<u8>(),
+            std::mem::size_of::<windows::Win32::NetworkManagement::IpHelper::TCP_ESTATS_PATH_RW_v0>(
+            ),
+        )
+    };
     let mut path = TCP_ESTATS_PATH_ROD_v0::default();
     // SAFETY: PATH_ROD_v0 contains only ULONG fields, all initialized. The
     // slice covers exactly this aligned writable object and cannot escape.
@@ -137,31 +152,35 @@ fn read_path(
             std::mem::size_of_val(&path),
         )
     };
-    let result = get(&mut rw, bytes);
+    let result = get(rw, bytes);
     if result != 0 {
-        return Err(result);
+        return Err(("read Path", result));
     }
     if rw[0] == 0 {
-        let result = enable();
+        rw[0] = 1;
+        let result = enable(rw);
         if result != 0 {
-            return Err(result);
+            return Err(("enable Path", result));
         }
         // Do not reset existing collection, disable another consumer's
         // collection, or interpret the disabled group's undefined fields.
-        let result = get(&mut rw, bytes);
+        let result = get(rw, bytes);
         if result != 0 {
-            return Err(result);
+            return Err(("read enabled Path", result));
         }
         if rw[0] == 0 {
-            return Err(50);
+            return Err(("collection disabled", 50));
         }
     }
     Ok(TcpSample {
         source: "windows_estats",
         sampled_at: SystemTime::now(),
         // Path RTT units are milliseconds, unlike Linux's microseconds.
-        rtt_us: path.SmoothedRtt.checked_mul(1000).ok_or(13u32)?,
-        rtt_variation_us: path.RttVar.checked_mul(1000).ok_or(13u32)?,
+        rtt_us: path
+            .SmoothedRtt
+            .checked_mul(1000)
+            .ok_or(("RTT units", 13u32))?,
+        rtt_variation_us: path.RttVar.checked_mul(1000).ok_or(("RTT units", 13u32))?,
         congestion_window_segments: None,
         retransmissions: path.PktsRetrans,
     })
@@ -178,13 +197,13 @@ mod tests {
                     rw[0] = 0;
                     0
                 },
-                || 5
+                |_| 5
             ),
-            Err(5)
+            Err(("enable Path", 5))
         ));
         assert!(matches!(
-            read_path(|_, _| 50, || panic!("failed read must not enable")),
-            Err(50)
+            read_path(|_, _| 50, |_| panic!("failed read must not enable")),
+            Err((_, 50))
         ));
         assert!(matches!(
             read_path(
@@ -192,9 +211,9 @@ mod tests {
                     rw[0] = 0;
                     0
                 },
-                || 0
+                |_| 0
             ),
-            Err(50)
+            Err((_, 50))
         ));
     }
 
@@ -214,7 +233,7 @@ mod tests {
                 put(std::mem::offset_of!(TCP_ESTATS_PATH_ROD_v0, PktsRetrans), 7);
                 0
             },
-            || panic!("must not reset existing collection"),
+            |_| panic!("must not reset existing collection"),
         )
         .unwrap();
         assert_eq!(

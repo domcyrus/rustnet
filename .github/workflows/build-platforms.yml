@@ -273,6 +273,27 @@ jobs:
         timeout-minutes: 3
         run: cargo run --locked --example native_diagnostics_probe --all-features --target ${{ matrix.target }}
 
+      - name: Test EStats denial as a standard user
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $password = ConvertTo-SecureString (([guid]::NewGuid().ToString()) + 'aA1!') -AsPlainText -Force
+          $name = 'rustnetdiag'
+          New-LocalUser -Name $name -Password $password | Out-Null
+          Add-LocalGroupMember -Group 'Users' -Member $name
+          try {
+            $credential = [pscredential]::new("$env:COMPUTERNAME\$name", $password)
+            $probe = (Resolve-Path 'target/${{ matrix.target }}/debug/examples/native_diagnostics_probe.exe').Path
+            $stdout = Join-Path $env:RUNNER_TEMP 'diagnostics-standard-out.txt'
+            $stderr = Join-Path $env:RUNNER_TEMP 'diagnostics-standard-err.txt'
+            $process = Start-Process $probe -ArgumentList '--expect-unavailable' -Credential $credential -WorkingDirectory $env:PUBLIC -RedirectStandardOutput $stdout -RedirectStandardError $stderr -Wait -PassThru
+            Get-Content $stdout
+            Get-Content $stderr
+            if ($process.ExitCode -ne 0) { throw "Standard-user probe failed: $($process.ExitCode)" }
+          } finally {
+            Remove-LocalUser -Name $name
+          }
+
   # x86_64 and the native Android build link against Alpine's static libpcap.
   # armv7 and x86 (i686) are cross-compiled with zig cc as the C compiler and
   # linker (no external toolchain download needed): the `Install cross toolchain`

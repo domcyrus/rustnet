@@ -8,6 +8,7 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().any(|arg| arg == "--fixture") {
         return fixture();
     }
+    let expect_unavailable = std::env::args().any(|arg| arg == "--expect-unavailable");
     let mut child = Command::new(std::env::current_exe()?)
         .arg("--fixture")
         .stdin(Stdio::piped())
@@ -54,6 +55,18 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             for local in locals {
+                if expect_unavailable {
+                    let socket = snapshot
+                        .sockets
+                        .iter()
+                        .find(|s| s.local_addr == local)
+                        .context("inventory must remain available without EStats permission")?;
+                    ensure!(
+                        !snapshot.diagnostics.contains_key(socket),
+                        "expected unavailable source, not a zero sample"
+                    );
+                    continue;
+                }
                 let (socket, sample) = snapshot
                     .diagnostics
                     .iter()

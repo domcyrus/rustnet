@@ -156,7 +156,8 @@ pub struct HostSocket {
     /// it. The socket record itself remains useful and must not be discarded.
     pub owner: Option<SocketOwner>,
     /// Platform-native identity when cheaply available, such as a Linux socket
-    /// inode. It is not displayed, but can distinguish otherwise equal rows.
+    /// inode, PCB identity or connection creation timestamp. Only meaningful
+    /// together with the socket endpoints and native scope, not globally unique.
     pub native_id: Option<u64>,
 }
 

@@ -69,22 +69,33 @@ fn main() -> anyhow::Result<()> {
                     "TCP queue mismatch: {q:?}"
                 );
                 let tcp = sample.tcp.as_ref().context("missing TCP iterator sample")?;
-                ensure!(
-                    u64::from(tcp.rtt_us) == entry["rtt"].as_u64().unwrap(),
-                    "RTT mismatch"
-                );
-                ensure!(
-                    u64::from(tcp.rtt_variation_us) == entry["rttvar"].as_u64().unwrap(),
-                    "RTT variation mismatch"
-                );
-                ensure!(
-                    tcp.congestion_window_segments.map(u64::from) == entry["cwnd"].as_u64(),
-                    "cwnd mismatch"
-                );
-                ensure!(
-                    u64::from(tcp.retransmissions) == entry["retransmissions"].as_u64().unwrap(),
-                    "TCP retransmission mismatch"
-                );
+                // TCP_INFO and iterator reads are sequential. During active loss,
+                // counters may advance between them, so compare monotonically.
+                if command == "loss" {
+                    ensure!(
+                        u64::from(tcp.retransmissions)
+                            >= entry["retransmissions"].as_u64().unwrap(),
+                        "retransmissions went backwards"
+                    );
+                } else {
+                    ensure!(
+                        u64::from(tcp.rtt_us) == entry["rtt"].as_u64().unwrap(),
+                        "RTT mismatch"
+                    );
+                    ensure!(
+                        u64::from(tcp.rtt_variation_us) == entry["rttvar"].as_u64().unwrap(),
+                        "RTT variation mismatch"
+                    );
+                    ensure!(
+                        tcp.congestion_window_segments.map(u64::from) == entry["cwnd"].as_u64(),
+                        "cwnd mismatch"
+                    );
+                    ensure!(
+                        u64::from(tcp.retransmissions)
+                            == entry["retransmissions"].as_u64().unwrap(),
+                        "TCP retransmission mismatch"
+                    );
+                }
                 let history = rustnet_core::network::types::ConnectionDiagnostics::update(
                     histories.get(&inode),
                     std::sync::Arc::clone(sample),
@@ -108,8 +119,13 @@ fn main() -> anyhow::Result<()> {
                 }
                 histories.insert(inode, history);
                 println!(
-                    "TCP inode={inode} rx={} RTT={} cwnd={:?}",
-                    q.receive, tcp.rtt_us, tcp.congestion_window_segments
+                    "TCP inode={inode} rx={} tx={} RTT={} cwnd={:?} retransmissions={} increase={:?}",
+                    q.receive,
+                    q.send,
+                    tcp.rtt_us,
+                    tcp.congestion_window_segments,
+                    tcp.retransmissions,
+                    histories[&inode].retransmission_increase
                 );
             }
             if command == "overflow" {

@@ -603,13 +603,14 @@ impl ProcessLookup for WindowsProcessLookup {
             Err(error) => log::debug!("Windows process snapshot failed: {}", error),
         }
 
-        let mut cache = write_recovering(&self.cache, CACHE_LOCK);
-
-        let total_entries = new_cache.len();
-        cache.lookup = new_cache;
-        cache.last_refresh = Instant::now();
         let mut snapshot = SocketSnapshot::from_inventory(sockets, complete);
         super::tcp_stats::sample(&mut snapshot);
+        let total_entries = new_cache.len();
+        {
+            let mut cache = write_recovering(&self.cache, CACHE_LOCK);
+            cache.lookup = new_cache;
+            cache.last_refresh = Instant::now();
+        }
         *self
             .socket_snapshot
             .write()

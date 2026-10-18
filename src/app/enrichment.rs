@@ -580,6 +580,90 @@ mod process_enrichment_tests {
     use std::thread;
 
     #[test]
+    fn tcp_only_samples_are_scoped_by_endpoints_and_reject_owner_mismatch() {
+        use crate::network::tracker::ConnectionTracker;
+        use crate::network::types::{SocketSample, TcpSample};
+        use rustnet_host::{
+            HostSocket, HostSocketState, HostTcpState, SocketOwner, SocketSnapshot,
+        };
+        use std::collections::HashMap;
+        use std::time::{Duration, SystemTime};
+        let tracker = ConnectionTracker::new();
+        let now = SystemTime::now();
+        let mut sockets = Vec::new();
+        let mut samples = HashMap::new();
+        for (port, pid, rtt) in [(1000, 42, 100), (1001, 42, 200), (1002, 43, 300)] {
+            let mut conn = Connection::new(
+                Protocol::Tcp,
+                format!("127.0.0.1:{port}").parse().unwrap(),
+                "127.0.0.1:2000".parse().unwrap(),
+                ProtocolState::Tcp(TcpState::Established),
+            );
+            conn.created_at = now - Duration::from_secs(1);
+            conn.socket_netns_id = Some(1);
+            conn.pid = Some(42);
+            let key = crate::network::types::ConnectionKey::from_connection(&conn);
+            tracker.connections().insert(key, conn);
+            let socket = HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: key.local_addr,
+                remote_addr: Some(key.remote_addr),
+                state: HostSocketState::Tcp(HostTcpState::Established),
+                owner: Some(SocketOwner::new(pid, "fixture", None)),
+                native_id: Some(7),
+            };
+            samples.insert(
+                socket.clone(),
+                Arc::new(SocketSample {
+                    native_id: 7,
+                    netns: Some(1),
+                    queues: None,
+                    tcp: Some(TcpSample {
+                        source: "windows_estats",
+                        sampled_at: now,
+                        rtt_us: rtt,
+                        rtt_variation_us: 0,
+                        congestion_window_segments: None,
+                        retransmissions: 0,
+                    }),
+                }),
+            );
+            sockets.push(socket);
+        }
+        let mut snapshot = SocketSnapshot::new(sockets);
+        snapshot.diagnostics = Arc::new(samples);
+        super::apply_socket_diagnostics(&tracker, &snapshot);
+        for conn in tracker.connections().iter() {
+            match conn.local_addr.port() {
+                1000 => assert_eq!(
+                    conn.diagnostics
+                        .as_ref()
+                        .unwrap()
+                        .sample
+                        .tcp
+                        .as_ref()
+                        .unwrap()
+                        .rtt_us,
+                    100
+                ),
+                1001 => assert_eq!(
+                    conn.diagnostics
+                        .as_ref()
+                        .unwrap()
+                        .sample
+                        .tcp
+                        .as_ref()
+                        .unwrap()
+                        .rtt_us,
+                    200
+                ),
+                1002 => assert!(conn.diagnostics.is_none()),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
     fn diagnostics_join_rejects_ambiguous_namespace_and_old_generation_samples() {
         use crate::network::types::{ConnectionKey, QueueKind, QueueSample, SocketSample};
         use rustnet_host::{HostSocket, HostSocketState, HostTcpState, SocketSnapshot};
