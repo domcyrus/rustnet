@@ -871,7 +871,7 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
     }
     lines.push(Line::from(""));
     lines.push(Line::from(
-        "Socket measurements (one row per socket; UDP drops are lifetime counters)",
+        "Socket measurements (UDP drops are lifetime counters)",
     ));
     let mut sockets: Vec<_> = snapshot
         .sockets
@@ -880,6 +880,15 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
         .collect();
     sockets.sort_by_key(|(socket, _)| (socket.protocol, socket.local_addr, socket.remote_addr));
     for (socket, sample) in sockets {
+        lines.push(Line::from(format!(
+            "{} {} -> {} (socket {})",
+            socket.protocol,
+            socket.local_addr,
+            socket
+                .remote_addr
+                .map_or_else(|| "*".to_string(), |addr| addr.to_string()),
+            sample.native_id,
+        )));
         if let Some(q) = &sample.queues {
             let unit = if q.kind == QueueKind::TcpBytes {
                 "bytes"
@@ -887,13 +896,7 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
                 "buffer bytes"
             };
             lines.push(Line::from(format!(
-                "{} {} -> {} (socket {})  RX {} / TX {} {unit}{}{} ({})",
-                socket.protocol,
-                socket.local_addr,
-                socket
-                    .remote_addr
-                    .map_or_else(|| "*".to_string(), |addr| addr.to_string()),
-                sample.native_id,
+                "  RX {} / TX {} {unit}{}{} ({})",
                 q.receive,
                 q.send,
                 q.socket_drops
@@ -908,15 +911,11 @@ fn draw_diagnostics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Re
         }
         if let Some(tcp) = &sample.tcp {
             lines.push(Line::from(format!(
-                "{} {} -> {} (socket {})  RTT {} us; variation {} us; {} retransmits ({}, {}){}",
-                socket.protocol,
-                socket.local_addr,
-                socket
-                    .remote_addr
-                    .map_or_else(|| "*".into(), |a| a.to_string()),
-                sample.native_id,
+                "  Kernel TCP: RTT {} us; variation {} us{}; {} retransmits ({}, {}){}",
                 tcp.rtt_us,
                 tcp.rtt_variation_us,
+                tcp.congestion_window_segments
+                    .map_or_else(String::new, |n| format!("; cwnd {n} segments")),
                 tcp.retransmissions,
                 if tcp.source == "windows_estats" {
                     "since collection enabled"

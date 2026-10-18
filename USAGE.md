@@ -1093,7 +1093,7 @@ With the `ebpf` build feature, one optional TCP iterator supplies kernel RTT, RT
 
 The experimental `drop-events` build feature enables an optional Linux typed `kfree_skb` hook, which records native drop reasons at Host scope. All these events are unmatched initially: RustNet does not guess a connection, namespace, firewall rule, or process from the current kernel task. It shows runtime kernel reason names, recent events, delivery loss, discarded records, and possible backlog. Counts cover the system since collector startup, independently of the capture filter and TUI clear. An interface index alone does not establish capture scope. A bounded buffer may lose observations during bursts. Missing events never prove that a path is healthy.
 
-JSON schema version 1 gains optional `diagnostics` on connections and `host_diagnostics` on snapshots. These additive objects carry units, independent sampling times, freshness, and source availability. Archived connections retain their measurements as historical evidence. The collector does not feed normal traffic counters or DPI.
+JSON schema version 1 includes optional connection `diagnostics` and always-present snapshot `host_diagnostics`. Host displays and exports TCP measurements even without a matching captured connection or queue sample. Snapshot JSON always includes source availability, including when collectors are unavailable or have no samples. These additive objects carry units, independent sampling times, freshness, and source availability. Archived connections retain their measurements as historical evidence. The collector does not feed normal traffic counters or DPI.
 
 Native platform coverage stays deliberately small:
 

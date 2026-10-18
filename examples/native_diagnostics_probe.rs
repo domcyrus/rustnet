@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     let result = (|| -> anyhow::Result<()> {
         let mut input = child.stdin.take().context("fixture input")?;
         let mut output = BufReader::new(child.stdout.take().context("fixture output")?);
-        let mut lookup = rustnet_host::create_process_lookup(false)?;
+        let lookup = rustnet_host::create_process_lookup(false)?;
         let mut identities = std::collections::HashMap::new();
         for command in ["initial", "late", "drain", "closed"] {
             if command == "late" {

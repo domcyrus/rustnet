@@ -4726,8 +4726,9 @@ mod snapshot_tests {
 
     #[test]
     fn host_diagnostics_socket_rows_identify_each_peer() {
-        use crate::network::types::{QueueKind, QueueSample, SocketSample};
+        use crate::network::types::{QueueKind, QueueSample, SocketSample, TcpSample};
         let app = test_app();
+        let now = SystemTime::now();
         let sockets: Vec<_> = (1000..1002)
             .map(|port| HostSocket {
                 protocol: Protocol::Tcp,
@@ -4752,8 +4753,23 @@ mod snapshot_tests {
                         std::sync::Arc::new(SocketSample {
                             native_id,
                             netns: Some(1),
-                            tcp: None,
-                            queues: Some(QueueSample {
+                            tcp: Some(TcpSample {
+                                source: if native_id == 1000 {
+                                    "tcp_bpf_iterator"
+                                } else {
+                                    "windows_estats"
+                                },
+                                sampled_at: if native_id == 1000 {
+                                    now
+                                } else {
+                                    now - Duration::from_secs(30)
+                                },
+                                rtt_us: 100,
+                                rtt_variation_us: 20,
+                                congestion_window_segments: (native_id == 1000).then_some(10),
+                                retransmissions: 2,
+                            }),
+                            queues: (native_id == 1000).then_some(QueueSample {
                                 source: "procfs",
                                 sampled_at: SystemTime::now(),
                                 kind: QueueKind::TcpBytes,
@@ -4781,6 +4797,9 @@ mod snapshot_tests {
             output.contains("127.0.0.1:8080 -> 127.0.0.1:1001 (socket 1001)"),
             "{output}"
         );
+        assert!(output.contains("Kernel TCP: RTT 100 us; variation 20 us; cwnd 10 segments; 2 retransmits (lifetime, tcp_bpf_iterator)"), "{output}");
+        assert!(output.contains("Kernel TCP: RTT 100 us; variation 20 us; 2 retransmits (since collection enabled, windows_estats) [Stale]"), "{output}");
+        assert!(output.contains("RX 1 / TX 0 bytes"), "{output}");
     }
 
     #[test]

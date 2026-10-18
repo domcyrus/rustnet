@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Preserve empty diagnostics source status in JSON and expose unassociated Host TCP measurements (#688)
 - Include example sources in Docker builds and use the checksum-verified libpcap mirror for Windows SDK downloads (#688)
 - Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0
