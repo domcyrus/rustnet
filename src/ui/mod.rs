@@ -4579,6 +4579,7 @@ mod snapshot_tests {
                 socket_drops: None,
             }),
             tcp: Some(TcpSample {
+                counter_reset: false,
                 source: "tcp_bpf_iterator",
                 sampled_at: now,
                 rtt_us: 100,
@@ -4754,6 +4755,7 @@ mod snapshot_tests {
                             native_id,
                             netns: Some(1),
                             tcp: Some(TcpSample {
+                                counter_reset: false,
                                 source: if native_id == 1000 {
                                     "tcp_bpf_iterator"
                                 } else {

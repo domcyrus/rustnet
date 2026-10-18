@@ -1033,13 +1033,13 @@ JSON 模式版本 1 新增可选连接字段 `diagnostics` 和快照字段 `host
 
 原生平台覆盖保持精简：
 
-- Windows 使用 IP Helper EStats Path 读取已建立 TCP 的 RTT、RTT 变化及启用采集以来的重传。启用每个套接字的采集需要提升权限；保留已启用的采集，拒绝或不支持的调用显示不可用。队列和拥塞窗口保持缺失。保留 IPv6 作用域和原生连接创建时间用于匹配。
+- Windows 使用 IP Helper EStats Path 读取已建立 TCP 的毫秒精度 RTT、RTT 变化及启用采集以来的重传。启用每个套接字的采集需要提升权限；保留已启用的采集，拒绝或不支持的调用显示不可用。队列和拥塞窗口保持缺失。保留 IPv6 作用域和原生连接创建时间用于匹配。
 - macOS 在现有 `lsof -Tqs` 扫描中加入 TCP 收发字节队列，无需私有 PCB 布局或额外权限。可见性取决于当前用户的 lsof 权限；缺失字段不会视为零。
 - FreeBSD 增加一次系统 `netstat -AanW -p tcp` 扫描获取 TCP 字节队列，继续使用 sockstat 获取归属。仅匹配唯一精确端点及可见的非零 PCB 标识，受当前凭据和 jail 限制；不在 Rust 中绑定版本相关的内核 PCB 布局。
 
 各平台共用摘要优先、Details Health、Host 和 JSON，明确显示来源和新鲜度。重传发现需要同来源、同套接字的两个新鲜有序样本；来源或身份变化、计数减少或过期间隔会重建基线，不推断丢包位置。WFP、DropTap、PFLOG 和连接级带原因丢弃关联继续推迟，以避免额外事件采集、权限和关联复杂度。不增加特权服务、策略修改、第二套 Linux 后端或 UDP BPF 迭代器。
 
-原生回环探针验证沙箱前后、新建套接字、队列排空及套接字消失。发布检查仍包括 root 降权、其他用户可见性、Windows 普通用户行为、内核/架构覆盖、事件突发和大量套接字性能。Linux 使用 `cargo build --locked --example diagnostics_probe --all-features` 构建，并设置普通 RustNet 文件能力后运行；`--loss` 通过仅附加到探针套接字的过滤器测试重传，有些主机策略禁止该过滤器。Windows、macOS、FreeBSD 使用 `cargo run --locked --example native_diagnostics_probe --all-features`（Windows EStats 需要提升权限）。探针不修改防火墙或系统策略。
+原生回环探针验证沙箱前后、新建套接字、队列排空及套接字消失。发布检查仍包括 root 降权、其他用户及 jail 可见性、操作系统/内核/架构覆盖、事件突发和大量套接字性能。Linux 使用 `cargo build --locked --example diagnostics_probe --all-features` 构建，并设置普通 RustNet 文件能力后运行；`--loss` 通过仅附加到探针套接字的过滤器测试重传，有些主机策略禁止该过滤器。Windows、macOS、FreeBSD 使用 `cargo run --locked --example native_diagnostics_probe --all-features`（Windows EStats 需要提升权限）。探针不修改防火墙或系统策略。
 
 ## 主机套接字清单<a id="host-socket-inventory"></a>
 

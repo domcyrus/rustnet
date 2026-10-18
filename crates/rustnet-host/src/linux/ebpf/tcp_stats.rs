@@ -130,6 +130,7 @@ fn decode(
             remote_addr: SocketAddr::new(addr(32)?, u16::from_ne_bytes(record[50..52].try_into()?)),
         },
         TcpSample {
+            counter_reset: false,
             source: "tcp_bpf_iterator",
             sampled_at,
             rtt_us: u32_at(52),

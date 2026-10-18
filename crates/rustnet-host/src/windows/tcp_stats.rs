@@ -156,7 +156,8 @@ fn read_path(
     if result != 0 {
         return Err(("read Path", result));
     }
-    if rw[0] == 0 {
+    let counter_reset = rw[0] == 0;
+    if counter_reset {
         rw[0] = 1;
         let result = enable(rw);
         if result != 0 {
@@ -173,6 +174,7 @@ fn read_path(
         }
     }
     Ok(TcpSample {
+        counter_reset,
         source: "windows_estats",
         sampled_at: SystemTime::now(),
         // Path RTT units are milliseconds, unlike Linux's microseconds.
@@ -218,6 +220,25 @@ mod tests {
     }
 
     #[test]
+    fn enabling_collection_starts_a_new_baseline() {
+        let mut reads = 0;
+        let sample = read_path(
+            |rw, _| {
+                reads += 1;
+                rw[0] = u8::from(reads > 1);
+                0
+            },
+            |rw| {
+                assert_eq!(rw, &[1]);
+                0
+            },
+        )
+        .unwrap();
+        assert!(sample.counter_reset);
+        assert_eq!(reads, 2);
+    }
+
+    #[test]
     fn enabled_path_preserves_collection_and_converts_units() {
         let sample = read_path(
             |rw, bytes| {
@@ -245,5 +266,6 @@ mod tests {
             (12000, 3000, 7)
         );
         assert!(sample.congestion_window_segments.is_none());
+        assert!(!sample.counter_reset);
     }
 }

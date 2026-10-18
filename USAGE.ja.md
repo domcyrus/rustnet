@@ -60,13 +60,13 @@ JSON スキーマ 1 に任意の接続 `diagnostics` とスナップショット
 
 ネイティブ対応は小さく保ちます。
 
-- Windows は IP Helper EStats Path から確立済み TCP の RTT、RTT 変動、収集有効化後の再送数を読みます。各ソケットの収集有効化には昇格が必要です。既存の収集を維持し、拒否や未対応は利用不可と表示します。キューと輻輳ウィンドウは未取得です。照合には IPv6 スコープとネイティブ接続作成時刻を保持します。
+- Windows は IP Helper EStats Path から確立済み TCP のミリ秒精度 RTT、RTT 変動、収集有効化後の再送数を読みます。各ソケットの収集有効化には昇格が必要です。既存の収集を維持し、拒否や未対応は利用不可と表示します。キューと輻輳ウィンドウは未取得です。照合には IPv6 スコープとネイティブ接続作成時刻を保持します。
 - macOS は既存の `lsof -Tqs` 走査で TCP 送受信バイトキューを取得します。非公開 PCB レイアウトや追加権限は不要で、現在のユーザーの lsof 可視範囲に従います。欠落フィールドをゼロと扱いません。
 - FreeBSD は一回のシステム `netstat -AanW -p tcp` 走査で TCP バイトキューを読み、所属情報には sockstat を維持します。一意な完全一致エンドポイントと可視の非ゼロ PCB 識別子のみを照合します。資格情報と jail の制約に従い、バージョン依存のカーネル PCB レイアウトを Rust に定義しません。
 
 全プラットフォームで概要優先、Details Health、Host、JSON を共有し、ソースと鮮度を表示します。再送所見は同じソースとソケットの新鮮で順序付きの二計測を要求し、ソース・識別子の変更、カウンター減少、古い間隔で基準をリセットします。損失場所は推定しません。WFP、DropTap、PFLOG、接続別の理由付き破棄関連付けは、イベント取得・権限・照合の複雑さを避けるため延期します。ヘルパー、ポリシー変更、第二の Linux バックエンド、UDP BPF イテレータは追加しません。
 
-ネイティブのループバック試験ではサンドボックス前後、新規ソケット、キュー排出、ソケット消失を確認します。root 降格、他ユーザーの可視性、Windows 標準ユーザー、対応カーネル・アーキテクチャ、イベント急増、多数ソケットの性能は追加のリリース確認事項です。Linux は `cargo build --locked --example diagnostics_probe --all-features` でビルドし、通常の RustNet ファイル capability を設定して実行します。`--loss` は試験ソケットだけのフィルターで再送を検証しますが、ホストポリシーによっては禁止されます。Windows、macOS、FreeBSD は `cargo run --locked --example native_diagnostics_probe --all-features` を使用します（Windows EStats は昇格が必要）。試験はファイアウォールやシステムポリシーを変更しません。
+ネイティブのループバック試験ではサンドボックス前後、新規ソケット、キュー排出、ソケット消失を確認します。root 降格、他ユーザーと jail の可視性、対応 OS・カーネル・アーキテクチャ、イベント急増、多数ソケットの性能は追加のリリース確認事項です。Linux は `cargo build --locked --example diagnostics_probe --all-features` でビルドし、通常の RustNet ファイル capability を設定して実行します。`--loss` は試験ソケットだけのフィルターで再送を検証しますが、ホストポリシーによっては禁止されます。Windows、macOS、FreeBSD は `cargo run --locked --example native_diagnostics_probe --all-features` を使用します（Windows EStats は昇格が必要）。試験はファイアウォールやシステムポリシーを変更しません。
 
 ## Host とネットワークイベント<a id="host-socket-inventory"></a>
 

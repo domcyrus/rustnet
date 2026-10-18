@@ -23,6 +23,8 @@ pub struct QueueSample {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcpSample {
+    /// Collection was (re)enabled; counters cannot extend the previous baseline.
+    pub counter_reset: bool,
     pub source: &'static str,
     pub sampled_at: SystemTime,
     pub rtt_us: u32,
@@ -66,7 +68,7 @@ impl ConnectionDiagnostics {
         let retransmission_increase = sample.tcp.as_ref().and_then(|tcp| {
             let old = previous?;
             let before = old.sample.tcp.as_ref()?;
-            if tcp.source != before.source {
+            if tcp.counter_reset || tcp.source != before.source {
                 return None;
             }
             if tcp == before {
@@ -209,6 +211,7 @@ mod tests {
                 netns: Some(1),
                 queues: None,
                 tcp: Some(TcpSample {
+                    counter_reset: false,
                     source,
                     sampled_at: SystemTime::UNIX_EPOCH + Duration::from_secs(second),
                     rtt_us: 100,
@@ -222,6 +225,12 @@ mod tests {
         assert_eq!(a.retransmission_increase, None);
         let b = ConnectionDiagnostics::update(Some(&a), tcp(15, 1, "windows_estats", 43));
         assert_eq!(b.retransmission_increase, Some(3));
+        let mut restarted = (*tcp(20, 1, "windows_estats", 100)).clone();
+        restarted.tcp.as_mut().unwrap().counter_reset = true;
+        assert_eq!(
+            ConnectionDiagnostics::update(Some(&b), Arc::new(restarted)).retransmission_increase,
+            None
+        );
         assert_eq!(
             b.findings(SystemTime::UNIX_EPOCH + Duration::from_secs(15)),
             vec!["Observed: kernel TCP retransmissions increased; loss location unknown"]

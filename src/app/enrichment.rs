@@ -619,6 +619,7 @@ mod process_enrichment_tests {
                     netns: Some(1),
                     queues: None,
                     tcp: Some(TcpSample {
+                        counter_reset: false,
                         source: "windows_estats",
                         sampled_at: now,
                         rtt_us: rtt,

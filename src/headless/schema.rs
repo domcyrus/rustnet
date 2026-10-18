@@ -887,6 +887,7 @@ mod tests {
                 netns: Some(7),
                 queues,
                 tcp: Some(TcpSample {
+                    counter_reset: false,
                     source,
                     sampled_at: now - Duration::from_secs(30),
                     rtt_us: 100,
