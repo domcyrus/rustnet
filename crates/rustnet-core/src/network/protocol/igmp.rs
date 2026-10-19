@@ -77,142 +77,67 @@ mod tests {
         TransportParams::new(IpAddr::V4(src), IpAddr::V4(dst), 64, None, None)
     }
 
-    // IGMPv1 Membership Report (type 0x12)
-    // Header: [type, unused, checksum(2), group_addr(4)]
     #[test]
-    fn test_igmpv1_membership_report() {
-        let group = Ipv4Addr::new(239, 1, 2, 3);
-        let data: &[u8] = &[0x12, 0x00, 0x00, 0x00, 239, 1, 2, 3];
-        let src = Ipv4Addr::new(192, 168, 1, 1);
-        let dst = Ipv4Addr::new(239, 1, 2, 3);
-
-        let packet = parse(data, params(src, dst), &local_ips(src)).unwrap();
-
-        assert_eq!(packet.protocol, Protocol::Igmp);
-        assert!(packet.is_outgoing);
-        match packet.protocol_state {
-            ProtocolState::Igmp {
-                igmp_type,
-                group_addr,
-            } => {
-                assert_eq!(igmp_type, 0x12);
-                assert_eq!(group_addr, Some(group));
-            }
-            _ => panic!("unexpected protocol state"),
-        }
-    }
-
-    // IGMPv2 General Membership Query (type 0x11, group addr = 0.0.0.0)
-    #[test]
-    fn test_igmpv2_general_query() {
-        let data: &[u8] = &[0x11, 0x64, 0x00, 0x00, 0, 0, 0, 0];
-        let src = Ipv4Addr::new(192, 168, 1, 1);
-        let dst = Ipv4Addr::new(224, 0, 0, 1);
-
-        let packet = parse(data, params(src, dst), &local_ips(src)).unwrap();
-
-        assert_eq!(packet.protocol, Protocol::Igmp);
-        assert!(packet.is_outgoing);
-        match packet.protocol_state {
-            ProtocolState::Igmp {
-                igmp_type,
-                group_addr,
-            } => {
-                assert_eq!(igmp_type, 0x11);
-                assert_eq!(group_addr, Some(Ipv4Addr::new(0, 0, 0, 0)));
-            }
-            _ => panic!("unexpected protocol state"),
-        }
-    }
-
-    // IGMPv2 Group-Specific Query (type 0x11, group addr set)
-    #[test]
-    fn test_igmpv2_group_specific_query() {
+    fn test_igmp_message_types_and_group_addresses() {
         let group = Ipv4Addr::new(239, 255, 255, 250);
-        let data: &[u8] = &[0x11, 0x14, 0x00, 0x00, 239, 255, 255, 250];
-        let src = Ipv4Addr::new(10, 0, 0, 1);
-        let dst = Ipv4Addr::new(239, 255, 255, 250);
-
-        let packet = parse(data, params(src, dst), &local_ips(src)).unwrap();
-
-        match packet.protocol_state {
-            ProtocolState::Igmp {
+        for (name, data, src, dst, expected_group) in [
+            (
+                "v1 report",
+                [0x12, 0, 0, 0, 239, 1, 2, 3],
+                [192, 168, 1, 1],
+                [239, 1, 2, 3],
+                Some(Ipv4Addr::new(239, 1, 2, 3)),
+            ),
+            (
+                "v2 general query",
+                [0x11, 0x64, 0, 0, 0, 0, 0, 0],
+                [192, 168, 1, 1],
+                [224, 0, 0, 1],
+                Some(Ipv4Addr::UNSPECIFIED),
+            ),
+            (
+                "v2 group query",
+                [0x11, 0x14, 0, 0, 239, 255, 255, 250],
+                [10, 0, 0, 1],
+                [239, 255, 255, 250],
+                Some(group),
+            ),
+            (
+                "v2 report",
+                [0x16, 0, 0, 0, 239, 255, 255, 250],
+                [192, 168, 0, 5],
+                [239, 255, 255, 250],
+                Some(group),
+            ),
+            (
+                "v2 leave",
+                [0x17, 0, 0, 0, 239, 255, 255, 250],
+                [192, 168, 0, 5],
+                [224, 0, 0, 2],
+                Some(group),
+            ),
+            // v3 bytes 4-7 are reserved and a record count, not a group address.
+            (
+                "v3 report",
+                [0x22, 0, 0, 0, 0, 0, 0, 2],
+                [192, 168, 1, 10],
+                [224, 0, 0, 22],
+                None,
+            ),
+        ] {
+            let src = Ipv4Addr::from(src);
+            let packet = parse(&data, params(src, dst.into()), &local_ips(src)).expect(name);
+            assert_eq!(packet.protocol, Protocol::Igmp, "{name}");
+            assert!(packet.is_outgoing, "{name}");
+            let ProtocolState::Igmp {
                 igmp_type,
                 group_addr,
-            } => {
-                assert_eq!(igmp_type, 0x11);
-                assert_eq!(group_addr, Some(group));
-            }
-            _ => panic!("unexpected protocol state"),
-        }
-    }
-
-    // IGMPv2 Membership Report (type 0x16)
-    #[test]
-    fn test_igmpv2_membership_report() {
-        let group = Ipv4Addr::new(239, 255, 255, 250);
-        let data: &[u8] = &[0x16, 0x00, 0x00, 0x00, 239, 255, 255, 250];
-        let src = Ipv4Addr::new(192, 168, 0, 5);
-        let dst = Ipv4Addr::new(239, 255, 255, 250);
-
-        let packet = parse(data, params(src, dst), &local_ips(src)).unwrap();
-
-        assert!(packet.is_outgoing);
-        match packet.protocol_state {
-            ProtocolState::Igmp {
-                igmp_type,
-                group_addr,
-            } => {
-                assert_eq!(igmp_type, 0x16);
-                assert_eq!(group_addr, Some(group));
-            }
-            _ => panic!("unexpected protocol state"),
-        }
-    }
-
-    // IGMPv2 Leave Group (type 0x17)
-    #[test]
-    fn test_igmpv2_leave_group() {
-        let group = Ipv4Addr::new(239, 255, 255, 250);
-        let data: &[u8] = &[0x17, 0x00, 0x00, 0x00, 239, 255, 255, 250];
-        let src = Ipv4Addr::new(192, 168, 0, 5);
-        let dst = Ipv4Addr::new(224, 0, 0, 2);
-
-        let packet = parse(data, params(src, dst), &local_ips(src)).unwrap();
-
-        match packet.protocol_state {
-            ProtocolState::Igmp {
-                igmp_type,
-                group_addr,
-            } => {
-                assert_eq!(igmp_type, 0x17);
-                assert_eq!(group_addr, Some(group));
-            }
-            _ => panic!("unexpected protocol state"),
-        }
-    }
-
-    // IGMPv3 Membership Report (type 0x22): bytes 4-5 reserved, 6-7 = num records
-    // group_addr must be None
-    #[test]
-    fn test_igmpv3_membership_report_no_group_addr() {
-        // 2 group records
-        let data: &[u8] = &[0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02];
-        let src = Ipv4Addr::new(192, 168, 1, 10);
-        let dst = Ipv4Addr::new(224, 0, 0, 22);
-
-        let packet = parse(data, params(src, dst), &local_ips(src)).unwrap();
-
-        assert!(packet.is_outgoing);
-        match packet.protocol_state {
-            ProtocolState::Igmp {
-                igmp_type,
-                group_addr,
-            } => {
-                assert_eq!(igmp_type, 0x22);
-                assert_eq!(group_addr, None);
-            }
-            _ => panic!("unexpected protocol state"),
+            } = packet.protocol_state
+            else {
+                panic!("unexpected protocol state for {name}");
+            };
+            assert_eq!(igmp_type, data[0], "{name}");
+            assert_eq!(group_addr, expected_group, "{name}");
         }
     }
 

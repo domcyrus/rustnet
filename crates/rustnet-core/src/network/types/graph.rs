@@ -501,7 +501,10 @@ impl TrafficHistory {
     /// Get network health chart data: (packet_loss_pct, rtt_ms) as ChartData pairs
     /// Time offset is negative seconds from now
     pub fn get_health_chart_data(&self) -> (ChartData, ChartData) {
-        let now = Instant::now();
+        self.health_chart_data_at(Instant::now())
+    }
+
+    fn health_chart_data_at(&self, now: Instant) -> (ChartData, ChartData) {
         let window = 3;
         let loss = self.windowed_series(now, window, |s| Some(s.packet_loss_pct as f64));
         let rtt = self.windowed_series(now, window, |s| s.avg_rtt_ms);
@@ -888,8 +891,8 @@ mod tests {
     #[test]
     fn test_traffic_history_health_smoothing() {
         let mut history = TrafficHistory::new(60);
+        let now = Instant::now();
 
-        // Add multiple samples
         for i in 0..5 {
             add_sample(
                 &mut history,
@@ -900,12 +903,16 @@ mod tests {
                 i * 2,
                 Some((i * 10) as f64),
             );
-            std::thread::sleep(Duration::from_millis(10));
+            history.samples.back_mut().unwrap().timestamp = now - Duration::from_secs(4 - i);
         }
 
-        let (loss_data, rtt_data) = history.get_health_chart_data();
+        let (loss_data, rtt_data) = history.health_chart_data_at(now);
+        assert_eq!(loss_data, vec![(-3.0, 2.0), (-2.0, 4.0), (-1.0, 6.0)]);
+        assert_eq!(rtt_data, vec![(-3.0, 10.0), (-2.0, 20.0), (-1.0, 30.0)]);
 
-        assert!(loss_data.len() >= 2);
-        assert!(rtt_data.len() >= 2);
+        // Missing RTT samples must not be averaged as zeros.
+        history.samples[2].avg_rtt_ms = None;
+        let (_, rtt_data) = history.health_chart_data_at(now);
+        assert_eq!(rtt_data, vec![(-3.0, 5.0), (-2.0, 20.0), (-1.0, 35.0)]);
     }
 }

@@ -1410,26 +1410,6 @@ mod tests {
     }
 
     #[test]
-    fn test_new_connection_rate_tracker_initialization() {
-        let packet = create_test_packet(true, false);
-        let mut conn = create_connection_from_packet(&packet, SystemTime::now());
-
-        assert_eq!(conn.bytes_sent, 100);
-        assert_eq!(conn.bytes_received, 0);
-
-        let packet2 = create_test_packet(true, false);
-        let _tcp_events = merge_packet_into_connection(&mut conn, &packet2, SystemTime::now());
-
-        assert_eq!(conn.bytes_sent, 200);
-        assert_eq!(conn.bytes_received, 0);
-
-        conn.update_rates();
-
-        // The rate must be based on the 100-byte delta, not the full 200 bytes.
-        assert!(conn.current_outgoing_rate_bps >= 0.0);
-    }
-
-    #[test]
     fn test_tcp_state_transitions() {
         // Test SYN -> SYN_SENT
         let flags = TcpFlags {

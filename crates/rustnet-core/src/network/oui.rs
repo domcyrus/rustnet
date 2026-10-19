@@ -173,28 +173,18 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_miss() {
-        let lookup = OuiLookup::from_embedded().unwrap();
-        // All-zeros OUI is unlikely to match a real vendor
-        assert!(
-            lookup.lookup("00:00:00:00:00:00").is_none()
-                || lookup.lookup("00:00:00:00:00:00").is_some()
-        );
-        // Truly random prefix
-        assert!(
-            lookup.lookup("ff:ff:ff:dd:ee:00").is_none()
-                || lookup.lookup("ff:ff:ff:dd:ee:00").is_some()
-        );
-    }
-
-    #[test]
-    fn test_lookup_known_vendor() {
-        let lookup = OuiLookup::from_embedded().unwrap();
-        // 00:1B:63 is an Apple OUI; the exact vendor string may change with
-        // the database, so only check that a lookup succeeds.
-        let result = lookup.lookup("00:1b:63:00:00:00");
-        if let Some(vendor) = result {
-            assert!(!vendor.is_empty());
+    fn test_lookup_vendor_prefix() {
+        let lookup = OuiLookup {
+            vendors: HashMap::from([([0x00, 0x1b, 0x63], "Test vendor".to_string())]),
+        };
+        for (mac, expected) in [
+            ("00:1b:63:00:00:00", Some("Test vendor")),
+            ("00:1B:63:ff:ff:ff", Some("Test vendor")),
+            ("00:00:00:00:00:00", None),
+            ("ff:ff:ff:dd:ee:00", None),
+            ("not a mac", None),
+        ] {
+            assert_eq!(lookup.lookup(mac), expected, "{mac}");
         }
     }
 }

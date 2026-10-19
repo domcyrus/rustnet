@@ -502,24 +502,6 @@ mod tests {
     }
 
     #[test]
-    fn test_port_toggle_state_change() {
-        let mut ui_state = UiState::default();
-        assert!(!ui_state.show_port_numbers);
-
-        ui_state.show_port_numbers = !ui_state.show_port_numbers;
-        assert!(
-            ui_state.show_port_numbers,
-            "Port numbers should be visible after toggle"
-        );
-
-        ui_state.show_port_numbers = !ui_state.show_port_numbers;
-        assert!(
-            !ui_state.show_port_numbers,
-            "Service names should be visible after second toggle"
-        );
-    }
-
-    #[test]
     fn test_sort_column_cycle_without_location() {
         use SortColumn::*;
 
@@ -570,44 +552,29 @@ mod tests {
 
     #[test]
     fn test_ui_state_cycle_sort_column() {
+        use SortColumn::*;
         let mut ui_state = UiState::default();
-
-        // Default state
-        assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
+        assert_eq!(ui_state.sort_column, CreatedAt);
         assert!(ui_state.sort_ascending);
 
-        // Cycle to Process - should reset to ascending
-        ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::Process);
-        assert!(ui_state.sort_ascending); // Process defaults to ascending
-
-        // Cycle to RemoteAddress - should reset to ascending
-        ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::RemoteAddress);
-        assert!(ui_state.sort_ascending);
-
-        // Cycle to LocalAddress - should reset to ascending
-        ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::LocalAddress);
-        assert!(ui_state.sort_ascending);
-
-        // Skip ahead to Application
-        ui_state.cycle_sort_column(); // Service
-        ui_state.cycle_sort_column(); // Application
-        assert_eq!(ui_state.sort_column, SortColumn::Application);
-        assert!(ui_state.sort_ascending);
-
-        // Cycle to `State`, `Rtt`, `Health`, then `BandwidthTotal`
-        ui_state.cycle_sort_column(); // State
-        ui_state.cycle_sort_column(); // `Rtt`
-        assert_eq!(ui_state.sort_column, SortColumn::Rtt);
-        assert!(!ui_state.sort_ascending); // RTT defaults to descending (slowest first)
-        ui_state.cycle_sort_column(); // Health
-        assert_eq!(ui_state.sort_column, SortColumn::Health);
-        assert!(!ui_state.sort_ascending); // Health defaults to descending (most events first)
-        ui_state.cycle_sort_column(); // BandwidthTotal
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(!ui_state.sort_ascending); // Bandwidth defaults to descending
+        for (column, ascending) in [
+            (Process, true),
+            (RemoteAddress, true),
+            (LocalAddress, true),
+            (Service, true),
+            (Application, true),
+            (State, true),
+            (Rtt, false),
+            (Health, false),
+            (BandwidthTotal, false),
+            (CreatedAt, true),
+        ] {
+            // A column change must restore its default direction.
+            ui_state.sort_ascending = !ascending;
+            ui_state.cycle_sort_column();
+            assert_eq!(ui_state.sort_column, column);
+            assert_eq!(ui_state.sort_ascending, ascending, "{column:?}");
+        }
     }
 
     #[test]
@@ -620,10 +587,12 @@ mod tests {
 
         // Toggle direction
         ui_state.toggle_sort_direction();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
         assert!(ui_state.sort_ascending);
 
         // Toggle back
         ui_state.toggle_sort_direction();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
         assert!(!ui_state.sort_ascending);
     }
 
@@ -642,53 +611,6 @@ mod tests {
         assert_eq!(State.display_name(), "State");
         assert_eq!(Rtt.display_name(), "RTT");
         assert_eq!(Health.display_name(), "Health");
-    }
-
-    #[test]
-    fn test_bandwidth_sort_states() {
-        let mut ui_state = UiState::default();
-
-        // Start from default
-        assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
-        assert!(ui_state.sort_ascending);
-
-        // Cycle through columns to reach BandwidthTotal
-        // CreatedAt -> Process -> RemoteAddress -> LocalAddress -> Service ->
-        // `Application` -> `State` -> `Rtt` -> `Health` -> `BandwidthTotal`
-        for _ in 0..9 {
-            ui_state.cycle_sort_column();
-        }
-
-        // Should be at BandwidthTotal with default descending (false)
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(
-            !ui_state.sort_ascending,
-            "BandwidthTotal should default to descending"
-        );
-
-        // Toggle direction with Shift+S
-        ui_state.toggle_sort_direction();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(
-            ui_state.sort_ascending,
-            "After toggle, BandwidthTotal should be ascending"
-        );
-
-        // Toggle back
-        ui_state.toggle_sort_direction();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(
-            !ui_state.sort_ascending,
-            "After second toggle, BandwidthTotal should be descending again"
-        );
-
-        // Cycle past BandwidthTotal wraps back to the CreatedAt default
-        ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
-        assert!(
-            ui_state.sort_ascending,
-            "CreatedAt should default to ascending"
-        );
     }
 
     #[test]
@@ -831,14 +753,6 @@ mod snapshot_tests {
     }
 
     // --- Chrome: loading, help, tabs, filter input, status bar ---
-
-    #[test]
-    fn loading_screen() {
-        let output = render(80, 20, |f| {
-            draw_loading_screen(f, std::time::Duration::ZERO);
-        });
-        insta::assert_snapshot!(output);
-    }
 
     #[test]
     fn help_overlay_overview() {

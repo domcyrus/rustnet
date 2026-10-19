@@ -34,7 +34,6 @@ pub(crate) use tls_common::is_partial_sni;
 pub(crate) use tls_common::test_fixtures;
 
 // Well-known port numbers used for DPI protocol detection.
-const PORT_SSH: u16 = 22;
 const PORT_DNS: u16 = 53;
 const PORT_FTP: u16 = 21;
 const PORT_DHCP_SERVER: u16 = 67;
@@ -48,8 +47,6 @@ const PORT_HTTPS: u16 = 443;
 const PORT_MQTT: u16 = 1883;
 const PORT_SSDP: u16 = 1900;
 const PORT_MDNS: u16 = 5353;
-const PORT_STUN: u16 = 3478;
-const PORT_STUN_TLS: u16 = 5349;
 const PORT_LLMNR: u16 = 5355;
 const PORT_OPENVPN: u16 = 1194;
 
@@ -127,9 +124,7 @@ pub(crate) fn analyze_tcp_packet(
     }
 
     // 3. Check for BitTorrent (handshake signature \x13BitTorrent protocol)
-    if bittorrent::is_bittorrent_handshake(payload)
-        && let Some(bt_result) = bittorrent::analyze_bittorrent(payload)
-    {
+    if let Some(bt_result) = bittorrent::analyze_bittorrent(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::BitTorrent(bt_result),
         });
@@ -144,10 +139,8 @@ pub(crate) fn analyze_tcp_packet(
         });
     }
 
-    // 5. Check for SSH (port 22 or SSH banner)
-    if (local_port == PORT_SSH || remote_port == PORT_SSH || ssh::is_likely_ssh(payload))
-        && let Some(ssh_result) = ssh::analyze_ssh(payload, _is_outgoing)
-    {
+    // 5. Check for SSH signatures on any port
+    if let Some(ssh_result) = ssh::analyze_ssh(payload, _is_outgoing) {
         return Some(DpiResult {
             application: ApplicationProtocol::Ssh(ssh_result),
         });
@@ -304,14 +297,8 @@ pub(crate) fn analyze_udp_packet(
         });
     }
 
-    // 11. STUN (port 3478/5349 or magic cookie detection for non-standard ports)
-    if (local_port == PORT_STUN
-        || remote_port == PORT_STUN
-        || local_port == PORT_STUN_TLS
-        || remote_port == PORT_STUN_TLS
-        || stun::is_likely_stun(payload))
-        && let Some(stun_result) = stun::analyze_stun(payload)
-    {
+    // 11. STUN (header and magic cookie detection on any port)
+    if let Some(stun_result) = stun::analyze_stun(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::Stun(stun_result),
         });
@@ -349,6 +336,60 @@ pub(crate) fn analyze_udp_packet(
 mod tests {
     use super::*;
     use crate::network::types::{OpenVpnPacketType, WireGuardPacketType};
+
+    #[test]
+    fn dispatches_ssh_signatures_on_standard_and_alternate_ports() {
+        for (local, remote) in [(50_000, 22), (22, 50_000), (50_000, 2222)] {
+            for outgoing in [false, true] {
+                let result =
+                    analyze_tcp_packet(b"SSH-2.0-OpenSSH_8.9\r\n", local, remote, outgoing)
+                        .expect("SSH banner should be classified");
+                let ApplicationProtocol::Ssh(info) = result.application else {
+                    panic!("expected SSH on {local}:{remote}");
+                };
+                assert_eq!(
+                    info.client_software.as_deref(),
+                    outgoing.then_some("OpenSSH_8.9")
+                );
+                assert_eq!(
+                    info.server_software.as_deref(),
+                    (!outgoing).then_some("OpenSSH_8.9")
+                );
+                assert!(analyze_tcp_packet(b"SSH", local, remote, outgoing).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn dispatches_bittorrent_handshake_on_any_port() {
+        for (local, remote) in [(50_000, 6881), (6881, 50_000), (50_000, 50_001)] {
+            let result = analyze_tcp_packet(b"\x13BitTorrent protocol", local, remote, true)
+                .expect("partial BitTorrent handshake should be classified");
+            assert!(matches!(
+                result.application,
+                ApplicationProtocol::BitTorrent(_)
+            ));
+            assert!(analyze_tcp_packet(b"\x12BitTorrent protocol", local, remote, true).is_none());
+        }
+    }
+
+    #[test]
+    fn dispatches_stun_only_with_a_valid_header_on_any_port() {
+        let mut payload = [0; 20];
+        payload[1] = 1; // Binding request
+        payload[4..8].copy_from_slice(&0x2112_A442u32.to_be_bytes());
+        for port in [3478, 5349, 50_001] {
+            for (local, remote) in [(50_000, port), (port, 50_000)] {
+                let result = analyze_udp_packet(&payload, local, remote, true)
+                    .expect("STUN header should be classified");
+                assert!(matches!(result.application, ApplicationProtocol::Stun(_)));
+                assert!(analyze_udp_packet(&payload[..19], local, remote, true).is_none());
+                let mut invalid = payload;
+                invalid[4] = 0;
+                assert!(analyze_udp_packet(&invalid, local, remote, true).is_none());
+            }
+        }
+    }
 
     #[test]
     fn dispatches_wireguard_before_bittorrent() {

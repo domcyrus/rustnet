@@ -12,9 +12,6 @@ mod packet_queue;
 mod pcapng_export;
 mod runtime;
 mod sampling;
-#[cfg(test)]
-#[path = "../test_support/scratch_dir.rs"]
-mod scratch_dir;
 mod state;
 mod types;
 #[cfg(unix)]
