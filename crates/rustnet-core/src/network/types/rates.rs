@@ -467,15 +467,10 @@ mod tests {
         }
 
         let final_time = start + Duration::from_millis(1600);
-        let outgoing_rate = tracker.get_outgoing_rate_bps_at(final_time);
 
-        // Rate should be averaged over the whole window
-        // Total bytes sent: 1MB burst + 100KB slow = 1.1MB over 1.6s = ~687.5 KB/s
-        assert!(
-            outgoing_rate > 600_000.0 && outgoing_rate < 800_000.0,
-            "Rate should average burst and steady traffic, got: {}",
-            outgoing_rate
-        );
+        // Average 1,100,000 bytes sent and 550,000 received over 1.6 seconds.
+        assert_eq!(tracker.get_outgoing_rate_bps_at(final_time), 687_500.0);
+        assert_eq!(tracker.get_incoming_rate_bps_at(final_time), 343_750.0);
     }
 
     #[test]
