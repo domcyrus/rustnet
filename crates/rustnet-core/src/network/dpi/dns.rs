@@ -134,9 +134,10 @@ fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQu
 
 /// Walk `count` resource records starting at `offset`, pushing A / AAAA
 /// rdata into `ips` (subject to [`MAX_RESPONSE_IPS_PER_PACKET`]) and counting
-/// records whose TYPE matches `queried_type` into `matched` (for NODATA
-/// detection; pass `None` to skip counting, e.g. on the mDNS additional-records
-/// walk where the concept does not apply). Returns the offset of the byte
+/// records whose TYPE matches `queried_type` (or any TYPE for QTYPE=ANY)
+/// into `matched` for NODATA detection. Pass `None` to skip counting, e.g. on
+/// the mDNS additional-records walk where the concept does not apply.
+/// Returns the offset of the byte
 /// immediately after the last record successfully walked (so callers can
 /// chain a second walk, e.g. ANCOUNT then ARCOUNT for mDNS) together with
 /// the number of records fully walked (so callers can tell a complete walk
@@ -157,7 +158,10 @@ fn walk_a_aaaa_records(
             return (offset, walked);
         };
 
-        if queried_type.is_some() && queried_type == Some(DnsQueryType::from_wire(rr.rtype)) {
+        // ANY (RFC 1035 §3.2.3) is a question wildcard, not an answer TYPE.
+        if queried_type.is_some_and(|qtype| {
+            qtype == DnsQueryType::Other(255) || qtype == DnsQueryType::from_wire(rr.rtype)
+        }) {
             *matched += 1;
         }
 
@@ -637,6 +641,123 @@ mod tests {
             Some(false),
             "the answer contains a record of the queried type"
         );
+    }
+
+    #[test]
+    fn test_any_response_with_data_is_not_nodata() {
+        // ANY is a query-only wildcard, not the TYPE of an answer record.
+        // RFC 8482 also permits a single synthesized HINFO answer.
+        for (rtype, rdata) in [
+            (1, &b"\xc0\x00\x02\x01"[..]),
+            (28, &Ipv6Addr::LOCALHOST.octets()[..]),
+            (5, &b"\x05alias\x07example\x03com\x00"[..]),
+            (16, &b"\x02ok"[..]),
+            (13, &b"\x07RFC8482\x00"[..]),
+            (65280, &b"opaque"[..]),
+        ] {
+            let mut payload = build_dns_header(0, 0x8000, 1, 1, 0, 0);
+            push_question(&mut payload, "example.com", 255);
+            push_rr(&mut payload, RrName::Ptr(12), rtype, 60, rdata);
+
+            let info = analyze_dns(&payload).unwrap();
+            assert_eq!(info.query_type, Some(DnsQueryType::Other(255)));
+            assert_eq!(info.rcode, Some(0));
+            assert_eq!(info.nodata, Some(false), "answer TYPE {rtype}");
+        }
+    }
+
+    #[test]
+    fn test_unknown_query_type_is_not_a_wildcard() {
+        for (rtype, expected) in [(1, Some(true)), (65280, Some(false))] {
+            let mut payload = build_dns_header(0, 0x8000, 1, 1, 0, 0);
+            push_question(&mut payload, "example.com", 65280);
+            push_rr(&mut payload, RrName::Ptr(12), rtype, 60, &[192, 0, 2, 1]);
+
+            assert_eq!(analyze_dns(&payload).unwrap().nodata, expected);
+        }
+    }
+
+    #[test]
+    fn test_any_success_is_not_counted_as_nodata() {
+        use crate::network::parser::ParsedPacket;
+        use crate::network::tracker::ConnectionTracker;
+        use std::time::{Duration, SystemTime};
+
+        let tracker = ConnectionTracker::new();
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        for is_outgoing in [true, false] {
+            let flags = if is_outgoing { 0 } else { 0x8000 };
+            let mut payload = build_dns_header(123, flags, 1, u16::from(!is_outgoing), 0, 0);
+            push_question(&mut payload, "example.com", 255);
+            if !is_outgoing {
+                push_rr(&mut payload, RrName::Ptr(12), 13, 60, b"\x07RFC8482\x00");
+            }
+            let dpi = super::super::analyze_udp_packet(&payload, 40_000, 53, is_outgoing).unwrap();
+            let mut packet = ParsedPacket::test_udp(
+                "192.0.2.10:40000".parse().unwrap(),
+                "192.0.2.53:53".parse().unwrap(),
+                dpi.application,
+            );
+            packet.is_outgoing = is_outgoing;
+            let at = if is_outgoing {
+                start
+            } else {
+                start + Duration::from_millis(10)
+            };
+            tracker.ingest_at(&packet, at);
+        }
+
+        let snapshot = tracker.dns_analytics_snapshot_at(start + Duration::from_millis(10));
+        assert_eq!(snapshot.lookups, 1);
+        assert_eq!(snapshot.answered, 1);
+        assert_eq!(snapshot.noerror, 1);
+        assert_eq!(snapshot.nodata, 0);
+    }
+
+    #[test]
+    fn test_any_empty_response_preserves_nodata_classification() {
+        let mut soa = vec![0xC0, 0x0C, 0xC0, 0x0C];
+        soa.extend_from_slice(&[0; 20]);
+        for (authority_type, expected) in
+            [(None, Some(true)), (Some(6), Some(true)), (Some(2), None)]
+        {
+            let mut payload =
+                build_dns_header(0, 0x8000, 1, 0, u16::from(authority_type.is_some()), 0);
+            push_question(&mut payload, "example.com", 255);
+            if let Some(rtype) = authority_type {
+                let rdata = if rtype == 6 { &soa[..] } else { &[0xC0, 0x0C] };
+                push_rr(&mut payload, RrName::Ptr(12), rtype, 60, rdata);
+            }
+
+            assert_eq!(analyze_dns(&payload).unwrap().nodata, expected);
+        }
+    }
+
+    #[test]
+    fn test_any_incomplete_response_leaves_nodata_unset() {
+        // Neither TC nor a promised answer with missing RDATA proves NODATA.
+        for truncated in [false, true] {
+            let flags = if truncated { 0x8200 } else { 0x8000 };
+            let mut payload = build_dns_header(0, flags, 1, u16::from(!truncated), 0, 0);
+            push_question(&mut payload, "example.com", 255);
+            if !truncated {
+                push_a(&mut payload, RrName::Ptr(12), 60, [192, 0, 2, 1]);
+                payload.pop();
+            }
+
+            assert_eq!(analyze_dns(&payload).unwrap().nodata, None);
+        }
+    }
+
+    #[test]
+    fn test_any_additional_record_is_not_an_answer() {
+        let mut payload = build_dns_header(0, 0x8000, 1, 0, 0, 1);
+        push_question(&mut payload, "example.com", 255);
+        push_a(&mut payload, RrName::Ptr(12), 60, [192, 0, 2, 1]);
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.nodata, Some(true));
+        assert!(info.response_ips.is_empty());
     }
 
     #[test]
