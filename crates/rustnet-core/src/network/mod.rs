@@ -25,6 +25,7 @@ pub mod parser;
 pub mod process_activity;
 pub mod protocol;
 pub mod services;
+pub mod time_window;
 pub mod tracker;
 pub mod types;
 pub mod util;

@@ -11,7 +11,7 @@ TCP 2   LISTEN 1   ESTAB 1   OPENING 0   CLOSING 0   TIME_WAIT 0   OTHER 0   UDP
 Observed RTT  1 samples   average 24ms   max 24ms                                                                                           
                                                                                                                                             
 ▎ Observed network events ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Captured packets · since startup/clear · capture interface/filter                                                                           
+60s / total (since startup) · captured packets                                                                                              
 No events observed                                                                                                                          
                                                                                                                                             
 ▎ Listening and Bound Endpoints  2 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -31,4 +31,4 @@ UDP     BOUND      127.0.0.1:53                          -                      
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- v/V section  esc back                                                                                                       h help  q quit
+ v/V section  w window  esc back                                                                                             h help  q quit

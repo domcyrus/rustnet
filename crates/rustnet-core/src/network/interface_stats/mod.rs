@@ -1,3 +1,6 @@
+mod errors;
+pub use errors::{InterfaceErrorCounts, InterfaceErrorTracker};
+
 use std::io;
 use std::time::SystemTime;
 
