@@ -1,6 +1,6 @@
 //! Host socket inventory and interface statistics.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
@@ -13,7 +13,9 @@ use ratatui::{
 };
 use rustnet_host::{HostSocket, HostSocketState, HostTcpState};
 
-use crate::network::dns_analytics::{DnsAnalyticsSnapshot, DnsHealth, DnsQuestionStats};
+use crate::network::dns_analytics::{
+    DnsAnalyticsSnapshot, DnsHealth, DnsIssue, DnsIssueKind, DnsQuestionStats,
+};
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, DnsSort, Effect, HandlerContext, HostView,
     format::format_rtt_compact,
@@ -45,6 +47,11 @@ impl Component for HostTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        if key.code == KeyCode::Char('w') && key.modifiers == KeyModifiers::NONE {
+            ctx.ui_state.host_window = ctx.ui_state.host_window.next();
+            ctx.ui_state.dns_questions_scroll.reset();
+            return Some(Vec::new());
+        }
         if key.code == KeyCode::Char('o')
             && key.modifiers == KeyModifiers::NONE
             && ctx.ui_state.host_view == HostView::Dns
@@ -93,12 +100,24 @@ fn draw_dns_analytics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> 
     if area.height == 0 {
         return Ok(());
     }
-    let snapshot = ctx.app.get_dns_analytics_snapshot();
-    let summary_height = area.height.saturating_sub(4).min(7);
+    let snapshot = ctx
+        .app
+        .get_dns_analytics_for_window(ctx.ui_state.host_window);
+    let summary_height = area.height.saturating_sub(4).min(6);
+    let groups = dns_issue_groups(&snapshot.recent_issues);
+    let evidence_rows = 3
+        + snapshot.resolvers.len().min(3)
+        + usize::from(snapshot.resolvers.len() > 3)
+        + groups.len().clamp(1, 3);
+    let evidence_height = area.height.saturating_sub(11).min(evidence_rows as u16);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .spacing(1)
-        .constraints([Constraint::Length(summary_height), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(summary_height),
+            Constraint::Length(evidence_height),
+            Constraint::Min(0),
+        ])
         .split(area);
 
     if chunks[0].width >= 110 {
@@ -107,13 +126,183 @@ fn draw_dns_analytics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> 
             .spacing(2)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(chunks[0]);
-        draw_dns_outcomes(f, summary[0], &snapshot, false);
+        draw_dns_outcomes(
+            f,
+            summary[0],
+            &snapshot,
+            false,
+            ctx.app.capture_error().is_some(),
+        );
         draw_dns_latency(f, summary[1], &snapshot, &ctx.ui_state.bar_animations);
     } else {
-        draw_dns_outcomes(f, chunks[0], &snapshot, true);
+        draw_dns_outcomes(
+            f,
+            chunks[0],
+            &snapshot,
+            true,
+            ctx.app.capture_error().is_some(),
+        );
     }
-    draw_dns_questions(f, chunks[1], ctx, &snapshot.questions);
+    draw_dns_evidence(f, chunks[1], &snapshot, ctx.app.capture_error().is_some());
+    draw_dns_questions(f, chunks[2], ctx, &snapshot);
     Ok(())
+}
+
+fn dns_guidance(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> &'static str {
+    if capture_failed {
+        "Capture stopped: restore capture before judging DNS health."
+    } else if snapshot.timeouts > 0 {
+        "Missing replies: check resolver reachability, capture loss, and Host > Sockets."
+    } else if snapshot.servfail > 0 {
+        "SERVFAIL: resolver could not answer; check its upstream path and DNSSEC."
+    } else if snapshot.refused > 0 {
+        "REFUSED: check resolver access policy and the selected DNS server."
+    } else if snapshot
+        .resolvers
+        .iter()
+        .any(|resolver| resolver.retries > 0)
+    {
+        "Repeated queries: inspect pending age, resolver reachability, and packet loss."
+    } else if snapshot.slow_responses > 0 {
+        "Slow replies: compare resolver latency and check upstream connectivity."
+    } else if snapshot.lookups == 0 && !snapshot.recent_issues.is_empty() {
+        "No recent UDP DNS; retained issues below may describe an earlier outage."
+    } else if snapshot.lookups == 0 {
+        if cfg!(target_os = "linux") {
+            "No DNS seen: try -i any; caches, NSS and encrypted DNS may emit no UDP DNS."
+        } else {
+            "No DNS seen: check capture scope; caches and encrypted DNS are not visible."
+        }
+    } else {
+        "Passive UDP DNS only; NXDOMAIN is a reply, not a resolver outage."
+    }
+}
+
+fn dns_issue_groups(issues: &[DnsIssue]) -> Vec<(&DnsIssue, usize)> {
+    let mut groups: Vec<(&DnsIssue, usize)> = Vec::new();
+    for issue in issues {
+        if let Some((_, count)) = groups.iter_mut().find(|(previous, _)| {
+            previous.resolver == issue.resolver && previous.kind == issue.kind
+        }) {
+            *count += 1;
+        } else {
+            groups.push((issue, 1));
+        }
+    }
+    groups
+}
+
+fn draw_dns_evidence(
+    f: &mut Frame,
+    area: Rect,
+    snapshot: &DnsAnalyticsSnapshot,
+    capture_failed: bool,
+) {
+    if area.height == 0 {
+        return;
+    }
+    let inner = section_header(
+        f,
+        area,
+        section_title(format!(" Resolver Evidence ({})", snapshot.window_label())),
+    );
+    let mut lines = vec![Line::styled(
+        dns_guidance(snapshot, capture_failed),
+        theme::fg(theme::muted()),
+    )];
+    // Keep both live resolver evidence and retained failures visible on a
+    // standard terminal. Explicit counts disclose rows omitted for space.
+    let resolver_limit = if inner.height >= 7 { 3 } else { 2 };
+    for resolver in snapshot.resolvers.iter().take(resolver_limit) {
+        let (health, color) = if capture_failed {
+            ("unknown", theme::warn())
+        } else {
+            dns_health_style(resolver.health)
+        };
+        let failures = resolver
+            .timeouts
+            .saturating_add(resolver.servfail)
+            .saturating_add(resolver.refused)
+            .saturating_add(resolver.other_rcodes);
+        let timing = if let Some(age) = resolver.oldest_pending {
+            format!("oldest {}s", age.as_secs())
+        } else {
+            format!(
+                "{}p95 {}",
+                if snapshot.approximate_latency {
+                    "~"
+                } else {
+                    ""
+                },
+                resolver
+                    .latency_p95
+                    .map_or_else(|| "-".into(), format_rtt_compact)
+            )
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ", resolver.address), theme::fg(theme::text())),
+            Span::styled(health, theme::fg(color)),
+            label(format!(
+                "  fail {}/{}  wait {}  retry {}  {}",
+                failures,
+                resolver.answered.saturating_add(resolver.timeouts),
+                resolver.pending,
+                resolver.retries,
+                timing
+            )),
+        ]));
+    }
+    if snapshot.resolvers.len() > resolver_limit {
+        lines.push(Line::styled(
+            format!(
+                "+{} more observed resolvers (problems shown first)",
+                snapshot.resolvers.len() - resolver_limit
+            ),
+            theme::fg(theme::muted()),
+        ));
+    }
+    let groups = dns_issue_groups(&snapshot.recent_issues);
+    let available = usize::from(inner.height).saturating_sub(lines.len() + 1);
+    lines.push(Line::styled(
+        format!(
+            "Recent issues (15m, {}/{} groups, {} retained)",
+            available.min(groups.len()),
+            groups.len(),
+            snapshot.recent_issues.len()
+        ),
+        theme::fg(theme::muted()),
+    ));
+    if groups.is_empty() {
+        lines.push(Line::styled(
+            "No retained DNS issues.",
+            theme::fg(theme::muted()),
+        ));
+    }
+    let now = SystemTime::now();
+    for (issue, count) in groups.into_iter().take(available) {
+        let age = now.duration_since(issue.at).unwrap_or_default().as_secs();
+        let age = if age < 60 {
+            format!("{age}s")
+        } else {
+            format!("{}m", age / 60)
+        };
+        let color = if issue.kind == DnsIssueKind::Slow {
+            theme::warn()
+        } else {
+            theme::err()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} {} x{}", issue.resolver, issue.kind.label(), count),
+                theme::fg(color),
+            ),
+            label(format!(
+                "  {age} ago  {}",
+                issue.query_name.as_deref().unwrap_or("unknown question")
+            )),
+        ]));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 fn dns_health_style(health: DnsHealth) -> (&'static str, Color) {
@@ -132,17 +321,29 @@ fn draw_dns_outcomes(
     area: Rect,
     snapshot: &DnsAnalyticsSnapshot,
     include_latency: bool,
+    capture_failed: bool,
 ) {
-    let inner = section_header(f, area, section_title(" DNS Outcomes (60s)"));
+    let inner = section_header(
+        f,
+        area,
+        section_title(format!(" DNS Outcomes ({})", snapshot.window_label())),
+    );
     if inner.height == 0 {
         return;
     }
 
-    let (health, health_color) = dns_health_style(snapshot.health);
+    let (health, health_color) = if capture_failed {
+        ("unknown (capture stopped)", theme::warn())
+    } else {
+        dns_health_style(snapshot.health)
+    };
     let mut status = vec![
         label("Status "),
         Span::styled(health, theme::bold_fg(health_color)),
     ];
+    if snapshot.details_truncated {
+        status.push(Span::styled("   details limited", theme::fg(theme::warn())));
+    }
     if snapshot.truncated {
         status.push(Span::styled("   sampled", theme::fg(theme::warn())));
     }
@@ -189,14 +390,22 @@ fn draw_dns_outcomes(
 
     if include_latency && inner.height > 4 {
         let line = Line::from(vec![
-            label("Response time  p50 "),
+            label(if snapshot.approximate_latency {
+                "Response time  ~p50 "
+            } else {
+                "Response time  p50 "
+            }),
             Span::styled(
                 snapshot
                     .latency_p50
                     .map_or_else(|| "-".to_string(), format_rtt_compact),
                 theme::fg(theme::text()),
             ),
-            label("   p95 "),
+            label(if snapshot.approximate_latency {
+                "   ~p95 "
+            } else {
+                "   p95 "
+            }),
             Span::styled(
                 snapshot
                     .latency_p95
@@ -237,12 +446,20 @@ fn draw_dns_latency(
     }
 
     let summary = Line::from(vec![
-        label("p50 "),
+        label(if snapshot.approximate_latency {
+            "~p50 "
+        } else {
+            "p50 "
+        }),
         Span::styled(
             format_rtt_compact(snapshot.latency_p50.unwrap_or_default()),
             theme::fg(theme::text()),
         ),
-        label("   p95 "),
+        label(if snapshot.approximate_latency {
+            "   ~p95 "
+        } else {
+            "   p95 "
+        }),
         Span::styled(
             format_rtt_compact(snapshot.latency_p95.unwrap_or_default()),
             theme::fg(theme::warn()),
@@ -298,9 +515,9 @@ fn draw_dns_questions(
     f: &mut Frame,
     area: Rect,
     ctx: &ComponentContext<'_>,
-    question_stats: &[DnsQuestionStats],
+    snapshot: &DnsAnalyticsSnapshot,
 ) {
-    let mut questions = question_stats.to_vec();
+    let mut questions = snapshot.questions.clone();
     let compare = |a: &DnsQuestionStats, b: &DnsQuestionStats| {
         let primary = match ctx.ui_state.dns_sort {
             DnsSort::Lookups => b.lookups.cmp(&a.lookups),
@@ -316,7 +533,7 @@ fn draw_dns_questions(
         f,
         area,
         Line::from(vec![
-            section_title(" Question Names (60s)"),
+            section_title(format!(" Question Names ({})", snapshot.window_label())),
             Span::styled(
                 format!("  sort: {}", ctx.ui_state.dns_sort.display_name()),
                 theme::fg(theme::muted()),
@@ -374,7 +591,11 @@ fn draw_dns_questions(
                 right_header("Lookups"),
                 right_header("NXDOMAIN"),
                 right_header("Failures"),
-                right_header("p95"),
+                right_header(if snapshot.approximate_latency {
+                    "~p95"
+                } else {
+                    "p95"
+                }),
             ]),
             vec![
                 Constraint::Min(24),
@@ -413,8 +634,8 @@ fn draw_dns_questions(
 
 fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result<()> {
     let snapshot = ctx.app.get_socket_snapshot();
-    let events = ctx.app.get_network_event_counts();
-    let event_lines = network_event_lines(&events, area.width < 70);
+    let events = ctx.app.get_network_event_snapshot(ctx.ui_state.host_window);
+    let event_lines = network_event_lines(&events, ctx.ui_state.host_window, area.width < 100);
     let event_height = event_lines.len() as u16 + 1;
     let mut endpoints: Vec<&HostSocket> = snapshot
         .sockets
@@ -548,37 +769,48 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
 }
 
 fn network_event_lines(
-    events: &crate::network::types::NetworkEventCounts,
+    events: &crate::network::types::NetworkEventSnapshot,
+    window: crate::network::time_window::TimeWindow,
     compact: bool,
 ) -> Vec<Line<'static>> {
+    let label = window.label_since_clear(events.since_clear);
+    let total_label = if events.since_clear {
+        "since clear"
+    } else {
+        "since startup"
+    };
     let mut lines = vec![Line::from(Span::styled(
-        "Captured packets · since startup/clear · capture interface/filter",
+        format!("{label} / total ({total_label}) · captured packets"),
         theme::fg(theme::muted()),
     ))];
-    let mut observed = events.observed().peekable();
+    let mut observed = events.total.observed().peekable();
     if observed.peek().is_none() {
         lines.push(Line::from("No events observed"));
         return lines;
     }
     if !compact {
         lines.push(Line::from(Span::styled(
-            format!("{:<34}{:>12}{:>12}", "", "Sent", "Received"),
+            format!(
+                "{:<42}{:>26}{:>26}",
+                "", "Sent: window / total", "Received: window / total"
+            ),
             theme::fg(theme::muted()),
         )));
     }
-    for (kind, count) in observed {
+    for (kind, total) in observed {
+        let selected = events.selected.get(kind);
         if compact {
             lines.push(Line::from(kind.to_string()));
             lines.push(Line::from(format!(
-                "  Sent {}   Received {}",
-                count.sent, count.received
+                "  Sent {} / {}   Received {} / {}",
+                selected.sent, total.sent, selected.received, total.received
             )));
         } else {
             lines.push(Line::from(format!(
-                "{:<34}{:>12}{:>12}",
+                "{:<42}{:>26}{:>26}",
                 kind.as_str(),
-                count.sent,
-                count.received
+                format!("{} / {}", selected.sent, total.sent),
+                format!("{} / {}", selected.received, total.received)
             )));
         }
     }
@@ -670,7 +902,7 @@ fn right_header(text: &'static str) -> Cell<'static> {
     Cell::from(Line::from(text).right_aligned())
 }
 
-fn label(text: &'static str) -> Span<'static> {
+fn label(text: impl Into<std::borrow::Cow<'static, str>>) -> Span<'static> {
     Span::styled(text, theme::fg(theme::muted()))
 }
 

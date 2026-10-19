@@ -11,12 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run Windows CI tests independently and start DEB installation checks after GNU/Linux builds, preserving all existing checks (#686)
 
 ### Added
+- Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible
+- Show per-resolver DNS health, retries, pending age, selectable 60s/5m/1h/since-startup windows, and 15-minute recent issue evidence in Host
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
 - Show observed TCP resets and ICMP errors in Host, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
 - Retire observed TCP/UDP flows after confirmed socket disappearance on macOS, Windows, and FreeBSD; keep timeout fallback for incomplete or restricted inventories (#684)
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Match local IPv4/IPv6 DNS stub replies correctly and prevent healthy resolvers from hiding a failing secondary resolver
 - Fall back to a pinned, checksum-verified Npcap SDK mirror when the primary download fails during Windows builds or CI test setup.
 - Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0

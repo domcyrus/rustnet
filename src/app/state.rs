@@ -11,9 +11,7 @@ use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
-#[cfg(test)]
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::filter::ConnectionFilter;
 #[cfg(test)]
@@ -28,6 +26,7 @@ use crate::network::{
     oui::OuiLookup,
     process_activity::{ProcessActivitySnapshot, ProcessActivityTracker},
     services::ServiceLookup,
+    time_window::TimeWindow,
     tracker::ConnectionTracker,
     types::{ApplicationProtocol, Connection, DnsQueryType, Protocol, TrafficHistory},
 };
@@ -136,6 +135,9 @@ pub struct App {
 
     /// Traffic transferred over the latest rolling 60-second interface window.
     pub(super) interface_traffic_windows: Arc<DashMap<String, InterfaceTrafficWindow>>,
+
+    /// Observed error increments, with independent OS lifetime totals.
+    pub(super) interface_errors: Arc<Mutex<crate::network::interface_stats::InterfaceErrorTracker>>,
 
     /// Cumulative interface samples backing the rolling traffic windows.
     /// Shared with the clear path so both sides of Activity coverage reset
@@ -338,6 +340,7 @@ impl App {
             interface_stats: Arc::new(DashMap::new()),
             interface_rates: Arc::new(RwLock::new(HashMap::new())),
             interface_traffic_windows: Arc::new(DashMap::new()),
+            interface_errors: Arc::new(Mutex::new(Default::default())),
             interface_traffic_history: Arc::new(Mutex::new(HashMap::new())),
             traffic_history: Arc::new(RwLock::new(TrafficHistory::new(TRAFFIC_HISTORY_CAPACITY))),
             conn_rate_history: Arc::new(RwLock::new(HashMap::new())),
@@ -546,8 +549,34 @@ impl App {
         self.tracker.dns_analytics_snapshot()
     }
 
-    pub(crate) fn get_network_event_counts(&self) -> crate::network::types::NetworkEventCounts {
-        self.tracker.network_event_counts()
+    pub(crate) fn get_dns_analytics_for_window(&self, window: TimeWindow) -> DnsAnalyticsSnapshot {
+        self.tracker
+            .dns_analytics_snapshot_for_window_at(std::time::SystemTime::now(), window)
+    }
+
+    pub(crate) fn get_interface_errors(
+        &self,
+        window: crate::network::time_window::TimeWindow,
+    ) -> (
+        HashMap<String, crate::network::interface_stats::InterfaceErrorCounts>,
+        bool,
+    ) {
+        let tracker = self
+            .interface_errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            tracker.snapshot(SystemTime::now(), window),
+            tracker.since_clear(),
+        )
+    }
+
+    pub(crate) fn get_network_event_snapshot(
+        &self,
+        window: crate::network::time_window::TimeWindow,
+    ) -> crate::network::types::NetworkEventSnapshot {
+        self.tracker
+            .network_event_snapshot(SystemTime::now(), window)
     }
 
     /// Get interface rates (bytes/sec)
@@ -845,6 +874,10 @@ impl App {
     #[cfg(test)]
     pub(crate) fn set_interface_stats_for_test(&self, name: &str, stats: InterfaceStats) {
         self.interface_stats.insert(name.to_string(), stats);
+        self.interface_errors
+            .lock()
+            .unwrap()
+            .observe(&self.get_interface_stats());
     }
 
     /// Seed the host socket inventory. Tests only.
@@ -951,6 +984,10 @@ impl App {
         interface_history.clear();
         self.interface_traffic_windows.clear();
         drop(interface_history);
+        self.interface_errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
 
         self.stats.reset_counters();
 
