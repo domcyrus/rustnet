@@ -178,7 +178,7 @@ impl DnsAnalyticsTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) {
-        self.advance(at);
+        self.expire_pending(at);
         let key = TransactionKey {
             connection,
             txid: info.txid,
@@ -261,7 +261,8 @@ impl DnsAnalyticsTracker {
         now: SystemTime,
         window: TimeWindow,
     ) -> DnsAnalyticsSnapshot {
-        self.advance(now);
+        self.expire_pending(now);
+        self.prune_history(now);
         let cutoff = window
             .duration()
             .and_then(|duration| now.checked_sub(duration));
@@ -292,7 +293,7 @@ impl DnsAnalyticsTracker {
         self.session.clear();
     }
 
-    fn advance(&mut self, now: SystemTime) {
+    fn expire_pending(&mut self, now: SystemTime) {
         let pending_cutoff = now.checked_sub(DNS_TRANSACTION_TIMEOUT);
         let expired: Vec<TransactionKey> = pending_cutoff.map_or_else(Vec::new, |cutoff| {
             self.pending
@@ -319,7 +320,11 @@ impl DnsAnalyticsTracker {
                 });
             }
         }
+    }
 
+    // Scan retained history only when collecting a snapshot, never per packet.
+    // Ingestion enforces the capacity limits even when snapshots are not requested.
+    fn prune_history(&mut self, now: SystemTime) {
         if let Some(cutoff) = now.checked_sub(DNS_ISSUE_WINDOW) {
             self.recent_issues.retain(|issue| issue.at > cutoff);
         }
@@ -517,6 +522,41 @@ mod tests {
         complete(&mut tracker, 1, "old.example", 0, 0, 10);
         assert_eq!(tracker.snapshot(time(1_000)).lookups, 1);
         assert_eq!(tracker.snapshot(time(60_011)).lookups, 0);
+    }
+
+    #[test]
+    fn packets_expire_pending_queries_but_defer_history_cleanup_to_snapshots() {
+        let mut tracker = DnsAnalyticsTracker::default();
+        complete(&mut tracker, 1, "old.example", 2, 0, 10);
+        tracker.record_packet(
+            connection(),
+            &dns("late.example", DnsQueryType::A, 2, false, None),
+            true,
+            time(3_600_000),
+        );
+        tracker.record_packet(
+            connection(),
+            &dns("late.example", DnsQueryType::A, 2, true, Some(0)),
+            false,
+            time(3_610_000),
+        );
+
+        // A late reply still times out immediately, without pruning old history.
+        assert!(tracker.pending.is_empty());
+        assert_eq!(tracker.completed.len(), 2);
+        assert!(tracker.completed.back().unwrap().timed_out);
+        assert_eq!(tracker.recent_issues.len(), 2);
+
+        let hour = tracker.snapshot_for_window(time(3_610_000), TimeWindow::OneHour);
+        assert_eq!(hour.lookups, 1);
+        assert_eq!(hour.timeouts, 1);
+        assert_eq!(hour.answered, 0);
+        assert_eq!(hour.recent_issues.len(), 1);
+        assert_eq!(tracker.completed.len(), 1);
+        let session = tracker.snapshot_for_window(time(3_610_000), TimeWindow::SinceStartup);
+        assert_eq!(session.lookups, 2);
+        assert_eq!(session.servfail, 1);
+        assert_eq!(session.timeouts, 1);
     }
 
     #[test]
