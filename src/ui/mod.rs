@@ -1845,7 +1845,7 @@ mod snapshot_tests {
             assert!(row.trim_end().ends_with("90"));
         }
         let compact = render_app(&app, &mut state, &[], None, 120, 30);
-        assert!(compact.contains("Collisions: 90"));
+        assert!(compact.contains("Collisions: 0/90"));
         assert!(compact.contains(&format!("Packets: RX {}", u64::MAX)));
     }
 
@@ -2839,7 +2839,7 @@ mod snapshot_tests {
                 // The responsive table now fits all three interfaces without scrolling.
                 assert!(!state.interfaces_scroll.can_scroll());
                 assert!(output.contains("veth-long-interface-name") && output.contains("zzz-last"));
-                assert!(!output.contains("Collisions: 90"));
+                assert!(!output.contains("Collisions: 0/90"));
                 continue;
             }
             assert!(state.interfaces_scroll.can_scroll());
@@ -2856,7 +2856,7 @@ mod snapshot_tests {
             .unwrap();
             let bottom = render_app(&app, &mut state, &[], None, width, 12);
             assert!(
-                bottom.contains("zzz-last") && bottom.contains("Collisions: 90"),
+                bottom.contains("zzz-last") && bottom.contains("Collisions: 0/90"),
                 "{bottom}"
             );
         }
@@ -2964,6 +2964,88 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn host_interface_windows_preserve_os_totals_and_clear_observed_counts() {
+        use crate::network::time_window::TimeWindow;
+        let app = test_app();
+        let now = SystemTime::now();
+        let mut stat = InterfaceStats {
+            interface_name: "test0".into(),
+            rx_bytes: 0,
+            tx_bytes: 0,
+            rx_packets: 900,
+            tx_packets: 800,
+            rx_errors: 100,
+            tx_errors: 200,
+            rx_dropped: 300,
+            tx_dropped: 400,
+            collisions: 500,
+            timestamp: now - Duration::from_secs(120),
+        };
+        app.set_interface_stats_for_test("test0", stat.clone());
+        stat.rx_errors = 102;
+        stat.rx_dropped = 303;
+        stat.timestamp = now - Duration::from_secs(90);
+        app.set_interface_stats_for_test("test0", stat.clone());
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Interfaces,
+            ..Default::default()
+        };
+        for width in [50, 80, 160] {
+            let output = render_app(&app, &mut state, &[], None, width, 28);
+            assert!(output.contains("0/102"), "{output}");
+            assert!(output.contains("0/303"), "{output}");
+        }
+        for window in [
+            TimeWindow::FiveMinutes,
+            TimeWindow::OneHour,
+            TimeWindow::SinceStartup,
+        ] {
+            state.host_window = window;
+            let output = render_app(&app, &mut state, &[], None, 100, 28);
+            assert!(output.contains("2/102"), "{output}");
+            assert!(output.contains("3/303"), "{output}");
+        }
+        app.clear_all_connections();
+        let output = render_app(&app, &mut state, &[], None, 100, 28);
+        assert!(output.contains("since clear"), "{output}");
+        assert!(output.contains("0/102"), "{output}");
+        assert!(output.contains("0/303"), "{output}");
+        assert_app_snapshot!(output);
+    }
+
+    #[test]
+    fn every_host_section_cycles_the_shared_window() {
+        use crate::network::time_window::TimeWindow;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        let regions = ClickableRegions::default();
+        let mut state = UiState {
+            selected_tab: 4,
+            ..Default::default()
+        };
+        for host_view in [HostView::Sockets, HostView::Interfaces, HostView::Dns] {
+            state.host_view = host_view;
+            state.host_window = TimeWindow::OneMinute;
+            for expected in [
+                TimeWindow::FiveMinutes,
+                TimeWindow::OneHour,
+                TimeWindow::SinceStartup,
+                TimeWindow::OneMinute,
+            ] {
+                let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+                dispatch_key(
+                    4,
+                    KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+                    &mut ctx,
+                )
+                .unwrap();
+                assert_eq!(state.host_window, expected);
+            }
+        }
+    }
+
+    #[test]
     fn host_network_events() {
         use crate::network::types::NetworkEventKind;
         let app = test_app();
@@ -2990,7 +3072,7 @@ mod snapshot_tests {
                 },
                 quoted_connection: None,
             }));
-            app.ingest_packet_at_for_test(&packet, SystemTime::now());
+            app.ingest_packet_at_for_test(&packet, SystemTime::now() - Duration::from_secs(90));
         }
         packet.protocol = Protocol::Tcp;
         packet.protocol_state = ProtocolState::Tcp(TcpState::Unknown);
@@ -3018,6 +3100,11 @@ mod snapshot_tests {
         };
         let output = render_app(&app, &mut state, &[], None, 140, 30);
         assert_app_snapshot!(output);
+        let compact = render_app(&app, &mut state, &[], None, 80, 40);
+        assert!(compact.contains("Received 0 / 1"), "{compact}");
+        state.host_window = crate::network::time_window::TimeWindow::FiveMinutes;
+        let history = render_app(&app, &mut state, &[], None, 80, 40);
+        assert!(history.contains("Received 1 / 1"), "{history}");
         for width in [50, 80, 140] {
             state.host_sockets_scroll.reset();
             render_app(&app, &mut state, &[], None, width, 12);
@@ -3192,6 +3279,205 @@ mod snapshot_tests {
     #[test]
     fn host_dns_analytics_compact() {
         insta::assert_snapshot!(render_host_dns(80, 24));
+    }
+
+    #[test]
+    fn host_dns_retains_old_failure_without_claiming_a_current_outage() {
+        let app = test_app();
+        seed_dns_lookup(
+            &app,
+            1,
+            "outage.example",
+            DnsQueryType::A,
+            2,
+            SystemTime::now() - Duration::from_secs(90),
+            Duration::from_millis(10),
+        );
+        for (width, height) in [(60, 20), (80, 24), (140, 32)] {
+            let mut state = UiState {
+                selected_tab: 4,
+                host_view: HostView::Dns,
+                ..Default::default()
+            };
+            let output = render_app(&app, &mut state, &[], None, width, height);
+            assert!(output.contains("Status not observed"), "{output}");
+            assert!(output.contains("SERVFAIL x1"), "{output}");
+            assert!(output.contains("outage.example"), "{output}");
+        }
+    }
+
+    #[test]
+    fn host_dns_capture_failure_overrides_old_responsive_health() {
+        let app = seeded_dns_app();
+        app.set_capture_error_for_test(Some("test capture failure"));
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Dns,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &[], None, 100, 28);
+        assert!(
+            output.contains("Status unknown (capture stopped)"),
+            "{output}"
+        );
+        assert!(output.contains("1.1.1.1:53 unknown"), "{output}");
+        assert!(output.contains("SERVFAIL x1"), "{output}");
+    }
+
+    #[test]
+    fn host_dns_window_switch_recovers_old_queries_and_preserves_live_health() {
+        use crate::network::time_window::TimeWindow;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let app = test_app();
+        for txid in 1..=3 {
+            seed_dns_lookup(
+                &app,
+                txid,
+                "earlier-outage.example",
+                DnsQueryType::A,
+                2,
+                SystemTime::now() - Duration::from_secs(90),
+                Duration::from_millis(10),
+            );
+        }
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Dns,
+            ..Default::default()
+        };
+        let (_, regions) = render_app_frame(&app, &mut state, &[], None, 100, 28);
+        {
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                4,
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+        }
+        assert_eq!(state.host_window, TimeWindow::FiveMinutes);
+        let output = render_app(&app, &mut state, &[], None, 100, 28);
+        assert!(output.contains("DNS Outcomes (5m)"), "{output}");
+        assert!(output.contains("Resolver Evidence (5m)"), "{output}");
+        assert!(output.contains("Question Names (5m)"), "{output}");
+        assert!(output.contains("Status failing"), "{output}");
+        assert!(output.contains("earlier-outage.example"), "{output}");
+        assert_eq!(app.get_dns_analytics_snapshot().lookups, 0);
+        state.select_section(0);
+        state.select_section(2);
+        render_app(&app, &mut state, &[], None, 80, 24);
+        assert_eq!(state.host_window, TimeWindow::FiveMinutes);
+        {
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                4,
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+        }
+        assert_eq!(state.host_window, TimeWindow::OneHour);
+        let output = render_app(&app, &mut state, &[], None, 100, 28);
+        assert!(output.contains("DNS Outcomes (1h)"), "{output}");
+        assert_eq!(app.get_dns_analytics_snapshot().lookups, 0);
+        {
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                4,
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+        }
+        assert_eq!(state.host_window, TimeWindow::SinceStartup);
+        let output = render_app(&app, &mut state, &[], None, 100, 28);
+        assert!(output.contains("DNS Outcomes (since startup)"), "{output}");
+        assert_eq!(app.get_dns_analytics_snapshot().lookups, 0);
+        {
+            let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+            dispatch_key(
+                4,
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+                &mut ctx,
+            )
+            .unwrap();
+        }
+        assert_eq!(state.host_window, TimeWindow::OneMinute);
+        let output = render_app(&app, &mut state, &[], None, 100, 28);
+        assert!(output.contains("Status not observed"), "{output}");
+        state.host_window = TimeWindow::FiveMinutes;
+        state.reset_view();
+        assert_eq!(state.host_window, TimeWindow::OneMinute);
+    }
+
+    #[test]
+    fn host_dns_five_minute_window() {
+        let app = seeded_dns_app();
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Dns,
+            host_window: crate::network::time_window::TimeWindow::FiveMinutes,
+            ..Default::default()
+        };
+        insta::assert_snapshot!(render_app(&app, &mut state, &[], None, 80, 24));
+    }
+
+    #[test]
+    fn host_dns_one_hour_window() {
+        let app = test_app();
+        for txid in 1..=3 {
+            seed_dns_lookup(
+                &app,
+                txid,
+                "earlier.example",
+                DnsQueryType::A,
+                2,
+                SystemTime::now() - Duration::from_secs(1_800),
+                Duration::from_millis(10),
+            );
+        }
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Dns,
+            host_window: crate::network::time_window::TimeWindow::OneHour,
+            ..Default::default()
+        };
+        insta::assert_snapshot!(render_app(&app, &mut state, &[], None, 80, 24));
+    }
+
+    #[test]
+    fn host_dns_since_startup_and_clear() {
+        use crate::network::time_window::TimeWindow;
+        let app = test_app();
+        for txid in 1..=3 {
+            seed_dns_lookup(
+                &app,
+                txid,
+                "session.example",
+                DnsQueryType::A,
+                2,
+                SystemTime::now() - Duration::from_secs(7_200),
+                Duration::from_millis(10),
+            );
+        }
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Dns,
+            host_window: TimeWindow::SinceStartup,
+            ..Default::default()
+        };
+        let output = render_app(&app, &mut state, &[], None, 100, 28);
+        insta::assert_snapshot!(output);
+        assert!(output.contains("~p95"), "{output}");
+        app.clear_all_connections();
+        let cleared = render_app(&app, &mut state, &[], None, 100, 28);
+        assert!(cleared.contains("DNS Outcomes (since clear)"), "{cleared}");
+        assert!(
+            cleared.contains("Question Names (since clear)"),
+            "{cleared}"
+        );
+        assert!(cleared.contains("Status not observed"), "{cleared}");
+        assert!(!cleared.contains("session.example"), "{cleared}");
     }
 
     #[test]

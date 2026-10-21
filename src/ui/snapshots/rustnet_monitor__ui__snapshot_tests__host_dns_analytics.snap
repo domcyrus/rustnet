@@ -13,6 +13,11 @@ NOERROR 3   NXDOMAIN 1   NODATA 0                                            10-
 SERVFAIL 1   REFUSED 0   other 0                                             50-100ms ░░░▒▒▓▓▓█▎····································  20%   
                                                                              >=100ms  ░░░▒▒▓▓▓█▎····································  20%   
                                                                                                                                             
+▎ Resolver Evidence (60s) ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+SERVFAIL: resolver could not answer; check its upstream path and DNSSEC.                                                                    
+1.1.1.1:53 degraded  fail 1/5  wait 0  retry 0  p95 220ms                                                                                   
+Recent issues (15m, 1/1 groups, 1 retained)                                                                                                 
+1.1.1.1:53 SERVFAIL x1  1s ago  registry.example.com                                                                                        
                                                                                                                                             
 ▎ Question Names (60s)  sort: lookups ──────────────────────────────────────────────────────────────────────────────────────────────────────
 Question                                                                               Type        Lookups   NXDOMAIN  Failures        p95  
@@ -28,9 +33,4 @@ updates.example.com                                                             
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
- v/V section  o sort  esc back                                                                                               h help  q quit
+ v/V section  w window  o sort  esc back                                                                                     h help  q quit
