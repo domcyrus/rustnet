@@ -318,19 +318,12 @@ mod tests {
 
     #[test]
     fn metadata_names_are_optional_and_scoped_to_runtime() {
-        let root = std::env::temp_dir().join(format!(
-            "rustnet-container-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let docker = root.as_path().join(ID);
+        let scratch = crate::scratch_dir::ScratchDir::new("container", "metadata");
+        let root = scratch.path();
+        let docker = root.join(ID);
         std::fs::create_dir(&docker).unwrap();
         std::fs::write(docker.join("config.v2.json"), r#"{"Name":"/web"}"#).unwrap();
-        let podman = root.as_path().join("overlay-containers");
+        let podman = root.join("overlay-containers");
         std::fs::create_dir(&podman).unwrap();
         std::fs::write(
             podman.join("containers.json"),
@@ -338,8 +331,8 @@ mod tests {
         )
         .unwrap();
         let mut resolver = ContainerResolver::default();
-        resolver.load_docker(root.as_path());
-        resolver.load_podman(root.as_path());
+        resolver.load_docker(root);
+        resolver.load_podman(root);
         for (prefix, name) in [("docker", "web"), ("libpod", "worker")] {
             let socket = SocketCgroup {
                 name: format!("{prefix}-{ID}.scope"),
@@ -354,9 +347,8 @@ mod tests {
                 Some(name)
             );
         }
-        resolver.load_docker(&root.as_path().join("missing"));
+        resolver.load_docker(&root.join("missing"));
         std::fs::write(podman.join("containers.json"), "invalid").unwrap();
-        resolver.load_podman(root.as_path());
-        std::fs::remove_dir_all(root).unwrap();
+        resolver.load_podman(root);
     }
 }

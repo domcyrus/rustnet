@@ -305,38 +305,22 @@ mod tests {
     }
 
     #[test]
-    fn empty_bar_is_all_track() {
-        let s = themed_spans(0.0, 4, Color::Rgb(0, 180, 90));
-        assert_eq!(spans_text(&s), "····");
-        assert_eq!(rendered_width(&s), 4);
-    }
-
-    #[test]
-    fn full_bar_has_no_track() {
-        let s = themed_spans(1.0, 4, Color::Rgb(0, 180, 90));
-        assert_eq!(spans_text(&s), "████");
-        assert_eq!(rendered_width(&s), 4);
-    }
-
-    #[test]
-    fn fractional_tip_uses_eighth_blocks() {
-        // 2.5 cells over width 4: two full blocks, a half-block tip, one track cell.
-        let s = themed_spans(0.625, 4, Color::Rgb(0, 180, 90));
-        assert_eq!(spans_text(&s), "██▌·");
-        assert_eq!(rendered_width(&s), 4);
-    }
-
-    #[test]
-    fn tip_rounds_up_to_full_cell() {
-        // 1.99 cells rounds to 2 full blocks, never a stray tip glyph.
-        let s = themed_spans(0.995, 2, Color::Rgb(0, 180, 90));
-        assert_eq!(spans_text(&s), "██");
-    }
-
-    #[test]
-    fn tiny_fraction_shows_one_eighth() {
-        let s = themed_spans(0.01, 10, Color::Rgb(0, 180, 90));
-        assert_eq!(spans_text(&s), "▏·········");
+    fn bar_endpoints_and_fractional_tips() {
+        for (fraction, width, expected) in [
+            (0.0, 4, "····"),
+            (1.0, 4, "████"),
+            (0.625, 4, "██▌·"),
+            (0.995, 2, "██"),
+            (0.01, 10, "▏·········"),
+        ] {
+            let spans = themed_spans(fraction, width, Color::Rgb(0, 180, 90));
+            assert_eq!(
+                spans_text(&spans),
+                expected,
+                "fraction {fraction}, width {width}"
+            );
+            assert_eq!(rendered_width(&spans), width, "fraction {fraction}");
+        }
     }
 
     #[test]

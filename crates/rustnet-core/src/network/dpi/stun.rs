@@ -83,8 +83,7 @@ pub(super) fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
 
 /// Check if a packet looks like STUN without full parsing: a full 20-byte
 /// header, leading bits 0b00 (distinguishes STUN from DTLS/RTP/RTCP) and the
-/// magic cookie at bytes 4-7. Used for non-standard port detection where we
-/// want a quick probe, and as the prologue of [`analyze_stun`].
+/// magic cookie at bytes 4-7. Used as the prologue of [`analyze_stun`].
 pub(super) fn is_likely_stun(payload: &[u8]) -> bool {
     if payload.len() < STUN_HEADER_SIZE {
         return false;
@@ -180,13 +179,12 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_payload_safe() {
-        assert!(analyze_stun(&[]).is_none());
-    }
-
-    #[test]
-    fn test_short_payload_safe() {
-        assert!(analyze_stun(&[0x00, 0x01]).is_none());
+    fn test_header_size_boundary() {
+        let packet = build_stun_packet(0, 0x0001, &[]);
+        for len in [0, 2, 10, STUN_HEADER_SIZE - 1] {
+            assert!(analyze_stun(&packet[..len]).is_none(), "length {len}");
+        }
+        assert!(analyze_stun(&packet).is_some());
     }
 
     #[test]
@@ -228,12 +226,6 @@ mod tests {
         let packet = build_stun_packet(2, 0x0001, &software_attr);
         let info = analyze_stun(&packet).expect("should parse");
         assert_eq!(info.software, Some("TestAgent/1.0".to_string()));
-    }
-
-    #[test]
-    fn test_too_short() {
-        let packet = [0x00; 10];
-        assert!(analyze_stun(&packet).is_none());
     }
 
     #[test]

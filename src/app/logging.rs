@@ -389,17 +389,12 @@ mod tests {
 mod vlan_tests {
     use super::*;
     use crate::network::types::ProtocolState;
+    use crate::scratch_dir::ScratchDir;
 
     #[test]
     fn events_and_sidecars_export_only_observed_vlan_ids() {
-        let path = std::env::temp_dir().join(format!(
-            "rustnet-vlan-log-{}-{}.jsonl",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let directory = ScratchDir::new("vlan-log", "observed-ids");
+        let path = directory.join("events.jsonl");
         let file = File::create_new(&path).unwrap();
         let writer = JsonLineWriter::new(file, path.display().to_string());
         let mut conn = Connection::new(
@@ -435,7 +430,6 @@ mod vlan_tests {
         assert!(log_pcap_connection(&writer, &conn));
         drop(writer);
         let contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_file(path).unwrap();
         let records: Vec<Value> = contents
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())

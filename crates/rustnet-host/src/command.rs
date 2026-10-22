@@ -41,43 +41,38 @@ pub(crate) fn output_with_timeout_or_cancel(
 
     let status = loop {
         if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = join_reader(stdout_reader, "stdout");
-            let _ = join_reader(stderr_reader, "stderr");
-            return Err(io::Error::new(
+            break Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 format!("command {program:?} cancelled"),
             ));
         }
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() < deadline => {
                 thread::sleep(
                     POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
                 );
             }
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = join_reader(stdout_reader, "stdout");
-                let _ = join_reader(stderr_reader, "stderr");
-                return Err(io::Error::new(
+                break Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!("command {program:?} timed out after {timeout:?}"),
                 ));
             }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = join_reader(stdout_reader, "stdout");
-                let _ = join_reader(stderr_reader, "stderr");
-                return Err(error);
-            }
+            Err(error) => break Err(error),
         }
     };
 
-    collect_output(status, stdout_reader, stderr_reader)
+    match status {
+        Ok(status) => collect_output(status, stdout_reader, stderr_reader),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_reader(stdout_reader, "stdout");
+            let _ = join_reader(stderr_reader, "stderr");
+            Err(error)
+        }
+    }
 }
 
 fn read_in_background<R>(mut reader: R) -> JoinHandle<io::Result<Vec<u8>>>

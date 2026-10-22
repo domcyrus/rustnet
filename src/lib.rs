@@ -23,6 +23,9 @@ pub(crate) mod export;
 pub(crate) mod filter;
 pub mod headless;
 pub mod network;
+#[cfg(test)]
+#[path = "test_support/scratch_dir.rs"]
+mod scratch_dir;
 mod tui;
 pub mod ui;
 

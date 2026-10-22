@@ -101,17 +101,30 @@ mod tests {
 
     #[test]
     fn test_raw_ipv4_version_check() {
-        // Create a minimal IPv6 packet but try to parse as IPv4
-        let ipv6_packet = vec![0x60, 0x00, 0x00, 0x00]; // Version 6
+        let mut packet = [0; 28];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&28u16.to_be_bytes());
+        packet[9] = 17; // UDP
+        packet[20..28].copy_from_slice(&[0x30, 0x39, 0x1f, 0x40, 0, 8, 0, 0]);
         let parser = PacketParser::new();
-        assert!(parse_ipv4(&ipv6_packet, &parser, None, None).is_none());
+        assert!(parse_ipv4(&packet, &parser, None, None).is_some());
+
+        // Change only the version, keeping a complete, otherwise valid packet.
+        packet[0] = 0x65;
+        assert!(parse_ipv4(&packet, &parser, None, None).is_none());
     }
 
     #[test]
     fn test_raw_ipv6_version_check() {
-        // Create a minimal IPv4 packet but try to parse as IPv6
-        let ipv4_packet = vec![0x45, 0x00, 0x00, 0x00]; // Version 4
+        let mut packet = [0; 48];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&8u16.to_be_bytes());
+        packet[6] = 17; // UDP
+        packet[40..48].copy_from_slice(&[0x30, 0x39, 0x1f, 0x40, 0, 8, 0, 0]);
         let parser = PacketParser::new();
-        assert!(parse_ipv6(&ipv4_packet, &parser, None, None).is_none());
+        assert!(parse_ipv6(&packet, &parser, None, None).is_some());
+
+        packet[0] = 0x40;
+        assert!(parse_ipv6(&packet, &parser, None, None).is_none());
     }
 }

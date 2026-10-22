@@ -184,6 +184,23 @@ mod tests {
     }
 
     #[test]
+    fn truncation_preserves_fitting_text_and_trims_spaces_before_ellipsis() {
+        for (text, width, expected) in [
+            ("short", 10, "short"),
+            ("exactly-10", 10, "exactly-10"),
+            ("hello world", 7, "hello…"),
+            ("0123456789ab", 10, "012345678…"),
+            ("héllö wörld!", 6, "héllö…"),
+        ] {
+            assert_eq!(
+                super::truncate_with_ellipsis(text, width),
+                expected,
+                "{text:?}, width {width}"
+            );
+        }
+    }
+
+    #[test]
     fn countdown_buckets_round_down() {
         assert_eq!(format_countdown(Duration::ZERO), "0s");
         assert_eq!(format_countdown(Duration::from_secs(45)), "45s");

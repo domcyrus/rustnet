@@ -1315,23 +1315,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_with_ellipsis_is_char_safe() {
-        assert_eq!(truncate_with_ellipsis("short", 10), "short");
-        assert_eq!(truncate_with_ellipsis("exactly-10", 10), "exactly-10");
-        // The ellipsis never floats after a space.
-        assert_eq!(truncate_with_ellipsis("hello world", 7), "hello…");
-        assert_eq!(
-            truncate_with_ellipsis("0123456789ab", 10),
-            "012345678\u{2026}"
-        );
-        // Multi-byte chars must not split.
-        assert_eq!(
-            truncate_with_ellipsis("h\u{e9}ll\u{f6} w\u{f6}rld!", 6),
-            "h\u{e9}ll\u{f6}\u{2026}"
-        );
-    }
-
-    #[test]
     fn process_text_formats_name_pid_and_placeholder() {
         let mut conn = local_tcp(8080, "firefox");
 

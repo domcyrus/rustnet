@@ -343,42 +343,15 @@ fn windows_error(operation: &str, error: windows::core::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::{PrivateSecurity, open_private, validate_owner};
+    use crate::scratch_dir::ScratchDir;
     use std::fs;
     use std::io::{self, Write};
     use std::mem::size_of;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
     use windows::Win32::Security::{CreateWellKnownSid, PSID, SECURITY_MAX_SID_SIZE, WinWorldSid};
-
-    static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
-
-    struct ScratchDir(PathBuf);
-
-    impl ScratchDir {
-        fn new(tag: &str) -> Self {
-            let sequence = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "rustnet-windows-output-{tag}-{}-{sequence}",
-                std::process::id()
-            ));
-            fs::create_dir(&path).expect("create scratch directory");
-            Self(path)
-        }
-
-        fn join(&self, path: impl AsRef<Path>) -> PathBuf {
-            self.0.join(path)
-        }
-    }
-
-    impl Drop for ScratchDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[test]
     fn appends_without_truncating_existing_content() {
-        let scratch = ScratchDir::new("append");
+        let scratch = ScratchDir::new("windows-output", "append");
         let path = scratch.join("events.log");
         // Elevated tokens can default ordinary new files to Administrators
         // ownership. Seed this positive fixture with the required user owner.
@@ -396,7 +369,7 @@ mod tests {
 
     #[test]
     fn default_token_owner_cannot_bypass_user_ownership_check() {
-        let scratch = ScratchDir::new("default-owner");
+        let scratch = ScratchDir::new("windows-output", "default-owner");
         let path = scratch.join("events.log");
         fs::write(&path, b"preserve on rejection").unwrap();
         let file = fs::File::open(&path).unwrap();
@@ -419,7 +392,7 @@ mod tests {
 
     #[test]
     fn rejects_hard_links_without_truncating_the_target() {
-        let scratch = ScratchDir::new("hard-link");
+        let scratch = ScratchDir::new("windows-output", "hard-link");
         let target = scratch.join("target.log");
         let link = scratch.join("events.log");
         fs::write(&target, b"keep me").unwrap();
@@ -433,7 +406,7 @@ mod tests {
 
     #[test]
     fn rejects_a_different_expected_owner() {
-        let scratch = ScratchDir::new("owner");
+        let scratch = ScratchDir::new("windows-output", "owner");
         let path = scratch.join("events.log");
         let file = open_private(&path, false, true).unwrap();
 
