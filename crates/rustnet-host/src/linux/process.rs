@@ -1,6 +1,6 @@
 //! Linux procfs-based process lookup.
 
-use crate::procfs::{parse_proc_net_addr, read_comm, read_comm_in};
+use crate::procfs::{extract_socket_inode, parse_proc_net_line, read_comm, read_comm_in};
 use crate::{
     ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
     ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketSnapshot,
@@ -642,7 +642,7 @@ impl LinuxProcessLookup {
                     for fd_entry in fd_entries.flatten() {
                         if let Ok(link) = fs::read_link(fd_entry.path())
                             && let Some(link_str) = link.to_str()
-                            && let Some(inode) = Self::extract_socket_inode(link_str)
+                            && let Some(inode) = extract_socket_inode(link_str)
                         {
                             startup_owners.insert(
                                 inode,
@@ -687,33 +687,23 @@ impl LinuxProcessLookup {
         result: &mut ConnectionProcessMap,
         sockets: &mut Vec<HostSocket>,
     ) {
-        for (i, line) in content.lines().enumerate() {
-            if i == 0 {
+        for line in content.lines().skip(1) {
+            let Some(row) = parse_proc_net_line(line) else {
                 continue;
-            }
-
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 10 {
+            };
+            let (Some(state), Some(inode)) = (row.state, row.inode) else {
                 continue;
-            }
-
-            let local_addr = match parse_proc_net_addr(parts[1]) {
-                Some(addr) => addr,
-                None => continue,
             };
-
-            let remote_addr = match parse_proc_net_addr(parts[2]) {
-                Some(addr) => addr,
-                None => continue,
-            };
+            let local_addr = row.local_addr;
+            let remote_addr = row.remote_addr;
             if protocol == Protocol::Udp && local_addr.port() == 0 {
                 continue;
             }
 
-            let inode = parts[9].parse::<u64>().ok();
+            let inode = inode.parse::<u64>().ok();
             let owner = inode.and_then(|inode| inode_map.get(&inode)).cloned();
             let state = match protocol {
-                Protocol::Tcp => HostSocketState::Tcp(parse_proc_tcp_state(parts[3])),
+                Protocol::Tcp => HostSocketState::Tcp(parse_proc_tcp_state(state)),
                 Protocol::Udp => HostSocketState::UdpBound,
                 _ => continue,
             };
@@ -735,15 +725,6 @@ impl LinuxProcessLookup {
                 owner,
                 native_id: inode,
             });
-        }
-    }
-
-    fn extract_socket_inode(link: &str) -> Option<u64> {
-        if link.starts_with("socket:[") && link.ends_with(']') {
-            let inode_str = &link[8..link.len() - 1];
-            inode_str.parse().ok()
-        } else {
-            None
         }
     }
 }

@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use crate::filter::ConnectionFilter;
 #[cfg(test)]
 use crate::network::parser::ParsedPacket;
 use crate::network::{
@@ -30,6 +29,7 @@ use crate::network::{
     tracker::ConnectionTracker,
     types::{ApplicationProtocol, Connection, DnsQueryType, Protocol, TrafficHistory},
 };
+use rustnet_core::network::filter::ConnectionFilter;
 
 use super::capture::{CaptureStatus, PreparedCapture};
 use super::enrichment::PreparedProcessEnrichment;
@@ -1184,7 +1184,7 @@ mod activity_reset_tests {
 
     #[test]
     fn clear_resets_both_activity_coverage_windows() {
-        let app = crate::ui::test_support::test_app();
+        let app = crate::test_support::test_app();
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let mut conn = Connection::new(
             Protocol::Tcp,

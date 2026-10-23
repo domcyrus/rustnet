@@ -6,6 +6,11 @@ use std::path::{Path, PathBuf};
 
 use super::{AppOutputHandles, Config};
 
+#[cfg(unix)]
+mod unix;
+#[cfg(target_os = "windows")]
+mod windows;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OutputKind {
     JsonLog,
@@ -215,7 +220,7 @@ fn stdout_file_identity() -> io::Result<Option<(u64, u64)>> {
 
 #[cfg(windows)]
 fn stdout_file_identity() -> io::Result<Option<(u64, u64)>> {
-    super::windows_output::stdout_file_identity()
+    windows::stdout_file_identity()
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -236,7 +241,7 @@ fn existing_file_identity(path: &Path) -> io::Result<Option<(u64, u64)>> {
 
 #[cfg(windows)]
 fn existing_file_identity(path: &Path) -> io::Result<Option<(u64, u64)>> {
-    super::windows_output::existing_file_identity(path)
+    windows::existing_file_identity(path)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -254,7 +259,7 @@ fn opened_file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
 
 #[cfg(windows)]
 fn opened_file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
-    super::windows_output::file_identity(file)
+    windows::file_identity(file)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -317,12 +322,12 @@ pub fn create_private_diagnostic_file(
     path: impl AsRef<Path>,
     invoking_uid: Option<u32>,
 ) -> io::Result<fs::File> {
-    super::unix_output::create_diagnostic(path.as_ref(), invoking_uid)
+    unix::create_diagnostic(path.as_ref(), invoking_uid)
 }
 
 #[cfg(target_os = "windows")]
 fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io::Result<fs::File> {
-    super::windows_output::open_private(path, append, truncate)
+    windows::open_private(path, append, truncate)
 }
 
 #[cfg(target_os = "windows")]
@@ -347,7 +352,7 @@ fn open_private_with_owner(
     truncate: bool,
     invoking_uid: Option<u32>,
 ) -> io::Result<fs::File> {
-    super::unix_output::open_private(path, append, truncate, invoking_uid)
+    unix::open_private(path, append, truncate, invoking_uid)
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
@@ -385,7 +390,7 @@ mod staged_tests {
         prepare_output_handles_with_stdout, validate_output_paths_with_stdout,
     };
     use crate::app::Config;
-    use crate::scratch_dir::ScratchDir;
+    use crate::test_support::scratch_dir::ScratchDir;
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -596,7 +601,7 @@ mod staged_tests {
 mod tests {
     use super::{open_private_append_file, validate_output_paths};
     use crate::app::Config;
-    use crate::scratch_dir::ScratchDir;
+    use crate::test_support::scratch_dir::ScratchDir;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 

@@ -1,84 +1,17 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
+
+use crate::network::pending::{PendingStamp, PendingTable};
 
 use super::identity::ConnectionKey;
 use super::protocol_info::{
     LlmnrInfo, NetBiosInfo, NetBiosService, NtpInfo, NtpMode, StunMessageClass,
 };
 
-/// Capture time of a pending entry, for staleness pruning.
-trait PendingStamp {
-    fn stamp(&self) -> SystemTime;
-}
-
-impl PendingStamp for SystemTime {
-    fn stamp(&self) -> SystemTime {
-        *self
-    }
-}
-
 impl PendingStamp for (SystemTime, ConnectionKey) {
     fn stamp(&self) -> SystemTime {
         self.0
-    }
-}
-
-/// Bounded map of in-flight requests awaiting their matching reply.
-///
-/// New entries are dropped at the cap, so a request flood costs unmatched
-/// samples, never memory. A retransmit of an already-pending request still
-/// refreshes its timestamp even at the cap, so the eventual reply measures
-/// from the most recent send.
-#[derive(Debug)]
-struct PendingTable<K, V = SystemTime> {
-    map: HashMap<K, V>,
-    cap: usize,
-    max_age: Duration,
-}
-
-impl<K: Eq + std::hash::Hash, V: PendingStamp + Copy> PendingTable<K, V> {
-    fn new(cap: usize, max_age: Duration) -> Self {
-        Self {
-            map: HashMap::new(),
-            cap,
-            max_age,
-        }
-    }
-
-    /// Record a request, dropping new keys at the cap.
-    fn start(&mut self, key: K, value: V) -> bool {
-        let was_pending = self.map.contains_key(&key);
-        if self.map.len() < self.cap || was_pending {
-            self.map.insert(key, value);
-        }
-        was_pending
-    }
-
-    /// Take the pending entry a reply matches, if its request was tracked.
-    fn complete(&mut self, key: &K) -> Option<V> {
-        self.map.remove(key)
-    }
-
-    /// Drop entries older than `max_age` relative to the capture time of the
-    /// packet being processed.
-    fn prune(&mut self, now: SystemTime) -> Vec<V> {
-        let Some(cutoff) = now.checked_sub(self.max_age) else {
-            return Vec::new();
-        };
-        let mut expired = Vec::new();
-        self.map.retain(|_, v| {
-            let keep = v.stamp() > cutoff;
-            if !keep {
-                expired.push(*v);
-            }
-            keep
-        });
-        expired
-    }
-
-    fn clear(&mut self) {
-        self.map.clear();
     }
 }
 
@@ -124,7 +57,7 @@ impl<K: Eq + std::hash::Hash> PendingTable<K, (SystemTime, ConnectionKey)> {
         events.note_timeouts(self.prune(at));
         match (is_outgoing, half) {
             (true, ExchangeHalf::Request) => {
-                if self.start(pending_key, (at, connection_key)) {
+                if self.start(pending_key, (at, connection_key)) == Some(true) {
                     events.retries.push(connection_key);
                 }
                 None
@@ -147,9 +80,12 @@ pub(crate) struct RequestHealthEvents {
 
 impl RequestHealthEvents {
     /// Note the requesting connection of every expired pending request.
-    fn note_timeouts(&mut self, expired: impl IntoIterator<Item = (SystemTime, ConnectionKey)>) {
+    fn note_timeouts<K>(
+        &mut self,
+        expired: impl IntoIterator<Item = (K, (SystemTime, ConnectionKey))>,
+    ) {
         self.timeouts
-            .extend(expired.into_iter().map(|(_, key)| key));
+            .extend(expired.into_iter().map(|(_, (_, key))| key));
     }
 }
 
@@ -237,7 +173,7 @@ impl RttTracker {
     /// Record a SYN packet being sent/received, stamped with its capture time.
     pub fn record_syn(&mut self, key: ConnectionKey, at: SystemTime) {
         self.pending_syns.prune(at);
-        self.pending_syns.start(key, at);
+        let _ = self.pending_syns.start(key, at);
     }
 
     /// Try to match a SYN-ACK to a pending SYN and calculate RTT
@@ -275,7 +211,7 @@ impl RttTracker {
     ) -> Option<Duration> {
         self.pending_quic_handshakes.prune(at);
         if is_outgoing {
-            self.pending_quic_handshakes.start(key, at);
+            let _ = self.pending_quic_handshakes.start(key, at);
             return None;
         }
         let sent_at = self.pending_quic_handshakes.complete(&key)?;
@@ -397,7 +333,7 @@ impl RttTracker {
         let pending_key = (key, identifier, sequence);
         match (is_outgoing, is_reply) {
             (true, false) => {
-                self.pending_icmp_echoes.start(pending_key, at);
+                let _ = self.pending_icmp_echoes.start(pending_key, at);
                 None
             }
             (false, true) => {

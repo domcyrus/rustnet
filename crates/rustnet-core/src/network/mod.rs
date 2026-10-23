@@ -22,6 +22,7 @@ pub mod merge;
 pub mod neighbors;
 pub mod oui;
 pub mod parser;
+mod pending;
 pub mod process_activity;
 pub mod protocol;
 pub mod services;

@@ -14,10 +14,6 @@ mod runtime;
 mod sampling;
 mod state;
 mod types;
-#[cfg(unix)]
-mod unix_output;
-#[cfg(target_os = "windows")]
-mod windows_output;
 
 #[cfg(unix)]
 pub(crate) use output::create_private_diagnostic_file;
