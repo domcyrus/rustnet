@@ -1649,6 +1649,7 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::{local_tcp, test_app};
     use std::collections::HashSet;
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1661,7 +1662,7 @@ mod tests {
     use crate::network::dns_analytics::{DnsAnalyticsSnapshot, DnsHealth};
     use crate::ui::{
         ClickableRegions, Component, Effect, HandlerContext, UiState, compute_grouped_rows,
-        test_support::{empty_ctx, line_text, local_tcp, test_app},
+        test_support::{empty_ctx, line_text},
         theme,
     };
     use std::time::Duration;

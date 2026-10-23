@@ -243,6 +243,18 @@ pub(super) fn log_connection_closed(
     }
 }
 
+fn base_connection_json(conn: &Connection) -> Value {
+    let mut event = json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "protocol": conn.protocol.to_string(),
+    });
+    add_process_fields(&mut event, conn);
+    if let Some(geoip) = &conn.geoip_info {
+        add_geoip_fields(&mut event, geoip);
+    }
+    event
+}
+
 /// Log a connection event as JSON.
 pub(super) fn log_connection_event(
     writer: &JsonLineWriter,
@@ -252,15 +264,12 @@ pub(super) fn log_connection_event(
     dns_resolver: Option<&DnsResolver>,
     local_port_status: Option<LocalPortStatus>,
 ) -> bool {
-    let mut event = json!({
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "event": event_type,
-        "protocol": conn.protocol.to_string(),
-        "source_ip": conn.local_addr.ip().to_string(),
-        "source_port": conn.local_addr.port(),
-        "destination_ip": conn.remote_addr.ip().to_string(),
-        "destination_port": conn.remote_addr.port(),
-    });
+    let mut event = base_connection_json(conn);
+    event["event"] = json!(event_type);
+    event["source_ip"] = json!(conn.local_addr.ip().to_string());
+    event["source_port"] = json!(conn.local_addr.port());
+    event["destination_ip"] = json!(conn.remote_addr.ip().to_string());
+    event["destination_port"] = json!(conn.remote_addr.port());
 
     if event_type == "new_connection"
         && let Some(status) = local_port_status
@@ -293,7 +302,6 @@ pub(super) fn log_connection_event(
     if let Some(process_name) = &conn.process_name {
         event["process_name"] = json!(process_name);
     }
-    add_process_fields(&mut event, conn);
 
     if let Some(service_name) = &conn.service_name {
         event["service_name"] = json!(service_name);
@@ -312,10 +320,6 @@ pub(super) fn log_connection_event(
         }
     }
 
-    if let Some(ref geoip) = conn.geoip_info {
-        add_geoip_fields(&mut event, geoip);
-    }
-
     if event_type == "connection_closed" {
         event["bytes_sent"] = json!(conn.bytes_sent);
         event["bytes_received"] = json!(conn.bytes_received);
@@ -329,19 +333,16 @@ pub(super) fn log_connection_event(
 
 /// Log a connection to the PCAP sidecar (JSONL).
 pub(super) fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) -> bool {
-    let mut event = json!({
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "protocol": conn.protocol.to_string(),
-        "local_addr": conn.local_addr.to_string(),
-        "remote_addr": conn.remote_addr.to_string(),
-        "pid": conn.pid,
-        "process_name": conn.process_name,
-        "first_seen": conn.created_at,
-        "last_seen": conn.last_activity,
-        "bytes_sent": conn.bytes_sent,
-        "bytes_received": conn.bytes_received,
-        "state": conn.state(),
-    });
+    let mut event = base_connection_json(conn);
+    event["local_addr"] = json!(conn.local_addr.to_string());
+    event["remote_addr"] = json!(conn.remote_addr.to_string());
+    event["pid"] = json!(conn.pid);
+    event["process_name"] = json!(conn.process_name);
+    event["first_seen"] = json!(conn.created_at);
+    event["last_seen"] = json!(conn.last_activity);
+    event["bytes_sent"] = json!(conn.bytes_sent);
+    event["bytes_received"] = json!(conn.bytes_received);
+    event["state"] = json!(conn.state());
 
     add_network_fields(
         &mut event,
@@ -350,12 +351,6 @@ pub(super) fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) ->
         "remote_addr_kind",
         "remote_is_gateway",
     );
-
-    add_process_fields(&mut event, conn);
-
-    if let Some(ref geoip) = conn.geoip_info {
-        add_geoip_fields(&mut event, geoip);
-    }
 
     writer.write(&event)
 }
@@ -389,7 +384,7 @@ mod tests {
 mod vlan_tests {
     use super::*;
     use crate::network::types::ProtocolState;
-    use crate::scratch_dir::ScratchDir;
+    use crate::test_support::scratch_dir::ScratchDir;
 
     #[test]
     fn events_and_sidecars_export_only_observed_vlan_ids() {
@@ -413,6 +408,14 @@ mod vlan_tests {
         ));
         assert!(log_pcap_connection(&writer, &conn));
         conn.observed_vlan_ids = vec![0, 42, 100];
+        conn.geoip_info = Some(GeoIpInfo {
+            country_code: Some("DE".into()),
+            country_name: None,
+            city: None,
+            postal_code: None,
+            asn: Some(64500),
+            as_org: None,
+        });
         conn.container_info = Some(crate::network::types::ContainerInfo {
             runtime: crate::network::types::ContainerRuntime::Docker,
             id: "0123456789abcdef".into(),
@@ -435,11 +438,21 @@ mod vlan_tests {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(records.len(), 4);
+        assert!(records[0].get("pid").is_none());
+        assert!(records[0].get("process_name").is_none());
+        assert_eq!(records[1].get("pid"), Some(&Value::Null));
+        assert_eq!(records[1].get("process_name"), Some(&Value::Null));
+        assert!(records[0].get("local_addr").is_none());
+        assert!(records[1].get("source_ip").is_none());
+        assert!(records[1].get("event").is_none());
         for record in &records[..2] {
             assert!(record.get("observed_vlan_ids").is_none());
             assert!(record.get("container").is_none());
         }
         for record in &records[2..] {
+            assert_eq!(record["geoip_country_code"], "DE");
+            assert_eq!(record["geoip_asn"], 64500);
+            assert!(record.get("geoip_country_name").is_none());
             assert_eq!(record["observed_vlan_ids"], json!([0, 42, 100]));
             assert_eq!(record["container"]["runtime"], "docker");
             assert_eq!(record["container"]["id"], "0123456789abcdef");

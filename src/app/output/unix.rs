@@ -267,7 +267,7 @@ pub(super) fn create_diagnostic(path: &Path, invoking_uid: Option<u32>) -> io::R
 #[cfg(test)]
 mod tests {
     use super::{create_diagnostic, open_file_at, open_private, parent_dir};
-    use crate::scratch_dir::ScratchDir;
+    use crate::test_support::scratch_dir::ScratchDir;
     use std::fs::{self, Permissions};
     use std::io::{self, Write};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
