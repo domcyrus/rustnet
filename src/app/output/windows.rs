@@ -343,7 +343,7 @@ fn windows_error(operation: &str, error: windows::core::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::{PrivateSecurity, open_private, validate_owner};
-    use crate::scratch_dir::ScratchDir;
+    use crate::test_support::scratch_dir::ScratchDir;
     use std::fs;
     use std::io::{self, Write};
     use std::mem::size_of;

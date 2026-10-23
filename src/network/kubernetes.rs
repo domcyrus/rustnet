@@ -483,32 +483,16 @@ fn discover_kubepods_pids() -> Vec<u32> {
 /// width, so the same parser serves the `tcp`/`udp` and `tcp6`/`udp6` files.
 #[cfg(any(test, target_os = "linux"))]
 pub(crate) fn parse_proc_net_line(line: &str, protocol: Protocol) -> Option<ConnectionKey> {
-    let mut fields = line.split_whitespace();
-    // Skip the "sl" column.
-    fields.next()?;
-    let local_raw = fields.next()?;
-    let remote_raw = fields.next()?;
-    let local_addr = parse_addr_port(local_raw)?;
-    let remote_addr = parse_addr_port(remote_raw)?;
-    Some(ConnectionKey::new(protocol, local_addr, remote_addr))
-}
-
-#[cfg(any(test, target_os = "linux"))]
-fn parse_addr_port(field: &str) -> Option<std::net::SocketAddr> {
-    let addr = rustnet_host::procfs::parse_proc_net_addr(field)?;
-    // Sockets bound to v6 may carry IPv4-mapped addresses (`::ffff:1.2.3.4`)
-    // for incoming v4 traffic. Normalise so the caller's 4-tuple match
-    // works whether the wire frame was v4 or v6.
-    match addr.ip() {
-        std::net::IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
-            Some(v4) => Some(std::net::SocketAddr::new(
-                std::net::IpAddr::V4(v4),
-                addr.port(),
-            )),
-            None => Some(addr),
-        },
-        std::net::IpAddr::V4(_) => Some(addr),
-    }
+    let row = rustnet_host::procfs::parse_proc_net_line(line)?;
+    // Match IPv4-mapped sockets to their IPv4 wire endpoints.
+    let canonical = |addr: std::net::SocketAddr| {
+        std::net::SocketAddr::new(addr.ip().to_canonical(), addr.port())
+    };
+    Some(ConnectionKey::new(
+        protocol,
+        canonical(row.local_addr),
+        canonical(row.remote_addr),
+    ))
 }
 
 /// `/proc/<pid>/cgroup` lines look like `12:cpu,cpuacct:/some/path` for v1

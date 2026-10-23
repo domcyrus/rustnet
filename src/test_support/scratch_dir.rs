@@ -6,11 +6,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
 
 /// Per-test scratch directory under the system temp dir, removed on drop.
-pub(super) struct ScratchDir(PathBuf);
+pub(crate) struct ScratchDir(PathBuf);
 
 impl ScratchDir {
     /// Create an exclusive directory without replacing other tests' files.
-    pub(super) fn new(prefix: &str, tag: &str) -> Self {
+    pub(crate) fn new(prefix: &str, tag: &str) -> Self {
         loop {
             let sequence = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
@@ -25,11 +25,11 @@ impl ScratchDir {
         }
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 
-    pub(super) fn join(&self, name: &str) -> PathBuf {
+    pub(crate) fn join(&self, name: &str) -> PathBuf {
         self.0.join(name)
     }
 }

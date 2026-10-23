@@ -52,7 +52,7 @@ The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-cap
 
 ### Re-export Facade
 
-To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module is now just the shim wiring in `rustnet-host`'s process and socket lookup; the per-platform interface-stats providers live in `rustnet-core` behind `interface_stats::create_stats_provider`, and sandboxing plus the root uid drop live in `rustnet-sandbox`, which the binary uses directly.
+To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. Process and socket lookup are imported directly from `rustnet-host`. The per-platform interface-stats providers live in `rustnet-core` behind `interface_stats::create_stats_provider`; sandboxing and the root uid drop live in `rustnet-sandbox`.
 
 ### Frontend Modules
 
