@@ -130,5 +130,10 @@ jobs:
         push: false
         load: true
         tags: rustnet:ci-test
+        # Keep CI's default-feature image separate from release image caches.
+        cache-from: type=gha,scope=ci-docker-amd64
+        cache-to: type=gha,scope=ci-docker-amd64,mode=max
+      env:
+        DOCKER_BUILD_RECORD_UPLOAD: 'false'
     - name: Verify Docker image
       run: docker run --rm rustnet:ci-test --version
