@@ -843,7 +843,7 @@ impl App {
     fn record_pktap_status(&self, linktype: i32) {
         use crate::network::capture::PktapUnavailable;
         use crate::network::link_layer::pktap;
-        use crate::network::platform::{DegradationReason, report_pktap_degradation};
+        use rustnet_host::{DegradationReason, report_pktap_degradation};
 
         if pktap::is_pktap_linktype(linktype) {
             self.pktap_active.store(true, Ordering::Relaxed);
@@ -1628,7 +1628,7 @@ mod capture_failure_message_tests {
 #[cfg(all(test, unix))]
 mod prepared_pcap_tests {
     use super::prepare_pcap_writer;
-    use crate::scratch_dir::ScratchDir;
+    use crate::test_support::scratch_dir::ScratchDir;
     use std::fs::OpenOptions;
     use std::time::SystemTime;
 
@@ -1909,7 +1909,7 @@ mod connection_lifecycle_tests {
     use std::net::SocketAddr;
     use std::path::Path;
 
-    use crate::scratch_dir::ScratchDir;
+    use crate::test_support::scratch_dir::ScratchDir;
 
     fn tcp_packet(flags: TcpFlags) -> ParsedPacket {
         let mut packet = ParsedPacket::new(

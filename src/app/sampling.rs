@@ -560,7 +560,7 @@ mod live_rate_sampling_tests {
                         let app = App::new(crate::app::Config {
                             resolve_dns,
                             show_ptr_lookups,
-                            ..crate::ui::test_support::test_config()
+                            ..crate::test_support::test_config()
                         })
                         .unwrap();
                         let mut ptr = Connection::new(

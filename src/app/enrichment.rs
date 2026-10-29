@@ -9,9 +9,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::network::platform::create_process_lookup;
 use crate::network::tracker::ConnectionTracker;
 use crate::network::types::{Connection, ProcessLineage, UNKNOWN_PROCESS_NAME};
+use rustnet_host::create_process_lookup;
 
 use super::runtime::ShutdownSignal;
 use super::sampling::spawn_loop;

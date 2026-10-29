@@ -170,16 +170,27 @@ fn jsonl_emits_an_initial_snapshot_and_applies_filter() {
     assert!(value["runtime"]["shutdown"].is_object());
 }
 
-#[derive(Default)]
-struct BrokenPipeWriter;
+enum FailingWriter {
+    Write(io::ErrorKind),
+    Flush,
+    Panic,
+}
 
-impl Write for BrokenPipeWriter {
-    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-        Err(io::Error::new(io::ErrorKind::BrokenPipe, "reader closed"))
+impl Write for FailingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Write(kind) => Err(io::Error::new(*kind, "injected output failure")),
+            Self::Flush => Ok(buffer.len()),
+            // Exercise unwinding without panic-hook backtrace latency.
+            Self::Panic => std::panic::resume_unwind(Box::new("injected writer panic")),
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        match self {
+            Self::Flush => Err(io::Error::new(io::ErrorKind::BrokenPipe, "reader closed")),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -188,30 +199,13 @@ fn broken_pipe_is_a_clean_exit() {
     let mut app = app_with_connections();
     let stop_report = run(
         &mut app,
-        BrokenPipeWriter,
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
+        FailingWriter::Write(io::ErrorKind::BrokenPipe),
+        &HeadlessOptions::default(),
         &AtomicBool::new(false),
     )
     .unwrap();
 
     assert_eq!(stop_report.timed_out_workers, 0);
-}
-
-struct FlushBrokenPipeWriter(Vec<u8>);
-
-impl Write for FlushBrokenPipeWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.0.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::BrokenPipe, "reader closed"))
-    }
 }
 
 #[test]
@@ -219,12 +213,8 @@ fn broken_pipe_while_flushing_is_a_clean_exit() {
     let mut app = app_with_connections();
     let stop_report = run(
         &mut app,
-        FlushBrokenPipeWriter(Vec::new()),
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
+        FailingWriter::Flush,
+        &HeadlessOptions::default(),
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -232,30 +222,13 @@ fn broken_pipe_while_flushing_is_a_clean_exit() {
     assert_eq!(stop_report.timed_out_workers, 0);
 }
 
-#[derive(Default)]
-struct FailedWriter;
-
-impl Write for FailedWriter {
-    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-        Err(io::Error::other("injected output failure"))
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn non_pipe_writer_failure_is_an_error() {
     let mut app = app_with_connections();
     let error = run(
         &mut app,
-        FailedWriter,
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
+        FailingWriter::Write(io::ErrorKind::Other),
+        &HeadlessOptions::default(),
         &AtomicBool::new(false),
     )
     .unwrap_err();
@@ -263,30 +236,13 @@ fn non_pipe_writer_failure_is_an_error() {
     assert!(error.to_string().contains("headless output"));
 }
 
-struct PanicWriter;
-
-impl Write for PanicWriter {
-    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-        // Exercise unwinding without panic-hook backtrace latency.
-        std::panic::resume_unwind(Box::new("injected writer panic"));
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn writer_panic_is_joined_and_reported() {
     let mut app = app_with_connections();
     let error = run(
         &mut app,
-        PanicWriter,
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
+        FailingWriter::Panic,
+        &HeadlessOptions::default(),
         &AtomicBool::new(false),
     )
     .unwrap_err();
@@ -299,55 +255,39 @@ fn writer_panic_is_joined_and_reported() {
 }
 
 struct StallOnceWriter {
+    on_flush: bool,
     output: SharedWriter,
     entered: Option<mpsc::Sender<()>>,
     release: mpsc::Receiver<()>,
     finished: Option<mpsc::Sender<()>>,
 }
 
-impl Write for StallOnceWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+impl StallOnceWriter {
+    fn stall(&mut self) {
         if let Some(entered) = self.entered.take() {
             let _ = entered.send(());
             let _ = self.release.recv();
+        }
+    }
+}
+
+impl Write for StallOnceWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if !self.on_flush {
+            self.stall();
         }
         self.output.write(buffer)
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if self.on_flush {
+            self.stall();
+        }
         self.output.flush()
     }
 }
 
 impl Drop for StallOnceWriter {
-    fn drop(&mut self) {
-        if let Some(finished) = self.finished.take() {
-            let _ = finished.send(());
-        }
-    }
-}
-
-struct StallFlushWriter {
-    entered: Option<mpsc::Sender<()>>,
-    release: mpsc::Receiver<()>,
-    finished: Option<mpsc::Sender<()>>,
-}
-
-impl Write for StallFlushWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        if let Some(entered) = self.entered.take() {
-            let _ = entered.send(());
-            let _ = self.release.recv();
-        }
-        Ok(())
-    }
-}
-
-impl Drop for StallFlushWriter {
     fn drop(&mut self) {
         if let Some(finished) = self.finished.take() {
             let _ = finished.send(());
@@ -368,6 +308,7 @@ fn stalled_writer() -> (
     let (finished_tx, finished_rx) = mpsc::channel();
     (
         StallOnceWriter {
+            on_flush: false,
             output: output.clone(),
             entered: Some(entered_tx),
             release: release_rx,
@@ -448,9 +389,8 @@ fn stalled_writer_cannot_block_duration_shutdown() {
         &mut app,
         writer,
         &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
             duration: Some(Duration::from_millis(20)),
-            filter_query: None,
+            ..HeadlessOptions::default()
         },
         &AtomicBool::new(false),
         Duration::from_millis(30),
@@ -466,23 +406,16 @@ fn stalled_writer_cannot_block_duration_shutdown() {
 
 #[test]
 fn stalled_flush_cannot_block_duration_shutdown() {
-    let (entered_tx, entered_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
-    let (finished_tx, finished_rx) = mpsc::channel();
-    let writer = StallFlushWriter {
-        entered: Some(entered_tx),
-        release: release_rx,
-        finished: Some(finished_tx),
-    };
+    let (mut writer, _output, entered_rx, release_tx, finished_rx) = stalled_writer();
+    writer.on_flush = true;
     let mut app = app_with_connections();
     let started = Instant::now();
     let error = run_with_writer_deadline(
         &mut app,
         writer,
         &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
             duration: Some(Duration::from_millis(20)),
-            filter_query: None,
+            ..HeadlessOptions::default()
         },
         &AtomicBool::new(false),
         Duration::from_millis(30),
@@ -514,11 +447,7 @@ fn stalled_writer_cannot_block_signal_shutdown() {
     let result = run_with_writer_deadline(
         &mut app,
         writer,
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
+        &HeadlessOptions::default(),
         &shutdown,
         Duration::from_millis(30),
     );
@@ -683,8 +612,7 @@ fn capture_failure_stops_an_indefinite_run() {
         output.clone(),
         &HeadlessOptions {
             format: HeadlessFormat::Json,
-            duration: None,
-            filter_query: None,
+            ..HeadlessOptions::default()
         },
         &AtomicBool::new(false),
     )
@@ -746,8 +674,7 @@ fn unexpected_critical_worker_exit_stops_an_indefinite_run() {
         output.clone(),
         &HeadlessOptions {
             format: HeadlessFormat::Json,
-            duration: None,
-            filter_query: None,
+            ..HeadlessOptions::default()
         },
         &AtomicBool::new(false),
     )
@@ -769,8 +696,7 @@ fn shared_shutdown_condition_ends_json_mode() {
         output.clone(),
         &HeadlessOptions {
             format: HeadlessFormat::Json,
-            duration: None,
-            filter_query: None,
+            ..HeadlessOptions::default()
         },
         &AtomicBool::new(true),
     )

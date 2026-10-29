@@ -2,7 +2,7 @@
 //! exit, and a fresh socket table protects sockets inherited by another owner.
 
 use super::process::process_start_ticks;
-use crate::{lifecycle::SocketObservation, procfs::parse_proc_net_addr};
+use crate::{lifecycle::SocketObservation, procfs::parse_proc_net_line};
 use rustnet_core::network::types::{
     Connection, ConnectionKey, ConnectionObservation, ProcessExitStatus, Protocol,
 };
@@ -438,20 +438,19 @@ fn parse_table(text: &str, protocol: Protocol) -> io::Result<HashSet<ConnectionK
     }
     let mut keys = HashSet::new();
     for line in lines {
-        let fields: Vec<_> = line.split_whitespace().collect();
-        if fields.len() < 10 {
-            return Err(invalid());
-        }
-        let local_addr = parse_proc_net_addr(fields[1]).ok_or_else(invalid)?;
-        let remote_addr = parse_proc_net_addr(fields[2]).ok_or_else(invalid)?;
-        let inode: u64 = fields[9].parse().map_err(|_| invalid())?;
+        let row = parse_proc_net_line(line).ok_or_else(invalid)?;
+        let inode: u64 = row
+            .inode
+            .ok_or_else(invalid)?
+            .parse()
+            .map_err(|_| invalid())?;
         // TIME_WAIT and orphaned TCP teardown can outlive the application's
         // socket. Preserve their observed transport state in the archive.
         if inode != 0 {
             keys.insert(ConnectionKey {
                 protocol,
-                local_addr,
-                remote_addr,
+                local_addr: row.local_addr,
+                remote_addr: row.remote_addr,
             });
         }
     }
