@@ -1,0 +1,40 @@
+name: Validate WinGet schema 1.28
+on:
+  push:
+    branches: [test/winget-1.7.0-validation]
+    paths: [.github/workflows/validate-winget-schema.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Install WinGet 1.29.380
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Join-Path $env:RUNNER_TEMP 'winget-setup'
+          New-Item -ItemType Directory -Path $setup -Force | Out-Null
+          $release = 'https://github.com/microsoft/winget-cli/releases/download/v1.29.380'
+          Invoke-WebRequest "$release/DesktopAppInstaller_Dependencies.zip" -OutFile "$setup/dependencies.zip"
+          Invoke-WebRequest "$release/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle" -OutFile "$setup/winget.msixbundle"
+          Expand-Archive "$setup/dependencies.zip" -DestinationPath "$setup/dependencies"
+          $dependencies = @(Get-ChildItem "$setup/dependencies/x64/*.appx" | Select-Object -ExpandProperty FullName)
+          Add-AppxPackage -Path "$setup/winget.msixbundle" -DependencyPath $dependencies -ForceApplicationShutdown
+          winget --version
+          if ($LASTEXITCODE -ne 0) { throw 'WinGet setup failed' }
+      - name: Validate proposed manifests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Join-Path $env:RUNNER_TEMP 'winget-manifests'
+          New-Item -ItemType Directory -Path $manifest -Force | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $manifest 'domcyrus.RustNet.installer.yaml'), [Convert]::FromBase64String('IyB5YW1sLWxhbmd1YWdlLXNlcnZlcjogJHNjaGVtYT1odHRwczovL2FrYS5tcy93aW5nZXQtbWFuaWZlc3QuaW5zdGFsbGVyLjEuMjguMC5zY2hlbWEuanNvbg0KDQpQYWNrYWdlSWRlbnRpZmllcjogZG9tY3lydXMuUnVzdE5ldA0KUGFja2FnZVZlcnNpb246IDEuNy4wDQpJbnN0YWxsZXJUeXBlOiB3aXgNClNjb3BlOiBtYWNoaW5lDQpJbnN0YWxsYXRpb25NZXRhZGF0YToNCiAgRmlsZXM6DQogIC0gUmVsYXRpdmVGaWxlUGF0aDogcnVzdG5ldC5leGUNCiAgICBGaWxlVHlwZTogbGF1bmNoDQogICAgSW52b2NhdGlvblBhcmFtZXRlcjogLS12ZXJzaW9uDQpJbnN0YWxsZXJzOg0KLSBBcmNoaXRlY3R1cmU6IHg4Ng0KICBEZXBlbmRlbmNpZXM6DQogICAgUGFja2FnZURlcGVuZGVuY2llczoNCiAgICAtIFBhY2thZ2VJZGVudGlmaWVyOiBNaWNyb3NvZnQuVkNSZWRpc3QuMjAxNSsueDg2DQogIEluc3RhbGxlclVybDogaHR0cHM6Ly9naXRodWIuY29tL2RvbWN5cnVzL3J1c3RuZXQvcmVsZWFzZXMvZG93bmxvYWQvdjEuNy4wL1J1c3RuZXRfV2luZG93c18zMi1iaXQubXNpDQogIEluc3RhbGxlclNoYTI1NjogMTQxMzIyNzFDNTJGMjA3MUY1NTNBNEI2ODM0RTVFQzY4RUJDNjE0NjVCRERCRDY0RDIyRDk1NzM3NzJEMDlCNg0KLSBBcmNoaXRlY3R1cmU6IHg2NA0KICBEZXBlbmRlbmNpZXM6DQogICAgUGFja2FnZURlcGVuZGVuY2llczoNCiAgICAtIFBhY2thZ2VJZGVudGlmaWVyOiBNaWNyb3NvZnQuVkNSZWRpc3QuMjAxNSsueDY0DQogIEluc3RhbGxlclVybDogaHR0cHM6Ly9naXRodWIuY29tL2RvbWN5cnVzL3J1c3RuZXQvcmVsZWFzZXMvZG93bmxvYWQvdjEuNy4wL1J1c3RuZXRfV2luZG93c182NC1iaXQubXNpDQogIEluc3RhbGxlclNoYTI1NjogMDcwQjM2NkMyOEJDQTVEMDg4NUJFM0EyOThCRTgyNzg1QUM1RkNENjBDMzYzNDY3NzZDNzE3MTY1ODNFQzIzQw0KTWFuaWZlc3RUeXBlOiBpbnN0YWxsZXINCk1hbmlmZXN0VmVyc2lvbjogMS4yOC4wDQo='))
+          [IO.File]::WriteAllBytes((Join-Path $manifest 'domcyrus.RustNet.locale.en-US.yaml'), [Convert]::FromBase64String('IyB5YW1sLWxhbmd1YWdlLXNlcnZlcjogJHNjaGVtYT1odHRwczovL2FrYS5tcy93aW5nZXQtbWFuaWZlc3QuZGVmYXVsdExvY2FsZS4xLjI4LjAuc2NoZW1hLmpzb24NCg0KUGFja2FnZUlkZW50aWZpZXI6IGRvbWN5cnVzLlJ1c3ROZXQNClBhY2thZ2VWZXJzaW9uOiAxLjcuMA0KUGFja2FnZUxvY2FsZTogZW4tVVMNClB1Ymxpc2hlcjogZG9tY3lydXMNClB1Ymxpc2hlclVybDogaHR0cHM6Ly9naXRodWIuY29tL2RvbWN5cnVzDQpQdWJsaXNoZXJTdXBwb3J0VXJsOiBodHRwczovL2dpdGh1Yi5jb20vZG9tY3lydXMvcnVzdG5ldC9pc3N1ZXMNClBhY2thZ2VOYW1lOiBSdXN0TmV0DQpQYWNrYWdlVXJsOiBodHRwczovL2dpdGh1Yi5jb20vZG9tY3lydXMvcnVzdG5ldA0KTGljZW5zZTogQXBhY2hlLTIuMA0KTGljZW5zZVVybDogaHR0cHM6Ly9naXRodWIuY29tL2RvbWN5cnVzL3J1c3RuZXQvYmxvYi92MS43LjAvTElDRU5TRQ0KU2hvcnREZXNjcmlwdGlvbjogQSBwZXItcHJvY2VzcyBuZXR3b3JrIG1vbml0b3Igd2l0aCBhIHRlcm1pbmFsIFVJIGFuZCBoZWFkbGVzcyBKU09OIG1vZGUuDQpEZXNjcmlwdGlvbjogfC0NCiAgUnVzdE5ldCBzaG93cyBsaXZlIFRDUCwgVURQLCBhbmQgUVVJQyBjb25uZWN0aW9ucyB3aXRoIHBlci1wcm9jZXNzIGF0dHJpYnV0aW9uLg0KICBOcGNhcCBtdXN0IGJlIGluc3RhbGxlZCBzZXBhcmF0ZWx5IGZvciBsaXZlIGNhcHR1cmUuIERlZmF1bHQgTnBjYXANCiAgaW5zdGFsbGF0aW9uIHNldHRpbmdzIGFyZSBzdXBwb3J0ZWQuIC0taGVscCBhbmQgLS12ZXJzaW9uIHdvcmsgd2l0aG91dCBOcGNhcC4NCk1vbmlrZXI6IHJ1c3RuZXQNClRhZ3M6DQotIG5ldHdvcmsNCi0gbW9uaXRvcmluZw0KLSB0ZXJtaW5hbA0KLSB0dWkNCk1hbmlmZXN0VHlwZTogZGVmYXVsdExvY2FsZQ0KTWFuaWZlc3RWZXJzaW9uOiAxLjI4LjANCg=='))
+          [IO.File]::WriteAllBytes((Join-Path $manifest 'domcyrus.RustNet.yaml'), [Convert]::FromBase64String('IyB5YW1sLWxhbmd1YWdlLXNlcnZlcjogJHNjaGVtYT1odHRwczovL2FrYS5tcy93aW5nZXQtbWFuaWZlc3QudmVyc2lvbi4xLjI4LjAuc2NoZW1hLmpzb24NCg0KUGFja2FnZUlkZW50aWZpZXI6IGRvbWN5cnVzLlJ1c3ROZXQNClBhY2thZ2VWZXJzaW9uOiAxLjcuMA0KRGVmYXVsdExvY2FsZTogZW4tVVMNCk1hbmlmZXN0VHlwZTogdmVyc2lvbg0KTWFuaWZlc3RWZXJzaW9uOiAxLjI4LjANCg=='))
+          Get-ChildItem $manifest | Get-FileHash -Algorithm SHA256 | Format-List
+          winget validate --manifest $manifest
+          if ($LASTEXITCODE -ne 0) { throw 'WinGet manifest validation failed' }
+          'WinGet 1.29.380: schema 1.28.0 validation passed for RustNet 1.7.0.' | Out-File $env:GITHUB_STEP_SUMMARY
