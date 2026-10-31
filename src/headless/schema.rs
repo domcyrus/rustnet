@@ -1,10 +1,12 @@
 //! Versioned wire schema, independent of application internals.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
+use serde_json::value::RawValue;
 
 use crate::app::{App, AppStats, StopReport};
 use crate::network::types::{AttributionSource, Connection, ConnectionKey};
@@ -12,7 +14,7 @@ use crate::network::types::{AttributionSource, Connection, ConnectionKey};
 use super::{SCHEMA_VERSION, TerminationReason};
 
 #[derive(Serialize)]
-pub(super) struct SnapshotEnvelope {
+pub(super) struct SnapshotEnvelope<C = Vec<ConnectionSnapshot>> {
     schema_version: u8,
     #[serde(rename = "type")]
     record_type: &'static str,
@@ -22,10 +24,24 @@ pub(super) struct SnapshotEnvelope {
     stats: StatsSnapshot,
     filter: Option<String>,
     connection_count: usize,
-    connections: Vec<ConnectionSnapshot>,
+    connections: C,
 }
 
 impl SnapshotEnvelope {
+    fn with_connections<C>(self, connections: C) -> SnapshotEnvelope<C> {
+        SnapshotEnvelope {
+            schema_version: self.schema_version,
+            record_type: self.record_type,
+            timestamp: self.timestamp,
+            runtime: self.runtime,
+            sandbox: self.sandbox,
+            stats: self.stats,
+            filter: self.filter,
+            connection_count: self.connection_count,
+            connections,
+        }
+    }
+
     pub(super) fn new(
         app: &App,
         filter_query: Option<&str>,
@@ -64,6 +80,96 @@ impl SnapshotEnvelope {
                 connections,
             },
         )
+    }
+}
+
+// Cache only the immediately preceding emitted snapshot. Both limits bound the
+// extra retained state independently of the tracker's connection configuration.
+const MAX_CACHED_CONNECTIONS: usize = 10_000;
+const MAX_CACHED_JSON_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum EncodedConnection {
+    Cached(Arc<RawValue>),
+    Direct(Box<ConnectionSnapshot>),
+}
+
+struct CachedConnection {
+    projected: ConnectionSnapshot,
+    json: Arc<RawValue>,
+}
+
+#[derive(Default)]
+pub(super) struct ConnectionCache {
+    entries: Vec<CachedConnection>,
+}
+
+impl ConnectionCache {
+    pub(super) fn serialize(&mut self, snapshot: SnapshotEnvelope) -> anyhow::Result<Vec<u8>> {
+        self.serialize_with_limits(snapshot, MAX_CACHED_CONNECTIONS, MAX_CACHED_JSON_BYTES)
+    }
+
+    fn serialize_with_limits(
+        &mut self,
+        mut snapshot: SnapshotEnvelope,
+        max_connections: usize,
+        max_bytes: usize,
+    ) -> anyhow::Result<Vec<u8>> {
+        if !snapshot
+            .connections
+            .iter()
+            .any(|connection| connection.historic)
+        {
+            self.entries.clear();
+            return super::output::serialize_record(&snapshot);
+        }
+        let mut previous = std::mem::take(&mut self.entries).into_iter().peekable();
+        let mut next = Vec::with_capacity(previous.len().min(max_connections));
+        let mut cached_bytes = 0;
+        let mut encoded = Vec::with_capacity(snapshot.connections.len());
+        for projected in std::mem::take(&mut snapshot.connections) {
+            // Active records usually change every tick. Serialize them directly
+            // to avoid allocating a separate JSON buffer for each connection.
+            if !projected.historic {
+                encoded.push(EncodedConnection::Direct(Box::new(projected)));
+                continue;
+            }
+            // Both snapshots are sorted by ID. A merge avoids rebuilding a hash
+            // table and duplicating connection IDs for each emitted snapshot.
+            while previous
+                .peek()
+                .is_some_and(|entry| entry.projected.id < projected.id)
+            {
+                previous.next();
+            }
+            let matching = if previous
+                .peek()
+                .is_some_and(|entry| entry.projected.id == projected.id)
+            {
+                previous.next()
+            } else {
+                None
+            };
+            // Compare the entire wire projection: enrichment can still change
+            // retained records after closure, without any traffic changes.
+            let cached = match matching {
+                Some(previous) if previous.projected == projected => previous,
+                _ => CachedConnection {
+                    json: Arc::from(serde_json::value::to_raw_value(&projected)?),
+                    projected,
+                },
+            };
+            encoded.push(EncodedConnection::Cached(Arc::clone(&cached.json)));
+            let bytes = cached.json.get().len();
+            if next.len() < max_connections && bytes <= max_bytes - cached_bytes {
+                cached_bytes += bytes;
+                next.push(cached);
+            }
+        }
+        // Evicted, filtered-out and cleared connections cannot accumulate here.
+        self.entries = next;
+        super::output::serialize_record(&snapshot.with_connections(encoded))
     }
 }
 
@@ -253,8 +359,8 @@ impl StatsSnapshot {
     }
 }
 
-#[derive(Serialize)]
-struct ConnectionSnapshot {
+#[derive(PartialEq, Serialize)]
+pub(super) struct ConnectionSnapshot {
     id: String,
     protocol: &'static str,
     state: String,
@@ -431,14 +537,14 @@ impl ConnectionSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct EndpointSnapshot {
     ip: String,
     port: u16,
     address_kind: &'static str,
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct ProcessSnapshot {
     pid: Option<u32>,
     ppid: Option<u32>,
@@ -450,13 +556,13 @@ struct ProcessSnapshot {
     lineage: Option<ProcessLineageSnapshot>,
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct ProcessLineageSnapshot {
     ancestors: Vec<ProcessAncestorSnapshot>,
     truncated: bool,
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct ProcessAncestorSnapshot {
     pid: u32,
     name: String,
@@ -464,30 +570,30 @@ struct ProcessAncestorSnapshot {
     started_at_unix_ms: Option<u64>,
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct TrafficSnapshot {
     bytes_sent: u64,
     bytes_received: u64,
     packets_sent: u64,
     packets_received: u64,
-    outgoing_bytes_per_second: Option<f64>,
-    incoming_bytes_per_second: Option<f64>,
+    outgoing_bytes_per_second: Option<JsonFloat>,
+    incoming_bytes_per_second: Option<JsonFloat>,
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct RttSnapshot {
-    current_ms: Option<f64>,
-    initial_ms: Option<f64>,
-    tcp_smoothed_ms: Option<f64>,
-    dns_response_ms: Option<f64>,
-    llmnr_response_ms: Option<f64>,
-    netbios_response_ms: Option<f64>,
-    icmp_echo_ms: Option<f64>,
-    stun_ms: Option<f64>,
-    ntp_ms: Option<f64>,
+    current_ms: Option<JsonFloat>,
+    initial_ms: Option<JsonFloat>,
+    tcp_smoothed_ms: Option<JsonFloat>,
+    dns_response_ms: Option<JsonFloat>,
+    llmnr_response_ms: Option<JsonFloat>,
+    netbios_response_ms: Option<JsonFloat>,
+    icmp_echo_ms: Option<JsonFloat>,
+    stun_ms: Option<JsonFloat>,
+    ntp_ms: Option<JsonFloat>,
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct GeoIpSnapshot {
     country_code: Option<String>,
     country_name: Option<String>,
@@ -497,7 +603,7 @@ struct GeoIpSnapshot {
     postal_code: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct ContainerSnapshot {
     runtime: &'static str,
     id: String,
@@ -505,7 +611,7 @@ struct ContainerSnapshot {
     cgroup_path: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct KubernetesSnapshot {
     pod_uid: Option<String>,
     pod_name: Option<String>,
@@ -531,13 +637,28 @@ fn connection_id(connection: &Connection) -> String {
     )
 }
 
-fn finite(value: f64) -> Option<f64> {
-    value.is_finite().then_some(value)
+// JSON distinguishes signed zero. Compare float bits so cache reuse preserves
+// the exact encoding as well as the numeric value. Non-finite values stay null.
+#[derive(Serialize)]
+#[serde(transparent)]
+struct JsonFloat(f64);
+
+impl PartialEq for JsonFloat {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
 }
 
-fn duration_ms(value: Option<Duration>) -> Option<f64> {
+fn finite(value: f64) -> Option<JsonFloat> {
+    value.is_finite().then_some(JsonFloat(value))
+}
+
+fn duration_ms(value: Option<Duration>) -> Option<JsonFloat> {
     value.and_then(|duration| finite(duration.as_secs_f64() * 1_000.0))
 }
+
+#[cfg(test)]
+mod cache_tests;
 
 #[cfg(test)]
 mod tests {
