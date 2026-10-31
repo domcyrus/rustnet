@@ -6,6 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
+use crate::network::time_window::TimeWindow;
 use ratatui::layout::Rect;
 
 #[cfg(test)]
@@ -635,6 +636,8 @@ pub struct UiState {
     pub host_view: HostView,
     /// Sort mode for the Host DNS question table.
     pub dns_sort: DnsSort,
+    /// Selected evidence window, independent of Overview live health.
+    pub host_window: TimeWindow,
     /// Process traffic direction emphasized by Activity.
     pub activity_direction: ActivityDirection,
     pub activity_section: ActivitySection,
@@ -703,6 +706,7 @@ impl Default for UiState {
             dns_questions_scroll: PaneScroll::default(),
             host_view: HostView::default(),
             dns_sort: DnsSort::default(),
+            host_window: TimeWindow::default(),
             activity_direction: ActivityDirection::default(),
             activity_section: ActivitySection::default(),
             activity_table: RefCell::default(),
@@ -1035,6 +1039,7 @@ impl UiState {
         self.activity_sort_ascending = false;
         self.activity_direction = ActivityDirection::default();
         self.dns_sort = DnsSort::default();
+        self.host_window = TimeWindow::default();
         self.dns_questions_scroll.reset();
         self.grouped_scroll_offset = 0;
     }

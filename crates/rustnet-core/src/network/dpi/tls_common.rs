@@ -654,19 +654,19 @@ mod tests {
 
     #[test]
     fn test_partial_sni_extraction() {
-        // Simulate a truncated SNI extension
-        let partial_sni = vec![
-            0x00, 0x10, // List length: 16
-            0x00, // Name type: host_name
-            0x00, 0x0d, // Name length: 13
-            b'e', b'x', b'a', b'm', b'p', // Only 5 bytes of "example.com"
-        ];
-
-        let result = parse_sni_extension(&partial_sni, true);
-        assert_eq!(result, Some("examp[PARTIAL]".to_string()));
-
-        // Without allow_partial the truncated name is dropped
-        assert_eq!(parse_sni_extension(&partial_sni, false), None);
+        for (list_len, name_len, prefix) in [(16u16, 13u16, "examp"), (20, 15, "example.co")] {
+            let mut data = Vec::new();
+            data.extend_from_slice(&list_len.to_be_bytes());
+            data.push(0); // host_name
+            data.extend_from_slice(&name_len.to_be_bytes());
+            data.extend_from_slice(prefix.as_bytes());
+            assert_eq!(parse_sni_extension(&data, false), None, "{prefix}");
+            assert_eq!(
+                parse_sni_extension(&data, true),
+                Some(format!("{prefix}[PARTIAL]")),
+                "{prefix}"
+            );
+        }
     }
 
     #[test]
@@ -700,24 +700,6 @@ mod tests {
 
         let result = parse_sni_extension(&data, false);
         assert_eq!(result, Some("test.example.org".to_string()));
-    }
-
-    #[test]
-    fn test_parse_sni_extension_partial() {
-        // Build partial SNI extension data
-        let mut data = Vec::new();
-        data.extend_from_slice(&20u16.to_be_bytes()); // list_len
-        data.push(0x00); // name type
-        data.extend_from_slice(&15u16.to_be_bytes()); // declared name_len
-        data.extend_from_slice(b"example.co"); // only 10 chars
-
-        // With allow_partial=false, returns None
-        let result = parse_sni_extension(&data, false);
-        assert_eq!(result, None);
-
-        // With allow_partial=true, returns partial SNI
-        let result = parse_sni_extension(&data, true);
-        assert_eq!(result, Some("example.co[PARTIAL]".to_string()));
     }
 
     #[test]

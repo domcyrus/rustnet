@@ -1,0 +1,32 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                            ● eth0
+────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────
+Sockets   Interfaces   DNS   Diagnostics                                                            
+───────────────────────━━━──────────────────────────────────────────────────────────────────────────
+▎ DNS Outcomes (since startup) ─────────────────────────────────────────────────────────────────────
+Status failing                                                                                      
+Lookups 3   answered 3   pending 0   timeout 0                                                      
+NOERROR 0   NXDOMAIN 0   NODATA 0                                                                   
+SERVFAIL 3   REFUSED 0   other 0                                                                    
+Response time  ~p50 10ms   ~p95 10ms   max 10ms                                                     
+                                                                                                    
+▎ Resolver Evidence (since startup) ────────────────────────────────────────────────────────────────
+SERVFAIL: resolver could not answer; check its upstream path and DNSSEC.                            
+1.1.1.1:53 failing  fail 3/3  wait 0  retry 0  ~p95 10ms                                            
+Recent issues (15m, 0/0 groups, 0 retained)                                                         
+No retained DNS issues.                                                                             
+                                                                                                    
+▎ Question Names (since startup)  sort: lookups ────────────────────────────────────────────────────
+Question                                       Type        Lookups   NXDOMAIN  Failures       ~p95  
+session.example                                A                 3          0         3       10ms  
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ v/V section  w window  o sort  esc back                                             h help  q quit

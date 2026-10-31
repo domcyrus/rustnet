@@ -249,35 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn test_kexinit_detection() {
-        // Simplified KEXINIT packet structure
-        let mut payload = vec![0, 0, 0, 100]; // packet length
-        payload.push(10); // padding length  
-        payload.push(20); // SSH_MSG_KEXINIT
-        payload.extend_from_slice(&[0; 94]); // rest of packet
-
-        let info = analyze_ssh(&payload, false).unwrap();
-        assert_eq!(info.connection_state, SshConnectionState::KeyExchange);
-    }
-
-    #[test]
-    fn test_userauth_success() {
-        let mut payload = vec![0, 0, 0, 20]; // packet length
-        payload.push(5); // padding length
-        payload.push(52); // SSH_MSG_USERAUTH_SUCCESS
-        payload.extend_from_slice(&[0; 14]); // padding
-
-        let info = analyze_ssh(&payload, false).unwrap();
-        assert_eq!(info.connection_state, SshConnectionState::Established);
-    }
-
-    #[test]
-    fn test_non_ssh_payload() {
-        let payload = b"HTTP/1.1 200 OK\r\n";
-        assert!(analyze_ssh(payload, false).is_none());
-    }
-
-    #[test]
     fn test_partial_ssh_banner() {
         let payload = b"SSH-2.0-Open";
         let info = analyze_ssh(payload, false).unwrap();

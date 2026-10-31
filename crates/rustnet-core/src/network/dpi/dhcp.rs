@@ -140,39 +140,41 @@ mod tests {
     }
 
     #[test]
-    fn test_dhcp_discover() {
+    fn test_dhcp_message_types() {
         let mac = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
-        let packet = build_dhcp_packet(1, Some("myhost"), &mac);
-        let info = analyze_dhcp(&packet).expect("should parse");
-        assert_eq!(info.message_type, DhcpMessageType::Discover);
-        assert_eq!(info.hostname, Some("myhost".to_string()));
-        assert_eq!(info.client_mac, Some("aa:bb:cc:dd:ee:ff".to_string()));
+        for (code, expected, hostname) in [
+            (1, DhcpMessageType::Discover, Some("myhost")),
+            (2, DhcpMessageType::Offer, None),
+            (3, DhcpMessageType::Request, Some("workstation-01")),
+            (5, DhcpMessageType::Ack, None),
+            (7, DhcpMessageType::Release, None),
+            (8, DhcpMessageType::Inform, Some("printer")),
+        ] {
+            let packet = build_dhcp_packet(code, hostname, &mac);
+            let info = analyze_dhcp(&packet).expect("valid DHCP message");
+            assert_eq!(info.message_type, expected, "message {code}");
+            assert_eq!(info.hostname.as_deref(), hostname, "message {code}");
+            assert_eq!(
+                info.client_mac.as_deref(),
+                Some("aa:bb:cc:dd:ee:ff"),
+                "message {code}"
+            );
+        }
     }
 
     #[test]
-    fn test_dhcp_offer() {
-        let mac = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
-        let packet = build_dhcp_packet(2, None, &mac);
-        let info = analyze_dhcp(&packet).expect("should parse");
-        assert_eq!(info.message_type, DhcpMessageType::Offer);
-        assert!(info.hostname.is_none());
-    }
-
-    #[test]
-    fn test_dhcp_request() {
-        let mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-        let packet = build_dhcp_packet(3, Some("workstation-01"), &mac);
-        let info = analyze_dhcp(&packet).expect("should parse");
-        assert_eq!(info.message_type, DhcpMessageType::Request);
-        assert_eq!(info.hostname, Some("workstation-01".to_string()));
-    }
-
-    #[test]
-    fn test_dhcp_ack() {
-        let mac = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let packet = build_dhcp_packet(5, None, &mac);
-        let info = analyze_dhcp(&packet).expect("should parse");
-        assert_eq!(info.message_type, DhcpMessageType::Ack);
+    fn test_dhcp_client_mac_formatting() {
+        for (mac, expected) in [
+            ([0x11, 0x22, 0x33, 0x44, 0x55, 0x66], "11:22:33:44:55:66"),
+            ([0, 0x11, 0x22, 0x33, 0x44, 0x55], "00:11:22:33:44:55"),
+            ([0, 0, 0, 0, 0, 1], "00:00:00:00:00:01"),
+            ([0xde, 0xad, 0xbe, 0xef, 0, 1], "de:ad:be:ef:00:01"),
+            ([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc], "12:34:56:78:9a:bc"),
+        ] {
+            let packet = build_dhcp_packet(1, None, &mac);
+            let info = analyze_dhcp(&packet).expect("valid DHCP message");
+            assert_eq!(info.client_mac.as_deref(), Some(expected), "{mac:?}");
+        }
     }
 
     #[test]
@@ -186,22 +188,5 @@ mod tests {
         let mut packet = vec![0u8; 250];
         packet[236..240].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]); // Wrong cookie
         assert!(analyze_dhcp(&packet).is_none());
-    }
-
-    #[test]
-    fn test_dhcp_release() {
-        let mac = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01];
-        let packet = build_dhcp_packet(7, None, &mac);
-        let info = analyze_dhcp(&packet).expect("should parse");
-        assert_eq!(info.message_type, DhcpMessageType::Release);
-    }
-
-    #[test]
-    fn test_dhcp_inform() {
-        let mac = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc];
-        let packet = build_dhcp_packet(8, Some("printer"), &mac);
-        let info = analyze_dhcp(&packet).expect("should parse");
-        assert_eq!(info.message_type, DhcpMessageType::Inform);
-        assert_eq!(info.hostname, Some("printer".to_string()));
     }
 }

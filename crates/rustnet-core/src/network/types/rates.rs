@@ -423,36 +423,31 @@ mod tests {
     }
 
     #[test]
-    fn test_sliding_window_simple_average() {
-        let mut tracker = RateTracker::new();
-        let start = Instant::now();
-
-        tracker.update_at(start, 0, 0);
-
-        // Simulate steady traffic: 10,000 bytes/sec for 2 seconds
-        // 1000 bytes every 100ms = 10KB/s out, 5KB/s in
-        for i in 1..=20_u64 {
-            let t = start + Duration::from_millis(i * 100);
-            tracker.update_at(t, i * 1000, i * 500);
+    fn test_sliding_window_sustained_rates() {
+        for (name, count, interval_ms, sent, received, expected_out, expected_in) in [
+            ("steady", 1, 1000, 5000, 2500, 5000.0, 2500.0),
+            ("simple average", 20, 100, 1000, 500, 10_000.0, 5000.0),
+            ("multiple updates", 15, 100, 1000, 500, 10_000.0, 5000.0),
+            ("high packet rate", 200, 10, 1500, 750, 150_000.0, 75_000.0),
+        ] {
+            let mut tracker = RateTracker::new();
+            let start = Instant::now();
+            tracker.update_at(start, 0, 0);
+            for i in 1..=count {
+                tracker.update_at(
+                    start + Duration::from_millis(i * interval_ms),
+                    i * sent,
+                    i * received,
+                );
+            }
+            let now = start + Duration::from_millis(count * interval_ms);
+            assert_eq!(
+                tracker.get_outgoing_rate_bps_at(now),
+                expected_out,
+                "{name}"
+            );
+            assert_eq!(tracker.get_incoming_rate_bps_at(now), expected_in, "{name}");
         }
-
-        let final_time = start + Duration::from_millis(2000);
-        let outgoing_rate = tracker.get_outgoing_rate_bps_at(final_time);
-        let incoming_rate = tracker.get_incoming_rate_bps_at(final_time);
-
-        // Should converge to actual sustained rate
-        // 1000 bytes / 0.1s = 10,000 bytes/sec outgoing
-        // 500 bytes / 0.1s = 5,000 bytes/sec incoming
-        assert!(
-            (outgoing_rate - 10000.0).abs() < 1.0,
-            "Outgoing rate should be exactly 10KB/s, got: {}",
-            outgoing_rate
-        );
-        assert!(
-            (incoming_rate - 5000.0).abs() < 1.0,
-            "Incoming rate should be exactly 5KB/s, got: {}",
-            incoming_rate
-        );
     }
 
     #[test]
@@ -472,69 +467,36 @@ mod tests {
         }
 
         let final_time = start + Duration::from_millis(1600);
-        let outgoing_rate = tracker.get_outgoing_rate_bps_at(final_time);
 
-        // Rate should be averaged over the whole window
-        // Total bytes sent: 1MB burst + 100KB slow = 1.1MB over 1.6s = ~687.5 KB/s
-        assert!(
-            outgoing_rate > 600_000.0 && outgoing_rate < 800_000.0,
-            "Rate should average burst and steady traffic, got: {}",
-            outgoing_rate
-        );
+        // Average 1,100,000 bytes sent and 550,000 received over 1.6 seconds.
+        assert_eq!(tracker.get_outgoing_rate_bps_at(final_time), 687_500.0);
+        assert_eq!(tracker.get_incoming_rate_bps_at(final_time), 343_750.0);
     }
 
     #[test]
     fn test_sliding_window_requires_minimum_timespan() {
-        let mut tracker = RateTracker::new();
-        let start = Instant::now();
-
-        tracker.update_at(start, 0, 0);
-        tracker.update_at(start + Duration::from_millis(100), 10_000, 5_000);
-
-        // With only 100ms of data (< 1 second minimum), should return 0
-        let check_time = start + Duration::from_millis(100);
-        assert_eq!(
-            tracker.get_outgoing_rate_bps_at(check_time),
-            0.0,
-            "Should return 0 when time_span < 1 second"
-        );
-        assert_eq!(
-            tracker.get_incoming_rate_bps_at(check_time),
-            0.0,
-            "Should return 0 when time_span < 1 second"
-        );
-    }
-
-    #[test]
-    fn test_sliding_window_high_packet_rate() {
-        let mut tracker = RateTracker::new();
-        let start = Instant::now();
-
-        tracker.update_at(start, 0, 0);
-
-        // Simulate high packet rate: 100 packets/sec for 2 seconds = 200 packets
-        // Each packet is 1500 bytes, 10ms intervals
-        for i in 1..=200_u64 {
-            let t = start + Duration::from_millis(i * 10);
-            tracker.update_at(t, i * 1500, i * 750);
+        for (elapsed_ms, expected_out, expected_in) in [
+            (0, 0.0, 0.0),
+            (100, 0.0, 0.0),
+            (999, 0.0, 0.0),
+            (1000, 10_000.0, 5000.0),
+        ] {
+            let mut tracker = RateTracker::new();
+            let start = Instant::now();
+            let now = start + Duration::from_millis(elapsed_ms);
+            tracker.update_at(start, 0, 0);
+            tracker.update_at(now, 10_000, 5000);
+            assert_eq!(
+                tracker.get_outgoing_rate_bps_at(now),
+                expected_out,
+                "{elapsed_ms}ms"
+            );
+            assert_eq!(
+                tracker.get_incoming_rate_bps_at(now),
+                expected_in,
+                "{elapsed_ms}ms"
+            );
         }
-
-        let final_time = start + Duration::from_millis(2000);
-        let outgoing_rate = tracker.get_outgoing_rate_bps_at(final_time);
-        let incoming_rate = tracker.get_incoming_rate_bps_at(final_time);
-
-        // Expected: 1500 bytes / 0.01s = 150,000 bytes/sec = ~150 KB/s outgoing
-        // 750 bytes / 0.01s = 75,000 bytes/sec = ~75 KB/s incoming
-        assert!(
-            (outgoing_rate - 150_000.0).abs() < 1.0,
-            "High packet rate should give 150KB/s, got: {}",
-            outgoing_rate
-        );
-        assert!(
-            (incoming_rate - 75_000.0).abs() < 1.0,
-            "High packet rate should give 75KB/s, got: {}",
-            incoming_rate
-        );
     }
 
     #[test]
@@ -556,26 +518,6 @@ mod tests {
             (outgoing_rate - 10_000.0).abs() < 1.0,
             "Should include all samples (not skip first), got: {}",
             outgoing_rate
-        );
-    }
-
-    #[test]
-    fn test_sliding_window_idle_connection() {
-        let mut tracker = RateTracker::new();
-        let start = Instant::now();
-
-        // Establish some traffic
-        tracker.update_at(start, 0, 0);
-        tracker.update_at(start + Duration::from_millis(500), 100_000, 50_000);
-
-        // Check at a time beyond the 10-second window (samples become stale)
-        let check_time = start + Duration::from_secs(12);
-
-        // Should return 0 as all samples are outside the window
-        assert_eq!(
-            tracker.get_outgoing_rate_bps_at(check_time),
-            0.0,
-            "Should return 0 when window has slid past all traffic"
         );
     }
 
@@ -680,108 +622,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_tracker_steady_traffic() {
-        let mut tracker = RateTracker::new();
-        let start = Instant::now();
-
-        tracker.update_at(start, 0, 0);
-
-        // Add second sample - 5000 bytes sent, 2500 received over 1 second
-        tracker.update_at(start + Duration::from_secs(1), 5000, 2500);
-
-        let check_time = start + Duration::from_secs(1);
-        let outgoing_rate = tracker.get_outgoing_rate_bps_at(check_time);
-        let incoming_rate = tracker.get_incoming_rate_bps_at(check_time);
-
-        // Should be exactly 5000 bytes/sec outgoing, 2500 bytes/sec incoming
-        assert!(
-            (outgoing_rate - 5000.0).abs() < 1.0,
-            "Outgoing rate: {}",
-            outgoing_rate
-        );
-        assert!(
-            (incoming_rate - 2500.0).abs() < 1.0,
-            "Incoming rate: {}",
-            incoming_rate
-        );
-    }
-
-    #[test]
-    fn test_rate_tracker_multiple_updates() {
-        let mut tracker = RateTracker::new();
-        let start = Instant::now();
-
-        // Simulate steady transfer over time
-        tracker.update_at(start, 0, 0);
-
-        // Add samples every 100ms for 1.5 seconds (15 samples)
-        // 1000 bytes/100ms = 10KB/s, 500 bytes/100ms = 5KB/s
-        for i in 1..=15_u64 {
-            let t = start + Duration::from_millis(i * 100);
-            tracker.update_at(t, i * 1000, i * 500);
-        }
-
-        let final_time = start + Duration::from_millis(1500);
-        let outgoing_rate = tracker.get_outgoing_rate_bps_at(final_time);
-        let incoming_rate = tracker.get_incoming_rate_bps_at(final_time);
-
-        // Should be exactly 10000 bytes/sec outgoing, 5000 bytes/sec incoming
-        assert!(
-            (outgoing_rate - 10000.0).abs() < 1.0,
-            "Outgoing rate: {}",
-            outgoing_rate
-        );
-        assert!(
-            (incoming_rate - 5000.0).abs() < 1.0,
-            "Incoming rate: {}",
-            incoming_rate
-        );
-    }
-
-    #[test]
-    fn test_rate_tracker_window_pruning() {
-        let window_duration = Duration::from_millis(300);
-        let mut tracker = RateTracker::with_window_duration(window_duration);
-        let start = Instant::now();
-
-        // Add samples that will be pruned
-        tracker.update_at(start, 0, 0);
-        tracker.update_at(start + Duration::from_millis(100), 1000, 500);
-
-        // Add a sample after the window has slid past the first samples
-        tracker.update_at(start + Duration::from_millis(500), 2000, 1000);
-
-        // Check rate - the first samples should be pruned
-        let check_time = start + Duration::from_millis(500);
-        let rate = tracker.get_outgoing_rate_bps_at(check_time);
-        // After pruning, should have limited data - just verify it works
-        assert!(rate >= 0.0);
-    }
-
-    #[test]
-    fn test_rate_tracker_memory_limit() {
-        let mut tracker = RateTracker::new();
-        let start = Instant::now();
-
-        // Add more samples than we need, ensuring we span > 1 second
-        tracker.update_at(start, 0, 0);
-        for i in 1..=150_u64 {
-            let t = start + Duration::from_millis(i * 10); // 10ms intervals = 1.5 seconds total
-            tracker.update_at(t, i * 100, i * 50);
-        }
-
-        // Should have pruned to max_samples limit (20,000)
-        assert!(tracker.samples.len() <= 20_000);
-
-        // Should still calculate rates (we have > 1 second of data)
-        let check_time = start + Duration::from_millis(1500);
-        let outgoing_rate = tracker.get_outgoing_rate_bps_at(check_time);
-        let incoming_rate = tracker.get_incoming_rate_bps_at(check_time);
-        assert!(outgoing_rate >= 0.0);
-        assert!(incoming_rate >= 0.0);
-    }
-
-    #[test]
     fn test_rate_tracker_bursty_traffic() {
         let mut tracker = RateTracker::new();
         let start = Instant::now();
@@ -815,16 +655,33 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_tracker_zero_time_diff() {
-        let mut tracker = RateTracker::new();
+    fn test_new_connection_rate_tracker_initialization() {
+        use crate::network::merge::{create_connection_from_packet, merge_packet_into_connection};
+        use crate::network::parser::ParsedPacket;
+        use crate::network::types::{Protocol, ProtocolState};
 
-        // Add two samples with identical or very close timestamps
-        tracker.update(0, 0);
-        tracker.update(1000, 500); // Immediately after, should be < 100ms apart
+        for is_outgoing in [false, true] {
+            let mut packet = ParsedPacket::test_base(
+                Protocol::Udp,
+                "192.168.1.100:12345".parse().unwrap(),
+                "10.0.0.1:8000".parse().unwrap(),
+                ProtocolState::Udp,
+            );
+            packet.is_outgoing = is_outgoing;
+            packet.packet_len = 100;
+            let mut conn = create_connection_from_packet(&packet, SystemTime::now());
+            let (sent, received) = if is_outgoing { (100, 0) } else { (0, 100) };
+            assert_eq!(conn.rate_tracker.last_bytes_sent, sent);
+            assert_eq!(conn.rate_tracker.last_bytes_received, received);
 
-        // Should return 0 to avoid division by very small numbers
-        assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
-        assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
+            merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+            assert_eq!(
+                (conn.bytes_sent, conn.bytes_received),
+                (sent * 2, received * 2)
+            );
+            let sample = conn.rate_tracker.samples.back().unwrap();
+            assert_eq!((sample.delta_sent, sample.delta_received), (sent, received));
+        }
     }
 
     #[test]

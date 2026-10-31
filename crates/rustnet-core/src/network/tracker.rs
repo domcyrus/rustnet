@@ -48,10 +48,11 @@ use crate::network::merge::{
 };
 use crate::network::neighbors::{NeighborCache, NeighborEntry};
 use crate::network::parser::ParsedPacket;
+use crate::network::time_window::TimeWindow;
 use crate::network::types::{
     ApplicationProtocol, AttributionSource, Connection, ConnectionKey, ConnectionObservation,
-    NetworkEventCounts, NetworkEventKind, Protocol, ProtocolState, QuicPacketType,
-    RequestHealthEvents, RttTracker,
+    NetworkEventCounts, NetworkEventHistory, NetworkEventKind, NetworkEventSnapshot, Protocol,
+    ProtocolState, QuicPacketType, RequestHealthEvents, RttTracker,
 };
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
@@ -352,7 +353,7 @@ pub struct ConnectionTracker {
     lifecycle: RwLock<()>,
     rtt: Mutex<RttTracker>,
     dns_analytics: Mutex<DnsAnalyticsTracker>,
-    network_events: Mutex<NetworkEventCounts>,
+    network_events: Mutex<NetworkEventHistory>,
     quic_map: Mutex<HashMap<String, ConnectionKey>>,
     recently_closed: Mutex<HashMap<ConnectionKey, SystemTime>>,
     config: TrackerConfig,
@@ -387,7 +388,7 @@ impl ConnectionTracker {
             lifecycle: RwLock::new(()),
             rtt: Mutex::new(RttTracker::new()),
             dns_analytics: Mutex::new(DnsAnalyticsTracker::default()),
-            network_events: Mutex::new(NetworkEventCounts::default()),
+            network_events: Mutex::new(NetworkEventHistory::default()),
             quic_map: Mutex::new(HashMap::new()),
             recently_closed: Mutex::new(HashMap::new()),
             config,
@@ -427,13 +428,7 @@ impl ConnectionTracker {
             && let ApplicationProtocol::Dns(dns) = &dpi.application
             && let Ok(mut analytics) = self.dns_analytics.lock()
         {
-            analytics.record_packet(
-                parsed.connection_key(),
-                dns,
-                parsed.is_outgoing,
-                now,
-                timings.dns_response_time,
-            );
+            analytics.record_packet(parsed.connection_key(), dns, parsed.is_outgoing, now);
         }
 
         // Passive DNS attribution: record answered A/AAAA mappings and collect
@@ -540,7 +535,7 @@ impl ConnectionTracker {
         self.network_events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record(kind, parsed.is_outgoing);
+            .record(kind, parsed.is_outgoing, now);
 
         if let Some(error) = &parsed.icmp_error
             && let Some(key) = error.quoted_connection
@@ -1158,13 +1153,35 @@ impl ConnectionTracker {
             .snapshot(now)
     }
 
+    /// Return DNS evidence over the selected window at a supplied capture time.
+    /// The default snapshot methods continue to use 60 seconds for live health.
+    pub fn dns_analytics_snapshot_for_window_at(
+        &self,
+        now: SystemTime,
+        window: TimeWindow,
+    ) -> DnsAnalyticsSnapshot {
+        self.dns_analytics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot_for_window(now, window)
+    }
+
     /// Packet observations since startup or the last clear, independent of
     /// active/historic connection retention and frontend display filters.
     pub fn network_event_counts(&self) -> NetworkEventCounts {
-        *self
-            .network_events
+        self.network_event_snapshot(SystemTime::now(), TimeWindow::SinceStartup)
+            .total
+    }
+
+    pub fn network_event_snapshot(
+        &self,
+        now: SystemTime,
+        window: TimeWindow,
+    ) -> NetworkEventSnapshot {
+        self.network_events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot(now, window)
     }
 
     /// Drop all active and historic connections and reset RTT, DNS, QUIC,
@@ -1177,10 +1194,10 @@ impl ConnectionTracker {
         self.connections.clear();
         self.active_count.store(0, Ordering::Relaxed);
         self.historic.clear();
-        *self
-            .network_events
+        self.network_events
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = NetworkEventCounts::default();
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         if let Ok(mut tracker) = self.rtt.lock() {
             tracker.clear();
         }

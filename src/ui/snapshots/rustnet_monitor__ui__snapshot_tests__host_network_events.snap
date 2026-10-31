@@ -11,15 +11,15 @@ TCP 0   LISTEN 0   ESTAB 0   OPENING 0   CLOSING 0   TIME_WAIT 0   OTHER 0   UDP
 Observed RTT  no samples   Diagnostics: 0 affected connections (v/V)                                                                        
                                                                                                                                             
 ▎ Observed network events ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Captured packets · since startup/clear · capture interface/filter                                                                           
-                                          Sent    Received                                                                                  
-TCP reset                                    1           0                                                                                  
-ICMP port unreachable                        0           1                                                                                  
-ICMP destination unreachable                 0           1                                                                                  
-ICMP administratively prohibited             0           1                                                                                  
-ICMP packet too big / frag needed            0           1                                                                                  
-ICMP time exceeded                           0           1                                                                                  
-ICMP parameter problem                       0           1                                                                                  
+60s / total (since startup) · captured packets                                                                                              
+                                                Sent: window / total  Received: window / total                                              
+TCP reset                                                      1 / 1                     0 / 0                                              
+ICMP port unreachable                                          0 / 0                     0 / 1                                              
+ICMP destination unreachable                                   0 / 0                     0 / 1                                              
+ICMP administratively prohibited                               0 / 0                     0 / 1                                              
+ICMP packet too big / frag needed                              0 / 0                     0 / 1                                              
+ICMP time exceeded                                             0 / 0                     0 / 1                                              
+ICMP parameter problem                                         0 / 0                     0 / 1                                              
                                                                                                                                             
 ▎ Listening and Bound Endpoints  0 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
 Proto   State      Local endpoint                        Peer                                 Service             PID Process               
@@ -31,4 +31,4 @@ Proto   State      Local endpoint                        Peer                   
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- v/V section  esc back                                                                                                       h help  q quit
+ v/V section  w window  esc back                                                                                             h help  q quit

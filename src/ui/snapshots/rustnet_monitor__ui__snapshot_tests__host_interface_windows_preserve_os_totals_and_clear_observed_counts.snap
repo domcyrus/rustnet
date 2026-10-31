@@ -1,0 +1,32 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                            ● eth0
+────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────
+Sockets   Interfaces   DNS   Diagnostics                                                            
+──────────━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────
+▎ Interface Statistics · since clear ───────────────────────────────────────────────────────────────
+Errors/drops/collisions: window / OS total · packets: OS total · rates: live                        
+test0                                                                                               
+RX -  ·  TX -                                                                                       
+Packets: RX 900  TX 800                                                                             
+Errors: RX 0/102  TX 0/200                                                                          
+Drops: RX 0/303  TX 0/400                                                                           
+Collisions: 0/500                                                                                   
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ v/V section  w window  esc back                                                     h help  q quit

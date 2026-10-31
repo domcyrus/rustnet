@@ -6,9 +6,10 @@ expression: output
 ────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────────────────────────────────────────────
 Sockets   Interfaces   DNS   Diagnostics                                                                                                    
 ──────────━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-▎ Interface Statistics ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▎ Interface Statistics · 60s ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Errors/drops/collisions: window / OS total · packets: OS total · rates: live                                                                
 Interface                                  RX Rate      TX Rate RX Packets TX Packets    RX Err    TX Err    RX Drop    TX Drop Collisions  
-eth0                                  512.00 KiB/s 128.00 KiB/s    1200000     800000         0         0         12          0          0  
+eth0                                  512.00 KiB/s 128.00 KiB/s    1200000     800000       0/0       0/0       0/12        0/0        0/0  
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -30,5 +31,4 @@ eth0                                  512.00 KiB/s 128.00 KiB/s    1200000     8
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-                                                                                                                                            
- v/V section  esc back                                                                                                       h help  q quit
+ v/V section  w window  esc back                                                                                             h help  q quit

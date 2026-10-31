@@ -45,12 +45,14 @@ jobs:
     with:
       create-archives: ${{ inputs.create-archives || false }}
       strip-symbols: false
+      artifact-retention-days: 7
       version: test-${{ github.run_id }}
 
   trigger-freebsd-build:
     name: trigger-freebsd-build
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Trigger FreeBSD test build
         run: |

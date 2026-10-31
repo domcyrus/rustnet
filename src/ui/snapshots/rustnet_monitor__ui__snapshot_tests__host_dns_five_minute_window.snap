@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: "render_app(&app, &mut state, &[], None, 80, 24)"
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
+────────────────────────────────────────────────────────────━━━━━━──────────────
+Sockets   Interfaces   DNS   Diagnostics                                        
+───────────────────────━━━──────────────────────────────────────────────────────
+▎ DNS Outcomes (5m) ────────────────────────────────────────────────────────────
+Status degraded                                                                 
+Lookups 5   answered 5   pending 0   timeout 0                                  
+NOERROR 3   NXDOMAIN 1   NODATA 0                                               
+SERVFAIL 1   REFUSED 0   other 0                                                
+Response time  p50 45ms   p95 220ms   max 220ms                                 
+                                                                                
+▎ Resolver Evidence (5m) ───────────────────────────────────────────────────────
+SERVFAIL: resolver could not answer; check its upstream path and DNSSEC.        
+1.1.1.1:53 degraded  fail 1/5  wait 0  retry 0  p95 220ms                       
+Recent issues (15m, 1/1 groups, 1 retained)                                     
+1.1.1.1:53 SERVFAIL x1  1s ago  registry.example.com                            
+                                                                                
+▎ Question Names (5m)  sort: lookups ───────────────────────────────────────────
+Question                                                  Lookups    NX   Fail  
+api.example.com                                                 1     0      0 ▐
+cdn.example.com                                                 1     0      0 ▐
+missing.example.com                                             1     1      0 ▐
+registry.example.com                                            1     0      1  
+ v/V section  j/k scroll  w window  o sort  esc back             h help  q quit

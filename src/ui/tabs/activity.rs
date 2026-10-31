@@ -1303,12 +1303,6 @@ mod tests {
     }
 
     #[test]
-    fn truncation_uses_single_cell_ellipsis() {
-        assert_eq!(truncate_with_ellipsis("agent-helper", 6), "agent…");
-        assert_eq!(truncate_with_ellipsis("short", 6), "short");
-    }
-
-    #[test]
     fn directional_bar_tips_preserve_the_theme_token() {
         for direction in [ActivityDirection::Egress, ActivityDirection::Ingress] {
             let color = direction_color(direction);

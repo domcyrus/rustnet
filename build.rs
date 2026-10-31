@@ -124,8 +124,14 @@ fn download_windows_npcap_sdk() -> Result<()> {
     const NPCAP_SDK_SHA256: &str =
         "52c7b9fb4abee3ad9fe739bb545c3efe77b731c8e127122bdf328eafdae3ed4f";
 
-    // Use libpcap's mirror while retaining the pinned archive checksum.
-    let npcap_sdk_download_url = format!("https://www.tcpdump.org/depends/{NPCAP_SDK}");
+    let npcap_sdk_download_url = format!("https://npcap.com/dist/{NPCAP_SDK}");
+    // The tcpdump project's byte-identical SDK mirror avoids making Windows
+    // builds depend on npcap.com's TLS availability. Pin the mirror revision;
+    // both sources must still pass the same checksum below.
+    let npcap_sdk_mirror_url = format!(
+        "https://raw.githubusercontent.com/the-tcpdump-group/tcpdump-htdocs/\
+         f5712b53248430a38938b045b692a9611344d9c8/depends/{NPCAP_SDK}"
+    );
     let cache_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("target");
     let npcap_sdk_cache_path = cache_dir.join(NPCAP_SDK);
 
@@ -139,7 +145,12 @@ fn download_windows_npcap_sdk() -> Result<()> {
             eprintln!("Downloading npcap SDK");
 
             let mut zip_data = vec![];
-            let _res = http_req::request::get(npcap_sdk_download_url, &mut zip_data)?;
+            if let Err(error) = http_req::request::get(npcap_sdk_download_url, &mut zip_data) {
+                eprintln!("Npcap SDK download failed ({error}); trying the pinned tcpdump mirror");
+                // A failed request may have written a partial response.
+                zip_data.clear();
+                http_req::request::get(npcap_sdk_mirror_url, &mut zip_data)?;
+            }
 
             verify_npcap_checksum(&zip_data)?;
 

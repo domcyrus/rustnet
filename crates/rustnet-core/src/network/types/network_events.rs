@@ -89,6 +89,58 @@ impl NetworkEventCounts {
     }
 }
 
+/// Selected-window observations alongside the cumulative Rustnet total.
+#[derive(Debug, Clone)]
+pub struct NetworkEventSnapshot {
+    pub selected: NetworkEventCounts,
+    pub total: NetworkEventCounts,
+    pub since_clear: bool,
+}
+
+const NETWORK_EVENT_COUNTERS: usize = NetworkEventKind::ALL.len() * 2;
+
+#[derive(Debug, Default)]
+pub(crate) struct NetworkEventHistory {
+    history: super::super::time_window::CounterHistory<NETWORK_EVENT_COUNTERS>,
+}
+
+impl NetworkEventHistory {
+    pub fn record(&mut self, kind: NetworkEventKind, outgoing: bool, now: SystemTime) {
+        let mut delta = [0; NETWORK_EVENT_COUNTERS];
+        delta[kind as usize * 2 + usize::from(!outgoing)] = 1;
+        self.history.record(now, delta);
+    }
+
+    pub fn snapshot(
+        &self,
+        now: SystemTime,
+        window: super::super::time_window::TimeWindow,
+    ) -> NetworkEventSnapshot {
+        use super::super::time_window::TimeWindow;
+        let convert = |values: [u64; NETWORK_EVENT_COUNTERS]| NetworkEventCounts {
+            counts: std::array::from_fn(|index| DirectionalCount {
+                sent: values[index * 2],
+                received: values[index * 2 + 1],
+            }),
+        };
+        NetworkEventSnapshot {
+            selected: convert(self.history.counts(now, window)),
+            total: convert(self.history.counts(now, TimeWindow::SinceStartup)),
+            since_clear: self.history.since_clear,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.history.clear();
+    }
+}
+
+impl NetworkEventCounts {
+    pub fn get(&self, kind: NetworkEventKind) -> DirectionalCount {
+        self.counts[kind as usize]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IcmpError {
     pub ipv6: bool,
@@ -163,5 +215,47 @@ mod tests {
         ] {
             assert_eq!(NetworkEventKind::from_icmp(ipv6, message_type, 0), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use crate::network::time_window::TimeWindow;
+    use std::time::Duration;
+
+    #[test]
+    fn selected_events_expire_but_totals_remain_until_clear() {
+        let mut history = NetworkEventHistory::default();
+        let start = SystemTime::UNIX_EPOCH;
+        history.record(NetworkEventKind::TcpReset, true, start);
+        history.record(
+            NetworkEventKind::PortUnreachable,
+            false,
+            start + Duration::from_secs(100),
+        );
+        let snapshot = history.snapshot(start + Duration::from_secs(100), TimeWindow::OneMinute);
+        assert_eq!(snapshot.selected.get(NetworkEventKind::TcpReset).sent, 0);
+        assert_eq!(snapshot.total.get(NetworkEventKind::TcpReset).sent, 1);
+        assert_eq!(
+            snapshot
+                .selected
+                .get(NetworkEventKind::PortUnreachable)
+                .received,
+            1
+        );
+        for window in [
+            TimeWindow::FiveMinutes,
+            TimeWindow::OneHour,
+            TimeWindow::SinceStartup,
+        ] {
+            let snapshot = history.snapshot(start + Duration::from_secs(100), window);
+            assert_eq!(snapshot.selected, snapshot.total);
+        }
+        history.clear();
+        let snapshot = history.snapshot(start + Duration::from_secs(100), TimeWindow::SinceStartup);
+        assert!(snapshot.since_clear);
+        assert_eq!(snapshot.total, NetworkEventCounts::default());
+        assert_eq!(snapshot.selected, snapshot.total);
     }
 }

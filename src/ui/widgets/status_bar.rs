@@ -249,6 +249,7 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             if scroll.can_scroll() {
                 hints.push(Hint::action("j/k", "scroll"));
             }
+            hints.push(Hint::action("w", "window"));
             if ui_state.host_view == HostView::Dns {
                 hints.push(Hint::action("o", "sort"));
             }

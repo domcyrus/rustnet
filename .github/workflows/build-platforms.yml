@@ -18,6 +18,10 @@ on:
         description: 'Version string for archive naming (e.g., v0.3.0)'
         type: string
         default: ''
+      artifact-retention-days:
+        description: 'Artifact retention in days; 0 uses the repository default'
+        type: number
+        default: 0
 
 env:
   RUST_BACKTRACE: 1
@@ -30,6 +34,7 @@ jobs:
       contents: read
     name: build-${{ matrix.build }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -100,6 +105,7 @@ jobs:
         if: contains(matrix.target, 'linux-gnu')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: deb-${{ matrix.target }}
           path: rustnet.deb
           if-no-files-found: error
@@ -113,6 +119,7 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-${{ matrix.build }}
           path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
           if-no-files-found: error
@@ -132,6 +139,7 @@ jobs:
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
@@ -141,6 +149,7 @@ jobs:
       contents: read
     name: build-${{ matrix.build }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -213,6 +222,7 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-${{ matrix.build }}
           path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
           if-no-files-found: error
@@ -232,6 +242,7 @@ jobs:
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
@@ -242,6 +253,7 @@ jobs:
       contents: read
     name: test-${{ matrix.build }}
     runs-on: windows-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -304,6 +316,7 @@ jobs:
       contents: read
     name: build-linux-static-${{ matrix.arch }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -424,6 +437,7 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-linux-static-${{ matrix.arch }}
           path: ${{ matrix.bin }}
           if-no-files-found: error
@@ -442,6 +456,7 @@ jobs:
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
@@ -455,6 +470,7 @@ jobs:
       contents: read
     name: build-linux-static-${{ matrix.arch }}
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -478,7 +494,7 @@ jobs:
 
       # Cache the container's Cargo paths, not the host's unrelated toolchain.
       - name: Cache container Cargo builds
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             target
@@ -517,6 +533,7 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-linux-static-${{ matrix.arch }}
           path: target/release/rustnet
           if-no-files-found: error
@@ -535,6 +552,7 @@ jobs:
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error

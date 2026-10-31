@@ -1085,7 +1085,7 @@ For a quick security review, sort Egress by the rolling or retained byte count, 
 
 Unreleased diagnostics appear before the connection cards in Details. At most three findings summarize observed evidence or possible causes. Press `d` to expand observation status in Health. Transport Health keeps captured RTT/retransmissions separate from kernel measurements. When the full dashboard does not fit, use the existing section controls to reach Health and Traffic.
 
-Host > Diagnostics puts findings and collection coverage before socket measurements. Rows include process names and label receive/send queues as queued bytes, not traffic totals. Fresh empty queue-only sockets are hidden by default; press `a` for **Show all sockets** or to hide them again. TCP statistics, socket drop counts, and stale samples remain visible. Use `n`/`p` to select an affected connection and Enter to open Details; `j`/`k` scroll the report. Internal socket IDs appear in Details under Observation status (`d`) and remain in JSON. Host > Sockets retains its inventory and links to diagnostics through the section controls.
+Host > Diagnostics puts findings and collection coverage before socket measurements. Rows include process names and label receive/send queues as queued bytes, not traffic totals. Fresh empty queue-only sockets are hidden by default; press `a` for **Show all sockets** or to hide them again. TCP statistics, socket drop counts, and stale samples remain visible. Use `n`/`p` to select an affected connection and Enter to open Details; `j`/`k` scroll the report. Press `w` to cycle the shared Host window for captured network events; native socket samples and drop-reason totals keep their own scope. Internal socket IDs appear in Details under Observation status (`d`) and remain in JSON. Host > Sockets retains its inventory and links to diagnostics through the section controls.
 
 On Linux, the existing five-second procfs scan supplies TCP queue bytes, UDP socket-buffer memory, and UDP lifetime socket-drop counters. Listener backlog is not displayed as byte queues. Shared/unconnected UDP counters remain at Host scope. Connection matching requires unique canonical endpoints and a verified namespace, then pins the socket identity. The first association is best effort: tuple reuse before that sample cannot prove that the native socket belongs to the original captured session. A socket drop counter does not identify a firewall or application cause and must not be added to reasoned event counts. Connection findings use differences between distinct samples; the first sample establishes a baseline. Three consecutive fresh nonempty TCP receive queues produce an observation with an unknown cause. The queue can include a pending EOF, so this does not diagnose slow application consumption. Samples older than 15 seconds are marked stale and stop supporting current queue findings.
 
@@ -1147,17 +1147,27 @@ Details > Health shows counts and the latest error's type/code, reporter, direct
 age, and advertised MTU when available. TCP/UDP correlation uses quoted endpoints
 without changing connection state or traffic totals. Truncated quotes, fragments,
 IPv6 extensions, NAT, or missing/reused connections can prevent or confuse matching.
-Unmatched errors still count in Host; no error history is retained.
+Unmatched errors still count in Host; individual error records are not retained.
+
+### Host timeframes (development version)
+
+Press `w` in any Host section to cycle **60s / 5m / 1h / since startup**. The selection is shared by Sockets, Interfaces, DNS, and captured network events in Diagnostics. Socket inventory and interface rates remain live.
+
+- **Network events:** sent and received counts show the selected window alongside the cumulative Rustnet total since startup or clear, including event types whose selected-window count is zero.
+- **Interfaces:** errors, drops, and collisions show `window/OS total`. Only increases observed after the first interface sample enter the selected window. OS totals and packet totals remain visible; existing OS errors are not counted as new errors. Highlighting follows the selected window.
+- `x` resets Rustnet's histories and cumulative counts, changes the session label to **since clear**, and establishes fresh interface baselines on the next post-clear poll. Samples collected before the clear are ignored. It does not reset OS totals. A decreasing OS counter starts a new counter epoch; disappearing interfaces lose their history and reappearing interfaces establish a new baseline.
+
+Event and interface histories use bounded one-second buckets. Counts near a rolling cutoff can remain visible for up to one extra second. Interface increments are assigned to the poll that observes them, so the exact time within a polling interval is unknown. The session choice covers observed data, including interfaces first seen after startup.
 
 ## Passive DNS Analytics
 
-Press `5` for Host, then select DNS with `v` / Shift+`v` or click its name. The view summarizes captured unicast UDP DNS traffic over a rolling 60-second window:
+Press `5` for Host, then select DNS with `v` / Shift+`v` or click its name. The view summarizes captured unicast UDP DNS traffic over a rolling 60-second window. **Development version:** press `w` to cycle through 60 seconds, 5 minutes, 1 hour, and since startup. Outcomes, latency, resolver evidence, and question names use the selected window; Overview always keeps its 60-second health window:
 
 - **Outcomes**: lookup, answer, pending, timeout, NOERROR, NXDOMAIN, NODATA, SERVFAIL, REFUSED, and other response-code counts
 - **Response time**: p50, p95, maximum, and latency buckets for responses paired by connection and transaction ID
 - **Question names**: normalized query name and type with lookup, NXDOMAIN, failure, and p95 latency totals
 
-Queries become timeouts after 10 seconds without a matching response. A retransmitted query with the same connection and transaction ID remains one logical lookup and restarts that timeout. Press `o` to sort question names by lookups, NXDOMAIN, failures, or p95 latency. The up/down arrow keys, Page Up, Page Down, and mouse wheel scroll the table.
+Queries become timeouts after 10 seconds without a matching response. A retransmitted query with the same connection and transaction ID remains one logical lookup and restarts that timeout. **Development version:** retries and the oldest pending age are shown per resolver, and analytics latency measures from the first observed attempt, including retry delays. Press `o` to sort question names by lookups, NXDOMAIN, failures, or p95 latency. The up/down arrow keys, Page Up, Page Down, and mouse wheel scroll the table.
 
 The DNS health state uses enough recent evidence to avoid alarming on a single packet:
 
@@ -1168,9 +1178,27 @@ The DNS health state uses enough recent evidence to avoid alarming on a single p
 - `failing`: at least three completed lookups produced no NOERROR or NXDOMAIN response
 - `no replies`: no response was captured and at least three lookups timed out
 
+**Development version:** health is also evaluated per observed resolver. If any resolver is degraded, failing, or has no replies, an otherwise responsive overall status becomes `degraded`, so a busy healthy server cannot hide a failing secondary server.
+
 NXDOMAIN is a valid resolver response, so it does not by itself make DNS unhealthy. Operational failures include SERVFAIL, REFUSED, other response codes, and timeouts.
 
 This is passive evidence, not an active DNS probe. DNS over HTTPS, DNS over TLS, cached answers, and traffic not present on the selected capture interface are not visible. Missing replies can also indicate capture loss or asymmetric routing. If capture stops, Overview reports DNS health as unknown. Pressing `x` to clear captured state also resets these DNS aggregates.
+
+### Resolver evidence (unreleased)
+
+Host > DNS shows observed resolver addresses with separate health, failures/finalized lookups, pending queries (`wait`), repeated queries (`retry`), and oldest pending age or p95 latency. Problematic resolvers appear first. Depending on terminal height, two or three resolver rows are shown; an additional count indicates omitted rows.
+
+The three rolling windows share a bounded buffer of up to 8,192 completed transactions and 4,096 pending queries. A `sampled` indicator means capacity pressure omitted evidence from the selected window; at high query rates, the selected duration of complete detail may not fit. Switching windows does not clear data, and data is collected only while RustNet is capturing.
+
+**Since startup** uses cumulative outcome counts for all tracked transactions, even after rolling details expire or are evicted. It retains cumulative detail for the first 128 resolver endpoints and 1,024 question-name/type pairs; `details limited` indicates that additional detail was omitted while overall totals continue. Session p50/p95 values (including per-question and per-resolver p95) use bounded histograms and are marked `~` as estimates. Counts, maximum latency, and the four latency buckets remain exact for tracked transactions; health uses exact slow-response threshold counts. `sampled` still indicates queries lost to tracking limits. Pressing `x` resets these totals and changes the label to **since clear**. This is session history, not current health; Overview continues to show the last 60 seconds.
+
+The view retains up to 64 individual timeout, SERVFAIL, REFUSED, other error, or slow-reply (at least 500 ms) observations for 15 minutes. Recent issues group those retained observations by resolver and cause, newest first, with a count, last-seen age, and the latest question name. Counts cover only retained observations, and the heading shows how many groups fit. This history survives the 60-second health window and does not imply an outage is still ongoing. `x` clears it together with the live aggregates.
+
+Guidance distinguishes missing replies, resolver errors, refused queries, retries, and slow replies. Missing packets cannot prove a resolver outage: inspect Host > Sockets for ICMP errors and Host > Interfaces for errors/drops, and check capture scope. When capture fails, Host displays `unknown` rather than continuing to claim live resolver health.
+
+On Linux, `sudo rustnet -i any --no-resolve-dns` includes loopback DNS stubs as well as upstream traffic. `127.0.0.53:53` is commonly a local systemd-resolved stub; loopback resolvers such as `127.0.0.1:53` and `[::1]:53` are supported. Capturing only a physical interface misses local stub exchanges. If both stub and upstream traffic are visible, they are separate wire transactions, not unique application lookups. `resolvectl status` can identify configured per-link servers when systemd-resolved is in use; RustNet's list contains only observed endpoints. The host configuration is not changed and no active probes are sent.
+
+These diagnostics cover unicast UDP DNS. They cannot establish success of TCP fallback, encrypted DNS, cached or `/etc/hosts` answers, or requests made through NSS/D-Bus without a DNS packet. macOS resolver activity can likewise be hidden by caching or attributed to mDNSResponder; captured unicast UDP DNS still provides resolver-level evidence.
 
 ## Interface Statistics
 
@@ -1198,18 +1226,18 @@ RustNet provides real-time network interface statistics across all supported pla
 | **TX Rate** | Current transmit rate (bytes/sec) | Calculated from recent activity |
 | **RX Packets** | Total packets received | Cumulative since boot/interface up |
 | **TX Packets** | Total packets transmitted | Cumulative since boot/interface up |
-| **RX Err** | Receive errors | Cumulative total (not recent) |
-| **TX Err** | Transmit errors | Cumulative total (not recent) |
-| **RX Drop** | Dropped incoming packets | Cumulative total (not recent) |
-| **TX Drop** | Dropped outgoing packets | Cumulative total (not recent) |
+| **RX Err** | Receive errors | OS cumulative total; development Host also shows window increments |
+| **TX Err** | Transmit errors | OS cumulative total; development Host also shows window increments |
+| **RX Drop** | Dropped incoming packets | OS cumulative total; development Host also shows window increments |
+| **TX Drop** | Dropped outgoing packets | OS cumulative total; development Host also shows window increments |
 | **Collisions** | Network collisions | Platform-dependent availability |
 
-**Important**: Error and drop counters are **cumulative totals** since the system booted or the interface came up, not recent activity. These help identify long-term interface reliability but won't show immediate issues.
+**Important**: OS error and drop totals can predate RustNet and cannot establish when a problem occurred. In the **development version**, Host shows selected-window increments alongside these totals; Overview retains cumulative totals.
 
 ### Platform-Specific Behavior
 
 **All Platforms:**
-- All counters (bytes, packets, errors, drops) are cumulative from boot/interface up
+- Underlying OS counters (bytes, packets, errors, drops) are cumulative; development Host window counts are differences between observations
 - Rates (bytes/sec) are calculated from snapshots taken every 500ms
 - Loopback interface is included for monitoring local traffic
 
@@ -1254,7 +1282,7 @@ High error/drop counts may indicate:
 - Network congestion
 - Driver or hardware problems
 
-**Note**: Since error/drop counters are cumulative, evaluate them relative to total packets. A few errors out of millions of packets is normal; thousands of errors with low packet counts indicates problems.
+**Note**: Evaluate OS error/drop totals relative to total packets. In the development Host view, use the selected-window increments to identify recent changes; the OS packet total covers a different period.
 
 ### Interface Filtering
 

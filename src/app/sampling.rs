@@ -283,6 +283,7 @@ impl App {
 
     pub(super) fn start_interface_stats_thread(&mut self) -> Result<()> {
         let interface_stats = Arc::clone(&self.interface_stats);
+        let interface_errors = Arc::clone(&self.interface_errors);
         let interface_rates = Arc::clone(&self.interface_rates);
         let interface_traffic_windows = Arc::clone(&self.interface_traffic_windows);
         let interface_traffic_history = Arc::clone(&self.interface_traffic_history);
@@ -304,6 +305,7 @@ impl App {
             move || {
                 match provider.get_all_stats() {
                     Ok(stats_vec) => {
+                        interface_errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).observe(&stats_vec);
                         let mut stats_history = interface_traffic_history
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);

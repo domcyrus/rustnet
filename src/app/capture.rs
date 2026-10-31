@@ -1628,7 +1628,7 @@ mod capture_failure_message_tests {
 #[cfg(all(test, unix))]
 mod prepared_pcap_tests {
     use super::prepare_pcap_writer;
-    use crate::app::scratch_dir::ScratchDir;
+    use crate::scratch_dir::ScratchDir;
     use std::fs::OpenOptions;
     use std::time::SystemTime;
 
@@ -1909,7 +1909,7 @@ mod connection_lifecycle_tests {
     use std::net::SocketAddr;
     use std::path::Path;
 
-    use crate::app::scratch_dir::ScratchDir;
+    use crate::scratch_dir::ScratchDir;
 
     fn tcp_packet(flags: TcpFlags) -> ParsedPacket {
         let mut packet = ParsedPacket::new(

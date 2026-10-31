@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
+
 ### Changed
 - Put Host diagnostics findings and coverage first, label queues clearly, show process names, and toggle empty queues with `a` (#688)
 - Run Windows CI tests independently and start DEB installation checks after GNU/Linux builds, preserving all existing checks (#686)
 
 ### Added
 - Add summary-first socket diagnostics in Details and Host, Linux procfs queues and drops, optional TCP iterator statistics and host-scope drop reasons, Windows EStats, macOS/FreeBSD TCP queues, source-aware findings, and JSON evidence (#688)
+- Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible
+- Show per-resolver DNS health, retries, pending age, selectable 60s/5m/1h/since-startup windows, and 15-minute recent issue evidence in Host
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
 - Show observed TCP resets and ICMP errors in Host, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
 - Retire observed TCP/UDP flows after confirmed socket disappearance on macOS, Windows, and FreeBSD; keep timeout fallback for incomplete or restricted inventories (#684)
@@ -20,7 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Preserve empty diagnostics source status in JSON and expose unassociated Host TCP measurements (#688)
-- Include example sources in Docker builds and use the checksum-verified libpcap mirror for Windows SDK downloads (#688)
+- Include example sources in Docker builds (#688)
+- Match local IPv4/IPv6 DNS stub replies correctly and prevent healthy resolvers from hiding a failing secondary resolver
+- Fall back to a pinned, checksum-verified Npcap SDK mirror when the primary download fails during Windows builds or CI test setup.
+- Stop classifying successful DNS ANY answers as NODATA in Details and passive DNS statistics (#689)
 - Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0
 

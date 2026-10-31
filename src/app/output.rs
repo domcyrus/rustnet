@@ -385,7 +385,7 @@ mod staged_tests {
         prepare_output_handles_with_stdout, validate_output_paths_with_stdout,
     };
     use crate::app::Config;
-    use crate::app::scratch_dir::ScratchDir;
+    use crate::scratch_dir::ScratchDir;
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -596,7 +596,7 @@ mod staged_tests {
 mod tests {
     use super::{open_private_append_file, validate_output_paths};
     use crate::app::Config;
-    use crate::app::scratch_dir::ScratchDir;
+    use crate::scratch_dir::ScratchDir;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 

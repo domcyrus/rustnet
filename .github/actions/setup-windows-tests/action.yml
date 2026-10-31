@@ -25,8 +25,16 @@ runs:
         $sdkVersion = '1.15'
         $expected = '52c7b9fb4abee3ad9fe739bb545c3efe77b731c8e127122bdf328eafdae3ed4f'
         $archive = Join-Path $env:RUNNER_TEMP "npcap-sdk-$sdkVersion.zip"
-        # libpcap's mirror avoids outages of the upstream download endpoint.
-        Invoke-WebRequest -UseBasicParsing -Uri "https://www.tcpdump.org/depends/npcap-sdk-$sdkVersion.zip" -OutFile $archive
+        try {
+          Invoke-WebRequest -UseBasicParsing -Uri "https://npcap.com/dist/npcap-sdk-$sdkVersion.zip" -OutFile $archive
+        } catch {
+          Write-Warning "Npcap SDK download failed ($($_.Exception.Message)); trying the pinned tcpdump mirror"
+          # Discard any partial response; retain TLS and checksum verification.
+          Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+          # Keep this mirror revision in sync with build.rs.
+          $mirror = 'https://raw.githubusercontent.com/the-tcpdump-group/tcpdump-htdocs/f5712b53248430a38938b045b692a9611344d9c8/depends'
+          Invoke-WebRequest -UseBasicParsing -Uri "$mirror/npcap-sdk-$sdkVersion.zip" -OutFile $archive
+        }
         $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actual -ne $expected) {
           throw "Npcap SDK checksum mismatch: expected $expected, got $actual"

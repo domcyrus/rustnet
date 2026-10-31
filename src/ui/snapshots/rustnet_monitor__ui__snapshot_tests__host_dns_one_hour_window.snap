@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: "render_app(&app, &mut state, &[], None, 80, 24)"
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
+────────────────────────────────────────────────────────────━━━━━━──────────────
+Sockets   Interfaces   DNS   Diagnostics                                        
+───────────────────────━━━──────────────────────────────────────────────────────
+▎ DNS Outcomes (1h) ────────────────────────────────────────────────────────────
+Status failing                                                                  
+Lookups 3   answered 3   pending 0   timeout 0                                  
+NOERROR 0   NXDOMAIN 0   NODATA 0                                               
+SERVFAIL 3   REFUSED 0   other 0                                                
+Response time  p50 10ms   p95 10ms   max 10ms                                   
+                                                                                
+▎ Resolver Evidence (1h) ───────────────────────────────────────────────────────
+SERVFAIL: resolver could not answer; check its upstream path and DNSSEC.        
+1.1.1.1:53 failing  fail 3/3  wait 0  retry 0  p95 10ms                         
+Recent issues (15m, 0/0 groups, 0 retained)                                     
+No retained DNS issues.                                                         
+                                                                                
+▎ Question Names (1h)  sort: lookups ───────────────────────────────────────────
+Question                                                  Lookups    NX   Fail  
+earlier.example                                                 3     0      3  
+                                                                                
+                                                                                
+                                                                                
+ v/V section  w window  o sort  esc back                         h help  q quit

@@ -825,6 +825,17 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
         DnsHealth::Degraded => {
             let reason = if failure_percent >= DEGRADED_FAILURE_PERCENT {
                 format!("{failure_percent}% failed")
+            } else if snapshot
+                .latency_p95
+                .is_none_or(|latency| latency < std::time::Duration::from_millis(500))
+                && snapshot.resolvers.iter().any(|resolver| {
+                    matches!(
+                        resolver.health,
+                        DnsHealth::Degraded | DnsHealth::Failing | DnsHealth::NoReplies
+                    )
+                })
+            {
+                "resolver issue (Host)".to_string()
             } else {
                 snapshot.latency_p95.map_or_else(
                     || "limited evidence".to_string(),
@@ -1796,6 +1807,31 @@ mod tests {
         assert_eq!(
             line_text(&dns_health_line(&slow, false)),
             "DNS: degraded · p95 620ms"
+        );
+        let mixed = DnsAnalyticsSnapshot {
+            health: DnsHealth::Degraded,
+            answered: 33,
+            failures: 3,
+            latency_p95: Some(Duration::from_millis(10)),
+            resolvers: vec![crate::network::dns_analytics::DnsResolverStats {
+                address: "192.0.2.53:53".parse().unwrap(),
+                health: DnsHealth::Failing,
+                lookups: 3,
+                answered: 3,
+                pending: 0,
+                timeouts: 0,
+                servfail: 3,
+                refused: 0,
+                other_rcodes: 0,
+                retries: 0,
+                oldest_pending: None,
+                latency_p95: Some(Duration::from_millis(10)),
+            }],
+            ..DnsAnalyticsSnapshot::default()
+        };
+        assert_eq!(
+            line_text(&dns_health_line(&mixed, false)),
+            "DNS: degraded · resolver issue (Host)"
         );
         assert_eq!(
             line_text(&dns_health_line(&responsive, true)),

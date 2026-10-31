@@ -363,7 +363,10 @@ const PANE_SCROLL_KEYS: &[HelpRow] = &[
     ("g, G", "Jump to the top or bottom"),
 ];
 
-const HOST_SOCKET_KEYS: &[HelpRow] = &[("Esc", "Return to Overview")];
+const HOST_SOCKET_KEYS: &[HelpRow] = &[
+    ("w", "Cycle Host window: 60s / 5m / 1h / since startup"),
+    ("Esc", "Return to Overview"),
+];
 
 const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
     (
@@ -376,17 +379,49 @@ const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
         "Measured from captured packets, not the socket table",
     ),
     ("Refresh", "The socket inventory rescans every 5 seconds"),
+    (
+        "Events",
+        "Selected window / Rustnet total since startup or clear",
+    ),
 ];
 
-const INTERFACE_KEYS: &[HelpRow] = &[("Esc", "Return to Overview")];
+const INTERFACE_KEYS: &[HelpRow] = HOST_SOCKET_KEYS;
+
+const INTERFACE_CONCEPTS: &[HelpRow] = &[
+    (
+        "Errors/drops",
+        "Selected-window increments / OS cumulative total",
+    ),
+    (
+        "Baseline",
+        "Existing OS errors are excluded from observed increments",
+    ),
+    (
+        "Clear",
+        "Resets observed history; OS totals remain unchanged",
+    ),
+    ("Live", "Rates stay live; packet counts are OS totals"),
+];
 
 const DNS_KEYS: &[HelpRow] = &[
+    ("w", "Cycle Host window: 60s / 5m / 1h / since startup"),
     ("o", "Cycle question sort metric"),
     ("Esc", "Return to Overview"),
 ];
 
 const DNS_CONCEPTS: &[HelpRow] = &[
-    ("Window", "All DNS analytics cover the latest 60 seconds"),
+    (
+        "Window",
+        "Host uses 60s / 5m / 1h / startup; Overview uses 60s",
+    ),
+    (
+        "Session",
+        "Cumulative totals since startup/clear; ~percentiles are estimates",
+    ),
+    (
+        "History",
+        "Recent issues retain up to 64 observations for 15 minutes",
+    ),
     (
         "Health",
         "Recent outcomes and latency; NXDOMAIN alone is not a failure",
@@ -538,6 +573,7 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
                     ("n/p", "Select the next/previous affected connection"),
                     ("Enter", "Open the selected connection in Details"),
                     ("a", "Show all sockets / hide empty queues"),
+                    ("w", "Cycle the captured network event window"),
                     ("j/k", "Scroll diagnostics"),
                     ("Esc", "Return to Overview"),
                 ],
@@ -559,6 +595,7 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
                 "Scroll interface details",
             );
             push_section(&mut lines, "Interface Actions", &rows);
+            push_section(&mut lines, "Interface Counts", INTERFACE_CONCEPTS);
         }
         HelpContext::HostDns => {
             let rows = host_pane_rows(
