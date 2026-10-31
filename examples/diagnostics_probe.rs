@@ -4,19 +4,41 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Context, ensure};
     use std::io::{BufRead, BufReader, Write};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     use std::time::Duration;
     let test_loss = std::env::args().any(|arg| arg == "--loss");
-    let mut child = Command::new("python3")
+    let loss_filter = test_loss.then(load_loss_filter).transpose()?;
+    let mut fixture = Command::new("python3");
+    fixture
         .args(["-u", "-c", FIXTURE])
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
+        .stdout(Stdio::piped());
+    if let Some(filter) = &loss_filter {
+        let fd = filter.as_raw_fd();
+        fixture.env("RUSTNET_DIAGNOSTICS_FILTER_FD", fd.to_string());
+        // SAFETY: only the async-signal-safe fcntl call runs after fork. The
+        // owned descriptor stays alive through spawn; only this child inherits it.
+        unsafe {
+            fixture.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = fixture.spawn()?;
+    drop(loss_filter);
     let result = (|| -> anyhow::Result<()> {
         let mut input = child.stdin.take().context("fixture stdin")?;
         let mut output = BufReader::new(child.stdout.take().context("fixture stdout")?);
         let mut line = String::new();
-        output.read_line(&mut line)?;
+        ensure!(
+            output.read_line(&mut line)? > 0,
+            "fixture exited before initial report; see fixture stderr"
+        );
         let mut expected: serde_json::Value = serde_json::from_str(&line)?;
         let mut lookup = rustnet_host::create_process_lookup(false)?;
         let config = rustnet_sandbox::SandboxConfig {
@@ -50,7 +72,10 @@ fn main() -> anyhow::Result<()> {
                 writeln!(input, "{command}")?;
                 input.flush()?;
                 line.clear();
-                output.read_line(&mut line)?;
+                ensure!(
+                    output.read_line(&mut line)? > 0,
+                    "fixture exited during {command}; see fixture stderr"
+                );
                 expected = serde_json::from_str(&line)?;
             }
             lookup.refresh()?;
@@ -173,6 +198,52 @@ fn main() -> anyhow::Result<()> {
     let _ = child.wait();
     result
 }
+
+/// Load a fixed socket filter while the probe still holds its normal CAP_BPF.
+/// Passing its FD lets the unprivileged fixture use SO_ATTACH_BPF, without the
+/// CAP_NET_ADMIN now required for classic SO_ATTACH_FILTER on TCP sockets.
+#[cfg(target_os = "linux")]
+fn load_loss_filter() -> anyhow::Result<std::os::fd::OwnedFd> {
+    use anyhow::Context;
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    const BPF_PROG_LOAD: libc::c_int = 5;
+
+    // Initial BPF_PROG_LOAD fields from linux/bpf.h. The kernel zero-fills
+    // trailing fields not supplied by this older, minimal attribute layout.
+    #[repr(C, align(8))]
+    struct ProgLoad {
+        prog_type: u32,
+        insn_cnt: u32,
+        insns: u64,
+        license: u64,
+    }
+    // BPF_MOV64_IMM r0, 0; BPF_EXIT. Returning zero drops the received packet.
+    let instructions: [[u8; 8]; 2] = [[0xb7, 0, 0, 0, 0, 0, 0, 0], [0x95, 0, 0, 0, 0, 0, 0, 0]];
+    let attr = ProgLoad {
+        prog_type: 1, // BPF_PROG_TYPE_SOCKET_FILTER
+        insn_cnt: instructions.len() as u32,
+        insns: instructions.as_ptr() as u64,
+        license: c"GPL".as_ptr() as u64,
+    };
+    // SAFETY: the attribute layout matches the UAPI; all referenced buffers
+    // remain valid for this synchronous syscall. A successful result is a new FD.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            BPF_PROG_LOAD,
+            &attr,
+            std::mem::size_of::<ProgLoad>(),
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("load loss fixture socket filter with CAP_BPF");
+    }
+    // SAFETY: the successful BPF_PROG_LOAD returned a uniquely owned descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+}
+
 #[cfg(not(target_os = "linux"))]
 fn main() {
     eprintln!("This native integration probe requires Linux.");
@@ -180,7 +251,11 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 const FIXTURE: &str = r#"
-import socket, os, sys, json, struct, time, ctypes
+import socket, os, sys, json, struct, time
+with open('/proc/self/status') as status:
+    for line in status:
+        if line.startswith(('CapEff:', 'CapPrm:')):
+            assert int(line.split()[1],16)==0, 'fixture must not retain capabilities'
 pairs=[]
 closed=[]
 def inode(s): return int(os.readlink('/proc/self/fd/%d'%s.fileno())[8:-1])
@@ -212,17 +287,11 @@ for command in sys.stdin:
     elif command=='overflow':
         for i in range(100): send.sendto(b'x'*512,udp.getsockname())
     elif command=='loss':
-        class Filter(ctypes.Structure):
-            _fields_=[('code',ctypes.c_ushort),('jt',ctypes.c_ubyte),('jf',ctypes.c_ubyte),('k',ctypes.c_uint)]
-        class Program(ctypes.Structure):
-            _fields_=[('length',ctypes.c_ushort),('filter',ctypes.POINTER(Filter))]
-        instruction=Filter(6,0,0,0) # BPF_RET | BPF_K, discard only on this fixture socket.
-        program=Program(1,ctypes.pointer(instruction))
-        libc=ctypes.CDLL(None,use_errno=True)
+        filter_fd=int(os.environ['RUSTNET_DIAGNOSTICS_FILTER_FD'])
         for s,r,_ in pairs:
-            if libc.setsockopt(r.fileno(),socket.SOL_SOCKET,26,ctypes.byref(program),ctypes.sizeof(program)):
-                raise OSError(ctypes.get_errno(),'fixture SO_ATTACH_FILTER')
+            r.setsockopt(socket.SOL_SOCKET,50,filter_fd) # SO_ATTACH_BPF, only on fixture sockets.
             s.sendall(b'lost'*256)
+        os.close(filter_fd)
         # Bound the control and stop before a second retransmission interval.
         deadline=time.monotonic()+3
         while any(struct.unpack_from('I',s.getsockopt(socket.IPPROTO_TCP,socket.TCP_INFO,104),100)[0]==0 for s,_,_ in pairs):

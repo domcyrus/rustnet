@@ -66,7 +66,7 @@ JSON スキーマ 1 に任意の接続 `diagnostics` とスナップショット
 
 全プラットフォームで概要優先、Details Health、Host、JSON を共有し、ソースと鮮度を表示します。再送所見は同じソースとソケットの新鮮で順序付きの二計測を要求し、ソース・識別子の変更、カウンター減少、古い間隔で基準をリセットします。損失場所は推定しません。WFP、DropTap、PFLOG、接続別の理由付き破棄関連付けは、イベント取得・権限・照合の複雑さを避けるため延期します。ヘルパー、ポリシー変更、第二の Linux バックエンド、UDP BPF イテレータは追加しません。
 
-ネイティブのループバック試験ではサンドボックス前後、新規ソケット、キュー排出、ソケット消失を確認します。root 降格、他ユーザーと jail の可視性、対応 OS・カーネル・アーキテクチャ、イベント急増、多数ソケットの性能は追加のリリース確認事項です。Linux は `cargo build --locked --example diagnostics_probe --all-features` でビルドし、通常の RustNet ファイル capability を設定して実行します。`--loss` は試験ソケットだけのフィルターで再送を検証しますが、ホストポリシーによっては禁止されます。Windows、macOS、FreeBSD は `cargo run --locked --example native_diagnostics_probe --all-features` を使用します（Windows EStats は昇格が必要）。試験はファイアウォールやシステムポリシーを変更しません。
+ネイティブのループバック試験ではサンドボックス前後、新規ソケット、キュー排出、ソケット消失を確認します。root 降格、他ユーザーと jail の可視性、対応 OS・カーネル・アーキテクチャ、イベント急増、多数ソケットの性能は追加のリリース確認事項です。Linux は `cargo build --locked --example diagnostics_probe --all-features` でビルドし、通常の RustNet ファイル capability を設定して実行します。`--loss` は再送を検証します。プローブはサンドボックス適用前に既存の `CAP_BPF` でソケットフィルターをロードし、その記述子だけを非特権の試験子プロセスに渡します。子プロセスは `SO_ATTACH_BPF` で自身のソケットに適用します。`CAP_NET_ADMIN` は不要ですが、ホストの BPF ポリシーによりロードが拒否される場合があります。Windows、macOS、FreeBSD は `cargo run --locked --example native_diagnostics_probe --all-features` を使用します（Windows EStats は昇格が必要）。試験はファイアウォールやシステムポリシーを変更しません。
 
 ## Host とネットワークイベント<a id="host-socket-inventory"></a>
 

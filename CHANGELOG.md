@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Fix Linux diagnostics probe loss injection on kernels that restrict classic TCP filters, using the existing capabilities (#688)
 - Preserve empty diagnostics source status in JSON and expose unassociated Host TCP measurements (#688)
 - Include example sources in Docker builds (#688)
 - Match local IPv4/IPv6 DNS stub replies correctly and prevent healthy resolvers from hiding a failing secondary resolver
