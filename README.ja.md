@@ -108,7 +108,7 @@ macOS で PKTAP を使用するには `sudo` が必要です。BPF へのアク�
 - [アーキテクチャ](ARCHITECTURE.md): プラットフォーム別の実装と性能
 - [Kubernetes とコンテナ](KUBERNETES.ja.md): 所有者特定とキャプチャの出力
 - [変更履歴](CHANGELOG.md): リリース済みおよび今後の変更
-- [貢献](CONTRIBUTING.md): コントリビューションガイド
+- [貢献](CONTRIBUTING.ja.md): コントリビューションガイド
 
 サポート対象の製品は `rustnet` バイナリです。ワークスペース内の crate の API は内部用であり、互換性を維持するための処理を残さずに変更される場合があります。
 
