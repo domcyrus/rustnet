@@ -7,6 +7,9 @@ expression: output
 Connection   Network   Process   Application   Health   Traffic                 
 ━━━━━━━━━━──────────────────────────────────────────────────────────────────────
 ▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy ─────────────
+Diagnostics                                                                     
+Unavailable: no unambiguous socket sample; capture evidence only                
+Observation status [d]                                                          
 ▎ Connection ───────────────────────────────────────────────────────────────────
 Protocol              TCP                                                       
 Status                Active (last seen <T> ago)                                 
@@ -18,9 +21,6 @@ Process               firefox
 PID                   2001                                                      
 Service               https                                                     
 Observed VLANs        -                                                         
-                                                                                
-                                                                                
-                                                                                
                                                                                 
                                                                                 
                                                                                 

@@ -62,6 +62,74 @@ fn process_enrichment_complete(conn: &Connection) -> bool {
         && conn.attribution_quality.is_some()
 }
 
+/// Join once per native refresh, independently of process-attribution completion.
+fn apply_socket_diagnostics(tracker: &ConnectionTracker, snapshot: &rustnet_host::SocketSnapshot) {
+    use crate::network::types::{ConnectionDiagnostics, ConnectionKey};
+    // Dual-stack sockets use mapped IPv6 addresses in procfs even when the
+    // captured packets are IPv4. Normalize before checking for ambiguity.
+    let canonical_key = |mut key: ConnectionKey| {
+        key.local_addr.set_ip(key.local_addr.ip().to_canonical());
+        key.remote_addr.set_ip(key.remote_addr.ip().to_canonical());
+        key
+    };
+    let mut candidates = HashMap::new();
+    for socket in snapshot.sockets.iter() {
+        let (Some(remote), Some(_)) = (socket.remote_addr, socket.native_id) else {
+            continue;
+        };
+        let sample = snapshot
+            .diagnostics
+            .get(socket)
+            .map(|sample| (sample, socket.owner.as_ref().map(|o| o.pid)));
+        let key = canonical_key(ConnectionKey::new(
+            socket.protocol,
+            socket.local_addr,
+            remote,
+        ));
+        candidates
+            .entry(key)
+            .and_modify(|candidate| *candidate = None)
+            .or_insert(sample);
+    }
+    for mut conn in tracker.connections().iter_mut() {
+        let Some(Some((sample, owner_pid))) =
+            candidates.get(&canonical_key(ConnectionKey::from_connection(&conn)))
+        else {
+            continue;
+        };
+        if conn.is_historic
+            || conn.socket_netns_id != sample.netns
+            || (cfg!(target_os = "linux") && sample.netns.is_none())
+            || conn
+                .pid
+                .zip(*owner_pid)
+                .is_some_and(|(captured, native)| captured != native)
+        {
+            continue;
+        }
+        let sampled_at = sample
+            .queues
+            .as_ref()
+            .map(|q| q.sampled_at)
+            .or_else(|| sample.tcp.as_ref().map(|t| t.sampled_at));
+        if sampled_at.is_none_or(|time| time < conn.created_at) {
+            continue;
+        }
+        // A different socket cannot silently replace evidence on the same captured generation.
+        if conn
+            .diagnostics
+            .as_ref()
+            .is_some_and(|old| old.sample.native_id != sample.native_id)
+        {
+            continue;
+        }
+        conn.diagnostics = Some(ConnectionDiagnostics::update(
+            conn.diagnostics.as_ref(),
+            Arc::clone(sample),
+        ));
+    }
+}
+
 impl App {
     /// Initialize process attribution synchronously while startup privileges
     /// are still available. In particular, Linux eBPF programs and maps are
@@ -251,8 +319,12 @@ impl App {
                         snapshot.invalidate_port_status();
                     }
                     lifecycle.refresh_failed();
-                } else if let Ok(mut snapshot) = socket_snapshot.write() {
-                    *snapshot = process_lookup.socket_snapshot();
+                } else {
+                    let refreshed = process_lookup.socket_snapshot();
+                    apply_socket_diagnostics(&tracker, &refreshed);
+                    if let Ok(mut snapshot) = socket_snapshot.write() {
+                        *snapshot = refreshed;
+                    }
                 }
                 // Refresh pod-name metadata and rebuild the cross-namespace
                 // socket table on the same cadence.
@@ -506,6 +578,242 @@ mod process_enrichment_tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;
+
+    #[test]
+    fn tcp_only_samples_are_scoped_by_endpoints_and_reject_owner_mismatch() {
+        use crate::network::tracker::ConnectionTracker;
+        use crate::network::types::{SocketSample, TcpSample};
+        use rustnet_host::{
+            HostSocket, HostSocketState, HostTcpState, SocketOwner, SocketSnapshot,
+        };
+        use std::collections::HashMap;
+        use std::time::{Duration, SystemTime};
+        let tracker = ConnectionTracker::new();
+        let now = SystemTime::now();
+        let mut sockets = Vec::new();
+        let mut samples = HashMap::new();
+        for (port, pid, rtt) in [(1000, 42, 100), (1001, 42, 200), (1002, 43, 300)] {
+            let mut conn = Connection::new(
+                Protocol::Tcp,
+                format!("127.0.0.1:{port}").parse().unwrap(),
+                "127.0.0.1:2000".parse().unwrap(),
+                ProtocolState::Tcp(TcpState::Established),
+            );
+            conn.created_at = now - Duration::from_secs(1);
+            conn.socket_netns_id = Some(1);
+            conn.pid = Some(42);
+            let key = crate::network::types::ConnectionKey::from_connection(&conn);
+            tracker.connections().insert(key, conn);
+            let socket = HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: key.local_addr,
+                remote_addr: Some(key.remote_addr),
+                state: HostSocketState::Tcp(HostTcpState::Established),
+                owner: Some(SocketOwner::new(pid, "fixture", None)),
+                native_id: Some(7),
+            };
+            samples.insert(
+                socket.clone(),
+                Arc::new(SocketSample {
+                    native_id: 7,
+                    netns: Some(1),
+                    queues: None,
+                    tcp: Some(TcpSample {
+                        counter_reset: false,
+                        source: "windows_estats",
+                        sampled_at: now,
+                        rtt_us: rtt,
+                        rtt_variation_us: 0,
+                        congestion_window_segments: None,
+                        retransmissions: 0,
+                    }),
+                }),
+            );
+            sockets.push(socket);
+        }
+        let mut snapshot = SocketSnapshot::new(sockets);
+        snapshot.diagnostics = Arc::new(samples);
+        super::apply_socket_diagnostics(&tracker, &snapshot);
+        for conn in tracker.connections().iter() {
+            match conn.local_addr.port() {
+                1000 => assert_eq!(
+                    conn.diagnostics
+                        .as_ref()
+                        .unwrap()
+                        .sample
+                        .tcp
+                        .as_ref()
+                        .unwrap()
+                        .rtt_us,
+                    100
+                ),
+                1001 => assert_eq!(
+                    conn.diagnostics
+                        .as_ref()
+                        .unwrap()
+                        .sample
+                        .tcp
+                        .as_ref()
+                        .unwrap()
+                        .rtt_us,
+                    200
+                ),
+                1002 => assert!(conn.diagnostics.is_none()),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostics_join_rejects_ambiguous_namespace_and_old_generation_samples() {
+        use crate::network::types::{ConnectionKey, QueueKind, QueueSample, SocketSample};
+        use rustnet_host::{HostSocket, HostSocketState, HostTcpState, SocketSnapshot};
+        use std::collections::HashMap;
+        use std::time::{Duration, SystemTime};
+        let tracker = crate::network::tracker::ConnectionTracker::new();
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            "127.0.0.1:1000".parse().unwrap(),
+            "127.0.0.1:2000".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        let time = SystemTime::now();
+        conn.created_at = time - Duration::from_secs(1);
+        conn.socket_netns_id = Some(1);
+        let key = ConnectionKey::from_connection(&conn);
+        tracker.connections().insert(key, conn);
+        let socket = HostSocket {
+            protocol: Protocol::Tcp,
+            local_addr: key.local_addr,
+            remote_addr: Some(key.remote_addr),
+            state: HostSocketState::Tcp(HostTcpState::Established),
+            owner: None,
+            native_id: Some(7),
+        };
+        let sample = Arc::new(SocketSample {
+            native_id: 7,
+            netns: Some(1),
+            tcp: None,
+            queues: Some(QueueSample {
+                source: "procfs",
+                sampled_at: time,
+                kind: QueueKind::TcpBytes,
+                receive: 100,
+                send: 0,
+                socket_drops: None,
+            }),
+        });
+        let mut snapshot = SocketSnapshot::new(vec![socket.clone(), socket.clone()]);
+        snapshot.diagnostics = Arc::new(HashMap::from([(socket.clone(), sample)]));
+        super::apply_socket_diagnostics(&tracker, &snapshot);
+        assert!(
+            tracker
+                .connections()
+                .get(&key)
+                .unwrap()
+                .diagnostics
+                .is_none()
+        );
+        snapshot.sockets = vec![socket].into();
+        tracker.connections().get_mut(&key).unwrap().socket_netns_id = Some(2);
+        super::apply_socket_diagnostics(&tracker, &snapshot);
+        assert!(
+            tracker
+                .connections()
+                .get(&key)
+                .unwrap()
+                .diagnostics
+                .is_none()
+        );
+        tracker.connections().get_mut(&key).unwrap().socket_netns_id = Some(1);
+        tracker.connections().get_mut(&key).unwrap().created_at = time + Duration::from_secs(1);
+        super::apply_socket_diagnostics(&tracker, &snapshot);
+        assert!(
+            tracker
+                .connections()
+                .get(&key)
+                .unwrap()
+                .diagnostics
+                .is_none()
+        );
+        tracker.connections().get_mut(&key).unwrap().created_at = time - Duration::from_secs(1);
+        super::apply_socket_diagnostics(&tracker, &snapshot);
+        let conn = tracker.connections().get(&key).unwrap();
+        assert_eq!(conn.diagnostics.as_ref().unwrap().sample.native_id, 7);
+        assert!(conn.snapshot_clone().diagnostics.is_some());
+    }
+
+    #[test]
+    fn diagnostics_join_normalizes_mapped_addresses_before_checking_ambiguity() {
+        use crate::network::types::{ConnectionKey, QueueKind, QueueSample, SocketSample};
+        use rustnet_host::{HostSocket, HostSocketState, HostTcpState, SocketSnapshot};
+        use std::collections::HashMap;
+        use std::time::SystemTime;
+
+        let tracker = crate::network::tracker::ConnectionTracker::new();
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            "127.0.0.1:1000".parse().unwrap(),
+            "127.0.0.1:2000".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        conn.socket_netns_id = Some(1);
+        let key = ConnectionKey::from_connection(&conn);
+        tracker.connections().insert(key, conn);
+        let mapped = HostSocket {
+            protocol: Protocol::Tcp,
+            local_addr: "[::ffff:127.0.0.1]:1000".parse().unwrap(),
+            remote_addr: Some("[::ffff:127.0.0.1]:2000".parse().unwrap()),
+            state: HostSocketState::Tcp(HostTcpState::Established),
+            owner: None,
+            native_id: Some(7),
+        };
+        let mut snapshot = SocketSnapshot::new(vec![mapped.clone()]);
+        snapshot.diagnostics = Arc::new(HashMap::from([(
+            mapped.clone(),
+            Arc::new(SocketSample {
+                native_id: 7,
+                netns: Some(1),
+                tcp: None,
+                queues: Some(QueueSample {
+                    source: "procfs",
+                    sampled_at: SystemTime::now(),
+                    kind: QueueKind::TcpBytes,
+                    receive: 100,
+                    send: 0,
+                    socket_drops: None,
+                }),
+            }),
+        )]));
+        super::apply_socket_diagnostics(&tracker, &snapshot);
+        assert!(
+            tracker
+                .connections()
+                .get(&key)
+                .unwrap()
+                .diagnostics
+                .is_some()
+        );
+
+        tracker.connections().get_mut(&key).unwrap().diagnostics = None;
+        let ipv4 = HostSocket {
+            local_addr: key.local_addr,
+            remote_addr: Some(key.remote_addr),
+            native_id: Some(8),
+            ..mapped.clone()
+        };
+        // An equivalent IPv4 socket is ambiguous even without its own sample.
+        snapshot.sockets = vec![mapped, ipv4].into();
+        super::apply_socket_diagnostics(&tracker, &snapshot);
+        assert!(
+            tracker
+                .connections()
+                .get(&key)
+                .unwrap()
+                .diagnostics
+                .is_none()
+        );
+    }
 
     struct ThreadRecordingLookup {
         calls: Arc<Mutex<Vec<thread::ThreadId>>>,

@@ -28,6 +28,7 @@ COPY build.rs ./
 # Copy source code
 COPY src ./src
 COPY benches ./benches
+COPY examples ./examples
 # Workspace member crates. rustnet-core holds the baked-in oui.gz / services
 # assets (include_bytes!/include_str!); rustnet-host holds the eBPF programs and
 # bundled vmlinux headers compiled by its own build.rs.

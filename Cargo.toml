@@ -151,6 +151,8 @@ linux-default = ["ebpf"]  # Deprecated: kept for backwards compatibility
 # eBPF now lives in the rustnet-host crate; this is a passthrough so
 # `--features ebpf` (and the default) keep enabling it as before.
 ebpf = ["rustnet-host/ebpf"]
+# Experimental host-scope reasoned drops; broader compatibility/load checks remain.
+drop-events = ["ebpf", "rustnet-host/drop-events"]
 # Sandboxing now lives in the rustnet-sandbox crate; these are passthroughs so
 # the existing feature names keep working. The names must stay `landlock` and
 # `macos-sandbox`: cfg(feature = "landlock") gates the per-thread capability
@@ -279,3 +281,7 @@ codegen-units = 1
 inherits = "release"
 debug = 2
 strip = false
+
+[[example]]
+name = "diagnostics_probe"
+required-features = ["drop-events", "landlock"]

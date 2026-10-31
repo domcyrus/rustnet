@@ -243,6 +243,7 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
                 HostView::Sockets => &ui_state.host_sockets_scroll,
                 HostView::Interfaces => &ui_state.interfaces_scroll,
                 HostView::Dns => &ui_state.dns_questions_scroll,
+                HostView::Diagnostics => &ui_state.host_diagnostics_scroll,
             };
             let mut hints = Vec::new();
             if scroll.can_scroll() {
@@ -251,6 +252,13 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             hints.push(Hint::action("w", "window"));
             if ui_state.host_view == HostView::Dns {
                 hints.push(Hint::action("o", "sort"));
+            }
+            if ui_state.host_view == HostView::Diagnostics {
+                hints.push(Hint::mode(
+                    "a",
+                    "all sockets",
+                    ui_state.host_diagnostics_show_all,
+                ));
             }
             hints.push(Hint::action("esc", "back"));
             hints

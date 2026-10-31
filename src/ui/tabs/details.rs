@@ -103,6 +103,12 @@ impl Component for DetailsTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        if key.code == KeyCode::Char('d') && key.modifiers == KeyModifiers::NONE {
+            ctx.ui_state.diagnostics_status_expanded = !ctx.ui_state.diagnostics_status_expanded;
+            ctx.ui_state.details_section = DetailsSection::Health;
+            ctx.ui_state.details_page.set(0);
+            return Some(Vec::new());
+        }
         // In grouped mode, flip through the grouped view's connection
         // sequence, skipping group headers, since a header has no record to
         // show on this tab. Falls through to the shared flat-list
@@ -961,7 +967,11 @@ fn draw_connection_strip(
     }
 }
 
-pub(in crate::ui) fn sectioned_layout(area: Rect, conn: Option<&Connection>) -> bool {
+pub(in crate::ui) fn sectioned_layout(
+    area: Rect,
+    conn: Option<&Connection>,
+    status_expanded: bool,
+) -> bool {
     // Connection (11), Network (9), and Attribution (8) have fixed rows.
     // Optional identity cards add a separator, heading, and their fields.
     let mut metadata_rows = 28;
@@ -975,14 +985,24 @@ pub(in crate::ui) fn sectioned_layout(area: Rect, conn: Option<&Connection>) -> 
     if conn.is_some_and(|conn| conn.k8s_info.is_some()) {
         metadata_rows += 7;
     }
-    // The optional event card extends the right column. Reserve its maximum
-    // ten rows so it and the traffic plots remain reachable on small screens.
-    if conn.is_some_and(|conn| conn.network_events.is_some()) {
-        metadata_rows = metadata_rows.max(
-            (APPLICATION_CARD_ROWS + TRANSPORT_CARD_ROWS + NETWORK_EVENT_CARD_MAX_ROWS - 1) as u16,
-        );
+    let native_rows = if conn.is_some_and(|c| c.diagnostics.is_some()) {
+        4
+    } else {
+        0
+    };
+    let event_rows = if conn.is_some_and(|c| c.network_events.is_some()) {
+        NETWORK_EVENT_CARD_MAX_ROWS
+    } else {
+        0
+    };
+    metadata_rows = metadata_rows
+        .max((APPLICATION_CARD_ROWS + TRANSPORT_CARD_ROWS + native_rows + event_rows - 1) as u16);
+    if status_expanded {
+        metadata_rows += 9;
     }
-    let dashboard_rows = STRIP_HEIGHT + 1 + metadata_rows + 1 + DASHBOARD_TRAFFIC_MIN_ROWS;
+    let summary_rows = 5;
+    let dashboard_rows =
+        STRIP_HEIGHT + 1 + summary_rows + metadata_rows + 1 + DASHBOARD_TRAFFIC_MIN_ROWS;
     area.width < DETAILS_SPLIT_MIN_WIDTH || area.height < dashboard_rows
 }
 
@@ -1075,6 +1095,51 @@ fn draw_detail_section(
         &details.fields[offset..details.fields.len().min(offset + rows)],
         skip_placeholder_values,
     );
+}
+
+fn draw_diagnostics_summary(f: &mut Frame, area: Rect, conn: &Connection) -> Rect {
+    // Keep the summary above both columns and use the existing section paging below.
+    let now = std::time::SystemTime::now();
+    let mut lines = vec![Line::from(Span::styled(
+        "Diagnostics",
+        theme::bold_fg(theme::heading()),
+    ))];
+    let findings = conn.diagnostic_findings(now);
+    if findings.is_empty() {
+        lines.push(Line::from(if conn.is_historic {
+            "Historical connection; retained measurements are not current"
+        } else if let Some(diagnostics) = &conn.diagnostics {
+            let sample = &diagnostics.sample;
+            if sample
+                .queues
+                .as_ref()
+                .is_some_and(|q| crate::network::types::sample_is_fresh(q.sampled_at, now))
+                || sample
+                    .tcp
+                    .as_ref()
+                    .is_some_and(|t| crate::network::types::sample_is_fresh(t.sampled_at, now))
+            {
+                "No findings in the observed scope"
+            } else {
+                "Stale: socket measurements are not current; capture evidence only"
+            }
+        } else {
+            "Unavailable: no unambiguous socket sample; capture evidence only"
+        }));
+    } else {
+        lines.extend(findings.into_iter().map(Line::from));
+    }
+    lines.push(Line::from("Observation status [d]"));
+    let paragraph = Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
+    let height =
+        (paragraph.line_count(area.width.max(1)) as u16).min(area.height.saturating_sub(3));
+    f.render_widget(paragraph, Rect::new(area.x, area.y, area.width, height));
+    Rect::new(
+        area.x,
+        area.y + height,
+        area.width,
+        area.height.saturating_sub(height),
+    )
 }
 
 pub(in crate::ui) fn draw_connection_details(
@@ -1999,8 +2064,99 @@ pub(in crate::ui) fn draw_connection_details(
         }
         details.field("Window Size", format_window_sizes(counters));
     }
+    if let Some(diagnostics) = &conn.diagnostics {
+        let now = std::time::SystemTime::now();
+        if let Some(q) = &diagnostics.sample.queues {
+            let fresh = crate::network::types::sample_is_fresh(q.sampled_at, now);
+            let status = format!("{}{}", if fresh { "" } else { "stale " }, q.source);
+            let unit = match q.kind {
+                crate::network::types::QueueKind::TcpBytes => "bytes",
+                crate::network::types::QueueKind::UdpMemory => "buffer bytes",
+            };
+            details.field(
+                if fresh {
+                    "Socket queues"
+                } else {
+                    "Socket queues (stale)"
+                },
+                format!("RX {} / TX {} {unit} ({status})", q.receive, q.send),
+            );
+            if let Some(drops) = q.socket_drops {
+                details.field(
+                    if fresh {
+                        "Socket drops"
+                    } else {
+                        "Socket drops (stale)"
+                    },
+                    format!("{drops} lifetime; cause unknown ({status})"),
+                );
+            }
+        }
+        if let Some(tcp) = &diagnostics.sample.tcp {
+            let fresh = crate::network::types::sample_is_fresh(tcp.sampled_at, now);
+            let status = format!("{}{}", if fresh { "" } else { "stale " }, tcp.source);
+            details.field(
+                if fresh {
+                    "Kernel RTT"
+                } else {
+                    "Kernel RTT (stale)"
+                },
+                format!(
+                    "{} us; variation {} us ({status})",
+                    tcp.rtt_us, tcp.rtt_variation_us
+                ),
+            );
+            details.field(
+                if fresh {
+                    "Kernel TCP"
+                } else {
+                    "Kernel TCP (stale)"
+                },
+                format!(
+                    "{}{} retransmits ({}, {status})",
+                    tcp.congestion_window_segments
+                        .map_or_else(String::new, |cwnd| format!("cwnd {cwnd} segments; ")),
+                    tcp.retransmissions,
+                    if tcp.source == "windows_estats" {
+                        "since collection enabled"
+                    } else {
+                        "lifetime"
+                    }
+                ),
+            );
+        }
+    }
     details.pad_section(metrics_start, TRANSPORT_CARD_ROWS);
     network_event_fields(&mut details, conn);
+    if ui_state.diagnostics_status_expanded {
+        details.section("Observation status [d]");
+        let snapshot = ctx.app.get_socket_snapshot();
+        details.field("Queues", snapshot.diagnostics_status.queues);
+        details.field("Native TCP", snapshot.diagnostics_status.tcp);
+        details.field("Drop events (Host)", snapshot.diagnostics_status.drops);
+        if let Some(d) = &conn.diagnostics {
+            for (source, time) in [
+                (
+                    "Queue sample age",
+                    d.sample.queues.as_ref().map(|s| s.sampled_at),
+                ),
+                (
+                    "TCP sample age",
+                    d.sample.tcp.as_ref().map(|s| s.sampled_at),
+                ),
+            ] {
+                details.field_opt(
+                    source,
+                    time.map(|time| format!("{}s", time.elapsed().unwrap_or_default().as_secs())),
+                );
+            }
+            details.field("Socket ID", d.sample.native_id.to_string());
+            details.field_opt("Socket namespace", d.sample.netns.map(|n| n.to_string()));
+        }
+        if let Some(events) = snapshot.drop_events {
+            details.field("Event delivery lost", events.delivery_lost.to_string());
+        }
+    }
     right_ranges.push(metrics_start..details.rows());
 
     // Continuity: the header band echoes the selected row so users feel
@@ -2087,6 +2243,7 @@ pub(in crate::ui) fn draw_connection_details(
     }
     band.extend(suffix);
     let info_area = section_header(f, body, Line::from(band));
+    let info_area = draw_diagnostics_summary(f, info_area, conn);
 
     // Drain the Application and Transport Health cards out
     // of the main buffers when we have enough horizontal room to show two

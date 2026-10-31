@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::mem::{MaybeUninit, size_of};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 const LSOF_PATH: &str = "/usr/sbin/lsof";
@@ -144,7 +144,12 @@ impl MacOSProcessLookup {
         });
         Ok(Self {
             cache: RwLock::new(scan.lookup),
-            socket_snapshot: RwLock::new(snapshot_from_scan(scan.sockets, scan.complete, started)),
+            socket_snapshot: RwLock::new(snapshot_from_scan(
+                scan.sockets,
+                scan.diagnostics,
+                scan.complete,
+                started,
+            )),
         })
     }
 
@@ -161,7 +166,7 @@ impl MacOSProcessLookup {
 
         let output = output_with_timeout_or_cancel(
             Command::new(LSOF_PATH)
-                .args(["-i", "-n", "-P", "-l", "+c", "0"])
+                .args(["-i", "-n", "-P", "-l", "-Tqs", "+c", "0"])
                 .env("LC_ALL", "C"),
             PROCESS_TABLE_COMMAND_TIMEOUT,
             cancelled,
@@ -225,7 +230,7 @@ impl MacOSProcessLookup {
             .socket_snapshot
             .write()
             .expect("socket snapshot lock poisoned") =
-            snapshot_from_scan(scan.sockets, scan.complete, started);
+            snapshot_from_scan(scan.sockets, scan.diagnostics, scan.complete, started);
         info!("Process lookup cache refreshed with {} entries", cache_size);
         Ok(())
     }
@@ -277,10 +282,15 @@ impl ProcessLookup for MacOSProcessLookup {
 // Unprivileged lsof can silently omit sockets owned by other users.
 fn snapshot_from_scan(
     sockets: Vec<HostSocket>,
+    diagnostics: HashMap<HostSocket, Arc<rustnet_core::network::types::SocketSample>>,
     complete: bool,
     started: SystemTime,
 ) -> SocketSnapshot {
-    let snapshot = SocketSnapshot::from_inventory(sockets, complete);
+    let mut snapshot = SocketSnapshot::from_inventory(sockets, complete);
+    snapshot.diagnostics = Arc::new(diagnostics);
+    snapshot.diagnostics_status.queues =
+        "lsof TCP byte queues; visibility follows current credentials; missing fields unavailable"
+            .into();
     // SAFETY: geteuid has no arguments or pointer preconditions.
     if complete && unsafe { libc::geteuid() } == 0 {
         snapshot.with_closure_evidence(started)

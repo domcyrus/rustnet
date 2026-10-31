@@ -65,3 +65,7 @@ impl SocketMatch {
         Self { info, quality }
     }
 }
+
+#[cfg(feature = "drop-events")]
+pub(super) mod drops;
+pub(super) mod tcp_stats;
