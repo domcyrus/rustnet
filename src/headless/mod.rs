@@ -17,7 +17,7 @@ mod output;
 mod schema;
 
 use output::AsyncOutput;
-use schema::{RuntimePhase, SnapshotEnvelope};
+use schema::{ConnectionCache, RuntimePhase, SnapshotEnvelope};
 
 #[cfg(test)]
 mod tests;
@@ -150,13 +150,15 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
     shutdown_requested: &AtomicBool,
     writer_deadline: Duration,
 ) -> Result<StopReport> {
-    let mut output = match AsyncOutput::spawn(writer) {
-        Ok(output) => output,
-        Err(error) => {
-            let _ = app.stop();
-            return Err(error).context("failed to start headless output writer");
-        }
-    };
+    let mut cache = ConnectionCache::default();
+    let mut output =
+        match AsyncOutput::spawn_with_serializer(writer, move |value| cache.serialize(value)) {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = app.stop();
+                return Err(error).context("failed to start headless output writer");
+            }
+        };
     let started = Instant::now();
     let poll_interval = app
         .snapshot_refresh_interval()

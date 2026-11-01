@@ -157,6 +157,8 @@ rustnet --headless --filter 'process:curl app:https'
 
 当前输出格式版本为 `schema_version = 1`。每条记录都是快照对象，顶层字段为 `schema_version`、`type`、`timestamp`、`runtime`、`sandbox`、`stats`、`filter`、`connection_count` 和 `connections`。最终终止记录会将 `runtime.status` 设为 `stopping`、`stopped` 或 `stopped_with_errors`，并包含 `runtime.termination_reason` 和 `runtime.shutdown`。连接记录涵盖端点、进程归属、流量、各协议计时、GeoIP，以及可选的 Kubernetes 元数据。`rtt` 对象以毫秒为单位提供当前值、初始值、平滑 TCP 值，以及 DNS、LLMNR、NetBIOS、ICMP echo、STUN 和 NTP 计时。可选的增强与计时字段在被发现前保持为 null；关闭期间排空的连接可能在进程、GeoIP 或 Kubernetes 增强完成前就出现在最终记录中。使用方必须根据 `schema_version` 选择解析逻辑，并允许出现新增的未知字段。
 
+开发版本会复用未变化的无界面历史连接记录的 JSON 编码。缓存最多保留 10,000 条记录和 16 MiB 的连接 JSON 编码，以及对应的投影字段和管理数据。它会比较所有导出的连接字段，因此延迟到达的元数据和最终计数仍会更新。每条输出记录仍然是版本 1 的完整快照；快照构建开销和输出大小仍会随可见连接数量增长。
+
 连接 `id` 是不透明标识符，连接转为历史记录后保持不变，并区分之后复用同一端点的连接。流量速率字段为 `traffic.outgoing_bytes_per_second` 和 `traffic.incoming_bytes_per_second`，单位均为字节每秒。如果工作线程超过关闭期限，终止状态保持为 `stopping`，`runtime.shutdown.timed_out_workers` 会报告其数量。此时记录可能仍是最后发布的快照，而非完全排空后的状态；进程以非零状态退出。
 
 如果 JSONL 管道的下游提前关闭，例如使用 `head`，会产生 broken pipe。RustNet 会将其视为成功的停止请求，关闭所有工作线程，并且不会尝试向已经关闭的管道写入最终终止记录。抓包初始化失败或之后发生抓包故障时，程序会以非零状态退出。`--duration`、`--output` 和 `--filter` 必须与 `--headless` 一起使用。
