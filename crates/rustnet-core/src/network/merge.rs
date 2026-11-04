@@ -88,6 +88,7 @@ struct TcpSegment {
     is_outgoing: bool,
     has_ack_flag: bool,
     is_syn: bool,
+    is_fin: bool,
     is_rst: bool,
     /// Window-scale verdict from this segment's options (SYN only).
     window_scale: Option<SynWindowScale>,
@@ -106,6 +107,7 @@ fn tcp_segment_from(parsed: &ParsedPacket, tcp_header: &TcpHeaderInfo) -> TcpSeg
         is_outgoing: parsed.is_outgoing,
         has_ack_flag: tcp_header.flags.ack,
         is_syn: tcp_header.flags.syn,
+        is_fin: tcp_header.flags.fin,
         is_rst: tcp_header.flags.rst,
         window_scale: tcp_header.window_scale,
     }
@@ -126,6 +128,7 @@ fn analyze_tcp_segment(
         is_outgoing,
         has_ack_flag,
         is_syn,
+        is_fin,
         is_rst,
         window_scale,
     } = segment;
@@ -133,6 +136,11 @@ fn analyze_tcp_segment(
     // Read before this segment overwrites it: RFC 5681 asks whether the
     // window moved, which only the previous advertisement can answer.
     let previous_window_in = analytics.last_window_in;
+    // A keepalive probe may carry one garbage byte at SND.NXT - 1 (RFC 1122
+    // §4.2.3.6), which Windows does. It re-covers a sent byte without being a
+    // resend, so it counts as neither loss nor reordering. SYN and FIN each
+    // consume a sequence number, so a resent bare one has this same shape.
+    let one_byte_data = payload_len == 1 && !is_syn && !is_fin && !is_rst;
 
     // Learn each side's window-scale shift from its SYN. Only a fully
     // examined SYN without the option turns scaling off (RFC 7323); a SYN
@@ -172,6 +180,8 @@ fn analyze_tcp_segment(
                 analytics.seen_outbound = true;
                 analytics.highest_seq_outbound = seq_end;
                 arm_rtt_probe(analytics, seq_end, at);
+            } else if one_byte_data && seq_end == analytics.highest_seq_outbound {
+                debug!("TCP keepalive probe ignored: seq={}", seq);
             } else if !seq_lt(analytics.highest_seq_outbound, seq_end) {
                 // Segment ends at or before the highest byte already sent, so
                 // it carries data the peer was sent before: a retransmission.
@@ -204,6 +214,8 @@ fn analyze_tcp_segment(
                 // First inbound packet with data
                 analytics.seen_inbound = true;
                 analytics.highest_seq_inbound = seq_end;
+            } else if one_byte_data && seq_end == analytics.highest_seq_inbound {
+                debug!("TCP keepalive probe ignored: seq={}", seq);
             } else if !seq_lt(analytics.highest_seq_inbound, seq_end) {
                 // Re-covers data already received: arrived late or duplicated.
                 analytics.out_of_order_count += 1;
@@ -1475,6 +1487,7 @@ mod tests {
             is_outgoing: false,
             has_ack_flag: true,
             is_syn: false,
+            is_fin: false,
             is_rst: false,
             window_scale: None,
         }
@@ -1733,6 +1746,63 @@ mod tests {
         send(&mut a, 5100, 100); // stream continues normally afterwards
         assert_eq!(a.retransmit_count, 1);
         assert_eq!(a.highest_seq_outbound, 5200);
+    }
+
+    #[test]
+    fn one_byte_keepalive_probe_is_not_a_retransmit() {
+        // Windows keepalive probes carry one garbage byte at SND.NXT - 1.
+        let mut a = TcpAnalytics::new();
+
+        send(&mut a, 1000, 100); // highest is now 1100
+        send(&mut a, 1099, 1); // probe
+        send(&mut a, 1099, 1); // and the next one
+        assert_eq!(a.retransmit_count, 0, "a keepalive probe is not a resend");
+        assert_eq!(a.highest_seq_outbound, 1100);
+
+        send(&mut a, 1000, 100); // genuine resend still counts
+        assert_eq!(a.retransmit_count, 1);
+    }
+
+    #[test]
+    fn one_byte_resend_below_the_top_is_a_retransmit() {
+        let mut a = TcpAnalytics::new();
+
+        send(&mut a, 1000, 100);
+        send(&mut a, 1050, 1); // not at SND.NXT - 1, so not a probe
+        assert_eq!(a.retransmit_count, 1);
+    }
+
+    #[test]
+    fn resent_fin_is_a_retransmit_not_a_keepalive_probe() {
+        // A bare FIN consumes one sequence number, so a resend of it has the
+        // same shape as a one-byte probe.
+        let mut a = TcpAnalytics::new();
+        let fin = || TcpSegment {
+            seq: 1100,
+            payload_len: 1,
+            is_outgoing: true,
+            has_ack_flag: false,
+            is_fin: true,
+            ..base_segment()
+        };
+
+        send(&mut a, 1000, 100);
+        analyze_tcp_segment(&mut a, fin(), t0());
+        assert_eq!(a.retransmit_count, 0);
+        analyze_tcp_segment(&mut a, fin(), t0());
+        assert_eq!(a.retransmit_count, 1);
+    }
+
+    #[test]
+    fn inbound_one_byte_keepalive_probe_is_not_out_of_order() {
+        let mut a = TcpAnalytics::new();
+
+        recv(&mut a, 1000, 0, 100);
+        recv(&mut a, 1099, 0, 1); // probe from a Windows peer
+        assert_eq!(a.out_of_order_count, 0);
+
+        recv(&mut a, 1000, 0, 100); // genuine late segment still counts
+        assert_eq!(a.out_of_order_count, 1);
     }
 
     #[test]

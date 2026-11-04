@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stop classifying successful DNS ANY answers as NODATA in Details and passive DNS statistics (#689)
 - Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0
+- Stop counting one-byte TCP keepalive probes as retransmits or out-of-order segments (#713)
 
 ### Documentation
 - Consolidate terminal guidance into concise usage documentation in English, Chinese, and Japanese (#683)
