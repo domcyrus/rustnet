@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Discard pending TCP RTT probes on one-byte keepalives to prevent inflated or ambiguous timing samples after missed ACKs or last-byte retransmissions
 - Match local IPv4/IPv6 DNS stub replies correctly and prevent healthy resolvers from hiding a failing secondary resolver
 - Fall back to a pinned, checksum-verified Npcap SDK mirror when the primary download fails during Windows builds or CI test setup.
 - Stop classifying successful DNS ANY answers as NODATA in Details and passive DNS statistics (#689)

@@ -181,6 +181,10 @@ fn analyze_tcp_segment(
                 analytics.highest_seq_outbound = seq_end;
                 arm_rtt_probe(analytics, seq_end, at);
             } else if one_byte_data && seq_end == analytics.highest_seq_outbound {
+                // Its reply cannot reliably time earlier data if capture
+                // missed the original ACK. A genuine last-byte resend also
+                // matches this heuristic, so Karn's ambiguity rule still applies.
+                analytics.rtt_probe = None;
                 debug!("TCP keepalive probe ignored: seq={}", seq);
             } else if !seq_lt(analytics.highest_seq_outbound, seq_end) {
                 // Segment ends at or before the highest byte already sent, so
@@ -1964,6 +1968,43 @@ mod tests {
 
         let events = recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(50));
         assert_eq!(events.rtt_sample, None);
+    }
+
+    #[test]
+    fn one_byte_keepalive_discards_pending_rtt_after_a_missed_ack() {
+        let mut a = TcpAnalytics::new();
+        send_at(&mut a, 1000, 100, t0());
+
+        // The peer ACKed the data, but capture missed that ACK. Its reply to
+        // a later keepalive must not time the original data from a minute ago.
+        send_at(&mut a, 1099, 1, t0() + Duration::from_secs(60));
+        assert_eq!(a.retransmit_count, 0);
+        let events = recv_at(&mut a, 5000, 1100, 0, t0() + Duration::from_millis(60_020));
+        assert_eq!(events.rtt_sample, None);
+        assert_eq!(a.smoothed_rtt, None);
+        assert_eq!(a.rtt_probe, None);
+
+        // Fresh data still arms a probe and produces a valid measurement.
+        let sent = t0() + Duration::from_secs(61);
+        send_at(&mut a, 1100, 100, sent);
+        let events = recv_at(&mut a, 5000, 1200, 0, sent + Duration::from_millis(20));
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(20)));
+        assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn one_byte_keepalive_shape_discards_ambiguous_retransmission_rtt() {
+        let mut a = TcpAnalytics::new();
+        send_at(&mut a, 1000, 1, t0());
+
+        // A genuine resend of the last byte also matches the keepalive
+        // heuristic. Excluding it from loss must not allow an ambiguous RTT.
+        send_at(&mut a, 1000, 1, t0() + Duration::from_millis(200));
+        assert_eq!(a.retransmit_count, 0);
+        let events = recv_at(&mut a, 5000, 1001, 0, t0() + Duration::from_millis(220));
+        assert_eq!(events.rtt_sample, None);
+        assert_eq!(a.smoothed_rtt, None);
+        assert_eq!(a.rtt_probe, None);
     }
 
     #[test]
