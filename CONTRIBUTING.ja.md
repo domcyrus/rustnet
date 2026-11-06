@@ -24,6 +24,25 @@ RustNet は小さく高速であることを目指しています。よく書か
 - **全体的な効果は測定する。** CPU 使用率、メモリ使用量、スループット、応答性の改善を主張する場合は、代表的な負荷で再現可能な変更前後の測定結果を示してください。プロファイリング（[PROFILING.md](PROFILING.md)、英語）はボトルネックの特定に役立ちますが、すべての PR にフレームグラフが必要なわけではありません。
 - **効果と複雑さのバランスを取る。** 小さな簡素化はホットパスに限りません。複雑さを増す変更では、保守コストに見合う効果を示してください。
 
+### ヘッドレススナップショット
+
+手動実行する release テストは、スナップショット構築、出力形式への変換、シリアライズ、ペイロード量を測定し、キャッシュ出力と完全シリアライズを比較します。マトリクスではアクティブ/履歴件数とメタデータ量を変えます。PCAP リプレイは待機せず、トレース時刻の 500 ms ごとに採取し、5 秒ごとにクリーンアップします。
+
+```bash
+RUSTNET_PROFILE_CSV=/tmp/matrix.csv cargo test --locked --release --lib \
+  profile_headless_matrix -- --ignored --nocapture --test-threads=1
+python3 scripts/summarize-headless-profile.py /tmp/matrix.csv
+
+RUSTNET_PROFILE_PCAP=/path/to/capture.pcap RUSTNET_PROFILE_CSV=/tmp/replay.csv \
+  cargo test --locked --release --lib profile_headless_pcap \
+  -- --ignored --nocapture --test-threads=1
+python3 scripts/summarize-headless-profile.py /tmp/replay.csv
+```
+
+毎回新しい CSV ファイル名を使ってください。既存ファイルは上書きしません。30 分の合成トレースは `python3 scripts/generate-headless-profile.py /tmp/churn.pcap` で生成できます（安定負荷には `--active 1000 --churn 0` を追加）。
+
+計測にはキャプチャ、解析/トラッキング、ホスト情報の補完、出力 I/O は含みません。リプレイ先のホストアドレスを使い、並行ワーカーはありません。キャッシュなしの参考処理が先にメモリを温めるため、その比率は公平な改善率ではありません。**代表的なライブキャプチャの検証は未完了です**。合成リプレイの結果は本番環境の CPU やメモリ測定ではありません。
+
 ## 開発の流れ<a id="development-workflow"></a>
 
 一般的なオープンソースのフォークと機能ブランチの方式を採用しています。
