@@ -128,7 +128,8 @@ clap_mangen = "0.3"
 
 [target.'cfg(windows)'.build-dependencies]
 http_req = "0.14"
-zip = "9.0.4"
+# The pinned Npcap SDK contains only unencrypted Stored/Deflate entries.
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 sha2 = "0.11"
 windows = { workspace = true, features = [
     "Win32_Foundation",

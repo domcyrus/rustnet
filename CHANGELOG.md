@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- Limit Npcap SDK ZIP support to Deflate, removing unused encryption and compression dependencies (#718)
 - Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
 
 ### Changed
