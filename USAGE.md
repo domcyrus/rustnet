@@ -168,23 +168,20 @@ Closing a JSONL pipeline early, for example with `head`, produces a broken pipe.
 
 #### Incremental JSONL (unreleased)
 
-Development builds also accept `--headless --output jsonl-delta`. This opt-in format uses **schema version 2**. Existing `jsonl` and `json` consumers keep version 1. Incremental output reduces repeated encoding and transmission of unchanged connections; it still constructs and compares the full selected snapshot on each refresh. It does not add packet or connection-event history.
+`--headless --output jsonl-delta` opts into **schema version 2**. Default `jsonl` and `json` output stays at version 1. Consumers must support these rules before switching:
 
-Each line contains the usual snapshot envelope plus `sequence`, `base_sequence`, and `removed_connection_ids`:
+- **Snapshots:** `type: "snapshot"` replaces all state. `connections` contains all selected connections, `base_sequence` is null, and `removed_connection_ids` is empty. Full snapshots are sent initially, at shutdown, and after 60 records or on the next emission after 30 seconds, whichever comes first.
+- **Deltas:** apply `type: "delta"` atomically: delete `removed_connection_ids`, then insert or replace the complete `connections` objects by `id`. Replace `timestamp`, `runtime`, `sandbox`, `stats`, and `filter` on every record. Verify the resulting total equals `connection_count`; sort by `id` to match full-snapshot ordering.
+- **Recovery:** each new stream starts at `sequence: 1`. A delta's `base_sequence` must equal the last applied sequence, and `sequence` must be its successor. On gaps, duplicates, invalid records, or count mismatches, mark state stale and ignore deltas until a valid full snapshot arrives. Do not combine streams. Recovery uses periodic snapshots, with no stdin resync request.
+- **Limits:** the baseline holds up to 10,000 active/historic connections and 16 MiB of encoded JSON, plus projected fields and bookkeeping. Larger states use full snapshots until a complete baseline fits again. All exported fields participate in change detection, including late metadata and final counters.
 
-- **`type: "snapshot"`** replaces all consumer state. `connections` contains every selected connection, `base_sequence` is null, and `removed_connection_ids` is empty. The first emitted record and the terminal record are always full snapshots. Another full snapshot is emitted after 60 records or on the next emission at least 30 seconds after the preceding full snapshot, whichever comes first.
-- **`type: "delta"`** is one atomic batch. Remove `removed_connection_ids`, then insert or replace each entry in `connections` by opaque `id`. These entries are complete connection objects, not field patches. Unchanged connections are omitted. Replace `timestamp`, `runtime`, `sandbox`, `stats`, and `filter` from every record; these fields are always complete. `connection_count` is the total after applying the batch, not the number of updates. Sort reconstructed connections by `id` to match full snapshot ordering.
-- **Ordering and recovery:** `sequence` starts at 1 for each new output stream and increases by one per emitted record. Apply a delta only when `base_sequence` equals the last applied sequence and `sequence` is its successor. On a missing, duplicate, out-of-order, or invalid record, mark state stale and ignore deltas until a valid full snapshot replaces it. Also verify that the resulting connection count matches `connection_count`. A new process/pipe is a new stream; never combine streams. There is no stdin resync request; periodic and terminal full snapshots provide recovery.
-- **Backpressure and shutdown:** deltas are computed on the writer worker against the preceding emitted state, after stale queued snapshots are replaced. Gaps in `runtime.snapshot_generation` therefore do not invalidate a delta. Broken-pipe handling, bounded buffering, shutdown deadlines, and error reporting are the same as for `jsonl`. A blocked or failed writer can still prevent terminal output.
-- **Bounds:** the baseline retains at most 10,000 active and historic records combined and 16 MiB of encoded connection JSON, plus projected fields and bookkeeping. If either limit is exceeded, emit full snapshots without retaining a partial baseline. Deltas resume after a complete baseline fits again. Late metadata, final counters, filtering, history eviction, and reused endpoints are compared using all exported connection fields.
+Deltas compare against the preceding emitted state, so skipped `runtime.snapshot_generation` values under backpressure are safe. Buffering, shutdown deadlines, and error handling match `jsonl`; terminal delivery is not guaranteed if writing fails or blocks.
 
-For a reproducible synthetic comparison, run:
+This reduces unchanged output, but still constructs full snapshots and can cost more when most connections change. It does not add event history. See [PROFILING.md](PROFILING.md) for workload measurements. The synthetic benchmark is:
 
 ```bash
 cargo test --release --locked --lib --all-features benchmark_history_encoding -- --ignored --nocapture
 ```
-
-The benchmark reports projection time, encoding time, and average bytes for uncached full snapshots, cached full snapshots, and incremental output. It varies active/history counts and metadata size, includes periodic full snapshots, and exercises baseline-limit fallback. These are synthetic measurements, not long-running live-capture CPU results. For live profiling, compare `--output jsonl` with `--output jsonl-delta` using the same traffic, interface, filters, history settings, and refresh interval; record CPU, memory, output bytes, connection counts, and capture drops as described in [PROFILING.md](PROFILING.md). When most connections change, incremental encoding can cost more than full output; measure the intended workload. Existing consumers must implement and validate version 2 reconstruction before opting in.
 
 #### Traffic history and capture files
 

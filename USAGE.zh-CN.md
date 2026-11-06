@@ -167,23 +167,20 @@ rustnet --headless --filter 'process:curl app:https'
 
 #### 增量 JSONL（未发布）
 
-开发版本还支持 `--headless --output jsonl-delta`。此可选格式使用 **schema 版本 2**，现有 `jsonl` 和 `json` 使用方继续使用版本 1。增量输出减少未变化连接的重复编码和传输，但每次刷新仍会构建并比较完整的所选快照，不会增加逐包或连接事件历史。
+`--headless --output jsonl-delta` 显式启用 **schema 版本 2**。默认 `jsonl` 和 `json` 仍使用版本 1。使用方切换前必须支持以下规则：
 
-每行包含常规快照信封字段，以及 `sequence`、`base_sequence` 和 `removed_connection_ids`：
+- **快照：**`type: "snapshot"` 替换全部状态。`connections` 包含所有选中的连接，`base_sequence` 为 null，`removed_connection_ids` 为空。首次、关闭时，以及距上次完整快照 60 条记录后或满 30 秒后的下一次输出时，发送完整快照，以先到者为准。
+- **增量：**原子应用 `type: "delta"`：先删除 `removed_connection_ids`，再按 `id` 插入或替换完整的 `connections` 对象。每条记录都替换 `timestamp`、`runtime`、`sandbox`、`stats` 和 `filter`。验证最终总数等于 `connection_count`；按 `id` 排序可匹配完整快照的顺序。
+- **恢复：**每个新流从 `sequence: 1` 开始。增量的 `base_sequence` 必须等于最后应用的序号，`sequence` 必须是其下一序号。遇到间断、重复、无效记录或数量不符时，将状态标为过期，并忽略增量直到有效完整快照到达。不要混合不同流。恢复依靠周期性快照，不支持 stdin 重新同步请求。
+- **上限：**基线最多保留合计 10,000 条活跃及历史连接、16 MiB 的 JSON 编码，以及投影字段和管理数据。超过上限时使用完整快照，直到完整基线再次满足上限。所有导出字段都参与变化检测，包括延迟元数据和最终计数。
 
-- **`type: "snapshot"`**：替换使用方的全部状态。`connections` 包含所有选中的连接，`base_sequence` 为 null，`removed_connection_ids` 为空。首次输出和最终终止记录始终是完整快照。距离上次完整快照输出 60 条记录后，或满 30 秒后的下一次输出时，再发送完整快照，以先到者为准。
-- **`type: "delta"`**：一个原子批次。先删除 `removed_connection_ids`，再按不透明的 `id` 插入或替换 `connections` 中的条目。这些条目是完整连接对象，而非字段补丁；未变化的连接不输出。每条记录的 `timestamp`、`runtime`、`sandbox`、`stats` 和 `filter` 都完整提供，应直接替换。`connection_count` 是应用批次后的总连接数，不是更新条目数。按 `id` 排序即可与完整快照的连接顺序一致。
-- **顺序与恢复：**每个新输出流的 `sequence` 从 1 开始，每输出一条记录递增 1。仅当 `base_sequence` 等于最后应用的序号，且 `sequence` 是其下一序号时，才能应用增量。遇到缺失、重复、乱序或无效记录时，将状态标为过期并忽略增量，直到有效的完整快照将其替换。还应验证重建后的连接数等于 `connection_count`。新的进程或管道是新流，不得混合不同流。没有通过 stdin 请求重新同步的机制；周期性和最终完整快照用于恢复。
-- **背压与关闭：**写入线程在替换队列中的过期快照之后，基于上一次实际输出的状态计算增量。因此 `runtime.snapshot_generation` 的间断不会使增量失效。broken pipe 处理、有界缓冲、关闭期限和错误报告与 `jsonl` 相同。写入阻塞或失败仍可能导致最终记录无法输出。
-- **上限：**基线最多保留合计 10,000 条活跃和历史记录、16 MiB 的连接 JSON 编码，以及投影字段和管理数据。超过任一上限时，输出完整快照且不保留不完整基线。完整基线再次满足上限后恢复增量。所有导出的连接字段都参与比较，以保留延迟元数据、最终计数、过滤变化、历史淘汰和端点复用。
+增量基于上一次实际输出的状态计算，因此背压导致的 `runtime.snapshot_generation` 间断是安全的。缓冲、关闭期限和错误处理与 `jsonl` 相同；写入失败或阻塞时不保证最终记录送达。
 
-可运行以下可复现的合成基准：
+此模式减少未变化的输出，但仍构建完整快照，且大部分连接变化时开销可能更高。它不增加事件历史。工作负载测量见 [PROFILING.zh-CN.md](PROFILING.zh-CN.md)。合成基准命令：
 
 ```bash
 cargo test --release --locked --lib --all-features benchmark_history_encoding -- --ignored --nocapture
 ```
-
-基准报告未缓存完整快照、缓存完整快照和增量输出的投影耗时、编码耗时和平均字节数。它改变活跃及历史连接数和元数据大小，包含周期性完整快照，并测试基线上限回退。这是合成测量，并非长时间实际抓包的 CPU 结果。实际分析应在相同流量、接口、过滤器、历史设置和刷新间隔下比较 `--output jsonl` 与 `--output jsonl-delta`，按照 [PROFILING.zh-CN.md](PROFILING.zh-CN.md) 记录 CPU、内存、输出字节数、连接数和抓包丢包。当大部分连接都发生变化时，增量编码的开销可能高于完整输出，应测量目标工作负载。现有使用方必须先实现并验证版本 2 重建，再启用此格式。
 
 #### 流量历史与抓包文件
 
