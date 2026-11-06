@@ -20,12 +20,10 @@ pub mod bootstrap;
 pub mod cli;
 pub mod config;
 pub(crate) mod export;
-pub(crate) mod filter;
 pub mod headless;
 pub mod network;
 #[cfg(test)]
-#[path = "test_support/scratch_dir.rs"]
-mod scratch_dir;
+mod test_support;
 mod tui;
 pub mod ui;
 

@@ -700,7 +700,8 @@ pub(in crate::ui) fn draw_help_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::test_support::{empty_ctx, render, test_app};
+    use crate::test_support::test_app;
+    use crate::ui::test_support::{empty_ctx, render};
 
     fn plain_text(ui_state: &UiState) -> String {
         help_lines(HelpContext::from_state(ui_state), ui_state)

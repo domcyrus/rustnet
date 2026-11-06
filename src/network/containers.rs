@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn metadata_names_are_optional_and_scoped_to_runtime() {
-        let scratch = crate::scratch_dir::ScratchDir::new("container", "metadata");
+        let scratch = crate::test_support::scratch_dir::ScratchDir::new("container", "metadata");
         let root = scratch.path();
         let docker = root.join(ID);
         std::fs::create_dir(&docker).unwrap();

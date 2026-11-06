@@ -1,9 +1,10 @@
 //! Bounded passive DNS transaction analytics.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 
+use super::pending::{PendingStamp, PendingTable};
 use super::types::{ConnectionKey, DnsInfo, DnsQueryType};
 
 mod aggregate;
@@ -161,13 +162,31 @@ struct CompletedTransaction {
     timed_out: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct DnsAnalyticsTracker {
-    pending: HashMap<TransactionKey, PendingTransaction>,
+    pending: PendingTable<TransactionKey, PendingTransaction>,
     completed: VecDeque<CompletedTransaction>,
     truncated_at: Option<SystemTime>,
     recent_issues: VecDeque<DnsIssue>,
     session: DnsAggregate,
+}
+
+impl PendingStamp for PendingTransaction {
+    fn stamp(&self) -> SystemTime {
+        self.last_sent_at
+    }
+}
+
+impl Default for DnsAnalyticsTracker {
+    fn default() -> Self {
+        Self {
+            pending: PendingTable::new(MAX_PENDING_DNS_TRANSACTIONS, DNS_TRANSACTION_TIMEOUT),
+            completed: VecDeque::new(),
+            truncated_at: None,
+            recent_issues: VecDeque::new(),
+            session: DnsAggregate::default(),
+        }
+    }
 }
 
 impl DnsAnalyticsTracker {
@@ -186,7 +205,7 @@ impl DnsAnalyticsTracker {
 
         if is_outgoing && !info.is_response {
             let query_name = normalize_query_name(info.query_name.as_deref());
-            if let Some(pending) = self.pending.get_mut(&key)
+            if let Some(pending) = self.pending.map.get_mut(&key)
                 && pending.query_name == query_name
                 && pending.query_type == info.query_type
             {
@@ -194,7 +213,7 @@ impl DnsAnalyticsTracker {
                 pending.retries = pending.retries.saturating_add(1);
                 return;
             }
-            if self.pending.contains_key(&key) {
+            if self.pending.map.contains_key(&key) {
                 self.session.truncated = true;
                 self.mark_truncated(at);
             }
@@ -205,10 +224,7 @@ impl DnsAnalyticsTracker {
                 query_name: normalize_query_name(info.query_name.as_deref()),
                 query_type: info.query_type,
             };
-            if self.pending.len() < MAX_PENDING_DNS_TRANSACTIONS || self.pending.contains_key(&key)
-            {
-                self.pending.insert(key, pending);
-            } else {
+            if self.pending.start(key, pending).is_none() {
                 self.session.truncated = true;
                 self.mark_truncated(at);
             }
@@ -220,7 +236,7 @@ impl DnsAnalyticsTracker {
         }
 
         // Do not let an old reply with a reused ID finish a different question.
-        if let Some(pending) = self.pending.get(&key)
+        if let Some(pending) = self.pending.map.get(&key)
             && ((pending.query_name.is_some()
                 && info.query_name.is_some()
                 && pending.query_name != normalize_query_name(info.query_name.as_deref()))
@@ -230,7 +246,7 @@ impl DnsAnalyticsTracker {
         {
             return;
         }
-        let Some(mut pending) = self.pending.remove(&key) else {
+        let Some(mut pending) = self.pending.complete(&key) else {
             return;
         };
         if pending.query_name.is_none() {
@@ -268,7 +284,7 @@ impl DnsAnalyticsTracker {
             .and_then(|duration| now.checked_sub(duration));
         let mut snapshot =
             if window == TimeWindow::SinceStartup {
-                self.session.snapshot(now, &self.pending)
+                self.session.snapshot(now, &self.pending.map)
             } else {
                 let mut aggregate = DnsAggregate::new(window);
                 for transaction in self.completed.iter().filter(|transaction| {
@@ -279,7 +295,7 @@ impl DnsAnalyticsTracker {
                 aggregate.truncated = self
                     .truncated_at
                     .is_some_and(|at| cutoff.is_none_or(|cutoff| at > cutoff));
-                aggregate.snapshot(now, &self.pending)
+                aggregate.snapshot(now, &self.pending.map)
             };
         snapshot.recent_issues = self.recent_issues.iter().rev().cloned().collect();
         snapshot
@@ -294,31 +310,22 @@ impl DnsAnalyticsTracker {
     }
 
     fn expire_pending(&mut self, now: SystemTime) {
-        let pending_cutoff = now.checked_sub(DNS_TRANSACTION_TIMEOUT);
-        let expired: Vec<TransactionKey> = pending_cutoff.map_or_else(Vec::new, |cutoff| {
-            self.pending
-                .iter()
-                .filter_map(|(key, pending)| (pending.last_sent_at <= cutoff).then_some(*key))
-                .collect()
-        });
-        for key in expired {
-            if let Some(pending) = self.pending.remove(&key) {
-                let completed_at = pending
-                    .last_sent_at
-                    .checked_add(DNS_TRANSACTION_TIMEOUT)
-                    .unwrap_or(now);
-                self.push_completed(CompletedTransaction {
-                    completed_at,
-                    resolver: key.connection.remote_addr,
-                    retries: pending.retries,
-                    query_name: pending.query_name,
-                    query_type: pending.query_type,
-                    rcode: None,
-                    nodata: false,
-                    latency: None,
-                    timed_out: true,
-                });
-            }
+        for (key, pending) in self.pending.prune(now) {
+            let completed_at = pending
+                .last_sent_at
+                .checked_add(DNS_TRANSACTION_TIMEOUT)
+                .unwrap_or(now);
+            self.push_completed(CompletedTransaction {
+                completed_at,
+                resolver: key.connection.remote_addr,
+                retries: pending.retries,
+                query_name: pending.query_name,
+                query_type: pending.query_type,
+                rcode: None,
+                nodata: false,
+                latency: None,
+                timed_out: true,
+            });
         }
     }
 
@@ -542,7 +549,7 @@ mod tests {
         );
 
         // A late reply still times out immediately, without pruning old history.
-        assert!(tracker.pending.is_empty());
+        assert!(tracker.pending.map.is_empty());
         assert_eq!(tracker.completed.len(), 2);
         assert!(tracker.completed.back().unwrap().timed_out);
         assert_eq!(tracker.recent_issues.len(), 2);

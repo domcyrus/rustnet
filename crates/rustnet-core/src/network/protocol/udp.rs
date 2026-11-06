@@ -126,7 +126,12 @@ mod tests {
             let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
             tracker.ingest_at(&query, at);
             let outcome = tracker.ingest_at(&reply, at + Duration::from_millis(20));
-            assert_eq!(outcome.dns_response_time, Some(Duration::from_millis(20)));
+            let response_time = tracker
+                .connections()
+                .get(&outcome.key)
+                .unwrap()
+                .dns_response_time;
+            assert_eq!(response_time, Some(Duration::from_millis(20)));
             let snapshot = tracker.dns_analytics_snapshot_at(at + Duration::from_secs(11));
             assert_eq!(snapshot.answered, 1);
             assert_eq!(snapshot.timeouts, 0);

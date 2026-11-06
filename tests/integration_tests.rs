@@ -2,7 +2,7 @@
 
 #[cfg(target_os = "linux")]
 mod linux_tests {
-    use rustnet_monitor::network::platform::create_process_lookup;
+    use rustnet_host::create_process_lookup;
 
     #[test]
     fn test_process_lookup_creation_and_refresh() {
@@ -13,7 +13,7 @@ mod linux_tests {
 
 #[cfg(target_os = "macos")]
 mod other_platforms {
-    use rustnet_monitor::network::platform::create_process_lookup;
+    use rustnet_host::create_process_lookup;
 
     #[test]
     fn test_other_platform_lookup() {

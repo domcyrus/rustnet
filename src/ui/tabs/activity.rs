@@ -1197,7 +1197,8 @@ mod tests {
     #[test]
     fn interface_bars_follow_window_traffic_while_live_rates_keep_their_columns() {
         use crate::network::interface_stats::{InterfaceRates, InterfaceTrafficWindow};
-        use crate::ui::test_support::{render_buffer, test_app};
+        use crate::test_support::test_app;
+        use crate::ui::test_support::render_buffer;
         let app = test_app();
         for (name, tx, rx) in [("接口", 75, 25), ("eth0", 25, 75)] {
             app.set_interface_rates_for_test(name, InterfaceRates::default());
