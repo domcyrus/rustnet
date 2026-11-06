@@ -161,11 +161,11 @@ jobs:
         include:
           - cargo: cargo
           - build: macos-aarch64
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
             run-tests: true
           - build: macos-x64
-            os: macos-14
+            os: macos-15
             target: x86_64-apple-darwin
           - build: windows-x64-msvc
             os: windows-latest
