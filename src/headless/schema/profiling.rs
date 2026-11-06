@@ -164,10 +164,9 @@ fn profile_headless_matrix() {
 #[ignore = "manual release PCAP replay; requires RUSTNET_PROFILE_PCAP and RUSTNET_PROFILE_CSV"]
 fn profile_headless_pcap() {
     let path = std::env::var_os("RUSTNET_PROFILE_PCAP").expect("set RUSTNET_PROFILE_PCAP");
-    // Explicit microsecond precision matches timeval handling below, including
-    // when libpcap reads a nanosecond-resolution file.
-    let mut capture =
-        pcap::Capture::from_file_with_precision(path, pcap::Precision::Micro).unwrap();
+    // The portable reader returns microseconds, including for nanosecond files.
+    // The explicit-precision API is unavailable with Windows' default pcap cfg.
+    let mut capture = pcap::Capture::from_file(path).unwrap();
     let parser = PacketParser::new().with_linktype(capture.get_datalink().0);
     let tracker = ConnectionTracker::new();
     let mut profiler = Profiler::new();
