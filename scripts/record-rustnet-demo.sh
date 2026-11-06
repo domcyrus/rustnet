@@ -6,8 +6,18 @@ set -euo pipefail
 #
 # Prerequisites (Linux):
 #   vhs                            # required (https://github.com/charmbracelet/vhs)
+#   a Braille-capable font         # required, see below
 #   gifsicle                       # optional, for GIF size optimization
+#   dig                            # optional, no DNS rows in the capture without it
 #   cargo build --release          # auto-run if target/release/rustnet missing
+#
+# The traffic graphs are drawn with Unicode Braille, so the recording font
+# needs those glyphs or every graph cell renders as fallback tofu and the
+# waves come out as a solid block. Both tapes pin "JetBrainsMono Nerd Font
+# Mono" for that reason.
+#   Arch:   sudo pacman -S ttf-jetbrains-mono-nerd gifsicle bind
+#   Debian: sudo apt install fonts-jetbrains-mono gifsicle dnsutils
+#   Verify: fc-list ':charset=2840' family
 #
 # Usage:
 #   scripts/record-rustnet-demo.sh

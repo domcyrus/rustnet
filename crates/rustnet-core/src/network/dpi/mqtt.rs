@@ -2,7 +2,7 @@ use crate::network::types::{MqttInfo, MqttPacketType, MqttVersion};
 use log::debug;
 
 /// Quick check if payload looks like an MQTT packet.
-pub fn is_mqtt_packet(payload: &[u8]) -> bool {
+pub(super) fn is_mqtt_packet(payload: &[u8]) -> bool {
     if payload.len() < 2 {
         return false;
     }
@@ -10,26 +10,23 @@ pub fn is_mqtt_packet(payload: &[u8]) -> bool {
     let packet_type = payload[0] >> 4;
     let flags = payload[0] & 0x0F;
 
-    // Valid MQTT packet types are 1-14
-    if !(1..=14).contains(&packet_type) {
+    // Valid MQTT packet types are 1-15 (AUTH=15 was added in MQTT 5)
+    if !(1..=15).contains(&packet_type) {
         return false;
     }
 
-    // Validate flags for packet types with fixed flag requirements (MQTT spec §2.1.2)
-    match packet_type {
-        1 | 2 | 4 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 => {
-            // CONNECT, CONNACK, PUBACK, PUBREL, PUBCOMP, SUBACK, UNSUBACK,
-            // PINGREQ/RESP, DISCONNECT must have flags = 0, except SUBSCRIBE(8)
-            // and UNSUBSCRIBE(10) which must have 0x02.
-            let expected = match packet_type {
-                8 | 10 => 0x02, // SUBSCRIBE, UNSUBSCRIBE require bit 1 set
-                _ => 0x00,
-            };
-            if flags != expected {
-                return false;
-            }
+    // Validate flags for packet types with fixed flag requirements (MQTT
+    // spec §2.1.2): every type except PUBLISH(3), whose flags carry
+    // DUP/QoS/RETAIN, has reserved flags: 0x02 for PUBREL(6),
+    // SUBSCRIBE(8), and UNSUBSCRIBE(10), 0x00 for the rest.
+    if packet_type != 3 {
+        let expected = match packet_type {
+            6 | 8 | 10 => 0x02,
+            _ => 0x00,
+        };
+        if flags != expected {
+            return false;
         }
-        _ => {} // PUBLISH(3), PUBREC(5) — flags carry DUP/QoS/RETAIN
     }
 
     // Validate remaining length encoding and check it's plausible
@@ -54,7 +51,7 @@ pub fn is_mqtt_packet(payload: &[u8]) -> bool {
 }
 
 /// Full MQTT packet analysis.
-pub fn analyze_mqtt(payload: &[u8]) -> Option<MqttInfo> {
+pub(super) fn analyze_mqtt(payload: &[u8]) -> Option<MqttInfo> {
     if payload.len() < 2 {
         return None;
     }
@@ -69,6 +66,9 @@ pub fn analyze_mqtt(payload: &[u8]) -> Option<MqttInfo> {
         2 => MqttPacketType::Connack,
         3 => MqttPacketType::Publish,
         4 => MqttPacketType::Puback,
+        5 => MqttPacketType::Pubrec,
+        6 => MqttPacketType::Pubrel,
+        7 => MqttPacketType::Pubcomp,
         8 => MqttPacketType::Subscribe,
         9 => MqttPacketType::Suback,
         10 => MqttPacketType::Unsubscribe,
@@ -76,6 +76,7 @@ pub fn analyze_mqtt(payload: &[u8]) -> Option<MqttInfo> {
         12 => MqttPacketType::Pingreq,
         13 => MqttPacketType::Pingresp,
         14 => MqttPacketType::Disconnect,
+        15 => MqttPacketType::Auth,
         _ => return None,
     };
 
@@ -146,30 +147,37 @@ fn has_mqtt_protocol_name(payload: &[u8]) -> bool {
     let var_start = 1 + header_len;
 
     // Protocol name is a length-prefixed string
-    if var_start + 2 > payload.len() {
-        return false;
-    }
+    matches!(
+        read_mqtt_string(payload, var_start),
+        Some((b"MQTT" | b"MQIsdp", _))
+    )
+}
 
-    let name_len = u16::from_be_bytes([payload[var_start], payload[var_start + 1]]) as usize;
-    let name_start = var_start + 2;
-    let name_end = name_start + name_len;
+/// Read an MQTT UTF-8 encoded string at `offset`: a 2-byte big-endian length
+/// prefix followed by that many bytes. Returns the bytes and the offset just
+/// past them, or `None` if the prefix or the body is cut off.
+fn read_mqtt_string(payload: &[u8], offset: usize) -> Option<(&[u8], usize)> {
+    let len_bytes = payload.get(offset..offset + 2)?;
+    let len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+    let start = offset + 2;
+    let end = start + len;
+    Some((payload.get(start..end)?, end))
+}
 
-    if name_end > payload.len() {
-        return false;
-    }
-
-    let name = &payload[name_start..name_end];
-    name == b"MQTT" || name == b"MQIsdp"
+/// Like [`read_mqtt_string`], but only accepts non-empty valid UTF-8 and
+/// returns an owned `String`.
+fn read_mqtt_str(payload: &[u8], offset: usize) -> Option<(String, usize)> {
+    let (bytes, end) = read_mqtt_string(payload, offset)?;
+    let s = std::str::from_utf8(bytes).ok()?;
+    (!s.is_empty()).then(|| (s.to_string(), end))
 }
 
 /// Parse a CONNECT packet to extract version, client ID.
 fn parse_connect(payload: &[u8], var_start: usize, info: &mut MqttInfo) {
     // Protocol Name (length-prefixed string)
-    if var_start + 2 > payload.len() {
+    let Some((_, after_name)) = read_mqtt_string(payload, var_start) else {
         return;
-    }
-    let name_len = u16::from_be_bytes([payload[var_start], payload[var_start + 1]]) as usize;
-    let after_name = var_start + 2 + name_len;
+    };
 
     // Protocol Level byte
     if after_name >= payload.len() {
@@ -194,43 +202,15 @@ fn parse_connect(payload: &[u8], var_start: usize, info: &mut MqttInfo) {
     };
 
     // Client ID (length-prefixed string)
-    if payload_start + 2 > payload.len() {
-        return;
-    }
-    let client_id_len =
-        u16::from_be_bytes([payload[payload_start], payload[payload_start + 1]]) as usize;
-    let client_id_start = payload_start + 2;
-    let client_id_end = client_id_start + client_id_len;
-
-    if client_id_end > payload.len() {
-        return;
-    }
-
-    if let Ok(client_id) = std::str::from_utf8(&payload[client_id_start..client_id_end])
-        && !client_id.is_empty()
-    {
-        info.client_id = Some(client_id.to_string());
+    if let Some((client_id, _)) = read_mqtt_str(payload, payload_start) {
+        info.client_id = Some(client_id);
     }
 }
 
 /// Parse the topic from a PUBLISH packet.
 fn parse_publish_topic(payload: &[u8], var_start: usize, info: &mut MqttInfo) {
-    if var_start + 2 > payload.len() {
-        return;
-    }
-
-    let topic_len = u16::from_be_bytes([payload[var_start], payload[var_start + 1]]) as usize;
-    let topic_start = var_start + 2;
-    let topic_end = topic_start + topic_len;
-
-    if topic_end > payload.len() {
-        return;
-    }
-
-    if let Ok(topic) = std::str::from_utf8(&payload[topic_start..topic_end])
-        && !topic.is_empty()
-    {
-        info.topic = Some(topic.to_string());
+    if let Some((topic, _)) = read_mqtt_str(payload, var_start) {
+        info.topic = Some(topic);
     }
 }
 
@@ -436,11 +416,36 @@ mod tests {
     }
 
     #[test]
-    fn test_type_15_invalid() {
-        // Type 15 is reserved
+    fn test_type_15_auth() {
+        // Type 15 is AUTH in MQTT 5. Not signature-detected (only CONNECT
+        // is), but the port-based path must classify it.
         let pkt = vec![0xF0, 0x00];
         assert!(!is_mqtt_packet(&pkt));
-        assert!(analyze_mqtt(&pkt).is_none());
+        let info = analyze_mqtt(&pkt).unwrap();
+        assert_eq!(info.packet_type, MqttPacketType::Auth);
+    }
+
+    #[test]
+    fn test_qos2_flow_packets() {
+        // PUBREC / PUBREL / PUBCOMP make up the QoS 2 delivery flow;
+        // PUBREL carries the reserved flags 0x02 (MQTT spec §2.1.2).
+        let pubrec = vec![0x50, 0x02, 0x00, 0x01];
+        assert_eq!(
+            analyze_mqtt(&pubrec).unwrap().packet_type,
+            MqttPacketType::Pubrec
+        );
+
+        let pubrel = vec![0x62, 0x02, 0x00, 0x01];
+        assert_eq!(
+            analyze_mqtt(&pubrel).unwrap().packet_type,
+            MqttPacketType::Pubrel
+        );
+
+        let pubcomp = vec![0x70, 0x02, 0x00, 0x01];
+        assert_eq!(
+            analyze_mqtt(&pubcomp).unwrap().packet_type,
+            MqttPacketType::Pubcomp
+        );
     }
 
     #[test]
@@ -479,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_invalid_remaining_length() {
-        // All continuation bits set (> 4 bytes) — invalid
+        // All continuation bits set (> 4 bytes): invalid
         let pkt = vec![0x20, 0x80, 0x80, 0x80, 0x80, 0x01];
         assert!(!is_mqtt_packet(&pkt));
     }

@@ -1,0 +1,45 @@
+name: 'Upload Release Assets'
+description: >-
+  Upload files to a GitHub release, skipping assets that are already on the
+  release unless overwrite is true.
+
+# Chocolatey, Scoop and the AUR binary package pin checksums of the published
+# assets, so a rebuilt asset must never silently replace one that users may
+# already install from. Backfills therefore only add what is missing.
+
+inputs:
+  tag:
+    description: 'Release tag to upload to'
+    required: true
+  files:
+    description: 'Files to upload, whitespace separated; globs are expanded'
+    required: true
+  overwrite:
+    description: 'Replace assets that already exist on the release'
+    required: false
+    default: 'false'
+  token:
+    description: 'GitHub token with contents: write'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Upload assets
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        TAG: ${{ inputs.tag }}
+        FILES: ${{ inputs.files }}
+        OVERWRITE: ${{ inputs.overwrite }}
+      run: |
+        existing="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+        # shellcheck disable=SC2086
+        for file in $FILES; do
+          name="$(basename "$file")"
+          if [ "$OVERWRITE" != "true" ] && grep -qxF -- "$name" <<< "$existing"; then
+            echo "Skipping $name: already on release $TAG (set overwrite_assets to replace it)"
+            continue
+          fi
+          gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY" --clobber
+        done

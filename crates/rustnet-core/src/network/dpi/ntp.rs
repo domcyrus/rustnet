@@ -11,7 +11,7 @@ const MIN_NTP_PACKET_SIZE: usize = 48;
 /// Analyze an NTP packet and extract key information.
 ///
 /// Returns `None` if the packet is too small or has invalid version.
-pub fn analyze_ntp(payload: &[u8]) -> Option<NtpInfo> {
+pub(super) fn analyze_ntp(payload: &[u8]) -> Option<NtpInfo> {
     // Early size check - NTP packets are at least 48 bytes
     if payload.len() < MIN_NTP_PACKET_SIZE {
         return None;
@@ -28,11 +28,27 @@ pub fn analyze_ntp(payload: &[u8]) -> Option<NtpInfo> {
         return None;
     }
 
+    // A server echoes the client's transmit timestamp back as the originate
+    // timestamp (RFC 5905 §8), which is what pairs a request with its
+    // response for round-trip timing.
+    let origin_timestamp = read_u64(payload, 24);
+    let transmit_timestamp = read_u64(payload, 40);
+
     Some(NtpInfo {
         version,
         mode: NtpMode::from(mode),
         stratum,
+        origin_timestamp,
+        transmit_timestamp,
     })
+}
+
+/// Read a big-endian u64 at `offset`; the caller guarantees the bounds via
+/// the minimum packet size check.
+fn read_u64(payload: &[u8], offset: usize) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&payload[offset..offset + 8]);
+    u64::from_be_bytes(bytes)
 }
 
 #[cfg(test)]
@@ -48,30 +64,32 @@ mod tests {
     }
 
     #[test]
-    fn test_ntp_client_request() {
-        let packet = build_ntp_packet(4, 3, 0); // v4, client mode, stratum 0
-        let info = analyze_ntp(&packet).expect("should parse");
-        assert_eq!(info.version, 4);
-        assert_eq!(info.mode, NtpMode::Client);
-        assert_eq!(info.stratum, 0);
+    fn test_ntp_modes_and_versions() {
+        for (version, mode, stratum, expected) in [
+            (4, 3, 0, NtpMode::Client),
+            (4, 4, 2, NtpMode::Server),
+            (3, 5, 1, NtpMode::Broadcast),
+            (4, 1, 3, NtpMode::SymmetricActive),
+            (4, 2, 3, NtpMode::SymmetricPassive),
+        ] {
+            let packet = build_ntp_packet(version, mode, stratum);
+            let info = analyze_ntp(&packet).expect("valid NTP mode and version");
+            assert_eq!(
+                (info.version, info.mode, info.stratum),
+                (version, expected, stratum),
+                "mode {mode}"
+            );
+        }
     }
 
     #[test]
-    fn test_ntp_server_response() {
-        let packet = build_ntp_packet(4, 4, 2); // v4, server mode, stratum 2
+    fn test_ntp_extracts_origin_and_transmit_timestamps() {
+        let mut packet = build_ntp_packet(4, 4, 2);
+        packet[24..32].copy_from_slice(&0x1122_3344_5566_7788u64.to_be_bytes());
+        packet[40..48].copy_from_slice(&0x99AA_BBCC_DDEE_FF00u64.to_be_bytes());
         let info = analyze_ntp(&packet).expect("should parse");
-        assert_eq!(info.version, 4);
-        assert_eq!(info.mode, NtpMode::Server);
-        assert_eq!(info.stratum, 2);
-    }
-
-    #[test]
-    fn test_ntp_v3_broadcast() {
-        let packet = build_ntp_packet(3, 5, 1); // v3, broadcast mode, stratum 1
-        let info = analyze_ntp(&packet).expect("should parse");
-        assert_eq!(info.version, 3);
-        assert_eq!(info.mode, NtpMode::Broadcast);
-        assert_eq!(info.stratum, 1);
+        assert_eq!(info.origin_timestamp, 0x1122_3344_5566_7788);
+        assert_eq!(info.transmit_timestamp, 0x99AA_BBCC_DDEE_FF00);
     }
 
     #[test]
@@ -81,28 +99,10 @@ mod tests {
     }
 
     #[test]
-    fn test_ntp_invalid_version_zero() {
-        let packet = build_ntp_packet(0, 3, 0); // Invalid version 0
-        assert!(analyze_ntp(&packet).is_none());
-    }
-
-    #[test]
-    fn test_ntp_invalid_version_high() {
-        let packet = build_ntp_packet(7, 3, 0); // Invalid version 7
-        assert!(analyze_ntp(&packet).is_none());
-    }
-
-    #[test]
-    fn test_ntp_symmetric_active() {
-        let packet = build_ntp_packet(4, 1, 3);
-        let info = analyze_ntp(&packet).expect("should parse");
-        assert_eq!(info.mode, NtpMode::SymmetricActive);
-    }
-
-    #[test]
-    fn test_ntp_symmetric_passive() {
-        let packet = build_ntp_packet(4, 2, 3);
-        let info = analyze_ntp(&packet).expect("should parse");
-        assert_eq!(info.mode, NtpMode::SymmetricPassive);
+    fn test_ntp_invalid_versions() {
+        for version in [0, 7] {
+            let packet = build_ntp_packet(version, 3, 0);
+            assert!(analyze_ntp(&packet).is_none(), "version {version}");
+        }
     }
 }

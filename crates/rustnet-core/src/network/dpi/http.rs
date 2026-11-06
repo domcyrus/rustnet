@@ -1,7 +1,7 @@
 use crate::network::types::{HttpInfo, HttpVersion};
 
 /// Analyze payload for HTTP protocol
-pub fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
+pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
     if !is_likely_http(payload) {
         return None;
     }
@@ -12,42 +12,44 @@ pub fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
         host: None,
         path: None,
         status_code: None,
+        status_token: None,
         user_agent: None,
     };
 
-    // Safe string conversion for HTTP parsing
     let text = String::from_utf8_lossy(payload);
-    // Drive the line iterator directly: the request/status line is the first
-    // element and headers are everything after it. Collecting into a `Vec<&str>`
-    // just to index `[0]` and `skip(1)` allocates one heap slice per parse.
     let mut lines = text.lines();
     let first_line = lines.next()?;
-    // Consume the first-line tokens lazily via iterator to avoid the
-    // `split_whitespace().collect::<Vec<_>>()` heap allocation. HTTP start
-    // lines always have exactly 3 SP-delimited tokens (RFC 9112 §3), so
-    // three consecutive `next()` calls are sufficient — no Vec needed.
+    // Requests have exactly 3 SP-delimited tokens; responses have 2 or 3
+    // since the reason phrase is optional (RFC 9112 §4).
     let mut tokens = first_line.split_whitespace();
-    let (tok0, tok1, tok2) = match (tokens.next(), tokens.next(), tokens.next()) {
-        (Some(a), Some(b), Some(c)) => (a, b, c),
+    let (tok0, tok1) = match (tokens.next(), tokens.next()) {
+        (Some(a), Some(b)) => (a, b),
         _ => return None,
     };
 
     if first_line.starts_with("HTTP/") {
-        // Response line: HTTP/1.1 200 OK
-        info.version = parse_http_version(tok0);
-        info.status_code = tok1.parse::<u16>().ok();
+        // Response line: HTTP/1.1 200 OK. The reason phrase may be empty,
+        // but the status code must be a 3-digit number.
+        info.version = parse_http_version(tok0)?;
+        info.status_code = Some(
+            tok1.parse::<u16>()
+                .ok()
+                .filter(|c| (100..=599).contains(c))?,
+        );
+        info.status_token = Some(tok1.to_string());
     } else if is_http_method(tok0) {
-        // Request line: GET /path HTTP/1.1
+        // Request line: GET /path HTTP/1.1. The version token is required:
+        // SIP and RTSP share the same verbs ("OPTIONS sip:bob@example.com
+        // SIP/2.0"), so a method match alone is not HTTP.
+        info.version = parse_http_version(tokens.next()?)?;
         info.method = Some(tok0.to_string());
         info.path = Some(tok1.to_string());
-        info.version = parse_http_version(tok2);
     } else {
         return None; // Not valid HTTP
     }
 
     // Parse headers. HTTP field-names are case-insensitive (RFC 7230 §3.2),
-    // so compare in place with `eq_ignore_ascii_case` instead of allocating a
-    // lowercased copy of every header name just to match two ASCII literals.
+    // so compare with `eq_ignore_ascii_case` rather than lowercasing.
     for line in lines {
         if line.is_empty() {
             break; // End of headers
@@ -97,18 +99,48 @@ fn is_http_method(s: &str) -> bool {
     )
 }
 
-fn parse_http_version(s: &str) -> HttpVersion {
+fn parse_http_version(s: &str) -> Option<HttpVersion> {
     match s {
-        "HTTP/1.0" => HttpVersion::Http10,
-        "HTTP/1.1" => HttpVersion::Http11,
-        "HTTP/2" => HttpVersion::Http2,
-        _ => HttpVersion::Http11,
+        "HTTP/1.0" => Some(HttpVersion::Http10),
+        "HTTP/1.1" => Some(HttpVersion::Http11),
+        "HTTP/2" => Some(HttpVersion::Http2),
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observed_http_status_preserves_original_token() {
+        for (token, code) in [
+            ("100", 100),
+            ("200", 200),
+            ("599", 599),
+            ("+200", 200),
+            ("0200", 200),
+        ] {
+            for suffix in [" OK", " ", ""] {
+                let payload = format!("HTTP/1.1 {token}{suffix}\r\n\r\n");
+                let info = analyze_http(payload.as_bytes()).expect("previously detected response");
+                assert_eq!(info.status_code, Some(code));
+                assert_eq!(info.status_token.as_deref(), Some(token));
+            }
+        }
+    }
+
+    #[test]
+    fn observed_http_status_keeps_detection_rules() {
+        for token in ["099", "600", "OK", "20", "2000"] {
+            let payload = format!("HTTP/1.1 {token} OK\r\n\r\n");
+            assert!(analyze_http(payload.as_bytes()).is_none(), "{token}");
+        }
+        let request = analyze_http(b"GET / HTTP/1.1 extra\r\n\r\n")
+            .expect("extra request tokens remain tolerated");
+        assert_eq!(request.status_code, None);
+        assert_eq!(request.status_token, None);
+    }
 
     #[test]
     fn test_http_request() {
@@ -131,22 +163,18 @@ mod tests {
 
     #[test]
     fn test_http_start_line_token_extraction() {
-        // Lock the lazy-iterator token extraction: all three tokens from a
-        // well-formed request line must be parsed without a Vec allocation.
+        // All three tokens from a well-formed request line must be parsed.
         let req = b"POST /api/v1/upload HTTP/1.1\r\nHost: api.example.com\r\n\r\n";
         let info = analyze_http(req).expect("POST request should parse");
         assert_eq!(info.method.as_deref(), Some("POST"));
         assert_eq!(info.path.as_deref(), Some("/api/v1/upload"));
         assert_eq!(info.host.as_deref(), Some("api.example.com"));
 
-        // A start line with fewer than 3 whitespace-delimited tokens must be
-        // rejected; this guards against the lazy `next()` chain silently
-        // accepting truncated lines that the old `parts.len() >= 3` guard
-        // would also have rejected.
-        let truncated: [&[u8]; 3] = [
+        // A truncated request line must be rejected: requests need all
+        // three tokens (method, target, version).
+        let truncated: [&[u8]; 2] = [
             b"GET /index.html\r\n\r\n", // only 2 tokens
             b"GET\r\n\r\n",             // only 1 token
-            b"HTTP/1.1 200\r\n\r\n",    // only 2 tokens (response, no reason phrase)
         ];
         for payload in &truncated {
             assert!(
@@ -158,12 +186,33 @@ mod tests {
     }
 
     #[test]
+    fn test_http_response_without_reason_phrase() {
+        // RFC 9112 §4: the reason phrase is optional. Real servers emit
+        // `HTTP/1.1 200 \r\n` (empty phrase) and some omit the trailing
+        // space entirely; both are valid responses.
+        for payload in [b"HTTP/1.1 200\r\n\r\n".as_slice(), b"HTTP/1.1 200 \r\n\r\n"] {
+            let info = analyze_http(payload).expect("reason phrase is optional");
+            assert_eq!(info.status_code, Some(200));
+        }
+    }
+
+    #[test]
+    fn test_non_http_text_protocols_rejected() {
+        // SIP and RTSP share request verbs with HTTP; the version token
+        // must be validated so they are not misclassified.
+        let sip = b"OPTIONS sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/TCP host\r\n\r\n";
+        assert!(analyze_http(sip).is_none());
+
+        let rtsp = b"OPTIONS rtsp://cam.local/stream RTSP/1.0\r\nCSeq: 1\r\n\r\n";
+        assert!(analyze_http(rtsp).is_none());
+
+        // A response-shaped line with a non-numeric status is not HTTP.
+        assert!(analyze_http(b"HTTP/1.1 OK 200\r\n\r\n").is_none());
+    }
+
+    #[test]
     fn test_http_mixed_case_host_and_user_agent_headers() {
-        // HTTP/1.1 §3.2 makes field-names case-insensitive. Real-world traffic
-        // varies in capitalisation (`Host`, `HOST`, `host`, etc.) and the
-        // `eq_ignore_ascii_case` refactor relies on this invariant — lock it
-        // here so a future change that drops the case-insensitive compare
-        // fails this test instead of silently regressing.
+        // HTTP/1.1 §3.2 makes field-names case-insensitive.
         let host_variants: [&[u8]; 4] = [
             b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
             b"GET / HTTP/1.1\r\nhost: example.com\r\n\r\n",

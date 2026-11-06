@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>RustNet</title>
+  <defs>
+    <linearGradient id="tile" x2="0" y2="1">
+      <stop stop-color="#1c2531"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+  <rect x="25" y="25" width="462" height="462" rx="104" fill="url(#tile)" stroke="#374151" stroke-width="2"/>
+  <g transform="translate(27 36) scale(.86)"><svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">RustNet terminal signal</title>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 88 148 L 190 256 L 88 364" stroke="#0891b2" stroke-width="52"/>
+    <path d="M 238 316 H 298 V 228 H 372 V 316 H 460" stroke="#10b981" stroke-width="44"/>
+  </g>
+</svg></g>
+</svg>

@@ -1,11 +1,11 @@
-//! Effect application — the one place the main loop reaches into
+//! Effect application: the one place the main loop reaches into
 //! `Effect`s produced by `Component::handle_key` / `handle_mouse`
 //! and translates them into the loop's local state mutations
 //! (`needs_data_refresh`, `needs_regroup`) plus side effects
 //! (clipboard write).
 
 use crate::app::App;
-use crate::ui::{Effect, UIState, copy_to_clipboard};
+use crate::ui::{Effect, UiState, copy_to_clipboard};
 
 /// Result of applying a batch of effects. The loop folds this into
 /// its own bookkeeping (refresh flags).
@@ -16,9 +16,9 @@ pub struct EffectOutcome {
 }
 
 /// Apply a vector of effects and return what the caller needs to
-/// know. Clipboard writes happen inline; UIState mutations for
+/// know. Clipboard writes happen inline; UiState mutations for
 /// the clipboard banner land through `copy_to_clipboard`.
-pub fn apply_effects(effects: Vec<Effect>, ui_state: &mut UIState, app: &App) -> EffectOutcome {
+pub fn apply_effects(effects: Vec<Effect>, ui_state: &mut UiState, app: &App) -> EffectOutcome {
     let mut out = EffectOutcome::default();
     for effect in effects {
         match effect {

@@ -26,36 +26,114 @@ This document outlines the planned features and improvements for RustNet.
   - Write FFI bindings for `libprocstat` and `libcasper` (no Rust crate exists)
   - Link against `-lprocstat -lcasper -lcap_sysctl` (system libraries on FreeBSD 10+)
 - [ ] **Windows Sandbox Hardening**: Strengthen the current privilege-drop + Job Object setup with process mitigation policies (`SetProcessMitigationPolicy`), low-integrity execution, and evaluation of `CreateRestrictedToken` / AppContainer.
-- [ ] **macOS Seatbelt Hardening**: The current Seatbelt profile is allow-default with targeted denies (user homes, system credential stores, outbound TCP/UDP, `process-exec` except `lsof`). Tighten further:
+- [ ] **macOS Seatbelt Hardening**: The current Seatbelt profile is allow-default with targeted denies (user homes, system credential stores, outbound TCP/UDP except DNS on port 53 when reverse DNS is enabled, `process-exec` except `lsof`). Tighten further:
   - **Deny-by-default writes**: rustnet only writes its log/PCAP/JSONL output, so flip `file-write*` to deny-by-default with a small allowlist. This blocks root-level persistence (`/Library/LaunchDaemons`, `/Library/LaunchAgents`, `/private/etc` cron/launchd, etc.) that the current allow-default write policy leaves open. Needs on-host validation that the TUI's writes to the already-open tty and the `lsof` child still work.
   - **More credential read denies**: system TCC database (`/Library/Application Support/com.apple.TCC`), Kerberos keytabs, `master.passwd`/`sudoers`, saved network/Wi-Fi configuration (`/Library/Preferences/SystemConfiguration`).
   - **Eventual deny-by-default reads**: whitelist the dyld shared cache, system frameworks, `/dev/bpf*`, resolver/locale/timezone data, and the GeoIP paths. Strongest containment, but fragile across macOS releases — requires a multi-version on-host test pass before shipping.
-- [ ] **Linux Sandbox Hardening (capabilities + Landlock network)**: Landlock already enforces deny-by-default filesystem access on the post-sandbox worker threads, but two gaps remain when rustnet runs as root:
-  - **Drop all non-essential capabilities** (or clear the bounding set via `PR_CAPBSET_DROP`) before spawning the worker threads. Today only `CAP_NET_RAW`/`CAP_BPF`/`CAP_PERFMON` are dropped, so a root-launched process retains `CAP_DAC_OVERRIDE`, `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`, etc. — which Landlock does not cover (non-filesystem/non-TCP abuse such as loading kernel modules). Running non-root with a `cap_net_raw` file capability already avoids this; the hardening is for the common `sudo rustnet` case.
-  - **UDP egress is not blocked**: Landlock ABI v4 only governs TCP `bind`/`connect`, so UDP exfiltration remains possible (accepted as low risk today, since filesystem reads are tightly contained). Revisit when a newer Landlock ABI adds UDP support. Note macOS Seatbelt already blocks both TCP and UDP.
+- [ ] **Linux Sandbox Hardening (Landlock UDP and explicit root-retention modes)**:
+  - [x] **Default privilege drop**: A normal root launch resolves the invoking
+    user and irreversibly drops UID/GID after privileged initialization,
+    clearing the effective and permitted capability sets before worker threads
+    start.
+  - [ ] **Harden explicit root-retention modes**: When `--no-uid-drop` or
+    `--no-sandbox` keeps the process as root, clear the capability bounding set
+    and drop every capability not required for continued capture or eBPF map
+    access.
+  - [ ] **Block UDP egress when supported**: The current `landlock` dependency
+    enforces TCP `bind`/`connect` but not UDP, so UDP egress remains possible.
+    Add a DNS exception when enforcing UDP. macOS Seatbelt blocks both TCP and
+    UDP except DNS on port 53 when reverse DNS is enabled.
 - [ ] **OpenBSD and NetBSD Support**: Future platforms to support
 - [x] **Linux Process Identification**: **Experimental eBPF Support Implemented** - Basic eBPF-based process identification now available with `--features ebpf`. Provides efficient kernel-level process-to-connection mapping with lower overhead than procfs. Currently has limitations (see eBPF Improvements section below).
+
+## Process Identity Retention Across Platforms
+
+Follow up on the Linux identity-retention work ([#640](https://github.com/domcyrus/rustnet/pull/640))
+and optional socket-cookie correlation ([#642](https://github.com/domcyrus/rustnet/pull/642))
+using each platform's native facilities. Prioritize Windows, then macOS, then
+FreeBSD metadata retention; evaluate additional tracing backends separately.
+
+- [ ] **Windows: Retain Rich ETW Identity**: Extend the existing network and
+  process-lifecycle event cache beyond PID and basename to preserve executable
+  paths, parent identity, and process-generation information where the event
+  schema provides them. Handle event ordering and PID reuse without attaching
+  a new process's metadata to an older connection.
+- [ ] **macOS: Retain PKTAP Process Details**: Preserve executable and parent
+  metadata as early as possible alongside PKTAP's packet-associated PID/name.
+  Validate process generations before enrichment and keep retained details
+  after exit. Early libproc caching remains best effort; evaluate Endpoint
+  Security lifecycle events separately, including Apple's entitlement and
+  deployment requirements.
+- [ ] **FreeBSD: Retain Observed Process Details**: Preserve executable paths,
+  parent identity, and start times from successful sockstat/sysctl observations
+  beyond the next refresh. Guard against PID reuse. This cannot recover
+  processes that start and exit entirely between scans.
+- [ ] **FreeBSD: Investigate Event-Driven Attribution**: Evaluate DTrace
+  process-lifecycle probes and socket-event correlation for flows missed by
+  polling. Establish privilege, kernel-support, overhead, and sandbox
+  requirements before adding a backend.
+
+Validate each implementation on its target OS with short-lived processes,
+exit before enrichment, PID reuse, lifecycle transitions, and transferred or
+inherited sockets. Keep observed identity distinct from later process changes,
+bound retained state, and expose uncertain attribution explicitly. Linux
+cgroup hooks and socket cookies are not a portable implementation API.
 
 ## eBPF Improvements (Linux)
 
 The experimental eBPF support provides efficient process identification but has several areas for improvement:
 
 ### Current Limitations
-- **Process Names Limited to 16 Characters**: Uses kernel `comm` field, causing truncation (e.g., "Firefox" → "Socket Thread")
-- **Thread Names vs Process Names**: Shows thread command names instead of full executable names
+- **Name recovery is best effort**: Names originate from the kernel `comm`
+  field (15 bytes). RustNet re-resolves the group leader's current name via
+  `/proc/<tgid>/comm` and recovers comm-truncated names from the executable's
+  file name, but a process that exits before enrichment runs keeps the short
+  eBPF-recorded name.
 
 ### Planned Improvements
-- **Hybrid eBPF + Procfs Approach**: Use eBPF for connection tracking, selectively lookup full process names via procfs for better accuracy
-- **Full Executable Path Resolution**: Investigate accessing full process executable path from eBPF programs
-- **Better Process-Thread Mapping**: Improve mapping from thread IDs to parent process information
-- **Enhanced BTF Support**: Better compatibility across different kernel versions and distributions
-- **Performance Optimizations**: Reduce eBPF map lookups and improve connection-to-process matching efficiency
-- **Switch from kprobes to fentry/fexit or kprobe.multi**: Today we attach 7 kprobes via `perf_event_open(2)`, which is gated by `kernel.perf_event_paranoid`. On Debian 13 the default is `=3` (an out-of-tree patch that predates CAP_PERFMON and only honors CAP_SYS_ADMIN), so even with `cap_bpf,cap_perfmon+ep` set via `setcap`, attach fails with `-EACCES` until the user lowers the sysctl globally (issue #255). Debian bug #994044 was archived in 2025 without a fix, so this is unlikely to change in Forky (Debian 14, ~2027) without renewed pressure. Ubuntu has a parallel patch at `=4` that *was* updated to honor CAP_PERFMON in late 2025 (Jammy 5.15.0-165+, Noble 6.8.0-91+, Plucky 6.14.0-37+, Questing 6.17.0-14+, Resolute 6.18.0-8+), so Ubuntu users already work out of the box — Debian is the laggard. Both `BPF_PROG_TYPE_TRACING` (fentry/fexit, kernel ≥ 5.5) and `kprobe.multi` (fprobe-based, kernel ≥ 5.18) attach via `BPF_LINK_CREATE` and never call `perf_event_open` — they're gated only by CAP_BPF + CAP_PERFMON, so they would work out of the box on Debian regardless of the broken patch. fentry also gives entry args + return value in a single program (cleaner than kprobe + kretprobe). Mainline / Fedora / Arch / RHEL all default to paranoid=2 and the upstream direction (CAP_PERFMON, fprobe, BTF trampolines) is toward more privilege separation, not less, so this conversion is also future-aligned. Trade-off: raises minimum supported kernel from current (kprobes work back to ~4.x) to 5.5+ for fentry or 5.18+ for kprobe.multi — need to decide whether to keep a kprobe fallback for older kernels.
+- [x] **Hybrid eBPF + Procfs Approach**: eBPF handles connection tracking; the
+  process name, executable path, parent PID, and credentials are resolved in
+  user space via procfs right after a successful attribution.
+- [x] **Full Executable Path Resolution**: `/proc/<tgid>/exe` is resolved in
+  user space immediately after attribution; kernel-side resolution turned out
+  to be unnecessary.
+- [x] **Better Process-Thread Mapping**: eBPF records the group leader's TGID,
+  the acting TID, and the leader's comm separately; the display name is
+  re-resolved from `/proc/<tgid>/comm`, and comm truncation is recovered from
+  the executable's file name.
+- [x] **Enhanced BTF Support**: Covered by the fentry/fexit backend selection
+  below, which uses actual BTF, load, and attach results per kernel.
+- [ ] **Profile-Guided Performance Optimizations**: Measure attribution cache
+  hit rates and exact/fallback eBPF map reads under representative traffic,
+  then reduce repeated lookups where profiling shows them to be hot. The
+  existing unified attribution cache is the baseline.
+- [x] **Prefer fentry/fexit with legacy kprobe fallback**: RustNet now tries a
+  BPF trampoline backend first, then legacy kprobes, then procfs. Selection uses
+  actual BTF, load, and attach results. The modern backend avoids
+  `perf_event_open(2)`, while the legacy backend preserves older-kernel
+  compatibility when usable target BTF is available. Kernels without target
+  BTF fall safely to procfs because fixed socket-structure offsets could
+  misattribute traffic. Optional ICMP attachment failures no longer disable TCP
+  and UDP attribution. `kprobe.multi` remains a possible future compatibility
+  option if kernel-matrix testing shows a concrete need.
 
 ### Future Enhancements
-- **Real-time Process Updates**: Track process name changes and executable updates
-- **Container Support**: Better process identification within containerized environments
-- **Security Context**: Include process security attributes (capabilities, SELinux context, etc.)
+- [ ] **Real-time Process Updates**: Refresh process names, executable paths,
+  and credentials after initial attribution when a process changes.
+- [x] **Kubernetes Container Attribution**: Resolve pod UID, name, namespace,
+  container ID/name, and cgroup metadata, with filters, exports, and scoped
+  per-PID network namespace lookups for kubepods processes.
+- [ ] **Generic Container Attribution**: Identify Docker, Podman, and LXC
+  workloads and expose runtime/container metadata outside Kubernetes.
+- [x] **Process Credentials**: Include effective UID and GID in attribution,
+  details, and exports.
+- [ ] **Process Security Context**: Include Linux capabilities and
+  SELinux/AppArmor context.
+- [ ] **Ephemeral Cross-Namespace Attribution for Kubernetes**: The current
+  per-PID TCP/UDP table scan runs at the enrichment interval and can miss
+  short-lived flows. Retain eBPF socket events long enough for userspace to
+  consume them, or drain close events through a ring buffer, then validate
+  end-to-end coverage in a kind cluster.
 
 ## Features
 
@@ -69,25 +147,54 @@ The experimental eBPF support provides efficient process identification but has 
   - SSH states (BANNER, KEYEXCHANGE, AUTHENTICATION, ESTABLISHED)
   - Activity states (UDP_ACTIVE, UDP_IDLE, UDP_STALE)
 - [x] **Deep Packet Inspection (DPI)**: Application protocol detection:
-  - HTTP with host information
-  - HTTPS/TLS with SNI (Server Name Indication)
-  - DNS queries and responses
+  - HTTP with host information and HTTPS/TLS with SNI
+  - DNS queries and responses, including mDNS and LLMNR
   - SSH connections with version detection, software identification, and state tracking
   - QUIC protocol with CONNECTION_CLOSE frame detection and RFC 9000 compliance
+  - FTP and MQTT
+  - BitTorrent peer traffic, DHT, and uTP
+  - DHCP and NTP
+  - SSDP, NetBIOS, SNMP, and STUN
 - [ ] **DPI Enhancements**: Improve deep packet inspection capabilities:
-  - Support more protocols (e.g. FTP, SMTP, IMAP, etc.)
+  - **Database and infrastructure protocols**, in priority order:
+    - **MySQL**: server version, capabilities, TLS use, command type, query
+      verb, and error code
+    - **Redis**: RESP version, command name, Pub/Sub state, and error type
+    - **PostgreSQL**: TLS negotiation; database and user on plaintext
+      connections; query verb, transaction state, and errors
+    - **Kafka**: begin with header-level API operation/version and client ID,
+      then consider selected client, topic/group, and error metadata without
+      decoding record payloads
+  - Add bounded, direction-aware, per-connection TCP stream reassembly before
+    relying on protocol messages that cross TCP segments
+  - Preserve the underlying application identity and TLS metadata for encrypted
+    database connections instead of classifying every TLS handshake as HTTPS
+  - Keep sensitive payloads out of DPI metadata: never surface full SQL, Redis
+    arguments or AUTH data, database row values, or Kafka record payloads
+  - Select further protocols only when usage and inspection value justify the
+    maintenance cost
   - CDP/LLDP (network device discovery protocols)
   - LACP (Link Aggregation Control Protocol)
-  - More accurate SNI detection for QUIC/HTTPS
-- [x] **Connection Lifecycle Management**: Smart protocol-aware timeouts with visual staleness indicators (yellow at 75%, red at 90%)
+  - [x] Reassemble QUIC CRYPTO frames across packets and promote partial SNI
+    when complete metadata arrives
+  - [ ] Recover complete HTTPS/TLS ClientHello metadata across TCP segments
+    through bounded TCP reassembly
+- [x] **Per-connection RTT**: Display observed TCP RTT, QUIC handshake RTT, or ICMP echo RTT when available, in a sortable table column, the Details pane, and exports
+- [x] **Connection Lifecycle Management**: Protocol-aware cleanup timeouts; once displayed rates reach zero, a stripe and removal countdown appear from halfway through the timeout
 - [x] **Process Identification**: Associate network connections with running processes (with experimental eBPF support on Linux)
 - [x] **Service Name Resolution**: Identify well-known services using port numbers
 - [x] **Cross-platform Support**: Works on Linux, macOS, Windows, and FreeBSD
-- [x] **DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display) - `--resolve-dns` flag with `d` key toggle
-- [ ] **IPv6 Support**: Full IPv6 connection tracking and display, including DNS resolution (needs testing)
-- [ ] **VLAN Tag Detection**: Parse 802.1Q VLAN tags from packet headers to identify VLAN configurations
-- [ ] **Passive Host Discovery**: Infer local network hosts from observed ARP requests/replies and other broadcast traffic without active scanning
-- [ ] **MAC Vendor Lookup (OUI)**: Resolve MAC addresses to hardware vendor names using a local OUI database (e.g. "Apple", "Intel", "Ubiquiti")
+- [x] **DNS Reverse Lookup**: Hostname resolution is enabled by default; use `--no-resolve-dns` to disable it and `d` to toggle IP/hostname display
+- [x] **IPv6 Support**: Parse and track IPv6 connections, including extension
+  headers, process attribution, full-address display, and reverse DNS.
+- [ ] **IPv6-only Interface Selection and Live Validation**: Prefer a routed
+  IPv6 interface when no usable IPv4 route exists, and validate live capture
+  and process attribution on every supported platform.
+- [ ] **VLAN Tag Detection**: Surface 802.1Q VLAN IDs per connection. The Ethernet link-layer parser already parses VLAN tags to reach the inner packet (the VID is extracted and trace-logged); what remains is carrying the VID onto connections and showing it in the TUI
+- [x] **Passive Host Discovery**: Learn a bounded cache of on-link IPv4 and
+  IPv6 neighbors from observed ARP and NDP traffic, including MAC address,
+  vendor, and last-seen metadata, without active scanning.
+- [x] **MAC Vendor Lookup (OUI)**: Resolve MAC addresses to hardware vendor names using a local OUI database (e.g. "Apple", "Intel", "Ubiquiti") - shown in the Details view, database bundled in `rustnet-core`
 
 ### Filtering & Search
 
@@ -102,7 +209,7 @@ The experimental eBPF support provides efficient process identification but has 
 ### Sorting & Display
 
 - [x] **Sorting**: Comprehensive table sorting with:
-  - Sort by all columns: Protocol, Local/Remote Address, State, Service, Application, Bandwidth (Down/Up), Process
+  - Sort by all columns: Protocol, Local/Remote Address, State, Service, Application, RTT, Bandwidth (Down/Up), Process
   - Intuitive left-to-right column cycling with `s` key
   - Direction toggle with `S` (Shift+s) for ascending/descending
   - Visual indicators: cyan/underlined active column, arrows showing direction
@@ -124,7 +231,7 @@ The experimental eBPF support provides efficient process identification but has 
   - [x] **Linux RPM packages**: x86_64, aarch64 (via cargo-generate-rpm)
   - [x] **Cargo crates.io**: Published as `rustnet-monitor` (version 0.10.0+)
   - [x] **Docker images**: Available on GitHub Container Registry with eBPF support
-  - [x] **Homebrew formula**: Available in separate tap repository (domcyrus/rustnet)
+  - [x] **Homebrew formula**: Available in Homebrew core as `brew install rustnet`
 
 ### Future Enhancements
 
@@ -134,14 +241,17 @@ The experimental eBPF support provides efficient process identification but has 
   - Standard PCAP format compatible with Wireshark/tcpdump
   - Streaming JSONL sidecar with PID, process name, timestamps
   - Python enrichment script to create annotated PCAPNG
+- [x] **Native Annotated PCAPNG Export**: Export a Wireshark-ready PCAPNG file with live best-effort RustNet packet comments (`--pcapng-export`)
+  - Per-packet comments include process/PID, direction, DPI/SNI, and GeoIP/ASN when available
+  - Uses true capture timestamps and bounded attribution retry
 - [ ] **Enhanced PCAP Metadata**: Richer process information in sidecar file
-  - Process executable full path (not just name)
-  - Command line arguments
-  - Working directory
-  - User/UID information
-  - Parent process information
-- [ ] **Configuration File**: Support for persistent configuration:
-  - Custom color themes and UI styling
+  - [x] Process executable full path (not just name)
+  - [ ] Command line arguments
+  - [ ] Working directory
+  - [x] User/UID information (UID and GID)
+  - [x] Parent process information (PPID)
+- [ ] **More Configuration File Options**: The config file already supports a
+  theme preset and color token overrides. Add persistent settings for:
   - Default filters and sort preferences
   - Default process grouping (start with `group: true` in config)
   - Color mode preference (disable colors via config, complementing `--no-color` flag)
@@ -150,11 +260,20 @@ The experimental eBPF support provides efficient process identification but has 
 - [ ] **Connection Alerts**: Notifications for new connections or suspicious activity
 - [x] **GeoIP Integration**: Geographical location of remote IPs
 - [x] **GeoIP City-Level Resolution**: Extend GeoIP to include city-level location data using GeoLite2-City database
-- [ ] **Protocol Statistics**: Summary view of protocol distribution
-- [ ] **Rate Limiting Detection**: Identify connections with unusual traffic patterns
-- [ ] **Bufferbloat Detection**: Measure latency under load to identify bufferbloat issues on the network
-- [ ] **PCAP Import/Replay**: Load a PCAP file (with optional JSON process attribution sidecar) and replay it in the TUI for offline analysis. Enables remote monitoring workflows: capture on a remote host with `--pcap-export`, transfer files, and replay locally with full process-attributed view
-- [ ] **Route Table Display**: Show the system routing table in a user-friendly view within the TUI
+- [x] **Protocol Statistics**: Summary view of protocol distribution (Graph tab shows application protocol distribution and TCP state distribution)
+- [ ] **Rate Limiting Detection**: Build an evidence-based classifier from the
+  existing rolling throughput, retransmission, loss, and RTT metrics, and show
+  the signals supporting each finding.
+- [ ] **Bufferbloat Detection**: Correlate the existing RTT history with
+  throughput/load against an idle baseline, and report confidence without
+  treating passive observations alone as proof.
+- [ ] **PCAP Import/Replay**: Add an offline capture reader, optional JSON
+  process-attribution sidecar matching, and TUI playback controls. The core
+  tracker already accepts trace timestamps for correct offline lifecycle and
+  rate calculations.
+- [ ] **Route Table Display**: Expand the existing cross-platform default-route
+  discovery and `(gw)` connection marker into a full TUI route table with
+  prefixes, next hops, interfaces, metrics, and flags.
 - [ ] **Privacy/Redact Mode**: Obfuscate sensitive information (IPs, MACs, hostnames) in the TUI for safe screenshots and sharing. Include option to export connection details from the details view to a text file with privacy redaction applied
 
 ## UI Improvements
@@ -169,10 +288,12 @@ The experimental eBPF support provides efficient process identification but has 
 - [x] **Platform-Specific CLI Help**: Show only relevant options per platform (hide Linux sandbox options on macOS, hide PKTAP notes on Linux)
 - [x] **Connection Grouping**: Group connections by process with expandable tree view (press `a` to toggle, aggregated stats, Space/arrows to expand/collapse)
 - [x] **Reset View**: Reset all view settings (grouping, sort, filter) with `r` key
-- [ ] **Resizable Columns**: Dynamic column width adjustment
-- [ ] **ASCII Graphs**: Terminal-based graphs for bandwidth/packet visualization
-- [ ] **Mouse Support**: Click to select connections
-- [ ] **Split Pane View**: Show multiple views simultaneously
+- [x] **Resizable Columns**: Automatically allocate widths for the available
+  terminal size and hide lower-priority columns when space is constrained.
+- [x] **ASCII Graphs**: Terminal-based graphs for bandwidth/packet visualization (Graph tab with braille traffic chart and connections sparkline)
+- [x] **Mouse Support**: Click to select connections, double-click to open Details, clickable tab bar
+- [x] **Split Pane View**: Show the Overview connection table beside the
+  system-information sidebar, and use a responsive two-column Details layout.
 
 ## Architecture
 
@@ -181,8 +302,9 @@ The experimental eBPF support provides efficient process identification but has 
 Restructure the single crate into a Cargo workspace (same GitHub repo) with clear separation of concerns:
 
 - [x] **rustnet-monitor** (binary, bin name `rustnet`): CLI, TUI, app event
-  loop, sandboxing (Landlock/Seatbelt), and interface statistics -- the
-  user-facing application; process attribution is delegated to `rustnet-host`.
+  loop, and the user-facing application; process attribution is delegated to
+  `rustnet-host`, interface statistics to `rustnet-core`, and sandboxing plus
+  root privilege dropping to `rustnet-sandbox`.
   (Package stays `rustnet-monitor` because the `rustnet` crate name is taken on
   crates.io; the installed binary is `rustnet`.)
 - [x] **rustnet-core** (library): Packet parsing, protocol types, DPI,
@@ -205,6 +327,13 @@ Restructure the single crate into a Cargo workspace (same GitHub repo) with clea
   and owns the eBPF build tooling (the `socket_tracker.bpf.c` program and bundled
   `vmlinux.h`). The binary injects PKTAP availability via `report_pktap_degradation`,
   so the crate needs no dependency on `rustnet-capture`.
+- [x] **rustnet-sandbox** (library): Post-initialization sandboxing and root
+  privilege dropping behind one `apply_sandbox` entry point -- Landlock +
+  capability drops on Linux, Seatbelt on macOS, token privilege removal + job object
+  on Windows, and the shared uid drop on Linux/macOS/FreeBSD. Lives at
+  `crates/rustnet-sandbox` and depends on no other workspace crate, so a
+  headless front-end gets identical sandboxing without linking capture or
+  attribution code.
 - [ ] **rustnet-helper** (binary): Minimal suid helper for macOS pktap privilege
   separation (~100 lines, zero C deps — just `libc`). **Future work, not yet a
   crate.** The root-gated pktap interface creation (`SIOCIFCREATE`) can only be
@@ -218,17 +347,63 @@ Benefits:
 - `cargo install rustnet-monitor` continues to work unchanged
 
 **Status:** The workspace exists with `rustnet-monitor` (binary) depending on
-`rustnet-core`, `rustnet-capture`, and `rustnet-host`. The binary's `src/network`
+`rustnet-core`, `rustnet-capture`, `rustnet-host`, and `rustnet-sandbox`. The binary's `src/network`
 module re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`)
 so existing `crate::network::*` paths, integration tests, and benches are
 unchanged. Net-only dependencies (`dns-lookup`, `ring`, `aes`, `flate2`,
 `maxminddb`, `pnet_datalink`) and the baked-in `oui.gz` / `services` assets live
 in `rustnet-core`; all pcap usage lives in `rustnet-capture`; and `procfs` /
-`libbpf-rs` plus the eBPF programs and `vmlinux.h` live in `rustnet-host`.
+`libbpf-rs` plus the eBPF programs and `vmlinux.h` live in `rustnet-host`;
+and `landlock` / `caps` plus Seatbelt and the uid drop live in
+`rustnet-sandbox`.
 `rustnet-core` also exposes a `ConnectionTracker` so headless tools can fold
 captured packets into a live, lifecycle-managed connection table without the
-TUI. Remaining work: the `rustnet-helper` macOS pktap suid helper (needs real
-hardware).
+TUI. The binary now has a headless JSON/JSONL mode. Remaining work includes the
+reusable library APIs below and the `rustnet-helper` macOS pktap suid helper
+(needs real hardware).
+
+### Reusable Headless Library Workstream
+
+The library crates now cover the whole privileged pipeline: capture
+(`rustnet-capture`), parsing + connection tracking + interface stats
+(`rustnet-core`), process attribution (`rustnet-host`), and sandboxing +
+uid drop (`rustnet-sandbox`). `examples/headless.rs` is a compiling,
+runnable proof of that pairing. The `rustnet --headless` CLI already streams
+JSONL or emits a final JSON snapshot. The following items concern reusable
+library APIs for other front-ends, such as a Prometheus exporter:
+
+Code that could move into a crate:
+
+- [x] `ConnectionFilter` now lives in `rustnet-core`; the binary re-exports it
+  through `src/filter.rs` for compatibility.
+- [ ] Kubernetes pod/container resolution (`src/network/kubernetes`, ~1000
+  lines) into `rustnet-host` next to the rest of attribution.
+- [ ] Process-grouping aggregation (currently in `src/ui/state.rs`) into
+  `rustnet-core`, since per-process rollups are exporter material.
+- [ ] Optional `serde` derives for `Connection` and the DPI types behind a
+  `rustnet-core` feature; today JSON output is hand-built in
+  `src/app/logging.rs` and unavailable to library consumers.
+- [ ] The capture-privileges preflight check (`src/network/privileges.rs`)
+  into `rustnet-capture` (its Windows probe already uses the pcap crate).
+
+Composition APIs that exist only as binary wiring:
+
+- [ ] An engine/runtime handle for the thread topology (capture thread,
+  DPI workers, batching, backpressure, `catch_unwind`) that `src/app`
+  hand-builds.
+- [ ] Expose the two-phase privileged start contract (open capture + load eBPF,
+  wait for readiness, sandbox, then spawn workers) as a reusable API.
+  `src/bootstrap.rs` implements it for the binary today.
+- [ ] A published-snapshot policy layer (service-name enrichment, localhost
+  and PTR-lookup filtering, historic merge, sorting) over
+  `ConnectionTracker::snapshot`.
+- [ ] Aggregate counters: an `AppStats`-shaped struct plus the
+  `IngestOutcome`-to-counter folding, which is exactly the metric set an
+  exporter would publish.
+- [ ] The enrichment driver loops (process attribution cadence and
+  write-once policy, GeoIP refresh) as reusable helpers.
+- [ ] Health/degradation status types (capture failure retention, PKTAP
+  degradation mapping) shared between front-ends.
 
 ### macOS Privilege Separation (pktap without root)
 
@@ -253,14 +428,17 @@ Security properties:
 
 ## Development
 
-- [x] **Unit Tests**: Basic unit tests in 12+ source modules (DPI protocols, filtering, services, network capture, etc.)
+- [x] **Unit Tests**: Broad unit coverage across packet parsing, DPI, tracking,
+  filtering, capture, process attribution, platform code, and the TUI.
 - [x] **Integration Tests**: Platform-specific integration tests for Linux and macOS (tests/integration_tests.rs)
-- [ ] **Comprehensive Test Coverage**: Expand test coverage across all modules
+- [ ] **Coverage Measurement and Gap Closure**: Add a CI coverage report and
+  define measurable expectations, then target platform-only and live-network
+  paths that the existing broad test suite does not exercise reliably.
 - [x] **CI/CD Pipeline**: Automated builds and releases for all platforms (GitHub Actions)
   - [x] **Release workflow**: Multi-platform builds with cross-compilation
   - [x] **Docker workflow**: Automated Docker image builds
   - [x] **Rust workflow**: Basic CI checks
 - [x] **Documentation**: Comprehensive README with usage guides, architecture overview, and troubleshooting
 - [x] **Packaging/Distribution**: Create packages for easy installation on Linux, macOS, and Windows
-  - DMG packages with code signing
-  - MSI packages with code signing for Windows
+  - DMG packages; code signing and notarization when release credentials are configured
+  - MSI packages for Windows

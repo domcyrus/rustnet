@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: "render_app(&app, &mut state, &connections, None, 80, 24)"
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
+─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
+Applications   Capture                                                          
+━━━━━━━━━━━━────────────────────────────────────────────────────────────────────
+▎ firefox · Processes · TX · Retained TX ↓ ────────────────────────────── 1-1/1 
+  Process                                      TX/s   60s %   Retained   Conns  
+▌ firefox (2001)                              2.4Mi   81.7%   4.78 MiB     1/1  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ v/V section  j/k select  enter details  d tx/rx  s sort         h help  q quit

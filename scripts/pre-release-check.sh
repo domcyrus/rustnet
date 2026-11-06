@@ -90,13 +90,16 @@ else
   fail "cargo fmt --check has formatting issues"
 fi
 
-if cargo clippy -- -D warnings > /dev/null 2>&1; then
+# --workspace --all-targets to match CI (rust.yml): the workspace root is
+# itself a package, so bare `cargo {clippy,test}` only covers rustnet-monitor
+# and skips the library crates.
+if cargo clippy --workspace --all-targets -- -D warnings > /dev/null 2>&1; then
   pass "cargo clippy"
 else
   fail "cargo clippy has warnings"
 fi
 
-if cargo test > /dev/null 2>&1; then
+if cargo test --workspace > /dev/null 2>&1; then
   pass "cargo test"
 else
   fail "cargo test failed"

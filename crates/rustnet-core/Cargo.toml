@@ -4,7 +4,7 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Network analysis library: packet parsing, protocol types, deep packet inspection, link-layer parsers, connection merging, and DNS/GeoIP/OUI lookups — the reusable core of rustnet"
+description = "Network analysis library: packet parsing, protocol types, deep packet inspection, link-layer parsers, connection merging, and DNS/GeoIP/OUI lookups: the reusable core of rustnet"
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/rustnet-core"
@@ -20,12 +20,29 @@ path = "src/lib.rs"
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
-dashmap = "6.2"
-rustc-hash = "2"
-crossbeam = "0.8"
-dns-lookup = "3.0"
+dashmap.workspace = true
+rustc-hash.workspace = true
+crossbeam.workspace = true
+dns-lookup = "4.0"
 pnet_datalink = "0.35"
-maxminddb = "0.28"
+maxminddb = "0.32"
 flate2 = "1"
 ring = "0.17"
 aes = "0.9"
+regex-lite = "0.1"
+
+[target.'cfg(any(target_os = "macos", target_os = "freebsd"))'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
+[features]
+# Adds the Kubernetes pod/container metadata (`K8sInfo`) to `Connection`.
+# Resolution itself lives in the rustnet binary; no extra dependencies.
+kubernetes = []

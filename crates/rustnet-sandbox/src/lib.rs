@@ -1,0 +1,398 @@
+//! Post-initialization sandboxing and privilege dropping for rustnet.
+//!
+//! One [`apply_sandbox`] entry point with a platform backend behind it:
+//!
+//! - **Linux**: `PR_SET_NO_NEW_PRIVS`, capability drops (CAP_NET_RAW,
+//!   CAP_BPF, CAP_PERFMON), the root uid drop, and Landlock
+//!   filesystem/network/scope restrictions (behind the `landlock` feature).
+//! - **macOS**: the root uid drop, then a Seatbelt profile restricting outbound
+//!   network, credential reads, and writes under user home directories
+//!   (behind the `macos-sandbox` feature).
+//! - **Windows**: dangerous token privileges removed and a job object that
+//!   blocks child process creation.
+//! - **FreeBSD**: the root uid drop (Capsicum is planned).
+//!
+//! # Application order contract
+//!
+//! Sandboxing is a *post-initialization* step. Callers must apply it only
+//! after every privileged operation is done, in this order:
+//!
+//! 1. Open capture handles (raw sockets, BPF/PKTAP devices, Npcap): the
+//!    descriptors stay valid across the sandbox and uid drop.
+//! 2. Load eBPF programs (needs CAP_BPF/CAP_PERFMON, which the sandbox
+//!    drops).
+//! 3. Securely open output files (logs, PCAP exports) and, when dropping root,
+//!    hand ownership to the drop target ([`privdrop::chown_to_target`]). Retain
+//!    these descriptors for writing after the drop instead of reopening paths
+//!    or granting pathname write exceptions.
+//! 4. Call [`apply_sandbox`] on the **main thread**.
+//! 5. Only then spawn worker threads that should inherit the restrictions:
+//!    Landlock domains and capability sets are per-thread state that new
+//!    threads inherit from their spawner; threads started before step 4 keep
+//!    the unrestricted state.
+//!
+//! Long-lived workers should not start before the sandbox. Capture handles and
+//! eBPF maps opened during initialization remain usable through their existing
+//! descriptors after capability and identity reduction. Workers created after
+//! step 4 inherit the reduced capability set and sandbox restrictions.
+
+use std::path::PathBuf;
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+pub mod privdrop;
+
+#[cfg(target_os = "freebsd")]
+mod freebsd;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
+
+#[cfg(all(target_os = "linux", feature = "landlock"))]
+pub use linux::capabilities;
+
+/// Sandbox enforcement mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SandboxMode {
+    /// Permit unavailable optional sandbox layers, but require a requested UID drop.
+    #[default]
+    BestEffort,
+    /// Require full sandbox enforcement or fail
+    Strict,
+    /// Disable sandboxing entirely
+    Disabled,
+}
+
+/// A requested root UID/GID transition failed.
+///
+/// Callers must not continue startup after this error, even in best-effort mode:
+/// the process may still be root or have only partially changed its identity.
+#[derive(Debug)]
+pub struct PrivilegeDropError;
+
+impl std::fmt::Display for PrivilegeDropError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("required root UID/GID drop failed")
+    }
+}
+
+impl std::error::Error for PrivilegeDropError {}
+
+impl SandboxMode {
+    /// Map the `--no-sandbox` / `--sandbox-strict` CLI flags to a mode.
+    pub fn from_flags(no_sandbox: bool, strict: bool) -> Self {
+        if no_sandbox {
+            SandboxMode::Disabled
+        } else if strict {
+            SandboxMode::Strict
+        } else {
+            SandboxMode::BestEffort
+        }
+    }
+}
+
+/// Status of sandbox application
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SandboxStatus {
+    /// Sandbox fully enforced (all requested restrictions applied)
+    FullyEnforced,
+    /// Sandbox partially enforced (some features unavailable)
+    PartiallyEnforced,
+    /// Sandbox not applied (disabled, or platform support missing)
+    #[default]
+    NotApplied,
+    /// Applying the sandbox failed (only set by callers on an `Err` from
+    /// [`apply_sandbox`]; the backends themselves never return it)
+    Error,
+}
+
+impl SandboxStatus {
+    /// Short human-readable label for status displays.
+    pub fn label(&self) -> &'static str {
+        match self {
+            SandboxStatus::FullyEnforced => "Fully enforced",
+            SandboxStatus::PartiallyEnforced => "Partially enforced",
+            SandboxStatus::NotApplied => "Not applied",
+            SandboxStatus::Error => "Error",
+        }
+    }
+}
+
+/// Configuration for the sandbox
+///
+/// One cross-platform shape; each backend reads what applies to it. Windows
+/// reads only `mode`; FreeBSD reads `mode` and `drop_uid`.
+#[derive(Debug, Clone, Default)]
+pub struct SandboxConfig {
+    /// Sandbox enforcement mode
+    pub mode: SandboxMode,
+    /// Block TCP bind/connect (Linux) or outbound TCP/UDP (macOS).
+    /// Recommended for passive monitors.
+    pub block_network: bool,
+    /// Paths that need read access after sandboxing (e.g., GeoIP databases)
+    pub read_paths: Vec<PathBuf>,
+    /// When running as root: the identity to drop to after initialization
+    /// (`None` = not root, or drop disabled via `--no-uid-drop`)
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    pub drop_uid: Option<privdrop::DropTarget>,
+}
+
+/// Result of sandbox application
+///
+/// One struct for every platform: the cross-platform fields always exist
+/// (and stay `false` where a platform has no such restriction), the
+/// platform-specific details are cfg-gated. This is both the enforcement
+/// report and the UI/status shape, so a new field automatically reaches
+/// every consumer.
+#[derive(Debug, Clone, Default)]
+pub struct SandboxReport {
+    /// Overall status
+    pub status: SandboxStatus,
+    /// Human-readable message
+    pub message: String,
+    /// Whether filesystem restrictions are active (Landlock / Seatbelt)
+    pub fs_restricted: bool,
+    /// Whether network restrictions are active (Landlock TCP restrictions /
+    /// Seatbelt outbound restrictions)
+    pub net_restricted: bool,
+    /// Whether the root uid/gid were dropped (Linux/macOS/FreeBSD)
+    pub uid_dropped: bool,
+    /// Whether CAP_NET_RAW was dropped
+    #[cfg(target_os = "linux")]
+    pub cap_net_raw_dropped: bool,
+    /// Whether CAP_BPF/CAP_PERFMON were dropped
+    #[cfg(target_os = "linux")]
+    pub ebpf_caps_dropped: bool,
+    /// Whether Landlock scope restrictions (abstract UNIX sockets + signals)
+    /// are applied
+    #[cfg(target_os = "linux")]
+    pub scope_restricted: bool,
+    /// Whether Landlock is available on this kernel
+    #[cfg(target_os = "linux")]
+    pub landlock_available: bool,
+    /// Effective Landlock ABI negotiated with the kernel (e.g. `Some(6)`),
+    /// or `None` when Landlock is unavailable / not enforced
+    #[cfg(target_os = "linux")]
+    pub landlock_abi: Option<u8>,
+    /// Whether PR_SET_NO_NEW_PRIVS is set (applied even with `--no-sandbox`)
+    #[cfg(target_os = "linux")]
+    pub no_new_privs: bool,
+    /// Whether the Seatbelt profile was applied
+    #[cfg(target_os = "macos")]
+    pub seatbelt_applied: bool,
+    /// Whether dangerous privileges were removed
+    #[cfg(target_os = "windows")]
+    pub privileges_removed: bool,
+    /// Number of privileges removed
+    #[cfg(target_os = "windows")]
+    pub privileges_removed_count: u32,
+    /// Whether the job object was applied
+    #[cfg(target_os = "windows")]
+    pub job_object_applied: bool,
+}
+
+impl SandboxReport {
+    /// Report for a failed [`apply_sandbox`] call (non-strict callers).
+    pub fn from_error(error: &anyhow::Error) -> Self {
+        Self {
+            status: SandboxStatus::Error,
+            message: error.to_string(),
+            ..Self::default()
+        }
+    }
+
+    /// Report for a backend whose only enforcement was the root uid drop
+    /// (no platform sandbox available or compiled in): partially enforced
+    /// when the drop happened, not applied otherwise.
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    pub(crate) fn uid_drop_only(banner: &str, outcome: &UidDropOutcome) -> Self {
+        Self {
+            status: if outcome.dropped {
+                SandboxStatus::PartiallyEnforced
+            } else {
+                SandboxStatus::NotApplied
+            },
+            message: outcome.message_after(banner),
+            uid_dropped: outcome.dropped,
+            ..Self::default()
+        }
+    }
+}
+
+/// Outcome of the root uid drop step shared by the Linux, macOS and FreeBSD
+/// backends (see [`drop_root_step`]).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+pub(crate) struct UidDropOutcome {
+    /// Whether the root uid/gid were dropped.
+    pub(crate) dropped: bool,
+    /// Human-readable summary of the successful step;
+    /// `None` when no drop was requested.
+    pub(crate) message: Option<String>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+impl UidDropOutcome {
+    /// `banner`, followed by the step summary as a `; `-separated suffix when
+    /// a drop was attempted. (Linux folds the summary into its own message
+    /// list instead.)
+    pub(crate) fn message_after(&self, banner: &str) -> String {
+        match &self.message {
+            Some(message) => format!("{}; {}", banner, message),
+            None => banner.to_string(),
+        }
+    }
+}
+
+/// Drop the root uid/gid when `config.drop_uid` is set.
+///
+/// Capture fds opened during initialization remain valid across the drop.
+/// `attribution_note` names the platform's process-attribution fallback that
+/// is limited to the target user's processes afterwards; it is appended to
+/// the success log line. A failed requested drop returns [`PrivilegeDropError`]
+/// in every enforcing mode and must stop startup before worker creation.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+pub(crate) fn drop_root_step(
+    config: &SandboxConfig,
+    attribution_note: &str,
+) -> anyhow::Result<UidDropOutcome> {
+    let Some(target) = config.drop_uid else {
+        return Ok(UidDropOutcome {
+            dropped: false,
+            message: None,
+        });
+    };
+    privdrop::drop_to(target).map_err(|error| error.context(PrivilegeDropError))?;
+    // The target uid/gid are reported through the outcome message
+    // (shown in the Overview Security panel) rather than logged here.
+    log::info!("Dropped root privileges (verified); {}", attribution_note);
+    Ok(UidDropOutcome {
+        dropped: true,
+        message: Some(format!(
+            "root dropped to uid {} gid {}",
+            target.uid, target.gid
+        )),
+    })
+}
+
+/// Apply the sandbox with the given configuration.
+///
+/// See the crate docs for the required application order. Returns
+/// `Ok(SandboxReport)` with details about what was applied; in
+/// [`SandboxMode::Strict`], returns `Err` if enforcement cannot be achieved.
+/// A failed requested UID/GID drop is always fatal and returns
+/// [`PrivilegeDropError`], including in [`SandboxMode::BestEffort`].
+pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
+    apply_sandbox_with_policy(config, false)
+}
+
+/// Apply the sandbox with its narrow platform DNS exception enabled.
+///
+/// This separate entry point preserves the stable [`SandboxConfig`] shape and
+/// makes the process-wide network exception explicit at the call site.
+pub fn apply_sandbox_allowing_dns(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
+    apply_sandbox_with_policy(config, true)
+}
+
+fn apply_sandbox_with_policy(
+    config: &SandboxConfig,
+    allow_dns_resolution: bool,
+) -> anyhow::Result<SandboxReport> {
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = allow_dns_resolution;
+    #[cfg(target_os = "linux")]
+    return linux::apply(config, allow_dns_resolution);
+    #[cfg(target_os = "macos")]
+    return macos::apply(config, allow_dns_resolution);
+    #[cfg(target_os = "windows")]
+    return windows::apply(config);
+    #[cfg(target_os = "freebsd")]
+    return freebsd::apply(config);
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd"
+    )))]
+    {
+        log::warn!("Sandboxing not implemented for this platform");
+        let _ = (config, allow_dns_resolution);
+        Ok(SandboxReport {
+            message: "Sandboxing not implemented for this platform".to_string(),
+            ..SandboxReport::default()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mode_from_flags() {
+        assert_eq!(
+            SandboxMode::from_flags(false, false),
+            SandboxMode::BestEffort
+        );
+        assert_eq!(SandboxMode::from_flags(false, true), SandboxMode::Strict);
+        assert_eq!(SandboxMode::from_flags(true, false), SandboxMode::Disabled);
+    }
+
+    #[test]
+    fn test_report_from_error_defaults_everything_off() {
+        let report = SandboxReport::from_error(&anyhow::anyhow!("boom"));
+        assert_eq!(report.status, SandboxStatus::Error);
+        assert_eq!(report.message, "boom");
+        assert!(!report.fs_restricted);
+        assert!(!report.net_restricted);
+        assert!(!report.uid_dropped);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    #[test]
+    fn requested_uid_drop_failure_is_fatal_in_every_enforcing_mode() {
+        for mode in [SandboxMode::BestEffort, SandboxMode::Strict] {
+            let config = SandboxConfig {
+                mode,
+                // Invalid targets fail before any identity-changing syscall.
+                drop_uid: Some(privdrop::DropTarget { uid: 0, gid: 0 }),
+                ..SandboxConfig::default()
+            };
+            let error = drop_root_step(&config, "test attribution")
+                .err()
+                .expect("a requested identity drop must fail closed");
+            assert!(error.is::<PrivilegeDropError>());
+            assert!(format!("{error:#}").contains("refusing to 'drop' to uid 0 / gid 0"));
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    #[test]
+    fn absent_uid_drop_target_preserves_explicit_opt_out() {
+        for mode in [SandboxMode::BestEffort, SandboxMode::Strict] {
+            let config = SandboxConfig {
+                mode,
+                drop_uid: None,
+                ..SandboxConfig::default()
+            };
+            let outcome = drop_root_step(&config, "test attribution").unwrap();
+            assert!(!outcome.dropped);
+            assert!(outcome.message.is_none());
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    #[test]
+    fn disabled_sandbox_does_not_attempt_uid_drop() {
+        let report = apply_sandbox(&SandboxConfig {
+            mode: SandboxMode::Disabled,
+            // This would fail if the disabled backend attempted the drop.
+            drop_uid: Some(privdrop::DropTarget { uid: 0, gid: 0 }),
+            ..SandboxConfig::default()
+        })
+        .unwrap();
+        assert!(!report.uid_dropped);
+        assert_eq!(report.status, SandboxStatus::NotApplied);
+    }
+}

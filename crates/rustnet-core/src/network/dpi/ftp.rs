@@ -3,7 +3,7 @@
 //! Parses the plaintext FTP control channel (RFC 959, RFC 2389, RFC 2428).
 //! Detection is keyed off port 21 plus a cheap start-line signature so non-
 //! standard ports are still caught. The data channel (port 20 / passive) is
-//! deliberately not inspected — payloads are arbitrary file bytes.
+//! deliberately not inspected: payloads are arbitrary file bytes.
 
 use crate::network::types::{FtpInfo, FtpMessageType};
 
@@ -27,35 +27,43 @@ const FTP_COMMANDS: &[&str] = &[
     "SIZE", "MDTM", "MLSD", "MLST",
 ];
 
+/// Commands accepted by the port-independent signature check. This is the
+/// subset of [`FTP_COMMANDS`] that no other common line-based protocol
+/// shares: SMTP claims `AUTH`/`QUIT`/`NOOP`/`HELP`, POP3 claims
+/// `USER`/`PASS`/`STAT`/`LIST`/`RETR`/`DELE`, and NNTP claims `MODE`, so
+/// matching those off port 21 would label mail and news flows as FTP.
+const FTP_DISTINCTIVE_COMMANDS: &[&str] = &[
+    "ACCT", "CWD", "CDUP", "SMNT", "REIN", "PORT", "PASV", "TYPE", "STRU", "STOR", "STOU", "APPE",
+    "ALLO", "REST", "RNFR", "RNTO", "ABOR", "RMD", "MKD", "PWD", "NLST", "SITE", "SYST", "FEAT",
+    "OPTS", "EPSV", "EPRT", "PBSZ", "PROT", "CCC", "SIZE", "MDTM", "MLSD", "MLST",
+];
+
 /// Cheap heuristic that returns `true` when a payload's first line plausibly
 /// belongs to the FTP control channel. Used so non-standard-port flows can
 /// still be classified.
-pub fn is_ftp(payload: &[u8]) -> bool {
+///
+/// Only distinctively-FTP commands count as a signature. Server replies
+/// (`220 <banner>`) are deliberately NOT matched here: the 3-digit reply
+/// grammar is shared verbatim by SMTP, POP3-era protocols, and NNTP, so
+/// off port 21 a reply line carries no FTP signal. Replies are still parsed
+/// by [`analyze_ftp`] on the port-21 path.
+pub(super) fn is_ftp(payload: &[u8]) -> bool {
     let line = first_line(payload);
     if line.is_empty() {
         return false;
     }
-    // Server response: 3-digit code, then space or '-' (continuation marker).
-    if line.len() >= 4
-        && line[0].is_ascii_digit()
-        && line[1].is_ascii_digit()
-        && line[2].is_ascii_digit()
-        && (line[3] == b' ' || line[3] == b'-')
-    {
-        return true;
-    }
-    // Client request: known command (case-insensitive) followed by space, CRLF,
-    // or end-of-line.
     let upper = first_token_upper(line);
     if upper.is_empty() {
         return false;
     }
-    FTP_COMMANDS.iter().any(|cmd| cmd.as_bytes() == upper)
+    FTP_DISTINCTIVE_COMMANDS
+        .iter()
+        .any(|cmd| cmd.as_bytes() == upper)
 }
 
 /// Parse an FTP control-channel payload. Returns `None` when the payload does
 /// not look like FTP.
-pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
+pub(super) fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
     let line = first_line(payload);
     if line.is_empty() {
         return None;
@@ -71,6 +79,11 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         && (line[3] == b' ' || line[3] == b'-')
     {
         let code = std::str::from_utf8(&line[0..3]).ok()?.parse::<u16>().ok()?;
+        // RFC 959 §4.2: the first digit is 1-5 and the second 0-5. Anything
+        // else ("999 hi") is not an FTP reply.
+        if !(1..=5).contains(&(code / 100)) || (code / 10) % 10 > 5 {
+            return None;
+        }
         let is_continuation = line[3] == b'-';
         let message = std::str::from_utf8(&line[4..])
             .ok()
@@ -80,17 +93,17 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         // (`220-Welcome to the FTP service.\r\n220 ProFTPD ...\r\n`) because
         // the first line is human-greeting prose. vsftpd, ProFTPD, and
         // Pure-FTPd all emit multi-line greetings by default, so honouring
-        // the continuation marker is critical — without it we tag
+        // the continuation marker is critical; without it we tag
         // `server_software = "Welcome"` on most real servers.
         let server_software = if code == 220 && !is_continuation {
-            // RFC 959 §5.4 — service-ready greetings typically embed the
+            // RFC 959 §5.4: service-ready greetings typically embed the
             // FTP server software in the first whitespace-delimited token
             // (`220 ProFTPD 1.3.7 ...`).
             message.as_deref().map(extract_software_token)
         } else {
             None
         };
-        // RFC 959 §4.2 — code 215 carries the system / OS name (`UNIX`,
+        // RFC 959 §4.2: code 215 carries the system / OS name (`UNIX`,
         // `Windows_NT`), NOT the FTP server software. Keeping the two
         // separate avoids labelling "UNIX" under "Server Software" in the
         // TUI.
@@ -121,11 +134,8 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         return None;
     }
     // `first_token_upper` already proved every byte is ASCII alphabetic, so
-    // the UTF-8 validation inside `String::from_utf8` is a fast linear walk
-    // that always succeeds — but the `?` stays as a defensive guard against
-    // a future change that widens the accepted byte range. Taking the `Vec`
-    // by value avoids the redundant `.to_string()` copy that the previous
-    // `std::str::from_utf8(&upper).ok()?.to_string()` shape required.
+    // `String::from_utf8` always succeeds; the `?` stays as a defensive guard
+    // against a future change that widens the accepted byte range.
     let command = String::from_utf8(upper).ok()?;
     // Trim leading command + whitespace to expose the argument.
     let args = std::str::from_utf8(line)
@@ -138,7 +148,7 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     // RFC 959 §5.4: `USER` carries the login name, useful as a per-flow
-    // identity hint (plaintext anyway — FTP-AUTH/TLS encrypts later).
+    // identity hint (plaintext anyway; FTP-AUTH/TLS encrypts later).
     let username = if command == "USER" {
         args.clone()
     } else {
@@ -208,8 +218,10 @@ mod tests {
 
     #[test]
     fn detects_server_greeting() {
+        // Replies are parsed on the port-21 path but are NOT a signature:
+        // the 3-digit grammar is shared with SMTP/POP3/NNTP.
         let payload = b"220 ProFTPD 1.3.7 Server (Example) [::ffff:10.0.0.1]\r\n";
-        assert!(is_ftp(payload));
+        assert!(!is_ftp(payload));
         let info = analyze_ftp(payload).expect("should parse");
         assert!(matches!(info.message_type, FtpMessageType::Response));
         assert_eq!(info.response_code, Some(220));
@@ -219,9 +231,32 @@ mod tests {
     #[test]
     fn detects_continuation_response() {
         let payload = b"220-Welcome to the FTP service.\r\n220 Ready.\r\n";
-        assert!(is_ftp(payload));
+        assert!(!is_ftp(payload));
         let info = analyze_ftp(payload).expect("should parse");
         assert_eq!(info.response_code, Some(220));
+    }
+
+    #[test]
+    fn signature_ignores_verbs_shared_with_mail_protocols() {
+        // SMTP traffic must not be classified as FTP off port 21.
+        assert!(!is_ftp(b"220 smtp.gmail.com ESMTP x1234\r\n"));
+        assert!(!is_ftp(b"EHLO mail.example.com\r\n"));
+        assert!(!is_ftp(b"AUTH LOGIN\r\n"));
+        // POP3 shares USER/PASS/RETR/LIST/DELE with FTP.
+        assert!(!is_ftp(b"USER alice\r\n"));
+        assert!(!is_ftp(b"RETR 1\r\n"));
+        // Distinctively-FTP commands still trigger the signature.
+        assert!(is_ftp(b"PASV\r\n"));
+        assert!(is_ftp(b"TYPE I\r\n"));
+        assert!(is_ftp(b"cwd /pub\r\n"));
+    }
+
+    #[test]
+    fn rejects_out_of_range_reply_codes() {
+        // RFC 959 reply codes are 1xx-5xx with second digit 0-5.
+        assert!(analyze_ftp(b"999 hello\r\n").is_none());
+        assert!(analyze_ftp(b"090 hello\r\n").is_none());
+        assert!(analyze_ftp(b"260-x\r\n").is_none());
     }
 
     #[test]
@@ -277,12 +312,8 @@ mod tests {
 
     #[test]
     fn parses_system_type_response() {
-        // RFC 959 §4.2: a `215` reply returns the OS / system type, NOT the
-        // FTP server software. Previously we tagged "UNIX" under
-        // `server_software`, which surfaced under the "Server Software"
-        // column in the TUI alongside greetings like "ProFTPD". They are
-        // different things; route 215 to a dedicated `system_type` field
-        // and confirm `server_software` stays unset for this reply.
+        // RFC 959 section 4.2: a 215 reply is the OS type, not the FTP
+        // server software.
         let payload = b"215 UNIX Type: L8\r\n";
         let info = analyze_ftp(payload).expect("should parse");
         assert_eq!(info.response_code, Some(215));

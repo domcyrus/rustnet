@@ -28,11 +28,6 @@ pub fn is_tap_interface(name: &str) -> bool {
     name.starts_with("tap")
 }
 
-/// Detect if an interface name is any tunnel interface (TUN or TAP)
-pub fn is_tunnel_interface(name: &str) -> bool {
-    is_tun_interface(name) || is_tap_interface(name)
-}
-
 /// Parse a TUN packet (raw IP, no link-layer header)
 ///
 /// TUN devices operate at the network layer (Layer 3) and carry raw IP packets.
@@ -139,16 +134,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tunnel_interface_detection() {
-        assert!(is_tunnel_interface("tun0"));
-        assert!(is_tunnel_interface("tap0"));
-        assert!(is_tunnel_interface("utun0"));
-        assert!(!is_tunnel_interface("eth0"));
-        assert!(!is_tunnel_interface("wlan0"));
-        assert!(!is_tunnel_interface("lo"));
-    }
-
-    #[test]
     fn test_parse_by_dlt() {
         use crate::network::parser::PacketParser;
 
@@ -196,7 +181,6 @@ mod tests {
 
         // The family header's first byte (0x02) has IP version nibble 0, so
         // parsing the frame as raw IP without stripping the header drops it.
-        // This is exactly what the old DLT_NULL arm did.
         assert!(
             raw_ip::parse(&null_frame, &parser, None, None).is_none(),
             "raw IP parse must fail when the 4-byte family header is not stripped",

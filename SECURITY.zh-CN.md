@@ -2,7 +2,13 @@
 
 # 安全
 
+> **文档版本：** `main` 分支上的本指南描述开发中的代码，可能包含尚未发布的变更。使用 v1.7.0 时，请参阅 [v1.7.0 安全指南](https://github.com/domcyrus/rustnet/blob/v1.7.0/SECURITY.zh-CN.md)。运行 `rustnet --version` 查看已安装的版本。
+
 RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本文档描述了已实现的安全措施。
+
+> **自 v1.7.0 起可用的加固：** 请求的 UID/GID 降权失败时中止启动、保留安全打开的输出文件描述符且不为 Seatbelt 添加输出路径例外，以及检测输出文件冲突。下文的 Linux 启动 socket 清单也自 v1.7.0 起可用。
+
+在 Linux、macOS 和 FreeBSD 上，即使使用尽力而为模式，请求的 root UID/GID 降权也必须在数据包处理线程启动前成功。身份切换失败会中止启动，不会以 root 或部分切换的身份继续运行。不受支持的可选沙箱层仍可降级。显式使用 `--no-uid-drop` 或 `--no-sandbox` 时保留原有的禁用行为。
 
 ## 目录
 
@@ -12,7 +18,7 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 - [权限剥离与 Job Object 沙箱（Windows）](#privilege-drop-and-job-object-sandboxing-windows)
 - [权限需求](#privilege-requirements)
 - [只读操作](#read-only-operation)
-- [不主动对外通信](#no-external-communication)
+- [网络通信](#no-external-communication)
 - [日志文件隐私](#log-file-privacy)
 - [eBPF 安全](#ebpf-security)
 - [威胁模型](#threat-model)
@@ -28,10 +34,11 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 
 | 限制项 | 内核版本 | 描述 |
 |--------|----------|------|
-| 文件系统 | 5.13+ | 仅 `/proc` 可读（用于进程识别） |
-| 网络 | 6.4+ | 禁止 TCP bind/connect（RustNet 为被动模式） |
+| 文件系统 | 5.13+ | 读取权限限于 `/proc`、接口统计所需的 sysfs 路径，以及运行时所需的账户、解析器、GeoIP 和可选 Kubernetes 路径 |
+| 网络 | 6.7+ | 禁止 TCP bind；启用反向 DNS 时仅允许连接目的端口 53。当前 Landlock 策略不限制 UDP |
 | Linux capabilities | 任意 | pcap socket 打开后丢弃 `CAP_NET_RAW` |
 | Linux capabilities | 任意 | eBPF 程序加载后丢弃 `CAP_BPF`、`CAP_PERFMON` |
+| root uid | 任意 | 以 root 启动时（如 `sudo rustnet`），初始化完成后降权到调用用户（`SUDO_UID`/`SUDO_GID`）或 `nobody` |
 | 特权 | 3.5+ | `PR_SET_NO_NEW_PRIVS` 由 RustNet 自身设置——始终生效，即使使用 `--no-sandbox`——防止通过 setuid 二进制文件提升特权 |
 
 ### 工作原理
@@ -39,31 +46,42 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 1. **初始化阶段**：RustNet 加载 eBPF 程序、打开包捕获句柄、创建日志文件
 2. **特权锁定**：设置 `PR_SET_NO_NEW_PRIVS`（即使禁用沙箱也会应用）
 3. **Linux capabilities 剥离**：移除 `CAP_NET_RAW`、`CAP_BPF` 和 `CAP_PERFMON`
-4. **Landlock**：限制文件系统和网络访问
+4. **root uid 降权**：以 root 运行时，通过 `setresuid`/`setresgid` 切换到调用 sudo 的用户（或 `nobody`）。已打开的捕获 socket、eBPF 程序和日志/导出文件继续有效。在没有 Landlock 的内核上，这是主要的隔离手段
+5. **Landlock**：限制文件系统和网络访问
 
 ### 安全收益
 
-如果攻击者利用 DPI/包解析中的漏洞：
+在 Landlock 生效时，利用 DPI/包解析漏洞的攻击者会受到以下限制。
+其中 TCP 限制要求 Linux 6.7+ 且 Landlock 网络策略已生效：
 - 无法读取任意文件（凭据、配置等）
-- 无法写入文件系统（除配置的日志路径外）
-- 无法建立出站 TCP 连接（阻止数据外泄）
+- 无法打开新的可写路径；已打开的输出文件描述符仍可写入
+- 除启用反向 DNS 时连接目的端口 53 外，无法建立出站 TCP 连接
 - 无法绑定 TCP 端口（阻止反向 shell）
 - 无法创建新的 raw socket（Linux capabilities 已剥离）
 - 无法通过 setuid 二进制文件提升特权（`PR_SET_NO_NEW_PRIVS`，即使使用 `--no-sandbox` 也会设置）
+- 不以 root 运行：使用 `sudo rustnet` 时进程会切换为调用用户，即使在没有 Landlock 的内核上，攻击者也无法获得 root
 
 ### CLI 选项
 
 ```
---no-sandbox        禁用 Landlock 沙箱和 Linux capabilities 剥离
+--no-sandbox        禁用 Landlock 沙箱、Linux capabilities 剥离和 root uid 降权
                     （仍会设置 PR_SET_NO_NEW_PRIVS）
 --sandbox-strict    要求完整沙箱强制生效，否则退出
+--no-uid-drop       初始化后保持 root 运行，
+                    不降权到 SUDO_UID/SUDO_GID（或 nobody）
 ```
+
+root uid 降权的权衡：降权后，procfs 回退路径的进程归属只能检查目标用户拥有的进程，
+`/var/log/pods` 下的 Kubernetes 日志目录也可能不可读。在 Linux 5.11 及更高版本上，
+默认 eBPF 路径会在降权前通过一次性的 task-file 迭代器清点 socket，因此其他用户拥有的
+既有 socket 仍可归属。如果依赖纯 procfs 归属（如未启用 eBPF 的构建或旧版内核）且需要
+归属其他用户的进程，请使用 `--no-uid-drop`。
 
 ### 优雅降级
 
 - **Kernel < 5.13**：跳过沙箱，记录警告
-- **Kernel 5.13-6.3**：仅文件系统限制
-- **Kernel 6.4+**：完整的文件系统 + 网络限制
+- **Kernel 5.13-6.6**：仅文件系统限制
+- **Kernel 6.7+**：文件系统和 TCP 限制；当前 Landlock 策略仍不限制 UDP
 - **Docker**：Landlock 可能受限；应用正常运行
 
 ## Seatbelt 沙箱（macOS）<a id="seatbelt-sandboxing-macos"></a>
@@ -74,43 +92,58 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 
 | 限制项 | 描述 |
 |--------|------|
-| 出站网络 | TCP/UDP 出站被阻止；Unix socket（Mach IPC）允许 |
+| 出站网络 | TCP/UDP 出站被阻止；启用反向 DNS 时允许目的端口 53，Unix socket（Mach IPC）允许 |
 | 文件系统读取 | 禁止读取用户主目录（`/Users`、`/var/root`）；GeoIP 路径显式允许 |
 | 文件系统写入 | 禁止写入所有用户主目录（`/Users`、`/var/root`） |
-| 文件系统写入 | 仅配置的日志和 PCAP 导出路径可写 |
+| 输出文件 | 通过保留的文件描述符写入，不授予输出路径写入例外 |
 | 进程执行 | 除 `/usr/sbin/lsof` 外，禁止执行所有二进制文件 |
+| root uid | 以 root 启动时（如 `sudo rustnet`），初始化完成后降权到调用用户（`SUDO_UID`/`SUDO_GID`）或 `nobody` |
 
 ### 工作原理
 
 1. **初始化阶段**：RustNet 打开包捕获句柄（BPF/PKTAP）并创建日志文件
-2. **预创建**：PCAP sidecar 文件（`.connections.jsonl`）在沙箱应用前创建，因此其路径已经是有效的允许目标
-3. **沙箱应用**：调用 `sandbox_init_with_parameters` — 已打开的文件描述符保持不变，仅限制未来的操作
+2. **准备输出**：JSON 日志、PCAP、PCAP sidecar（`.connections.jsonl`）和 PCAPNG 文件在应用沙箱前安全打开。截断捕获输出前会检查已打开文件的身份是否冲突，文件描述符在 uid 降权期间保持打开
+3. **root uid 降权**：以 root 运行时，通过 `setgid`/`setuid` 切换到调用 sudo 的用户（或 `nobody`）。已打开的捕获和日志/导出文件描述符继续有效
+4. **沙箱应用**：调用 `sandbox_init_with_parameters`；已打开的文件描述符保持不变，仅限制未来的操作
 
 ### 配置文件策略
 
-RustNet 使用 **默认允许** 的 SBPL 配置文件配合针对性拒绝。拒绝默认的配置文件需要显式将所有系统库、Mach 端口、区域设置数据、字体和其他 OS 内部组件加入白名单——脆弱且容易出错。默认允许配合针对性拒绝覆盖了主要威胁（凭据窃取、数据外泄、shell 逃逸），同时避免操作风险。具体的拒绝规则阻止对用户主目录下的文件读/写、出站网络连接，以及除 `/usr/sbin/lsof` 外所有二进制文件的执行。
+RustNet 使用 **默认允许** 的 SBPL 配置文件配合针对性拒绝。
+默认拒绝的配置文件需要显式允许所有系统库、Mach 端口、区域设置数据、
+字体及其他操作系统内部组件，容易随系统版本变化而失效。
+当前的针对性规则阻止对用户主目录的读写、出站网络连接
+（启用反向 DNS 时的目的端口 53 除外），以及执行除 `/usr/sbin/lsof` 外的二进制文件。
 
 ### 输出文件支持
 
-`--json-log` 和 `--pcap-export` 路径通过运行时参数（`JSON_LOG_PATH`、`PCAP_PATH`、`PCAP_JSONL_PATH`）传递给 SBPL 配置文件。配置文件为每个路径授予显式的 `allow file-write*` 规则，该规则通过 SBPL 的特异性优先于更宽泛的 `/Users` 拒绝规则。未使用的参数默认为 `/dev/null`。
+`--json-log`、`--pcap-export` 和 `--pcapng-export`（包括 PCAP sidecar）通过安全预先打开的文件描述符写入。RustNet 不会在应用沙箱后重新打开这些路径，也不会向 Seatbelt 配置文件传递输出路径写入例外。即使准备完成后路径被替换，也不会因此获得对其他文件的写入权限。
 
-两个标志在沙箱内均可正常工作。
+三个标志在沙箱内均可正常工作。
+
+**自 v1.7.0 起可用：** 在 Unix 上，现有的显式输出文件必须属于有效用户或有效的 sudo 调用用户。输出路径相对于已验证的目录文件描述符打开；拒绝所有权或权限不安全的目录。自动诊断日志仅在已验证的 `logs/` 目录中创建新文件。请使用可信的私有启动目录和输出目录；修改现有文件的权限无法撤销其他进程已持有的文件描述符。
 
 ### 安全收益
 
 如果攻击者利用 DPI/包解析中的漏洞：
 - 无法读取 `/Users` 下的 SSH 密钥、AWS 凭据、浏览器配置文件或其他凭据文件
 - 无法写入 `/Users` 下的 SSH 密钥、AWS 凭据、浏览器配置文件或其他凭据文件
-- 无法建立出站 TCP/UDP 连接（阻止数据外泄）
-- 无法打开新的 raw network socket
-- 无法执行二进制文件（不能通过 `/bin/sh`、`/usr/bin/curl` 等逃逸 shell）
+- 除启用反向 DNS 时连接目的端口 53 外，无法建立出站 TCP/UDP 连接
+- 除 `/usr/sbin/lsof` 外无法执行二进制文件（不能通过 `/bin/sh`、`/usr/bin/curl` 等逃逸 shell）
+- 不以 root 运行：使用 `sudo rustnet` 时进程会切换为调用用户
 
 ### CLI 选项
 
 ```
---no-sandbox        禁用 Seatbelt 沙箱
+--no-sandbox        禁用 Seatbelt 沙箱和 root uid 降权
 --sandbox-strict    要求完整沙箱强制生效，否则退出
+--no-uid-drop       初始化后保持 root 运行，
+                    不降权到 SUDO_UID/SUDO_GID（或 nobody）
 ```
+
+root uid 降权的权衡：默认的 PKTAP 归属路径不受影响（进程元数据随已打开的捕获
+fd 带内到达），但 lsof 回退路径（PKTAP 不可用时启用，例如显式指定 `--interface`）
+降权后只能看到目标用户的进程。如果依赖 lsof 归属其他用户的进程，请使用
+`--no-uid-drop`。
 
 ### 为什么默认使用 BestEffort
 
@@ -125,6 +158,17 @@ RustNet 使用 **默认允许** 的 SBPL 配置文件配合针对性拒绝。拒
 ## FreeBSD 沙箱<a id="freebsd-sandboxing"></a>
 
 FreeBSD 当前未启用沙箱。计划使用 `cap_enter()` 配合 `libcasper` 实现完整的 Capsicum 沙箱，用于特权进程查找——详见 [ROADMAP.md](ROADMAP.md)。
+
+### root uid 降权
+
+在 Capsicum 落地之前，FreeBSD 上的主要隔离手段是 root 降权：以 root 启动时（如 `sudo rustnet`），BPF 捕获设备打开后，进程通过 `setresuid`/`setresgid` 降权到调用用户（`SUDO_UID`/`SUDO_GID`）或 `nobody`。已打开的捕获和日志/导出文件描述符继续有效，预创建的导出文件会移交给目标用户。注意 `doas` 不设置 `SUDO_UID`，因此 doas 用户会回退到 `nobody`。
+
+权衡：进程归属使用 `sockstat`，非 root 用户只能看到目标用户的 socket。如需归属其他用户的进程，请使用 `--no-uid-drop`。
+
+```
+--no-uid-drop       初始化后保持 root 运行，
+                    不降权到 SUDO_UID/SUDO_GID（或 nobody）
+```
 
 ## 权限剥离与 Job Object 沙箱（Windows）<a id="privilege-drop-and-job-object-sandboxing-windows"></a>
 
@@ -154,9 +198,10 @@ FreeBSD 当前未启用沙箱。计划使用 `cap_enter()` 配合 `libcasper` �
 
 ### 局限性
 
-Windows 沙箱弱于 Linux/macOS/FreeBSD：
+Windows 沙箱的文件系统和网络限制少于 Linux Landlock 或 macOS Seatbelt。
+FreeBSD 目前没有同类沙箱：
 - 无文件系统限制 —— Windows 缺少与 Landlock 或 Seatbelt 等效的进程级文件系统沙箱
-- 无网络限制 —— 阻止出站会中断 Npcap 包捕获
+- 无网络限制；仍可建立出站连接
 - 特权移除仅影响提升进程已拥有的特权
 
 ### CLI 选项
@@ -191,14 +236,14 @@ RustNet 需要特权访问来捕获网络数据包：
 # 现代 Linux（5.8+）：包捕获 + eBPF
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)
 
-# 旧版 Linux（pre-5.8）：包捕获 + eBPF
-sudo setcap 'cap_net_raw,cap_sys_admin+eip' $(which rustnet)
-
-# 仅包捕获（无 eBPF 进程检测）
+# 仅包捕获（eBPF 会回退到 procfs）
 sudo setcap cap_net_raw+eip $(which rustnet)
 ```
 
-沙箱应用后，`CAP_NET_RAW` 会被丢弃——进程仅保留所需的最小特权。
+旧版 pre-5.8 内核需要宽泛的 `CAP_SYS_ADMIN` 才能执行 eBPF 操作。RustNet
+的安装包不会自动授予该 capability；除非你明确接受该风险，否则请只授予
+`CAP_NET_RAW` 并使用 procfs 回退。沙箱应用后，`CAP_NET_RAW` 和 eBPF
+加载相关 capabilities 会被丢弃——进程仅保留所需的最小特权。
 
 ## 只读操作<a id="read-only-operation"></a>
 
@@ -211,13 +256,11 @@ RustNet 仅监控流量，不会：
 
 包捕获以非混杂、只读模式打开。
 
-## 不主动对外通信<a id="no-external-communication"></a>
+## 网络通信<a id="no-external-communication"></a>
 
-RustNet 完全在本地运行：
-- 无遥测或分析
-- 无网络请求（除监控的流量外）
-- 无云服务或远程 API
-- 所有数据保留在你的系统上
+RustNet 没有遥测、云服务或远程 API。GeoIP 查询使用本地数据库文件。
+反向 DNS 默认启用，可能向系统配置的 DNS 解析器发送针对所观察 IP 地址的 PTR 查询。
+使用 `--no-resolve-dns` 可避免这些查询。除非你自行分享，捕获的流量、日志和导出文件均保存在本地。
 
 ## 日志文件隐私<a id="log-file-privacy"></a>
 
@@ -237,9 +280,10 @@ RustNet 完全在本地运行：
 
 使用 eBPF 进行增强型进程检测时（Linux 默认）：
 
-- 需要额外的 Linux capabilities（`CAP_BPF`、`CAP_PERFMON`）
+- 现代内核需要额外的 Linux capabilities（`CAP_BPF`、`CAP_PERFMON`）
 - eBPF 程序在加载前由内核验证
 - 仅限只读操作（不修改数据包）
+- 在 Linux 5.11 及更高版本上，一次性的 task-file 迭代器会清点既有 socket 的所有者
 - 如果 eBPF 失败，自动回退到 procfs
 
 ## 威胁模型<a id="threat-model"></a>
@@ -272,7 +316,7 @@ Landlock（Linux）和 Seatbelt（macOS）即使在 RustNet 以 root（UID 0）�
 RustNet 采取以下措施防护供应链攻击：
 
 - **依赖锁文件**：`Cargo.lock` 已提交到仓库，固定所有传递依赖版本并记录源校验和。这防止静默版本升级。
-- **安全审计**：`cargo deny check` 在每次 push 和 pull request 时于 CI 中运行，对照 RustSec Advisory Database 检查依赖，并强制执行许可证、来源和通配符版本策略（`deny.toml`）。一个每日定时工作流会针对已提交的 `Cargo.lock` 重新检查安全公告，因此新发布的公告无需 push 即可被发现。
+- **安全审计**：`cargo audit` 在每次 push 和 pull request 时于 CI 中运行，对照 RustSec Advisory Database 检查依赖并检测已撤回的版本。一个每日定时工作流会重新检查已提交的 `Cargo.lock`，因此新发布的公告和版本撤回无需 push 即可被发现。
 - **CI action 固定**：所有 GitHub Actions 均通过 commit SHA（而非标签）固定，防止对上游 action 的标签重写攻击。
 - **保守的依赖策略**：新依赖需要说明理由，并审查其维护状态和安全记录（参见 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)）。
 - **构建时完整性**：Windows Npcap SDK 下载在 `build.rs` 中对照硬编码的 SHA256 校验和进行验证。

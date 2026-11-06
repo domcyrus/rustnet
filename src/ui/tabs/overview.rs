@@ -1,4 +1,4 @@
-//! Overview tab — the main connection list (flat or grouped), the
+//! Overview tab: the main connection list (flat or grouped), the
 //! stats sidebar (interface, process detection, security, mini
 //! traffic), the section separator helper, and the per-interface
 //! sparkline used inside the stats sidebar.
@@ -9,32 +9,32 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Cell, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Sparkline, Table, Wrap,
-    },
+    widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Wrap},
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use log::{debug, info};
 
-use crate::app::{App, AppStats};
+use crate::app::{App, AppStats, ConnectionCounts};
 use crate::network::dns::DnsResolver;
-use crate::network::types::{Connection, Protocol};
+use crate::network::dns_analytics::{DEGRADED_FAILURE_PERCENT, DnsAnalyticsSnapshot, DnsHealth};
+use crate::network::types::Connection;
 use crate::ui::{
-    ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER, SortColumn, UIState, clear_all_with_confirmation,
+    ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
+    NONE_PLACEHOLDER, OverviewSection, PaneScroll, SelectionMove, SortColumn, UiState, alert_style,
+    clear_all_with_confirmation,
     connection_table::{
-        Column, ColumnId, bandwidth_cell, build_header, column_constraints, connection_row,
-        select_columns,
+        CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
+        connection_row, render_row_table, select_columns, visible_window,
     },
-    format::format_bytes,
-    section_header,
+    format::{format_bytes, format_rtt_compact, truncate_with_ellipsis},
+    section_header, section_title,
     state::ProcessGroupStats,
-    theme, try_handle_connection_nav,
+    theme, try_handle_connection_nav, try_handle_pane_scroll, try_handle_pane_wheel,
+    widgets::{badge, braille_graph},
 };
 
-/// Overview tab — connection list + stats sidebar. Reads every
+/// Overview tab: connection list + stats sidebar. Reads every
 /// ComponentContext field; holds no per-tab state today.
 pub(in crate::ui) struct OverviewTab;
 
@@ -54,6 +54,11 @@ impl Component for OverviewTab {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
+        if ctx.ui_state.section_navigation
+            && ctx.ui_state.overview_section == OverviewSection::System
+        {
+            return try_handle_pane_wheel(mouse, &mut ctx.ui_state.system_scroll);
+        }
         // Scroll wheel: navigate the connection list, but only when
         // the cursor is over the registered scroll area. Click events
         // are dispatched by main.rs through ClickableRegions.
@@ -67,23 +72,11 @@ impl Component for OverviewTab {
         }
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                if ctx.ui_state.grouping_enabled
-                    && let Some(rows) = ctx.grouped_rows
-                {
-                    ctx.ui_state.move_selection_up_grouped(rows);
-                } else {
-                    ctx.ui_state.move_selection_up(ctx.connections);
-                }
+                ctx.move_selection(SelectionMove::Up);
                 Some(Vec::new())
             }
             MouseEventKind::ScrollDown => {
-                if ctx.ui_state.grouping_enabled
-                    && let Some(rows) = ctx.grouped_rows
-                {
-                    ctx.ui_state.move_selection_down_grouped(rows);
-                } else {
-                    ctx.ui_state.move_selection_down(ctx.connections);
-                }
+                ctx.move_selection(SelectionMove::Down);
                 Some(Vec::new())
             }
             _ => None,
@@ -91,18 +84,37 @@ impl Component for OverviewTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        // --- Filter mode owns its own input mini-loop ---
         if ctx.ui_state.filter_mode {
             return handle_filter_mode_key(key, ctx);
         }
+        if ctx.ui_state.section_navigation
+            && ctx.ui_state.overview_section == OverviewSection::System
+        {
+            let page = usize::from(ctx.ui_state.system_scroll.viewport_rows());
+            if let handled @ Some(_) =
+                try_handle_pane_scroll(key, page, &mut ctx.ui_state.system_scroll)
+            {
+                return handled;
+            }
+            return match key.code {
+                KeyCode::Esc => {
+                    ctx.ui_state.select_section(0);
+                    Some(Vec::new())
+                }
+                // Only global controls can act while the connection list lacks focus.
+                KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Char('q' | 'h' | 'x' | '1'..='5' | '[' | ']') => None,
+                KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => None,
+                _ => Some(Vec::new()),
+            };
+        }
 
-        // --- Connection navigation + copy (shared with DetailsTab) ---
         if let nav @ Some(_) = try_handle_connection_nav(key, ctx) {
             return nav;
         }
 
         match (key.code, key.modifiers) {
-            // --- Open Details on Enter (only for a real connection, not a group header) ---
             (KeyCode::Enter, _) => {
                 let on_group_header =
                     ctx.ui_state.grouping_enabled && ctx.ui_state.is_group_selected();
@@ -112,9 +124,9 @@ impl Component for OverviewTab {
                 Some(Vec::new())
             }
 
-            // --- Group expand / collapse ---
             (KeyCode::Char(' '), _)
-                if ctx.ui_state.grouping_enabled && ctx.ui_state.is_group_selected() =>
+                if ctx.ui_state.grouping_enabled
+                    && ctx.ui_state.selected_group_expansion().is_some() =>
             {
                 ctx.ui_state.toggle_group_expansion();
                 Some(vec![Effect::Regroup])
@@ -132,7 +144,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::Regroup])
             }
 
-            // --- Filter mode entry and exit ---
             (KeyCode::Char('/'), _) => {
                 debug!("Entering filter mode");
                 ctx.ui_state.enter_filter_mode();
@@ -143,9 +154,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // --- Display toggles & sort ---
-
-            // Toggle port number / service name display
             (KeyCode::Char('p'), _) => {
                 ctx.ui_state.show_port_numbers = !ctx.ui_state.show_port_numbers;
                 info!(
@@ -159,7 +167,6 @@ impl Component for OverviewTab {
                 Some(Vec::new())
             }
 
-            // Toggle hostname / IP display — DNS resolver must be enabled
             (KeyCode::Char('d'), _) if ctx.app.is_dns_resolution_enabled() => {
                 ctx.ui_state.show_hostnames = !ctx.ui_state.show_hostnames;
                 info!(
@@ -173,7 +180,6 @@ impl Component for OverviewTab {
                 Some(Vec::new())
             }
 
-            // Toggle historic-connection inclusion
             (KeyCode::Char('t'), _) => {
                 ctx.ui_state.show_historic = !ctx.ui_state.show_historic;
                 ctx.ui_state.scroll_offset = 0;
@@ -190,21 +196,11 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // Toggle the System stats sidebar
-            (KeyCode::Char('i'), _) => {
+            (KeyCode::Char('i'), _) if !ctx.ui_state.section_navigation => {
                 ctx.ui_state.show_system_panel = !ctx.ui_state.show_system_panel;
-                info!(
-                    "System sidebar: {}",
-                    if ctx.ui_state.show_system_panel {
-                        "shown"
-                    } else {
-                        "hidden"
-                    }
-                );
                 Some(Vec::new())
             }
 
-            // Toggle process grouping
             (KeyCode::Char('a'), _) => {
                 ctx.ui_state.toggle_grouping();
                 info!(
@@ -218,7 +214,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::Regroup])
             }
 
-            // Reset view settings
             (KeyCode::Char('r'), _) => {
                 let was_historic = ctx.ui_state.show_historic;
                 ctx.ui_state.reset_view();
@@ -229,7 +224,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // Cycle sort column
             (KeyCode::Char('s'), KeyModifiers::NONE) => {
                 ctx.ui_state.cycle_sort_column();
                 info!(
@@ -244,7 +238,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // Toggle sort direction (Shift+s)
             (KeyCode::Char('S'), _) => {
                 ctx.ui_state.toggle_sort_direction();
                 info!(
@@ -259,10 +252,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // (Connection navigation + 'c' copy are handled by
-            // try_handle_connection_nav at the top of this function.)
-
-            // Clear all connections (two-press confirmation)
             (KeyCode::Char('x'), _) => {
                 if clear_all_with_confirmation(ctx.ui_state, ctx.app) {
                     Some(vec![Effect::RefreshData])
@@ -321,7 +310,7 @@ fn handle_filter_mode_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option
             ctx.ui_state.filter_cursor_position = ctx.ui_state.filter_query.len();
             Some(Vec::new())
         }
-        // Navigation works while typing — uses the parent's sorted list.
+        // Navigation works while typing; it uses the parent's sorted list.
         KeyCode::Up => {
             ctx.ui_state.move_selection_up(ctx.connections);
             Some(Vec::new())
@@ -350,11 +339,87 @@ fn is_filter_backspace_char(c: char, modifiers: KeyModifiers) -> bool {
 
 /// Fixed width of the System stats sidebar. A constant (rather than a
 /// percentage) keeps it from ballooning on wide terminals; it just fits
-/// the longest stat lines ("Process Detection: …").
+/// the longest stat lines.
 const SYSTEM_PANEL_WIDTH: u16 = 34;
 /// Below this Overview width the sidebar is dropped even when toggled
-/// on — the connection table needs the room more.
+/// on: the connection table needs the room more.
 const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
+/// Minimum rows reserved for the Traffic heading, its two waves, and the
+/// current-rate line. Security details yield this space on short terminals.
+const TRAFFIC_MIN_HEIGHT: u16 = 4;
+/// Compact Security keeps its heading and overall sandbox status visible.
+const COMPACT_SECURITY_HEIGHT: u16 = 2;
+const NETWORK_STATS_HEIGHT: u16 = 6;
+const SECTION_GAP_HEIGHT: u16 = 1;
+
+/// The sidebar has `SYSTEM_PANEL_WIDTH` minus the rule and padding to play
+/// with, so labels here are kept short enough that `Detection: <label>` stays
+/// on one line. The backends report stable machine identifiers (which the JSON
+/// export keeps verbatim); only the display form is abbreviated.
+fn detection_method_label(method: &str) -> &str {
+    match method {
+        "windows-etw+iphlpapi" => "ETW + IP Helper",
+        "windows-iphlpapi" => "IP Helper",
+        // "fentry" alone names the trampoline backend; the paired fexit
+        // program is implied and costs 6 columns we do not have.
+        "eBPF fentry/fexit + procfs" => "eBPF fentry + procfs",
+        _ => method,
+    }
+}
+
+fn capture_summary_lines(
+    interface: &str,
+    link_layer: &str,
+    is_tunnel: bool,
+    detection: &str,
+    degraded: bool,
+    header_visible: (bool, bool),
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if !header_visible.0 {
+        lines.push(Line::from(format!("Interface: {interface}")));
+    }
+    if (!header_visible.1 && !link_layer.eq_ignore_ascii_case(interface)) || is_tunnel {
+        lines.push(Line::from(format!(
+            "Link Layer: {link_layer}{}",
+            if is_tunnel { " (Tunnel)" } else { "" }
+        )));
+    }
+    // A fallback or warning must stay explicit even when its name repeats.
+    if degraded
+        || (!detection.eq_ignore_ascii_case(interface)
+            && !detection.eq_ignore_ascii_case(link_layer))
+    {
+        lines.push(Line::from(vec![
+            Span::raw("Detection: "),
+            Span::styled(
+                detection_method_label(detection).to_owned(),
+                theme::fg(if degraded { theme::warn() } else { theme::ok() }),
+            ),
+        ]));
+    }
+    lines
+}
+
+/// Whether the complete Security section fits without taking the four rows
+/// needed to keep the live Traffic summary usable.
+fn security_details_fit(area_height: u16, stats_height: u16, full_security_height: u16) -> bool {
+    let required_height = stats_height
+        .saturating_add(NETWORK_STATS_HEIGHT)
+        .saturating_add(TRAFFIC_MIN_HEIGHT)
+        .saturating_add(SECTION_GAP_HEIGHT * 3)
+        .saturating_add(full_security_height);
+    area_height >= required_height
+}
+
+pub(in crate::ui) fn compact_layout(area: Rect) -> bool {
+    area.width < SYSTEM_PANEL_MIN_AREA_WIDTH
+}
+
+/// Actual row capacity after the section and column headings.
+pub(in crate::ui) fn visible_connection_rows(area: Rect) -> usize {
+    usize::from(crate::ui::connection_table::table_rows_area(crate::ui::section_body(area)).height)
+}
 
 fn draw_overview(
     f: &mut Frame,
@@ -362,6 +427,22 @@ fn draw_overview(
     area: Rect,
     click_regions: &mut ClickableRegions,
 ) -> Result<()> {
+    if compact_layout(area) && ctx.ui_state.overview_section == OverviewSection::System {
+        let counts = if ctx.ui_state.has_active_filter() {
+            ctx.app.get_connection_counts()
+        } else {
+            ConnectionCounts::from_connections(ctx.connections)
+        };
+        return draw_stats_panel(
+            f,
+            counts,
+            ctx.stats,
+            ctx.app,
+            area,
+            Some(&ctx.ui_state.system_scroll),
+            ctx.ui_state,
+        );
+    }
     let show_system_panel =
         ctx.ui_state.show_system_panel && area.width >= SYSTEM_PANEL_MIN_AREA_WIDTH;
     let chunks = if show_system_panel {
@@ -376,13 +457,11 @@ fn draw_overview(
             .split(area)
     };
 
-    // Get DNS resolver from app if enabled
     let dns_resolver = ctx.app.get_dns_resolver();
 
-    // Get GeoIP status - only show Loc column if country DB is loaded
+    // The Loc column only appears when the country DB is loaded.
     let (has_country_db, _has_asn_db, _has_city_db) = ctx.app.get_geoip_status();
 
-    // Use grouped view if grouping is enabled
     if ctx.ui_state.grouping_enabled {
         if let Some(rows) = ctx.grouped_rows {
             draw_grouped_connections_list(
@@ -408,144 +487,157 @@ fn draw_overview(
     }
 
     if show_system_panel {
-        draw_stats_panel(f, ctx.connections, ctx.stats, ctx.app, chunks[1])?;
+        let connection_counts = if ctx.ui_state.has_active_filter() {
+            ctx.app.get_connection_counts()
+        } else {
+            ConnectionCounts::from_connections(ctx.connections)
+        };
+        draw_stats_panel(
+            f,
+            connection_counts,
+            ctx.stats,
+            ctx.app,
+            chunks[1],
+            None,
+            ctx.ui_state,
+        )?;
     }
 
     Ok(())
 }
 
-/// Render a vertical scrollbar on the right edge of the table's row
-/// region when the row list overflows the viewport. `position` is the
-/// scroll offset of the topmost visible row; `viewport` is the number
-/// of rows currently visible. No-op when everything fits. Styled to
-/// match the section rules (and NO_COLOR-aware via `theme::fg`).
-fn draw_table_scrollbar(
-    f: &mut Frame,
-    area: Rect,
-    total_rows: usize,
-    position: usize,
-    viewport: usize,
-) {
-    if total_rows <= viewport {
-        return;
-    }
-    // ratatui sizes the thumb against `(content_length - 1) + viewport`, so the
-    // thumb only reaches the track bottom when `position == content_length - 1`
-    // (last row scrolled to the *top* of the viewport). Our `position` is a
-    // scroll offset clamped to `total_rows - viewport` (last row at the *bottom*
-    // of the viewport), so reporting `total_rows` as the content length leaves
-    // the thumb short by `viewport - 1` rows. Reporting the number of distinct
-    // scroll positions instead makes the thumb track the visible window
-    // `[position, position + viewport)` over `[0, total_rows)` and sit flush at
-    // the bottom when fully scrolled.
-    let scroll_positions = total_rows - viewport + 1;
-    let mut scrollbar_state = ScrollbarState::new(scroll_positions)
-        .position(position)
-        .viewport_content_length(viewport);
-    // Thumb in the default foreground so it matches the table content;
-    // only the track recedes into the chrome gray.
-    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(None)
-        .end_symbol(None)
-        .track_style(theme::fg(theme::border()))
-        .thumb_style(Style::default());
-    f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+/// The list a connection grid renders: its section title, the full row
+/// list, and where the viewport and selection sit within it.
+struct ConnectionGrid<'a, T> {
+    title: Line<'a>,
+    items: &'a [T],
+    scroll_offset: usize,
+    selected: Option<usize>,
 }
 
-fn draw_connections_list(
+/// Render a connection grid: section title, column selection, header, the
+/// visible row window built by `row`, and the scrollbar and click regions.
+/// The flat and grouped Overview lists share this scaffold so toggling
+/// grouping never reads as a screen change.
+fn draw_connection_grid<'a, T>(
     f: &mut Frame,
-    ui_state: &UIState,
-    connections: &[Connection],
     area: Rect,
-    dns_resolver: Option<&DnsResolver>,
+    grid: ConnectionGrid<'a, T>,
+    ui_state: &UiState,
     show_location: bool,
     click_regions: &mut ClickableRegions,
+    row: impl Fn(&'a T, &[Column], bool) -> Row<'a>,
 ) {
+    let ConnectionGrid {
+        title,
+        items,
+        scroll_offset,
+        selected,
+    } = grid;
     // Borderless: one title row, then the table.
-    let area = section_header(
-        f,
-        area,
-        connections_title(ui_state, false, connections.len()),
-    );
+    let area = section_header(f, area, title);
 
     // Virtualization window first: the Remote column sizes itself to the
     // rows actually on screen, so the window must be known before the
     // column set is chosen.
-    let scroll_offset = ui_state.scroll_offset;
-    let visible_rows = ui_state.visible_rows.max(1);
-    let window_end = (scroll_offset + visible_rows + 1).min(connections.len());
-    let visible_connections = &connections[scroll_offset.min(connections.len())..window_end];
+    let visible_rows = usize::from(crate::ui::connection_table::table_rows_area(area).height);
+    let visible_items = visible_window(items, scroll_offset, visible_rows);
 
     // Reserve the two rightmost columns: a blank gap, then the scrollbar.
     let columns = select_columns(area.width.saturating_sub(2), show_location);
     let widths = column_constraints(&columns);
     let header = build_header(&columns, ui_state);
 
-    let rows: Vec<Row> = visible_connections
+    let rows: Vec<Row> = visible_items
         .iter()
-        .map(|conn| connection_row(conn, &columns, ui_state, dns_resolver, None))
+        .enumerate()
+        .map(|(i, item)| row(item, &columns, selected == Some(scroll_offset + i)))
         .collect();
 
-    // Create table state with selection adjusted to windowed slice
-    let mut state = ratatui::widgets::TableState::default();
-    if let Some(selected_index) = ui_state.get_selected_index(connections) {
-        state.select(Some(selected_index.saturating_sub(scroll_offset)));
-    }
-
-    let connections_table = Table::new(rows, &widths)
-        .header(header)
-        .row_highlight_style(theme::row_highlight())
-        .highlight_symbol("> ");
-
-    let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
-    f.render_stateful_widget(connections_table, table_area, &mut state);
-
-    // Scrollbar tracks the row region (below header + margin).
-    let header_height = 2_u16; // header row (1) + bottom_margin (1)
-    let rows_area = Rect::new(
-        area.x,
-        area.y + header_height,
-        area.width,
-        area.height.saturating_sub(header_height),
+    render_row_table(
+        f,
+        area,
+        header,
+        rows,
+        &widths,
+        RowWindow {
+            selected,
+            scroll_offset,
+            total_rows: items.len(),
+            visible_rows,
+        },
+        click_regions,
     );
-    draw_table_scrollbar(f, rows_area, connections.len(), scroll_offset, visible_rows);
-
-    // Register click regions for visible connection rows
-    click_regions.scroll_area = Some(area);
-    let visible_start_y = area.y + header_height;
-    let max_visible_rows = area.height.saturating_sub(header_height) as usize;
-
-    for i in 0..max_visible_rows {
-        let conn_idx = scroll_offset + i;
-        if conn_idx >= connections.len() {
-            break;
-        }
-        let row_y = visible_start_y + i as u16;
-        let row_rect = Rect::new(area.x, row_y, area.width, 1);
-        click_regions.register(row_rect, ClickAction::SelectConnection(conn_idx));
-    }
 }
 
-/// Shared section title for the flat and grouped connection tables —
-/// same bold base, same muted metadata, so toggling grouping reads as
-/// a view change rather than a different screen.
-fn connections_title<'a>(ui_state: &UIState, grouped: bool, shown: usize) -> Line<'a> {
-    let mut base = if ui_state.show_historic {
-        "Active + Historic Connections".to_string()
-    } else {
-        "Active Connections".to_string()
-    };
-    if grouped {
-        base.push_str(" · Grouped by Process");
-    }
-    let counter = if grouped { "processes" } else { "shown" };
-    let mut spans = vec![
-        Span::styled(
-            format!(" {base}"),
-            Style::default().add_modifier(Modifier::BOLD),
+fn draw_connections_list(
+    f: &mut Frame,
+    ui_state: &UiState,
+    connections: &[Connection],
+    area: Rect,
+    dns_resolver: Option<&DnsResolver>,
+    show_location: bool,
+    click_regions: &mut ClickableRegions,
+) {
+    let grid = ConnectionGrid {
+        title: connections_title(
+            ui_state,
+            false,
+            ui_state.has_active_filter().then_some(connections.len()),
         ),
-        Span::styled(format!(" · {shown} {counter}"), theme::fg(theme::muted())),
-    ];
+        items: connections,
+        scroll_offset: ui_state.scroll_offset,
+        selected: ui_state.get_selected_index(connections),
+    };
+    draw_connection_grid(
+        f,
+        area,
+        grid,
+        ui_state,
+        show_location,
+        click_regions,
+        |conn, columns, is_selected| {
+            connection_row(conn, columns, ui_state, dns_resolver, None, is_selected)
+        },
+    );
+}
+
+/// Longest filter query shown in the title chip; longer queries are cut
+/// with an ellipsis so the chip cannot crowd out the title itself.
+const FILTER_CHIP_MAX: usize = 20;
+
+/// Shared section title for the flat and grouped connection tables. The
+/// visual grammar stays consistent while aggregate mode names its view.
+fn connections_title<'a>(
+    ui_state: &UiState,
+    grouped: bool,
+    filtered_count: Option<usize>,
+) -> Line<'a> {
+    let base = match (grouped, ui_state.show_historic) {
+        (true, true) => "Process Aggregate · active + historic",
+        (true, false) => "Process Aggregate",
+        (false, true) => "Live + Historic Connections",
+        (false, false) => "Live Connections",
+    };
+    let mut spans = vec![Span::styled(
+        format!(" {base}"),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    if let Some(shown) = filtered_count {
+        let counter = if grouped { "processes" } else { "shown" };
+        spans.push(Span::styled(
+            format!(" · {shown} {counter}"),
+            theme::fg(theme::muted()),
+        ));
+        // The query itself rides along as a chip, so what is being
+        // filtered on stays visible without reopening filter mode.
+        let query = ui_state.filter_query.trim();
+        if !query.is_empty() {
+            spans.push(Span::raw(" "));
+            spans.extend(badge::chip(&truncate_with_ellipsis(query, FILTER_CHIP_MAX)));
+        }
+    }
+
     if ui_state.sort_column != SortColumn::CreatedAt {
         let direction = if ui_state.sort_ascending {
             "↑"
@@ -570,39 +662,38 @@ fn connections_title<'a>(ui_state: &UIState, grouped: bool, shown: usize) -> Lin
 /// difference, so toggling grouping doesn't read as a screen change.
 fn draw_grouped_connections_list(
     f: &mut Frame,
-    ui_state: &UIState,
+    ui_state: &UiState,
     grouped_rows: &[GroupedRow],
     area: Rect,
     dns_resolver: Option<&DnsResolver>,
     show_location: bool,
     click_regions: &mut ClickableRegions,
 ) {
-    // Borderless: one title row, then the table (same chrome as flat).
-    let group_count = grouped_rows
-        .iter()
-        .filter(|row| matches!(row, GroupedRow::Group { .. }))
-        .count();
-    let area = section_header(f, area, connections_title(ui_state, true, group_count));
-
-    // Virtualization: only build Row objects for the visible window
-    let scroll_offset = ui_state.grouped_scroll_offset;
-    let visible_rows = ui_state.visible_rows.max(1);
-    let window_end = (scroll_offset + visible_rows + 1).min(grouped_rows.len());
-    let visible_grouped = &grouped_rows[scroll_offset.min(grouped_rows.len())..window_end];
-
-    // Reserve the two rightmost columns: a blank gap, then the scrollbar.
-    let columns = select_columns(area.width.saturating_sub(2), show_location);
-    let widths = column_constraints(&columns);
-    let header = build_header(&columns, ui_state);
-
-    let rows: Vec<Row> = visible_grouped
-        .iter()
-        .map(|row| match row {
+    let group_count = ui_state.has_active_filter().then(|| {
+        grouped_rows
+            .iter()
+            .filter(|row| matches!(row, GroupedRow::Group { .. }))
+            .count()
+    });
+    let grid = ConnectionGrid {
+        title: connections_title(ui_state, true, group_count),
+        items: grouped_rows,
+        scroll_offset: ui_state.grouped_scroll_offset,
+        selected: ui_state.get_selected_grouped_index(grouped_rows),
+    };
+    draw_connection_grid(
+        f,
+        area,
+        grid,
+        ui_state,
+        show_location,
+        click_regions,
+        |row, columns, is_selected| match row {
             GroupedRow::Group {
                 process_name,
                 stats,
                 expanded,
-            } => group_header_row(&columns, process_name, stats, *expanded, ui_state),
+            } => group_header_row(columns, process_name, stats, *expanded, ui_state),
             GroupedRow::Connection {
                 connection,
                 is_last_in_group,
@@ -610,10 +701,11 @@ fn draw_grouped_connections_list(
             } => {
                 // The group header above carries the process name, so the
                 // child row's Process cell is just the tree connector + PID.
+                // connection_row prefixes the one-cell stripe gutter.
                 let connector = if *is_last_in_group {
-                    "  └─ "
+                    " └─ "
                 } else {
-                    "  ├─ "
+                    " ├─ "
                 };
                 let pid = connection
                     .pid
@@ -625,70 +717,25 @@ fn draw_grouped_connections_list(
                 ]);
                 connection_row(
                     connection,
-                    &columns,
+                    columns,
                     ui_state,
                     dns_resolver,
                     Some(process_cell),
+                    is_selected,
                 )
             }
-        })
-        .collect();
-
-    // Create table state with selection adjusted to windowed slice
-    let mut state = ratatui::widgets::TableState::default();
-    if let Some(selected_index) = ui_state.get_selected_grouped_index(grouped_rows) {
-        state.select(Some(selected_index.saturating_sub(scroll_offset)));
-    }
-
-    let connections_table = Table::new(rows, &widths)
-        .header(header)
-        .row_highlight_style(theme::row_highlight())
-        .highlight_symbol("> ");
-
-    let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
-    f.render_stateful_widget(connections_table, table_area, &mut state);
-
-    // Scrollbar tracks the row region (below header + margin).
-    let header_height = 2_u16;
-    let rows_area = Rect::new(
-        area.x,
-        area.y + header_height,
-        area.width,
-        area.height.saturating_sub(header_height),
+        },
     );
-    draw_table_scrollbar(
-        f,
-        rows_area,
-        grouped_rows.len(),
-        scroll_offset,
-        visible_rows,
-    );
-
-    // Register click regions for visible grouped rows
-    click_regions.scroll_area = Some(area);
-    let visible_start_y = area.y + header_height;
-    let max_visible_rows = area.height.saturating_sub(header_height) as usize;
-
-    for i in 0..max_visible_rows {
-        let row_idx = scroll_offset + i;
-        if row_idx >= grouped_rows.len() {
-            break;
-        }
-        let row_y = visible_start_y + i as u16;
-        let row_rect = Rect::new(area.x, row_y, area.width, 1);
-        click_regions.register(row_rect, ClickAction::SelectConnection(row_idx));
-    }
 }
 
-/// A process-group header row rendered on the shared grid: ▾/▸ + name +
-/// count in the Process column, TCP/UDP breakdown in State, aggregate
-/// bandwidth in the Bandwidth column; other cells stay empty.
+/// A process-group header row rendered on the shared grid: name and count in
+/// Process, protocol totals in State, and aggregate rates in Bandwidth.
 fn group_header_row<'a>(
     columns: &[Column],
     process_name: &str,
     stats: &ProcessGroupStats,
     expanded: bool,
-    ui_state: &UIState,
+    ui_state: &UiState,
 ) -> Row<'a> {
     let indicator = if expanded { "▾" } else { "▸" };
     // Plain BOLD (no accent): group headers are structural anchors, and
@@ -707,9 +754,7 @@ fn group_header_row<'a>(
                         ),
                         Span::styled(
                             stats.historic_count.to_string(),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::DIM | Modifier::BOLD),
+                            theme::fg(theme::faint()).add_modifier(Modifier::DIM | Modifier::BOLD),
                         ),
                         Span::styled(")".to_string(), group_style),
                     ])
@@ -731,7 +776,7 @@ fn group_header_row<'a>(
             ColumnId::Bandwidth => bandwidth_cell(
                 stats.total_incoming_rate_bps,
                 stats.total_outgoing_rate_bps,
-                true,
+                CellPaint::FRESH,
             ),
             _ => Cell::from(""),
         })
@@ -740,66 +785,213 @@ fn group_header_row<'a>(
     Row::new(cells)
 }
 
-/// Draw stats panel
-/// Render a single-row horizontal rule between sections. Uses the default
-/// terminal foreground so it matches the surrounding `Block` borders rather
-/// than rendering muted gray.
+/// Render a single-row horizontal rule between sections, styled with the
+/// theme border color so it matches every other rule in the chrome.
 fn render_section_separator(f: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let rule: String = "─".repeat(area.width as usize);
-    let para = Paragraph::new(Line::from(rule));
-    f.render_widget(para, area);
+    f.render_widget(Paragraph::new(section_separator(area.width)), area);
+}
+
+fn section_separator(width: u16) -> Line<'static> {
+    Line::styled("─".repeat(usize::from(width)), theme::fg(theme::border()))
+}
+
+fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Line<'static> {
+    if capture_failed {
+        return Line::from(vec![
+            Span::raw("DNS: "),
+            Span::styled("unknown · capture stopped", theme::fg(theme::warn())),
+        ]);
+    }
+
+    let finalized = snapshot.answered.saturating_add(snapshot.timeouts);
+    let failure_percent = snapshot
+        .failures
+        .saturating_mul(100)
+        .checked_div(finalized)
+        .unwrap_or(0);
+    let (text, color) = match snapshot.health {
+        DnsHealth::NotObserved => ("not observed".to_string(), theme::muted()),
+        DnsHealth::Checking => ("checking".to_string(), theme::muted()),
+        DnsHealth::Responsive => (
+            snapshot.latency_p95.map_or_else(
+                || "responsive".to_string(),
+                |p95| format!("responsive · p95 {}", format_rtt_compact(p95)),
+            ),
+            theme::ok(),
+        ),
+        DnsHealth::Degraded => {
+            let reason = if failure_percent >= DEGRADED_FAILURE_PERCENT {
+                format!("{failure_percent}% failed")
+            } else if snapshot
+                .latency_p95
+                .is_none_or(|latency| latency < std::time::Duration::from_millis(500))
+                && snapshot.resolvers.iter().any(|resolver| {
+                    matches!(
+                        resolver.health,
+                        DnsHealth::Degraded | DnsHealth::Failing | DnsHealth::NoReplies
+                    )
+                })
+            {
+                "resolver issue (Host)".to_string()
+            } else {
+                snapshot.latency_p95.map_or_else(
+                    || "limited evidence".to_string(),
+                    |p95| format!("p95 {}", format_rtt_compact(p95)),
+                )
+            };
+            (format!("degraded · {reason}"), theme::warn())
+        }
+        DnsHealth::Failing => (
+            format!("failing · {} errors", snapshot.failures),
+            theme::err(),
+        ),
+        DnsHealth::NoReplies => (
+            format!("no replies · {} timeouts", snapshot.timeouts),
+            theme::err(),
+        ),
+    };
+    Line::from(vec![
+        Span::raw("DNS: "),
+        Span::styled(text, theme::fg(color)),
+    ])
+}
+
+/// Effective-UID privilege line shared by the Linux and macOS Security
+/// sections. (Windows reports Administrator status instead.)
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "macos-sandbox")
+))]
+fn privilege_line() -> Line<'static> {
+    let uid = crate::network::privileges::effective_uid();
+    let (priv_label, priv_style) = if uid == 0 {
+        (
+            "Process: running as root".to_string(),
+            theme::fg(theme::warn()),
+        )
+    } else {
+        (format!("Process: UID {uid}"), theme::fg(theme::ok()))
+    };
+    Line::from(Span::styled(priv_label, priv_style))
+}
+
+/// Shared tail of the Security section: the platform-specific `head`
+/// lines, the feature bullets (or the "no restrictions" warning), and
+/// the privilege line.
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "macos-sandbox"),
+    target_os = "windows"
+))]
+fn sandbox_lines<'a, S: AsRef<str>>(
+    head: Vec<Line<'a>>,
+    features: &[S],
+    privilege: Line<'a>,
+) -> Vec<Line<'a>> {
+    let mut lines = head;
+    if features.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No restrictions active",
+            theme::fg(theme::warn()),
+        )));
+    } else {
+        for f in features {
+            lines.push(Line::from(Span::styled(
+                format!("• {}", f.as_ref()),
+                theme::fg(theme::muted()),
+            )));
+        }
+    }
+    lines.push(privilege);
+    lines
+}
+
+/// An indented `label: count` statistics line whose count turns `alert`
+/// colored once it is non-zero.
+fn counter_line(label: &str, count: u64, alert: Color) -> Line<'static> {
+    if count > 0 {
+        Line::from(vec![
+            Span::raw(format!("  {label}: ")),
+            Span::styled(count.to_string(), theme::fg(alert)),
+        ])
+    } else {
+        Line::from(format!("  {label}: {count}"))
+    }
+}
+
+/// The Security section's lead line: `prefix` followed by the sandbox
+/// status label in its ok / warn / err color.
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "macos-sandbox"),
+    target_os = "windows"
+))]
+fn sandbox_status_line(
+    prefix: &'static str,
+    status: &rustnet_sandbox::SandboxStatus,
+) -> Line<'static> {
+    use rustnet_sandbox::SandboxStatus;
+
+    let status_style = match status {
+        SandboxStatus::FullyEnforced => theme::fg(theme::ok()),
+        SandboxStatus::PartiallyEnforced => theme::fg(theme::warn()),
+        _ => theme::fg(theme::err()),
+    };
+    Line::from(vec![
+        Span::raw(prefix),
+        Span::styled(status.label(), status_style),
+    ])
 }
 
 fn draw_stats_panel(
     f: &mut Frame,
-    connections: &[Connection],
+    connection_counts: ConnectionCounts,
     stats: &AppStats,
     app: &App,
     area: Rect,
+    scroll: Option<&PaneScroll>,
+    state: &UiState,
 ) -> Result<()> {
     // Borderless: a single quiet vertical rule separates the sidebar
-    // from the connections table, and the section header names it —
+    // from the connections table, and the section header names it:
     // deliberately *not* the same chrome as the table so the two read
     // as different kinds of content.
-    let panel = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(theme::fg(theme::border()))
-        .padding(Padding::horizontal(1));
-    let inner_area = panel.inner(area);
-    f.render_widget(panel, area);
-    let inner_area = section_header(
-        f,
-        inner_area,
-        Span::styled(" System", Style::default().add_modifier(Modifier::BOLD)),
-    );
+    let inner_area = if scroll.is_some() {
+        section_header(f, area, section_title(" System"))
+    } else {
+        let panel = Block::default()
+            .borders(Borders::LEFT)
+            .border_style(theme::fg(theme::border()))
+            .padding(Padding::horizontal(1));
+        let inner = panel.inner(area);
+        f.render_widget(panel, area);
+        section_header(f, inner, section_title(" System"))
+    };
 
     // Build the security/sandbox text up front so the chunk height can match
     // its content. Otherwise long feature lists get clipped on narrow columns.
     #[cfg(target_os = "linux")]
-    let security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
-        let status_style = match sandbox_info.status.as_str() {
-            "Fully enforced" => theme::fg(theme::ok()),
-            "Partially enforced" => theme::fg(theme::warn()),
-            "Not applied" | "Error" => theme::fg(theme::err()),
-            _ => Style::default(),
-        };
+    let mut security_text: Vec<Line> = {
+        let sandbox_info = app.sandbox_report();
 
         let mut features: Vec<&'static str> = Vec::new();
-        if sandbox_info.cap_dropped {
+        if sandbox_info.cap_net_raw_dropped {
             features.push("CAP_NET_RAW dropped");
         }
         if sandbox_info.ebpf_caps_dropped {
             features.push("eBPF caps dropped");
         }
+        if sandbox_info.uid_dropped {
+            features.push("Root UID dropped");
+        }
         if sandbox_info.fs_restricted {
             features.push("FS restricted");
         }
         if sandbox_info.net_restricted {
-            features.push("Net blocked");
+            features.push("Net restricted");
         }
         if sandbox_info.scope_restricted {
             features.push("IPC scoped");
@@ -820,90 +1012,39 @@ fn draw_stats_panel(
             Span::styled("Landlock: kernel unsupported", theme::fg(theme::muted()))
         };
 
-        let uid = crate::network::privileges::effective_uid();
-        let (priv_label, priv_style) = if uid == 0 {
-            (
-                "Process: running as root".to_string(),
-                theme::fg(theme::warn()),
-            )
-        } else {
-            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
-        };
-
-        let mut lines = vec![
-            Line::from(vec![
-                Span::raw("Sandbox: "),
-                Span::styled(sandbox_info.status, status_style),
-            ]),
-            Line::from(available_indicator),
-        ];
-        if features.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No restrictions active",
-                theme::fg(theme::warn()),
-            )));
-        } else {
-            for f in &features {
-                lines.push(Line::from(Span::styled(
-                    format!("• {f}"),
-                    theme::fg(theme::muted()),
-                )));
-            }
-        }
-        lines.push(Line::from(Span::styled(priv_label, priv_style)));
-        lines
+        sandbox_lines(
+            vec![
+                sandbox_status_line("Sandbox: ", &sandbox_info.status),
+                Line::from(available_indicator),
+            ],
+            &features,
+            privilege_line(),
+        )
     };
 
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
-    let security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
-        let is_enforced = sandbox_info.status.as_str() == "Fully enforced";
-        let status_style = if is_enforced {
-            theme::fg(theme::ok())
-        } else {
-            theme::fg(theme::err())
-        };
+    let mut security_text: Vec<Line> = {
+        let sandbox_info = app.sandbox_report();
 
         let mut features: Vec<&'static str> = Vec::new();
         if sandbox_info.seatbelt_applied {
             features.push("Seatbelt applied");
         }
+        if sandbox_info.uid_dropped {
+            features.push("Root UID dropped");
+        }
         if sandbox_info.fs_restricted {
             features.push("FS restricted");
         }
         if sandbox_info.net_restricted {
-            features.push("Net blocked");
+            features.push("Net restricted");
         }
 
-        let uid = crate::network::privileges::effective_uid();
-        let (priv_label, priv_style) = if uid == 0 {
-            (
-                "Process: running as root".to_string(),
-                theme::fg(theme::warn()),
-            )
-        } else {
-            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
-        };
-
-        let mut lines = vec![Line::from(vec![
-            Span::raw("Seatbelt: "),
-            Span::styled(sandbox_info.status, status_style),
-        ])];
-        if features.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No restrictions active",
-                theme::fg(theme::warn()),
-            )));
-        } else {
-            for f in &features {
-                lines.push(Line::from(Span::styled(
-                    format!("• {f}"),
-                    theme::fg(theme::muted()),
-                )));
-            }
-        }
-        lines.push(Line::from(Span::styled(priv_label, priv_style)));
-        lines
+        sandbox_lines(
+            vec![sandbox_status_line("Seatbelt: ", &sandbox_info.status)],
+            &features,
+            privilege_line(),
+        )
     };
 
     #[cfg(all(
@@ -911,7 +1052,7 @@ fn draw_stats_panel(
         not(target_os = "linux"),
         not(all(target_os = "macos", feature = "macos-sandbox"))
     ))]
-    let security_text: Vec<Line> = {
+    let mut security_text: Vec<Line> = {
         let uid = crate::network::privileges::effective_uid();
         if uid == 0 {
             vec![Line::from(Span::styled(
@@ -927,14 +1068,8 @@ fn draw_stats_panel(
     };
 
     #[cfg(target_os = "windows")]
-    let security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
-        let status_style = match sandbox_info.status.as_str() {
-            "Fully enforced" => theme::fg(theme::ok()),
-            "Partially enforced" => theme::fg(theme::warn()),
-            "Not applied" | "Error" => theme::fg(theme::err()),
-            _ => Style::default(),
-        };
+    let mut security_text: Vec<Line> = {
+        let sandbox_info = app.sandbox_report();
 
         let mut features: Vec<String> = Vec::new();
         if sandbox_info.privileges_removed {
@@ -959,41 +1094,53 @@ fn draw_stats_panel(
             ("Process: standard user".to_string(), theme::fg(theme::ok()))
         };
 
-        let mut lines = vec![Line::from(vec![
-            Span::raw("Sandbox: "),
-            Span::styled(sandbox_info.status, status_style),
-        ])];
-        if features.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No restrictions active",
-                theme::fg(theme::warn()),
-            )));
-        } else {
-            for f in &features {
-                lines.push(Line::from(Span::styled(
-                    format!("• {f}"),
-                    theme::fg(theme::muted()),
-                )));
-            }
-        }
-        lines.push(Line::from(Span::styled(priv_label, priv_style)));
-        lines
+        sandbox_lines(
+            vec![sandbox_status_line("Sandbox: ", &sandbox_info.status)],
+            &features,
+            Line::from(Span::styled(priv_label, priv_style)),
+        )
     };
 
-    // 1 line for the "Security" heading + one line per content line.
-    let security_height = 1u16 + security_text.len() as u16;
+    let interface_name = app
+        .get_current_interface()
+        .unwrap_or_else(|| "Unknown".to_string());
+    let detection_status = app.get_process_detection_status();
+    let (link_layer_type, is_tunnel) = app.get_link_layer_info();
+    let capture_lines = capture_summary_lines(
+        &interface_name,
+        &link_layer_type,
+        is_tunnel,
+        &detection_status.method,
+        detection_status.is_degraded,
+        state.capture_header_visibility.get(),
+    );
 
-    // The Statistics block is normally 13 lines. When process detection is
-    // degraded we render the warning as two indented lines (header +
-    // reason) so the often-long reason text isn't crammed onto the same
-    // line as "Process Detection: …" — which would truncate on a narrow
-    // right column. Reserve enough extra rows for the reason to wrap onto
-    // a second visual line on typical terminal widths.
-    let stats_height: u16 = if app.get_process_detection_status().is_degraded {
-        15
-    } else {
-        13
-    };
+    // Size the Statistics block from every optional row so Historic and export
+    // counters cannot be clipped when their combinations change.
+    let pcap_export_enabled = app.is_pcap_export_enabled();
+    let pcapng_export_enabled = app.is_pcapng_export_enabled();
+    let pre_attribution_packets = stats
+        .pre_attribution_packets
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let stats_height: u16 = 11
+        + capture_lines.len() as u16
+        + u16::from(connection_counts.historic > 0)
+        + u16::from(pre_attribution_packets > 0)
+        + if detection_status.is_degraded { 2 } else { 0 }
+        + if pcap_export_enabled { 4 } else { 0 }
+        + if pcapng_export_enabled { 7 } else { 0 };
+
+    // Keep Security after the live Traffic section. If both do not fit, retain
+    // the overall sandbox status and hide the static detail lines. They return
+    // automatically as soon as the terminal is tall enough.
+    let full_security_height = 1u16.saturating_add(security_text.len() as u16);
+    let compact_security = scroll.is_none()
+        && full_security_height > COMPACT_SECURITY_HEIGHT
+        && !security_details_fit(inner_area.height, stats_height, full_security_height);
+    if compact_security {
+        security_text.truncate(1);
+    }
+    let security_height = 1u16.saturating_add(security_text.len() as u16);
 
     // Inside the frame, sections are separated by a 1-row gap (no inner
     // borders) so the right column reads as one cohesive panel with
@@ -1002,62 +1149,20 @@ fn draw_stats_panel(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(stats_height), // Statistics (1 heading + content)
-            Constraint::Length(1),            // gap
-            Constraint::Length(5),            // Network Stats (1 heading + 4 content)
-            Constraint::Length(1),            // gap
-            Constraint::Length(security_height), // Security (heading + content)
-            Constraint::Length(1),            // gap
-            Constraint::Min(0),               // Traffic + interface details
+            Constraint::Length(SECTION_GAP_HEIGHT),
+            Constraint::Length(NETWORK_STATS_HEIGHT),
+            Constraint::Length(SECTION_GAP_HEIGHT),
+            Constraint::Min(TRAFFIC_MIN_HEIGHT),
+            Constraint::Length(SECTION_GAP_HEIGHT),
+            Constraint::Length(security_height),
         ])
         .split(inner_area);
 
-    // Connection statistics (only count active connections, not historic)
-    let tcp_count = connections
-        .iter()
-        .filter(|c| !c.is_historic && c.protocol == Protocol::Tcp)
-        .count();
-    let udp_count = connections
-        .iter()
-        .filter(|c| !c.is_historic && c.protocol == Protocol::Udp)
-        .count();
-    let active_count = connections.iter().filter(|c| !c.is_historic).count();
-    let historic_count = connections.iter().filter(|c| c.is_historic).count();
+    let mut conn_stats_text = vec![Line::styled("Statistics", theme::bold_fg(theme::heading()))];
+    conn_stats_text.extend(capture_lines);
 
-    let interface_name = app
-        .get_current_interface()
-        .unwrap_or_else(|| "Unknown".to_string());
-
-    let detection_status = app.get_process_detection_status();
-    let (link_layer_type, is_tunnel) = app.get_link_layer_info();
-
-    // Build process detection line(s) with color based on status
-    let process_detection_color = if detection_status.is_degraded {
-        theme::warn()
-    } else {
-        theme::ok()
-    };
-
-    let mut conn_stats_text: Vec<Line> = vec![
-        Line::from(Span::styled("Statistics", theme::bold_fg(theme::heading()))),
-        Line::from(format!("Interface: {}", interface_name)),
-        Line::from(format!(
-            "Link Layer: {}{}",
-            link_layer_type,
-            if is_tunnel { " (Tunnel)" } else { "" }
-        )),
-        Line::from(vec![
-            Span::raw("Process Detection: "),
-            Span::styled(
-                detection_status.method.clone(),
-                theme::fg(process_detection_color),
-            ),
-        ]),
-    ];
-
-    // Add degradation warning on two lines if degraded: a short header line
-    // ("eBPF unavailable:") and the reason on its own indented line. Long
-    // reasons (e.g. raw libbpf error text in EbpfLoadFailed) would otherwise
-    // overflow the narrow right column and get clipped.
+    // Keep the warning and its impact separate. This avoids constructions like
+    // "ETW unavailable: ETW unavailable" and wraps predictably in narrow panes.
     if detection_status.is_degraded {
         let feature = detection_status
             .unavailable_feature
@@ -1068,25 +1173,25 @@ fn draw_stats_panel(
             .as_deref()
             .unwrap_or("insufficient permissions");
         conn_stats_text.push(Line::from(Span::styled(
-            format!("  {feature} unavailable:"),
+            format!("  {feature} unavailable"),
             theme::fg(theme::muted()),
         )));
         conn_stats_text.push(Line::from(Span::styled(
-            format!("    {reason}"),
+            format!("  {reason}"),
             theme::fg(theme::muted()),
         )));
     }
 
-    // Add remaining stats
     conn_stats_text.extend([
         Line::from(""),
-        Line::from(format!("TCP Connections: {}", tcp_count)),
-        Line::from(format!("UDP Connections: {}", udp_count)),
-        Line::from(format!("Total Connections: {}", active_count)),
+        Line::from(format!("TCP Connections: {}", connection_counts.tcp)),
+        Line::from(format!("UDP Connections: {}", connection_counts.udp)),
+        Line::from(format!("Processes: {}", connection_counts.processes)),
+        Line::from(format!("Total Connections: {}", connection_counts.active)),
     ]);
-    if historic_count > 0 {
+    if connection_counts.historic > 0 {
         conn_stats_text.push(Line::from(Span::styled(
-            format!("Historic: {}", historic_count),
+            format!("Historic: {}", connection_counts.historic),
             theme::fg(theme::muted()),
         )));
     }
@@ -1108,39 +1213,78 @@ fn draw_stats_panel(
                 .load(std::sync::atomic::Ordering::Relaxed);
             if dropped > 0 {
                 Line::from(vec![
-                    Span::raw("Packets Dropped: "),
+                    Span::raw("Queue Drops: "),
                     Span::styled(format!("{}", dropped), theme::fg(theme::warn())),
                     Span::styled(" (backpressure)", theme::fg(theme::muted())),
                 ])
             } else {
-                Line::from(format!("Packets Dropped: {}", dropped))
+                Line::from(format!("Queue Drops: {}", dropped))
             }
         },
+        {
+            let dropped = stats
+                .capture_packets_dropped
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .saturating_add(
+                    stats
+                        .interface_packets_dropped
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
+            counter_line("Capture Drops", dropped, theme::warn())
+        },
     ]);
+    if pre_attribution_packets > 0 {
+        conn_stats_text.push(counter_line(
+            "Pre-ETW Skips",
+            pre_attribution_packets,
+            theme::warn(),
+        ));
+    }
 
-    // Wrap so the indented reason line for a degraded eBPF status (which can
-    // be ~140 chars in the EbpfLoadFailed catch-all) flows to the next visual
-    // row instead of being clipped on a narrow right column. trim:false
-    // preserves the leading indent on continuation rows.
-    let conn_stats = Paragraph::new(conn_stats_text)
-        .style(Style::default())
-        .wrap(Wrap { trim: false });
-    f.render_widget(conn_stats, chunks[0]);
-    render_section_separator(f, chunks[1]);
+    if pcap_export_enabled {
+        let written = stats
+            .pcap_records_written
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let errors = stats
+            .pcap_export_errors
+            .load(std::sync::atomic::Ordering::Relaxed);
+        conn_stats_text.extend([
+            Line::from(""),
+            Line::from(Span::styled("PCAP Export", theme::fg(theme::heading()))),
+            Line::from(format!("  Written: {written}")),
+            counter_line("Errors", errors, theme::err()),
+        ]);
+    }
 
-    // Network statistics (TCP analytics)
-    let mut tcp_retransmits: u64 = 0;
-    let mut tcp_out_of_order: u64 = 0;
-    let mut tcp_fast_retransmits: u64 = 0;
-    let mut tcp_connections_with_analytics = 0;
+    if pcapng_export_enabled {
+        let queued = stats
+            .pcapng_records_queued
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let written = stats
+            .pcapng_records_written
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let annotated = stats
+            .pcapng_records_annotated
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let unannotated = stats
+            .pcapng_records_unannotated
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let dropped = stats
+            .pcapng_records_dropped
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let errors = stats
+            .pcapng_export_errors
+            .load(std::sync::atomic::Ordering::Relaxed);
 
-    for conn in connections {
-        if let Some(analytics) = &conn.tcp_analytics {
-            tcp_retransmits += analytics.retransmit_count;
-            tcp_out_of_order += analytics.out_of_order_count;
-            tcp_fast_retransmits += analytics.fast_retransmit_count;
-            tcp_connections_with_analytics += 1;
-        }
+        conn_stats_text.extend([
+            Line::from(""),
+            Line::from(Span::styled("PCAPNG Export", theme::fg(theme::heading()))),
+            Line::from(format!("  Written: {written}/{queued}")),
+            Line::from(format!("  Annotated: {annotated}")),
+            Line::from(format!("  Unannotated: {unannotated}")),
+            counter_line("Export Drops", dropped, theme::warn()),
+            counter_line("Errors", errors, theme::err()),
+        ]);
     }
 
     let total_retransmits = stats
@@ -1158,52 +1302,206 @@ fn draw_stats_panel(
             Span::styled("Network Stats ", theme::bold_fg(theme::heading())),
             Span::styled("(active / total)", theme::fg(theme::muted())),
         ]),
+        dns_health_line(
+            &app.get_dns_analytics_snapshot(),
+            app.capture_error().is_some(),
+        ),
         Line::from(format!(
             "TCP Retransmits: {} / {}",
-            tcp_retransmits, total_retransmits
+            connection_counts.tcp_retransmits, total_retransmits
         )),
         Line::from(format!(
             "Out-of-Order: {} / {}",
-            tcp_out_of_order, total_out_of_order
+            connection_counts.tcp_out_of_order, total_out_of_order
         )),
         Line::from(format!(
             "Fast Retransmits: {} / {}",
-            tcp_fast_retransmits, total_fast_retransmits
+            connection_counts.tcp_fast_retransmits, total_fast_retransmits
         )),
         Line::from(format!(
             "Active TCP Flows: {}",
-            tcp_connections_with_analytics
+            connection_counts.tcp_flows_with_analytics
         )),
     ];
+
+    let security_heading = if compact_security {
+        Line::from(vec![
+            Span::styled("Security ", theme::bold_fg(theme::heading())),
+            Span::styled("(compact)", theme::fg(theme::muted())),
+        ])
+    } else {
+        Line::from(Span::styled("Security", theme::bold_fg(theme::heading())))
+    };
+    let mut security_lines: Vec<Line> = vec![security_heading];
+    security_lines.extend(security_text);
+    if let Some(scroll) = scroll {
+        let mut lines = conn_stats_text;
+        lines.push(section_separator(inner_area.width.saturating_sub(2)));
+        lines.extend(network_stats_text);
+        lines.push(section_separator(inner_area.width.saturating_sub(2)));
+        lines.push(Line::styled("Traffic", theme::bold_fg(theme::heading())));
+        let history = app.get_traffic_history();
+        let rx = history.get_rx_sparkline_data(1).last().copied();
+        let tx = history.get_tx_sparkline_data(1).last().copied();
+        lines.push(Line::from(vec![
+            Span::styled(format!("RX {}", sidebar_rate(rx)), theme::fg(theme::rx())),
+            Span::raw(" · "),
+            Span::styled(format!("TX {}", sidebar_rate(tx)), theme::fg(theme::tx())),
+        ]));
+        lines.push(section_separator(inner_area.width.saturating_sub(2)));
+        lines.extend(interface_error_lines(app, usize::MAX));
+        lines.push(section_separator(inner_area.width.saturating_sub(2)));
+        lines.extend(security_lines);
+        crate::ui::widgets::scrollbar::draw_scrolled_text(
+            f,
+            inner_area,
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            scroll,
+        );
+        return Ok(());
+    }
+
+    // Wrap so the indented reason line for a degraded eBPF status (which can
+    // be ~140 chars in the EbpfLoadFailed catch-all) flows to the next visual
+    // row instead of being clipped on a narrow right column. trim:false
+    // preserves the leading indent on continuation rows.
+    let conn_stats = Paragraph::new(conn_stats_text)
+        .style(Style::default())
+        .wrap(Wrap { trim: false });
+    f.render_widget(conn_stats, chunks[0]);
+    render_section_separator(f, chunks[1]);
 
     let network_stats = Paragraph::new(network_stats_text).style(Style::default());
     f.render_widget(network_stats, chunks[2]);
     render_section_separator(f, chunks[3]);
 
-    let mut security_lines: Vec<Line> = vec![Line::from(Span::styled(
-        "Security",
-        theme::bold_fg(theme::heading()),
-    ))];
-    security_lines.extend(security_text);
-    let security_stats = Paragraph::new(security_lines).style(Style::default());
-    f.render_widget(security_stats, chunks[4]);
+    draw_interface_stats_with_graph(f, app, chunks[4], state)?;
     render_section_separator(f, chunks[5]);
 
-    // Interface statistics with traffic graph
-    draw_interface_stats_with_graph(f, app, chunks[6])?;
+    let security_stats = Paragraph::new(security_lines).style(Style::default());
+    f.render_widget(security_stats, chunks[6]);
 
     Ok(())
 }
 
-/// Draw interface stats section with embedded traffic sparklines
-fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
-    // Heading + sparklines (3 lines) + interface details (remaining).
+/// One-row braille wave for the sidebar traffic graphs. Keep its color at a
+/// stable point in the ramp because this compact graph has no vertical rows
+/// over which to distribute a gradient.
+const MINI_WAVE_INTENSITY: f64 = 0.6;
+const MINI_WAVE_SMOOTHING_SAMPLES: usize = 4;
+const MINI_WAVE_SCALE_PERCENTILE: usize = 90;
+const MINI_WAVE_MIN_CEILING: u64 = 1024;
+
+/// The full graph preserves short bursts, but a one-cell-high wave has only
+/// four vertical dot levels. A longer trailing average prevents small traffic
+/// changes from blinking individual dots on and off in the Overview sidebar.
+fn smooth_mini_wave(samples: &[u64]) -> Vec<u64> {
+    let mut smoothed = Vec::with_capacity(samples.len());
+    let mut sum = 0u128;
+    for (index, &value) in samples.iter().enumerate() {
+        sum += u128::from(value);
+        if index >= MINI_WAVE_SMOOTHING_SAMPLES {
+            sum -= u128::from(samples[index - MINI_WAVE_SMOOTHING_SAMPLES]);
+        }
+        let count = (index + 1).min(MINI_WAVE_SMOOTHING_SAMPLES) as u128;
+        smoothed.push((sum / count) as u64);
+    }
+    smoothed
+}
+
+fn mini_wave_window(width: u16, history_window: usize) -> usize {
+    history_window.min(width as usize * 2)
+}
+
+fn mini_wave_ceiling(samples: &[u64], visible_window: usize) -> f64 {
+    let start = samples.len().saturating_sub(visible_window);
+    let mut visible = samples[start..].to_vec();
+    if visible.is_empty() {
+        return MINI_WAVE_MIN_CEILING as f64;
+    }
+
+    visible.sort_unstable();
+    let rank = (visible.len() * MINI_WAVE_SCALE_PERCENTILE).div_ceil(100);
+    let representative = visible[rank.saturating_sub(1).min(visible.len() - 1)];
+    representative
+        .max(MINI_WAVE_MIN_CEILING)
+        .checked_next_power_of_two()
+        .unwrap_or(u64::MAX) as f64
+}
+
+fn mini_wave(
+    samples: &[u64],
+    width: u16,
+    frac: f64,
+    window: usize,
+    wave: fn(f64) -> Color,
+) -> Vec<Line<'static>> {
+    // A braille cell has two horizontal dots. Keep one traffic sample per dot
+    // in this compact graph so advancing the ring translates existing crests
+    // instead of resampling them against shifting fractional boundaries.
+    let visible_window = mini_wave_window(width, window);
+    let ceiling = mini_wave_ceiling(samples, visible_window);
+    braille_graph::render(
+        samples,
+        width as usize,
+        1,
+        ceiling,
+        frac,
+        visible_window,
+        |intensity| wave(MINI_WAVE_INTENSITY * intensity),
+    )
+}
+
+fn sidebar_rate(rate: Option<u64>) -> String {
+    rate.map_or_else(
+        || NONE_PLACEHOLDER.to_string(),
+        |rate| format!("{}/s", format_bytes(rate)),
+    )
+}
+
+/// One sidebar sparkline row: the colored RX/TX label, then the
+/// smoothed mini wave. Both traffic rows differ only in label, rate
+/// source, and color ramp.
+fn draw_mini_wave_row(
+    f: &mut Frame,
+    area: Rect,
+    label: &'static str,
+    rates: &[u64],
+    frac: f64,
+    window: usize,
+    wave: fn(f64) -> Color,
+) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+
+    let label = Paragraph::new(label).style(theme::fg(wave(MINI_WAVE_INTENSITY)));
+    f.render_widget(label, cols[0]);
+
+    let data = smooth_mini_wave(rates);
+    f.render_widget(
+        Paragraph::new(mini_wave(&data, cols[1].width, frac, window, wave)),
+        cols[1],
+    );
+}
+
+fn draw_interface_stats_with_graph(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    state: &UiState,
+) -> Result<()> {
+    // Traffic heading + sparklines (3 lines) + separator + Interfaces section.
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Heading
             Constraint::Length(3), // Traffic sparklines
-            Constraint::Min(0),    // Interface details
+            Constraint::Length(
+                SECTION_GAP_HEIGHT.min(area.height.saturating_sub(TRAFFIC_MIN_HEIGHT)),
+            ),
+            Constraint::Min(0), // Interface details
         ])
         .split(area);
 
@@ -1215,75 +1513,81 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
 
     let sections = &layout[1..];
 
-    // Draw traffic sparklines
+    // Single-row braille waves, same gradient style as the Graph tab.
     let traffic_history = app.get_traffic_history();
-    let sparkline_width = sections[0].width.saturating_sub(8) as usize; // Leave room for labels
+    let frac = traffic_history.scroll_fraction();
+    let window = traffic_history.capacity();
 
-    // Split sparkline area into rows
     let sparkline_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // RX sparkline
-            Constraint::Length(1), // TX sparkline
+            Constraint::Length(1), // RX wave
+            Constraint::Length(1), // TX wave
             Constraint::Length(1), // Current rates
         ])
         .split(sections[0]);
 
-    // RX row: label + sparkline
-    let rx_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(sparkline_rows[0]);
+    state.graph_animation_visible.set(
+        traffic_history.has_enough_traffic_data()
+            && sparkline_rows[..2]
+                .iter()
+                .any(|area| area.height > 0 && area.width > 3),
+    );
+    let rx_rates = traffic_history.get_rx_sparkline_data(usize::MAX);
+    draw_mini_wave_row(
+        f,
+        sparkline_rows[0],
+        "RX",
+        &rx_rates,
+        frac,
+        window,
+        theme::rx_wave,
+    );
 
-    let rx_label = Paragraph::new("RX").style(theme::fg(theme::rx()));
-    f.render_widget(rx_label, rx_cols[0]);
+    let tx_rates = traffic_history.get_tx_sparkline_data(usize::MAX);
+    draw_mini_wave_row(
+        f,
+        sparkline_rows[1],
+        "TX",
+        &tx_rates,
+        frac,
+        window,
+        theme::tx_wave,
+    );
 
-    let rx_data = traffic_history.get_rx_sparkline_data(sparkline_width);
-    let rx_sparkline = Sparkline::default()
-        .data(&rx_data)
-        .style(theme::fg(theme::rx()));
-    f.render_widget(rx_sparkline, rx_cols[1]);
-
-    // TX row: label + sparkline
-    let tx_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(sparkline_rows[1]);
-
-    let tx_label = Paragraph::new("TX").style(theme::fg(theme::tx()));
-    f.render_widget(tx_label, tx_cols[0]);
-
-    let tx_data = traffic_history.get_tx_sparkline_data(sparkline_width);
-    let tx_sparkline = Sparkline::default()
-        .data(&tx_data)
-        .style(theme::fg(theme::tx()));
-    f.render_widget(tx_sparkline, tx_cols[1]);
-
-    // Current rates row
-    let (current_rx, current_tx) = rx_data
-        .last()
-        .zip(tx_data.last())
-        .map(|(rx, tx)| (*rx, *tx))
-        .unwrap_or((0, 0));
+    let current_rx = rx_rates.last().copied();
+    let current_tx = tx_rates.last().copied();
 
     let rates_text = Line::from(vec![
         Span::styled(
-            format!("↓{}/s", format_bytes(current_rx)),
-            theme::fg(theme::rx()),
+            format!("↓{}", sidebar_rate(current_rx)),
+            theme::fg(theme::rx_wave(MINI_WAVE_INTENSITY)),
         ),
         Span::raw(" "),
         Span::styled(
-            format!("↑{}/s", format_bytes(current_tx)),
-            theme::fg(theme::tx()),
+            format!("↑{}", sidebar_rate(current_tx)),
+            theme::fg(theme::tx_wave(MINI_WAVE_INTENSITY)),
         ),
     ]);
     let rates_para = Paragraph::new(rates_text);
     f.render_widget(rates_para, sparkline_rows[2]);
 
-    // Interface details section (errors/drops only, rates shown in sparklines above)
+    render_section_separator(f, sections[1]);
+
+    // Reserve the heading and a possible overflow summary.
+    let max_interfaces = usize::from(sections[2].height).saturating_sub(2);
+    let interface_text = interface_error_lines(app, max_interfaces);
+    let interface_para = Paragraph::new(interface_text);
+    f.render_widget(interface_para, sections[2]);
+
+    Ok(())
+}
+
+fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>> {
+    // Errors/drops only; rates are in the sparklines above.
     let all_interface_stats = app.get_interface_stats();
 
-    // Filter to show only the captured interface (or active interfaces if "any" or "pktap")
+    // Only the captured interface, or every active one for "any" / "pktap".
     let captured_interface = app.get_current_interface();
     let filtered_interface_stats: Vec<_> = if let Some(ref iface) = captured_interface {
         let is_npf_device = iface.starts_with("\\Device\\NPF_");
@@ -1308,36 +1612,22 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
             .collect()
     };
 
-    // Calculate how many interfaces can fit (1 line per interface now)
-    let available_height = sections[1].height as usize;
-    let max_interfaces = available_height.saturating_sub(1); // Reserve 1 for "more" message
-
-    let interface_text: Vec<Line> = if filtered_interface_stats.is_empty() {
-        vec![Line::from(Span::styled(
+    let mut lines = vec![Line::styled("Interfaces", theme::bold_fg(theme::heading()))];
+    if filtered_interface_stats.is_empty() {
+        lines.push(Line::from(Span::styled(
             "No interface stats available",
             theme::fg(theme::muted()),
-        ))]
+        )));
     } else {
-        let mut lines = Vec::new();
         let num_to_show = max_interfaces.min(filtered_interface_stats.len());
 
         for stat in filtered_interface_stats.iter().take(num_to_show) {
             let total_errors = stat.rx_errors + stat.tx_errors;
             let total_drops = stat.rx_dropped + stat.tx_dropped;
 
-            let error_style = if total_errors > 0 {
-                theme::fg(theme::err())
-            } else {
-                theme::fg(theme::ok())
-            };
+            let error_style = alert_style(total_errors > 0, theme::err());
+            let drop_style = alert_style(total_drops > 0, theme::warn());
 
-            let drop_style = if total_drops > 0 {
-                theme::fg(theme::warn())
-            } else {
-                theme::fg(theme::ok())
-            };
-
-            // Show interface name with errors/drops on single line
             lines.push(Line::from(vec![
                 Span::raw(format!("{}: ", stat.interface_name)),
                 Span::raw("Err: "),
@@ -1353,24 +1643,285 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
                 theme::fg(theme::muted()),
             )));
         }
-        lines
-    };
-
-    let interface_para = Paragraph::new(interface_text);
-    f.render_widget(interface_para, sections[1]);
-
-    Ok(())
+    }
+    lines
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::{local_tcp, test_app};
+    use std::collections::HashSet;
+
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{handle_filter_mode_key, is_filter_backspace_char};
-    use crate::{
-        app::{App, Config},
-        ui::{ClickableRegions, HandlerContext, UIState},
+    use super::{
+        MINI_WAVE_INTENSITY, OverviewTab, SYSTEM_PANEL_WIDTH, connections_title,
+        detection_method_label, dns_health_line, handle_filter_mode_key, is_filter_backspace_char,
+        mini_wave, mini_wave_ceiling, mini_wave_window, security_details_fit, smooth_mini_wave,
     };
+    use crate::network::dns_analytics::{DnsAnalyticsSnapshot, DnsHealth};
+    use crate::ui::{
+        ClickableRegions, Component, Effect, HandlerContext, UiState, compute_grouped_rows,
+        test_support::{empty_ctx, line_text},
+        theme,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn windows_detection_methods_use_human_facing_labels() {
+        assert_eq!(
+            detection_method_label("windows-etw+iphlpapi"),
+            "ETW + IP Helper"
+        );
+        assert_eq!(detection_method_label("windows-iphlpapi"), "IP Helper");
+        assert_eq!(detection_method_label("procfs"), "procfs");
+    }
+
+    #[test]
+    fn repeated_capture_labels_preserve_fallback_and_tunnel_information() {
+        assert!(
+            super::capture_summary_lines("pktap", "Pktap", false, "pktap", false, (true, true))
+                .is_empty()
+        );
+        let fallback =
+            super::capture_summary_lines("pktap", "Pktap", false, "lsof", true, (true, true));
+        assert_eq!(
+            fallback.iter().map(line_text).collect::<Vec<_>>(),
+            ["Detection: lsof"]
+        );
+        let lines = |interface, link, tunnel, detection, degraded| {
+            super::capture_summary_lines(
+                interface,
+                link,
+                tunnel,
+                detection,
+                degraded,
+                (false, false),
+            )
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            lines("pktap", "Pktap", false, "pktap", false),
+            ["Interface: pktap"]
+        );
+        assert_eq!(
+            lines("pktap", "Pktap", false, "lsof", true),
+            ["Interface: pktap", "Detection: lsof"]
+        );
+        assert_eq!(
+            lines("pktap", "Pktap", false, "pktap", true),
+            ["Interface: pktap", "Detection: pktap"]
+        );
+        assert_eq!(
+            lines("en0", "Ethernet", false, "pktap", false),
+            ["Interface: en0", "Link Layer: Ethernet", "Detection: pktap"]
+        );
+        for method in ["ebpf", "procfs"] {
+            assert_eq!(
+                lines("any", "LinuxSll2", false, method, false),
+                [
+                    "Interface: any",
+                    "Link Layer: LinuxSll2",
+                    &format!("Detection: {method}")
+                ]
+            );
+            let partial_header = super::capture_summary_lines(
+                "any",
+                "LinuxSll2",
+                false,
+                method,
+                false,
+                (true, false),
+            );
+            assert_eq!(
+                partial_header.iter().map(line_text).collect::<Vec<_>>(),
+                ["Link Layer: LinuxSll2", &format!("Detection: {method}")]
+            );
+        }
+        assert!(
+            lines("utun0", "RawIp", true, "lsof", false)
+                .contains(&"Link Layer: RawIp (Tunnel)".to_owned())
+        );
+    }
+
+    #[test]
+    fn security_details_only_use_rows_left_after_traffic_minimum() {
+        assert!(!security_details_fit(37, 14, 11));
+        assert!(security_details_fit(38, 14, 11));
+    }
+
+    #[test]
+    fn detection_labels_fit_the_system_panel_on_one_line() {
+        // Left rule (1) + horizontal padding (2) is what the panel spends on
+        // chrome; the rest is text.
+        let text_width = usize::from(SYSTEM_PANEL_WIDTH) - 3;
+
+        for method in [
+            "eBPF fentry/fexit + procfs",
+            "eBPF kprobe + procfs",
+            "procfs",
+            "windows-etw+iphlpapi",
+            "windows-iphlpapi",
+            "pktap",
+            "lsof",
+        ] {
+            let rendered = format!("Detection: {}", detection_method_label(method));
+            assert!(
+                rendered.chars().count() <= text_width,
+                "`{rendered}` is {} columns, panel fits {text_width}",
+                rendered.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn dns_health_summary_is_conservative_and_compact() {
+        let responsive = DnsAnalyticsSnapshot {
+            health: DnsHealth::Responsive,
+            latency_p95: Some(Duration::from_millis(18)),
+            ..DnsAnalyticsSnapshot::default()
+        };
+        assert_eq!(
+            line_text(&dns_health_line(&responsive, false)),
+            "DNS: responsive · p95 18ms"
+        );
+
+        let no_replies = DnsAnalyticsSnapshot {
+            health: DnsHealth::NoReplies,
+            timeouts: 4,
+            ..DnsAnalyticsSnapshot::default()
+        };
+        assert_eq!(
+            line_text(&dns_health_line(&no_replies, false)),
+            "DNS: no replies · 4 timeouts"
+        );
+
+        let slow = DnsAnalyticsSnapshot {
+            health: DnsHealth::Degraded,
+            answered: 5,
+            noerror: 5,
+            latency_p95: Some(Duration::from_millis(620)),
+            ..DnsAnalyticsSnapshot::default()
+        };
+        assert_eq!(
+            line_text(&dns_health_line(&slow, false)),
+            "DNS: degraded · p95 620ms"
+        );
+        let mixed = DnsAnalyticsSnapshot {
+            health: DnsHealth::Degraded,
+            answered: 33,
+            failures: 3,
+            latency_p95: Some(Duration::from_millis(10)),
+            resolvers: vec![crate::network::dns_analytics::DnsResolverStats {
+                address: "192.0.2.53:53".parse().unwrap(),
+                health: DnsHealth::Failing,
+                lookups: 3,
+                answered: 3,
+                pending: 0,
+                timeouts: 0,
+                servfail: 3,
+                refused: 0,
+                other_rcodes: 0,
+                retries: 0,
+                oldest_pending: None,
+                latency_p95: Some(Duration::from_millis(10)),
+            }],
+            ..DnsAnalyticsSnapshot::default()
+        };
+        assert_eq!(
+            line_text(&dns_health_line(&mixed, false)),
+            "DNS: degraded · resolver issue (Host)"
+        );
+        assert_eq!(
+            line_text(&dns_health_line(&responsive, true)),
+            "DNS: unknown · capture stopped"
+        );
+    }
+
+    #[test]
+    fn mini_wave_color_does_not_follow_latest_rate() {
+        let quiet = mini_wave(&[64, 128], 12, 0.0, 120, theme::rx_wave);
+        let busy = mini_wave(&[64, 1024], 12, 0.0, 120, theme::rx_wave);
+        let expected = Some(theme::rx_wave(MINI_WAVE_INTENSITY));
+
+        assert_eq!(quiet[0].spans[0].style.fg, expected);
+        assert_eq!(busy[0].spans[0].style.fg, expected);
+    }
+
+    #[test]
+    fn mini_wave_uses_a_longer_trailing_average() {
+        assert_eq!(
+            smooth_mini_wave(&[0, 0, 0, 400, 400]),
+            vec![0, 0, 0, 100, 200]
+        );
+        assert_eq!(smooth_mini_wave(&[100; 6]), vec![100; 6]);
+    }
+
+    #[test]
+    fn mini_wave_uses_one_sample_per_horizontal_dot() {
+        assert_eq!(mini_wave_window(40, 120), 80);
+        assert_eq!(mini_wave_window(80, 120), 120);
+        assert_eq!(mini_wave_window(0, 120), 0);
+    }
+
+    #[test]
+    fn mini_wave_scale_ignores_isolated_surges() {
+        let mut isolated = vec![4_096; 120];
+        isolated[20] = 1_000_000;
+        assert_eq!(mini_wave_ceiling(&isolated, 80), 4_096.0);
+
+        isolated[119] = 1_000_000;
+        assert_eq!(mini_wave_ceiling(&isolated, 80), 4_096.0);
+
+        let mut sustained = vec![4_096; 80];
+        sustained[70..].fill(1_000_000);
+        assert_eq!(mini_wave_ceiling(&sustained, 80), 1_048_576.0);
+    }
+
+    #[test]
+    fn connection_titles_only_show_counts_for_active_filters() {
+        let unfiltered = UiState::default();
+        assert_eq!(
+            line_text(&connections_title(&unfiltered, false, None)),
+            " Live Connections"
+        );
+
+        let filtered = UiState {
+            filter_query: "port:443".to_string(),
+            ..Default::default()
+        };
+        // The default (muted) theme has no selection tint, so the chip
+        // renders in its bracket form.
+        assert_eq!(
+            line_text(&connections_title(&filtered, false, Some(7))),
+            " Live Connections · 7 shown [port:443]"
+        );
+        assert_eq!(
+            line_text(&connections_title(&filtered, true, Some(3))),
+            " Process Aggregate · 3 processes [port:443]"
+        );
+
+        let long = UiState {
+            filter_query: "process:some-very-long-daemon-name".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            line_text(&connections_title(&long, false, Some(1))),
+            " Live Connections · 1 shown [process:some-very-l…]"
+        );
+
+        let whitespace = UiState {
+            filter_query: "   ".to_string(),
+            ..Default::default()
+        };
+        assert!(!whitespace.has_active_filter());
+        assert_eq!(
+            line_text(&connections_title(&whitespace, false, None)),
+            " Live Connections"
+        );
+    }
 
     #[test]
     fn filter_mode_treats_terminal_backspace_variants_as_backspace() {
@@ -1380,67 +1931,13 @@ mod tests {
         assert!(!is_filter_backspace_char('h', KeyModifiers::NONE));
     }
 
-    /// Render `draw_table_scrollbar` into a test buffer and report whether
-    /// any non-space glyph landed in the rightmost column (the scrollbar
-    /// track/thumb sits on the right border).
-    fn scrollbar_renders(total_rows: usize, position: usize, viewport: usize) -> bool {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-        use ratatui::layout::Rect;
-
-        let backend = TestBackend::new(20, 12);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        terminal
-            .draw(|f| {
-                super::draw_table_scrollbar(
-                    f,
-                    Rect::new(0, 0, 20, 12),
-                    total_rows,
-                    position,
-                    viewport,
-                )
-            })
-            .expect("draw scrollbar");
-        let buffer = terminal.backend().buffer();
-        let right_x = 19;
-        (0..12).any(|y| buffer[(right_x, y)].symbol() != " ")
-    }
-
-    #[test]
-    fn scrollbar_hidden_when_content_fits() {
-        // 5 rows, 10-row viewport: nothing to scroll, no bar drawn.
-        assert!(!scrollbar_renders(5, 0, 10));
-        // Exactly fits is also a no-op.
-        assert!(!scrollbar_renders(10, 0, 10));
-    }
-
-    #[test]
-    fn scrollbar_shown_when_content_overflows() {
-        // 100 rows, 10-row viewport: bar must render on the right edge.
-        assert!(scrollbar_renders(100, 0, 10));
-        // Still drawn when scrolled into the middle of the list.
-        assert!(scrollbar_renders(100, 45, 10));
-    }
-
     #[test]
     fn filter_mode_backspace_on_empty_query_stays_in_filter_mode() {
-        let app = App::new(Config {
-            resolve_dns: false,
-            disable_geoip: true,
-            ..Config::default()
-        })
-        .expect("create app");
-        let mut ui_state = UIState::default();
+        let app = test_app();
+        let mut ui_state = UiState::default();
         ui_state.enter_filter_mode();
-        let connections = [];
         let click_regions = ClickableRegions::default();
-        let mut ctx = HandlerContext {
-            app: &app,
-            ui_state: &mut ui_state,
-            connections: &connections,
-            grouped_rows: None,
-            click_regions: &click_regions,
-        };
+        let mut ctx = empty_ctx(&app, &mut ui_state, &click_regions);
 
         handle_filter_mode_key(
             KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
@@ -1454,5 +1951,35 @@ mod tests {
         assert!(ctx.ui_state.filter_mode);
         assert!(ctx.ui_state.filter_query.is_empty());
         assert_eq!(ctx.ui_state.filter_cursor_position, 0);
+    }
+
+    #[test]
+    fn space_collapses_parent_group_from_connection_row() {
+        let app = test_app();
+        let connections = vec![local_tcp(1000, "alpha"), local_tcp(1001, "alpha")];
+        let mut ui_state = UiState {
+            grouping_enabled: true,
+            expanded_groups: HashSet::from(["alpha".to_string()]),
+            ..UiState::default()
+        };
+        let grouped_rows = compute_grouped_rows(&connections, &ui_state.expanded_groups);
+        ui_state.set_selected_grouped_by_index(&grouped_rows, 1);
+        let click_regions = ClickableRegions::default();
+        let mut ctx = HandlerContext {
+            app: &app,
+            ui_state: &mut ui_state,
+            connections: &connections,
+            grouped_rows: Some(&grouped_rows),
+            click_regions: &click_regions,
+        };
+
+        let effects = OverviewTab.handle_key(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut ctx,
+        );
+
+        assert!(matches!(effects.as_deref(), Some([Effect::Regroup])));
+        assert!(!ctx.ui_state.expanded_groups.contains("alpha"));
+        assert!(ctx.ui_state.is_group_selected());
     }
 }

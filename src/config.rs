@@ -1,190 +1,347 @@
-//! Runtime configuration: CLI flags, GeoIP database discovery, refresh
-//! interval, DNS resolution toggle, and pcap export settings.
+//! User configuration file loading.
+//!
+//! rustnet reads an optional TOML file for settings that do not fit the
+//! command line, including the color theme, optional popup shadow, and
+//! initial connection view:
+//!
+//! ```toml
+//! # ~/.config/rustnet/config.toml
+//! [theme]
+//! name = "tokyo-night"
+//!
+//! [theme.overrides]
+//! accent = "#ff9e64"
+//! border = "darkgray"
+//!
+//! [view]
+//! group_by_process = true
+//! ```
+//!
+//! Loading never fails: a missing file yields the defaults silently, and an
+//! unreadable or invalid file yields the defaults after a single stderr
+//! warning (emitted before the terminal enters raw mode). Overrides that
+//! leave text unreadable on its background are reported the same way by the
+//! contrast guard in `ui::theme`, which warns but never changes a color.
 
-use anyhow::{Result, anyhow};
-use std::fs;
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-/// Application configuration
-#[derive(Debug, Clone)]
-pub struct Config {
-    /// Network interface to monitor
-    pub interface: Option<String>,
-    /// Interface language (ISO code)
-    pub language: String,
-    /// Path to MaxMind GeoIP database
-    pub geoip_db_path: Option<PathBuf>,
-    /// Refresh interval in milliseconds
-    pub refresh_interval: u64,
-    /// Show IP locations (requires MaxMind DB)
-    pub show_locations: bool,
-    /// Filter out localhost (loopback) traffic
-    pub filter_localhost: bool,
-    /// Interval in milliseconds for the packet processing loop's sleep. 0 means minimal sleep for continuous processing.
-    pub packet_processing_interval_ms: u64,
-    /// Custom configuration file path
-    pub config_path: Option<PathBuf>,
+use serde::Deserialize;
+
+/// Raw on-disk schema. Unknown keys are ignored for
+/// forward compatibility.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawConfig {
+    theme: RawTheme,
+    ui: RawUi,
+    view: RawView,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            interface: None,
-            language: "en".to_string(),
-            geoip_db_path: None,
-            refresh_interval: 1000,
-            show_locations: true,
-            filter_localhost: true,
-            packet_processing_interval_ms: 0, // Default to continuous processing (minimal sleep)
-            config_path: None,
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawView {
+    group_by_process: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawTheme {
+    name: Option<String>,
+    /// BTreeMap so warnings about bad overrides come out in a stable order.
+    overrides: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RawUi {
+    popup_shadow: bool,
+}
+
+/// Parsed user configuration. Override values are validated later by
+/// `ThemeSpec::set_token`, not here.
+#[derive(Debug, Default, PartialEq)]
+pub struct UserConfig {
+    pub theme: Option<String>,
+    pub popup_shadow: bool,
+    pub overrides: Vec<(String, String)>,
+    pub group_by_process: bool,
+}
+
+/// Load the user configuration. Never panics, never fails: missing file is
+/// a silent default; an unreadable file or parse error prints one stderr
+/// warning naming the path and falls back to the default.
+pub fn load() -> UserConfig {
+    let Some(path) = config_path() else {
+        return UserConfig::default();
+    };
+    let contents = match read_config(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return UserConfig::default(),
+        Err(e) => {
+            eprintln!("rustnet: cannot read {}: {e}", path.display());
+            return UserConfig::default();
+        }
+    };
+    match parse(&contents) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("rustnet: invalid config {}: {e}", path.display());
+            UserConfig::default()
         }
     }
 }
 
-impl Config {
-    /// Load configuration from file
-    pub fn load(path: Option<&str>) -> Result<Self> {
-        let config_path = if let Some(path) = path {
-            PathBuf::from(path)
-        } else {
-            Self::find_config_file()?
-        };
-
-        let mut config = Config::default();
-
-        if config_path.exists() {
-            config.config_path = Some(config_path.clone());
-
-            // Read config file
-            let content = fs::read_to_string(&config_path)?;
-
-            // Parse YAML
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-
-                if let Some(pos) = line.find(':') {
-                    let key = line[..pos].trim();
-                    let value = line[pos + 1..].trim();
-
-                    match key {
-                        "interface" => {
-                            config.interface = Some(value.to_string());
-                        }
-                        "language" => {
-                            config.language = value.to_string();
-                        }
-                        "geoip_db_path" => {
-                            config.geoip_db_path = Some(PathBuf::from(value));
-                        }
-                        "refresh_interval" => {
-                            if let Ok(interval) = value.parse::<u64>() {
-                                config.refresh_interval = interval;
-                            }
-                        }
-                        "show_locations" => {
-                            if value == "true" {
-                                config.show_locations = true;
-                            } else if value == "false" {
-                                config.show_locations = false;
-                            }
-                        }
-                        "filter_localhost" => {
-                            if value == "true" {
-                                config.filter_localhost = true;
-                            } else if value == "false" {
-                                config.filter_localhost = false;
-                            }
-                        }
-                        "packet_processing_interval_ms" => {
-                            if let Ok(interval) = value.parse::<u64>() {
-                                config.packet_processing_interval_ms = interval;
-                            }
-                        }
-                        _ => {
-                            // Ignore unknown keys
-                        }
-                    }
-                }
+/// Read the config file. Under sudo the read happens with root privileges
+/// (before the privilege drop) at a path inside the invoking user's home,
+/// so a config not owned by that user is refused: following a planted
+/// symlink there would otherwise turn rustnet into a root file oracle.
+/// The owner comes from fstat on the opened file, leaving no window
+/// between check and read.
+fn read_config(path: &Path) -> std::io::Result<String> {
+    #[cfg(not(windows))]
+    {
+        use std::io::Read as _;
+        use std::os::unix::fs::MetadataExt as _;
+        let mut file = std::fs::File::open(path)?;
+        if let Some(uid) = sudo_uid() {
+            let owner = file.metadata()?.uid();
+            if owner != uid {
+                return Err(std::io::Error::other(format!(
+                    "owned by uid {owner}, not the invoking user (uid {uid})"
+                )));
             }
         }
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        Ok(contents)
+    }
+    #[cfg(windows)]
+    {
+        std::fs::read_to_string(path)
+    }
+}
 
-        // Try to find GeoIP database if not specified in config
-        if config.geoip_db_path.is_none() {
-            for path in Self::possible_geoip_paths() {
-                if path.exists() {
-                    config.geoip_db_path = Some(path);
-                    break;
-                }
-            }
+/// Pure parsing core, unit-testable without the filesystem.
+fn parse(contents: &str) -> Result<UserConfig, String> {
+    // Not `e.to_string()`: the toml Display echoes the offending source
+    // line, and the file may have been read with root privileges, so its
+    // contents must never be reflected back to the caller's terminal.
+    let raw: RawConfig = toml::from_str(contents).map_err(|e| match e.span() {
+        Some(span) => {
+            let clamped = span.start.min(contents.len());
+            let line = contents[..clamped].bytes().filter(|&b| b == b'\n').count() + 1;
+            format!("{} (line {line})", e.message())
         }
+        None => e.message().to_string(),
+    })?;
+    Ok(UserConfig {
+        theme: raw.theme.name,
+        popup_shadow: raw.ui.popup_shadow,
+        overrides: raw.theme.overrides.into_iter().collect(),
+        group_by_process: raw.view.group_by_process,
+    })
+}
 
-        Ok(config)
+/// Platform config file location, from environment variables only:
+/// `%APPDATA%\rustnet\config.toml` on Windows, otherwise
+/// `$XDG_CONFIG_HOME/rustnet/config.toml` (when set and non-empty) or
+/// `$HOME/.config/rustnet/config.toml`. `None` when the relevant
+/// environment variables are unset.
+/// Home directory of the user who invoked `sudo`, when running under it.
+/// `None` when not under sudo, when the invoking user is root anyway (their
+/// own HOME is then correct), or when the passwd lookup yields nothing.
+#[cfg(not(windows))]
+fn invoking_user_home() -> Option<PathBuf> {
+    sudo_uid()?;
+    let user = std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty())?;
+    // Read the home field straight out of the passwd database rather than
+    // assuming /home/<user>: it is wrong for root, for macOS (/Users), and
+    // for anyone with a relocated home.
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd_home(&passwd, &user)
+}
+
+/// The uid that invoked `sudo`, when running under it. `None` when not
+/// under sudo or when the invoker was root anyway.
+#[cfg(not(windows))]
+fn sudo_uid() -> Option<u32> {
+    let uid: u32 = std::env::var("SUDO_UID").ok()?.parse().ok()?;
+    (uid != 0).then_some(uid)
+}
+
+/// Home directory field for `user` in the contents of a passwd file.
+#[cfg(not(windows))]
+fn passwd_home(passwd: &str, user: &str) -> Option<PathBuf> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        if fields.next()? != user {
+            return None;
+        }
+        // name:passwd:uid:gid:gecos:home:shell, so home is four past passwd.
+        let home = fields.nth(4)?;
+        (!home.is_empty()).then(|| PathBuf::from(home))
+    })
+}
+
+fn config_path() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .filter(|v| !v.is_empty())
+            .map(|appdata| PathBuf::from(appdata).join("rustnet").join("config.toml"))
+    }
+    #[cfg(not(windows))]
+    {
+        // Under `sudo rustnet`, which the docs recommend, sudo's env_reset
+        // clears XDG_CONFIG_HOME and many distros point HOME at /root, so
+        // both would resolve to root's config rather than the config of the
+        // person who ran the command. rustnet already drops back to
+        // SUDO_UID/SUDO_GID after initialization, so it knows who that is:
+        // resolve their home the same way and read their config.
+        if let Some(home) = invoking_user_home() {
+            return Some(home.join(".config").join("rustnet").join("config.toml"));
+        }
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+            return Some(PathBuf::from(xdg).join("rustnet").join("config.toml"));
+        }
+        std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .map(|home| {
+                PathBuf::from(home)
+                    .join(".config")
+                    .join("rustnet")
+                    .join("config.toml")
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(not(windows))]
+    fn passwd_home_reads_the_home_field_not_a_guessed_path() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\n\
+                      marco:x:1000:1000:Marco:/home/marco:/usr/bin/fish\n\
+                      relocated:x:1001:1001::/srv/people/relocated:/bin/sh\n\
+                      noshell:x:1002:1002:::\n";
+        assert_eq!(
+            passwd_home(passwd, "marco"),
+            Some(PathBuf::from("/home/marco"))
+        );
+        // A home outside /home is exactly why the field is read, not guessed.
+        assert_eq!(
+            passwd_home(passwd, "relocated"),
+            Some(PathBuf::from("/srv/people/relocated"))
+        );
+        assert_eq!(passwd_home(passwd, "root"), Some(PathBuf::from("/root")));
+        // An empty home field is not a usable answer.
+        assert_eq!(passwd_home(passwd, "noshell"), None);
+        assert_eq!(passwd_home(passwd, "absent"), None);
     }
 
-    /// Find configuration file
-    fn find_config_file() -> Result<PathBuf> {
-        // Try XDG config directory first
-        if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-            let xdg_path = PathBuf::from(xdg_config).join("rustnet/config.yml");
-            if xdg_path.exists() {
-                return Ok(xdg_path);
-            }
-        }
-
-        // Try ~/.config/rustnet
-        let home = Self::get_home_dir()?;
-        let home_config = home.join(".config/rustnet/config.yml");
-        if home_config.exists() {
-            return Ok(home_config);
-        }
-
-        // Try current directory
-        let current_config = PathBuf::from("config.yml");
-        if current_config.exists() {
-            return Ok(current_config);
-        }
-
-        // Default to home config path
-        Ok(home_config)
+    #[test]
+    fn popup_shadow_is_opt_in_and_validated() {
+        assert!(!parse("").unwrap().popup_shadow);
+        assert!(parse("[ui]\npopup_shadow = true").unwrap().popup_shadow);
+        assert!(!parse("[ui]\npopup_shadow = false").unwrap().popup_shadow);
+        assert!(parse("[ui]\npopup_shadow = 'yes'").is_err());
     }
 
-    /// Get home directory
-    fn get_home_dir() -> Result<PathBuf> {
-        if let Ok(home) = std::env::var("HOME") {
-            return Ok(PathBuf::from(home));
-        }
+    #[test]
+    fn parses_theme_name_and_overrides() {
+        let config = parse(
+            r##"
+[theme]
+name = "tokyo-night"
 
-        if let Ok(userprofile) = std::env::var("USERPROFILE") {
-            return Ok(PathBuf::from(userprofile));
-        }
-
-        Err(anyhow!("Could not determine home directory"))
+[theme.overrides]
+accent = "#ff9e64"
+border = "darkgray"
+selection_bg = "#3b4261"
+"##,
+        )
+        .unwrap();
+        assert_eq!(config.theme.as_deref(), Some("tokyo-night"));
+        assert_eq!(
+            config.overrides,
+            vec![
+                ("accent".to_string(), "#ff9e64".to_string()),
+                ("border".to_string(), "darkgray".to_string()),
+                ("selection_bg".to_string(), "#3b4261".to_string()),
+            ]
+        );
     }
 
-    /// Get possible GeoIP database paths
-    fn possible_geoip_paths() -> Vec<PathBuf> {
-        let mut paths = Vec::new();
+    #[test]
+    fn empty_input_yields_default() {
+        assert_eq!(parse("").unwrap(), UserConfig::default());
+    }
 
-        // Current directory
-        paths.push(PathBuf::from("GeoLite2-City.mmdb"));
-
-        // Try XDG data directory
-        if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
-            paths.push(PathBuf::from(xdg_data).join("rustnet/GeoLite2-City.mmdb"));
+    #[test]
+    fn view_grouping_defaults_to_flat_and_accepts_booleans() {
+        for input in [
+            "",
+            "[view]",
+            "[theme]\nname = \"nord\"",
+            "[view]\ngroup_by_process = false",
+        ] {
+            assert!(!parse(input).unwrap().group_by_process);
         }
+        let config = parse(
+            "[theme]\nname = \"nord\"\n[ui]\npopup_shadow = true\n[view]\ngroup_by_process = true",
+        )
+        .unwrap();
+        assert!(config.group_by_process);
+        assert!(config.popup_shadow);
+        assert_eq!(config.theme.as_deref(), Some("nord"));
+        assert!(parse("[view]\ngroup_by_process = \"true\"").is_err());
+    }
 
-        // Try home directory
-        if let Ok(home) = Self::get_home_dir() {
-            paths.push(home.join(".local/share/rustnet/GeoLite2-City.mmdb"));
-        }
+    #[test]
+    fn theme_name_without_overrides() {
+        let config = parse("[theme]\nname = \"nord\"\n").unwrap();
+        assert_eq!(config.theme.as_deref(), Some("nord"));
+        assert!(config.overrides.is_empty());
+    }
 
-        // System paths
-        paths.push(PathBuf::from("/usr/share/GeoIP/GeoLite2-City.mmdb"));
-        paths.push(PathBuf::from("/usr/local/share/GeoIP/GeoLite2-City.mmdb"));
+    #[test]
+    fn invalid_toml_is_an_error() {
+        let err = parse("not [valid toml").unwrap_err();
+        assert!(!err.is_empty());
+    }
 
-        paths
+    #[test]
+    fn parse_error_never_echoes_file_contents() {
+        // A parse error on a file rustnet was never meant to read (here a
+        // shadow-style line) must not quote the offending source back.
+        let err = parse("root:$6$hunter2$abcdef:19000:0:99999:7:::").unwrap_err();
+        assert!(!err.contains("hunter2"), "{err}");
+        // The line number alone is fine and expected.
+        let err = parse("[theme]\nname = not-quoted\n").unwrap_err();
+        assert!(err.contains("(line 2)"), "{err}");
+        assert!(!err.contains("not-quoted"), "{err}");
+    }
+
+    #[test]
+    fn unknown_keys_are_ignored() {
+        let config = parse(
+            r#"
+[capture]
+foo = 1
+
+[view]
+unknown = "x"
+
+[theme]
+name = "gruvbox"
+unknown = "x"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.theme.as_deref(), Some("gruvbox"));
+        assert!(config.overrides.is_empty());
     }
 }

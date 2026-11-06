@@ -13,14 +13,6 @@ pub struct ServiceLookup {
 }
 
 impl ServiceLookup {
-    /// Create an empty service lookup
-    pub fn new() -> Self {
-        Self {
-            services: HashMap::new(),
-        }
-    }
-
-    // Load services from embedded data.
     pub fn from_embedded() -> Result<Self> {
         let mut services = HashMap::new();
 
@@ -41,7 +33,6 @@ impl ServiceLookup {
             let service_name = parts[0];
             let port_protocol = parts[1];
 
-            // Parse port/protocol
             let port_parts: Vec<&str> = port_protocol.split('/').collect();
             if port_parts.len() != 2 {
                 continue;
@@ -58,7 +49,6 @@ impl ServiceLookup {
                 _ => continue,
             };
 
-            // Store the service
             services
                 .entry((port, protocol))
                 .or_insert_with(|| service_name.to_string());
@@ -73,7 +63,9 @@ impl ServiceLookup {
 
     /// Create with common well-known services
     pub fn with_defaults() -> Self {
-        let mut lookup = Self::new();
+        let mut lookup = Self {
+            services: HashMap::new(),
+        };
 
         // Common TCP services
         lookup.add_service(20, Protocol::Tcp, "ftp-data");
@@ -90,6 +82,7 @@ impl ServiceLookup {
         lookup.add_service(587, Protocol::Tcp, "submission");
         lookup.add_service(993, Protocol::Tcp, "imaps");
         lookup.add_service(995, Protocol::Tcp, "pop3s");
+        lookup.add_service(1194, Protocol::Tcp, "openvpn");
         lookup.add_service(1433, Protocol::Tcp, "mssql");
         lookup.add_service(3306, Protocol::Tcp, "mysql");
         lookup.add_service(3389, Protocol::Tcp, "rdp");
@@ -111,6 +104,7 @@ impl ServiceLookup {
         lookup.add_service(1194, Protocol::Udp, "openvpn");
         lookup.add_service(4500, Protocol::Udp, "ipsec-nat");
         lookup.add_service(5060, Protocol::Udp, "sip");
+        lookup.add_service(51820, Protocol::Udp, "wireguard");
 
         lookup
     }
@@ -126,12 +120,6 @@ impl ServiceLookup {
     }
 }
 
-impl Default for ServiceLookup {
-    fn default() -> Self {
-        Self::with_defaults()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +132,17 @@ mod tests {
         assert_eq!(lookup.lookup(443, Protocol::Tcp), Some("https"));
         assert_eq!(lookup.lookup(22, Protocol::Tcp), Some("ssh"));
         assert_eq!(lookup.lookup(53, Protocol::Udp), Some("dns"));
+        assert_eq!(lookup.lookup(1194, Protocol::Tcp), Some("openvpn"));
+        assert_eq!(lookup.lookup(1194, Protocol::Udp), Some("openvpn"));
+        assert_eq!(lookup.lookup(51820, Protocol::Udp), Some("wireguard"));
+    }
+
+    #[test]
+    fn test_embedded_vpn_services() {
+        let lookup = ServiceLookup::from_embedded().unwrap();
+
+        assert_eq!(lookup.lookup(1194, Protocol::Tcp), Some("openvpn"));
+        assert_eq!(lookup.lookup(1194, Protocol::Udp), Some("openvpn"));
+        assert_eq!(lookup.lookup(51820, Protocol::Udp), Some("wireguard"));
     }
 }

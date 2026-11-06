@@ -1,0 +1,36 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                      ● eth0
+─────────────────────────────────────━━━━━━━━━━───────────────────────────────────────────────────────────────
+Applications   Capture                                                                                        
+━━━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────
+TX    2.88 MiB/s   RX    1.70 MiB/s                                                                           
+Coverage 60s: TX 73.1%  RX 91.8%                                                                              
+▎ Applications · TX · Retained TX ↓ ─────────────────────────────────────────────────────────────────── 1-4/4 
+  Application                            TX/s   60s %   Retained   Conns Share · 60s  Top remote peer         
+▌ firefox                               2.4Mi   81.7%   4.78 MiB     1/1 ░░░▒▒▓▓▓█▊·· 140.82.121.4:443        
+  sshd                                  488Ki   17.7%   1.04 MiB     1/1 ██▏········· 10.0.0.5:51022          
+  systemd-resolved                       16Ki    0.5%  32.42 KiB     1/1 ▏··········· 1.1.1.1:53              
+  curl                                      -    0.0%        0 B     1/1 ············ 151.101.1.195:443       
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+ v/V section  j/k select  enter details  d tx/rx  s sort  S order  o connections  esc back     h help  q quit

@@ -11,65 +11,26 @@ use super::dns;
 ///
 /// LLMNR uses the same packet format as DNS, so we reuse the DNS parser.
 /// Returns `None` if the packet cannot be parsed as DNS.
-pub fn analyze_llmnr(payload: &[u8]) -> Option<LlmnrInfo> {
+pub(super) fn analyze_llmnr(payload: &[u8]) -> Option<LlmnrInfo> {
     // Reuse DNS parser - LLMNR has the same wire format
-    let dns_info = dns::analyze_dns(payload)?;
-
-    Some(LlmnrInfo {
-        query_name: dns_info.query_name,
-        query_type: dns_info.query_type,
-        is_response: dns_info.is_response,
-        response_ips: dns_info.response_ips,
-    })
+    dns::analyze_dns(payload).map(LlmnrInfo::from)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::dns::test_fixtures::{
+        RrName, build_dns_header, build_dns_packet, push_a, push_question,
+    };
     use super::*;
     use crate::network::types::DnsQueryType;
 
     fn build_llmnr_query(name: &str, qtype: u16) -> Vec<u8> {
-        let mut packet = Vec::new();
-
-        // DNS header (12 bytes)
-        packet.extend_from_slice(&[0x00, 0x01]); // Transaction ID
-        packet.extend_from_slice(&[0x00, 0x00]); // Flags (query)
-        packet.extend_from_slice(&[0x00, 0x01]); // Questions: 1
-        packet.extend_from_slice(&[0x00, 0x00]); // Answer RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Authority RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Additional RRs: 0
-
-        // Question section - encode name (single label for LLMNR)
-        packet.push(name.len() as u8);
-        packet.extend_from_slice(name.as_bytes());
-        packet.push(0x00); // Null terminator
-
-        // Query type and class
-        packet.extend_from_slice(&qtype.to_be_bytes());
-        packet.extend_from_slice(&[0x00, 0x01]); // Class: IN
-
-        packet
+        build_dns_packet(0x0001, 0x0000, name, qtype)
     }
 
     fn build_llmnr_response(name: &str, qtype: u16) -> Vec<u8> {
-        let mut packet = Vec::new();
-
-        // DNS header (12 bytes)
-        packet.extend_from_slice(&[0x00, 0x01]); // Transaction ID
-        packet.extend_from_slice(&[0x80, 0x00]); // Flags (response)
-        packet.extend_from_slice(&[0x00, 0x01]); // Questions: 1
-        packet.extend_from_slice(&[0x00, 0x00]); // Answer RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Authority RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Additional RRs: 0
-
-        // Question section
-        packet.push(name.len() as u8);
-        packet.extend_from_slice(name.as_bytes());
-        packet.push(0x00);
-        packet.extend_from_slice(&qtype.to_be_bytes());
-        packet.extend_from_slice(&[0x00, 0x01]);
-
-        packet
+        // Flags: response
+        build_dns_packet(0x0001, 0x8000, name, qtype)
     }
 
     #[test]
@@ -79,6 +40,7 @@ mod tests {
         assert_eq!(info.query_name, Some("workstation".to_string()));
         assert_eq!(info.query_type, Some(DnsQueryType::A));
         assert!(!info.is_response);
+        assert_eq!(info.txid, 0x0001);
     }
 
     #[test]
@@ -87,6 +49,7 @@ mod tests {
         let info = analyze_llmnr(&packet).expect("should parse");
         assert_eq!(info.query_name, Some("fileserver".to_string()));
         assert!(info.is_response);
+        assert_eq!(info.txid, 0x0001);
     }
 
     #[test]
@@ -105,20 +68,11 @@ mod tests {
     /// Build an LLMNR response that echoes the question and supplies an A
     /// record. RFC 4795 §2.1: LLMNR responses re-include the question.
     fn build_llmnr_response_with_a(name: &str, ip: [u8; 4]) -> Vec<u8> {
-        let mut packet = Vec::new();
-        // Header: txid 1, flags response, qdcount=1, ancount=1, ns=0, ar=0.
-        packet.extend_from_slice(&[0x00, 0x01, 0x80, 0x00, 0x00, 0x01, 0x00, 0x01]);
-        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-        // Question (single label).
-        packet.push(name.len() as u8);
-        packet.extend_from_slice(name.as_bytes());
-        packet.push(0x00);
-        packet.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE A, QCLASS IN
-        // Answer: NAME pointer back to offset 12, TYPE A, CLASS IN, TTL, RDLENGTH 4, RDATA.
-        packet.extend_from_slice(&[
-            0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x04,
-        ]);
-        packet.extend_from_slice(&ip);
+        // Header: txid 1, flags response, qdcount=1, ancount=1; question
+        // (single label) for A; answer with NAME pointer back to offset 12.
+        let mut packet = build_dns_header(0x0001, 0x8000, 1, 1, 0, 0);
+        push_question(&mut packet, name, 1);
+        push_a(&mut packet, RrName::Ptr(12), 120, ip);
         packet
     }
 

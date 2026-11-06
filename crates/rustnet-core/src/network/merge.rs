@@ -1,33 +1,21 @@
-// src/network/merge.rs - Connection merging and update utilities
+//! Connection merging and update utilities.
 
-use log::{debug, info, warn};
-use std::time::{Instant, SystemTime};
+use log::{debug, warn};
+use std::fmt::Debug;
+use std::time::{Duration, SystemTime};
 
 use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reassembler};
-use crate::network::parser::{ParsedPacket, TcpFlags};
+use crate::network::parser::{ParsedPacket, SynWindowScale, TcpFlags, TcpHeaderInfo};
 use crate::network::types::{
-    ApplicationProtocol, Connection, DnsInfo, DpiInfo, FtpInfo, HttpInfo, HttpsInfo, MqttInfo,
-    ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState,
+    ApplicationProtocol, Connection, DnsInfo, DpiInfo, FtpInfo, HttpInfo, MqttInfo, NetBiosInfo,
+    ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState, TlsInfo,
 };
 
-/// Get the priority of a QUIC connection state for proper state progression
-/// Higher priority = more advanced state. States should only progress forward.
 /// Upper bound on DNS response IPs accumulated per connection across packets.
 /// The per-packet parser already caps extraction (see `MAX_RESPONSE_IPS_PER_PACKET`
 /// in dpi/dns.rs); this bounds the cross-packet merge accumulator so a sustained
 /// flow cannot grow it without limit.
 const MAX_MERGED_RESPONSE_IPS: usize = 64;
-
-fn quic_state_priority(state: &QuicConnectionState) -> u8 {
-    match state {
-        QuicConnectionState::Unknown => 0,
-        QuicConnectionState::Initial => 1,
-        QuicConnectionState::Handshaking => 2,
-        QuicConnectionState::Connected => 3,
-        QuicConnectionState::Draining => 4,
-        QuicConnectionState::Closed => 5,
-    }
-}
 
 /// Update TCP connection state based on observed flags and current state
 /// This implements the TCP state machine according to RFC 793
@@ -66,122 +54,321 @@ fn update_tcp_state(current_state: TcpState, flags: &TcpFlags, is_outgoing: bool
     }
 }
 
-/// Analyze TCP segment and update analytics for retransmissions and packet quality
-/// Returns (new_retransmits, new_out_of_order, new_fast_retransmits)
-fn analyze_tcp_segment(
-    analytics: &mut crate::network::types::TcpAnalytics,
+/// RFC 1982 serial-number comparison: true when `a` precedes `b` in TCP
+/// sequence space. A plain `a < b` inverts once the 32-bit counter wraps,
+/// which long-lived or high-volume connections do reach.
+fn seq_lt(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) < 0
+}
+
+/// Per-packet TCP events produced while merging a packet into a connection.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TcpMergeEvents {
+    pub retransmits: u64,
+    pub out_of_order: u64,
+    pub fast_retransmits: u64,
+    /// Completed data round trip when this packet's ACK closed the pending
+    /// probe. Karn-filtered: never produced by a retransmitted segment.
+    pub rtt_sample: Option<Duration>,
+}
+
+/// A pending RTT probe whose ACK never arrived within this window is
+/// abandoned and replaced by the next outbound segment, so the estimator
+/// recovers after captures miss the covering ACK.
+const RTT_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The fields of one TCP segment that the analytics care about.
+struct TcpSegment {
     seq: u32,
     ack: u32,
     window: u16,
+    /// Sequence space the segment consumes: payload bytes plus one each
+    /// for SYN and FIN.
     payload_len: u32,
     is_outgoing: bool,
     has_ack_flag: bool,
-) -> (u64, u64, u64) {
-    let mut new_retransmits = 0;
-    let mut new_out_of_order = 0;
-    let mut new_fast_retransmits = 0;
+    is_syn: bool,
+    is_fin: bool,
+    is_rst: bool,
+    /// Window-scale verdict from this segment's options (SYN only).
+    window_scale: Option<SynWindowScale>,
+}
 
-    // Track window size
-    analytics.last_window_size = window;
+/// The analytics view of one packet's TCP header.
+fn tcp_segment_from(parsed: &ParsedPacket, tcp_header: &TcpHeaderInfo) -> TcpSegment {
+    TcpSegment {
+        seq: tcp_header.seq,
+        ack: tcp_header.ack,
+        window: tcp_header.window,
+        // SYN and FIN each consume a sequence number even with no payload.
+        payload_len: tcp_header.payload_len
+            + u32::from(tcp_header.flags.syn)
+            + u32::from(tcp_header.flags.fin),
+        is_outgoing: parsed.is_outgoing,
+        has_ack_flag: tcp_header.flags.ack,
+        is_syn: tcp_header.flags.syn,
+        is_fin: tcp_header.flags.fin,
+        is_rst: tcp_header.flags.rst,
+        window_scale: tcp_header.window_scale,
+    }
+}
+
+/// Analyze TCP segment and update analytics for retransmissions, packet
+/// quality, and round-trip timing. `at` is the packet's capture timestamp.
+fn analyze_tcp_segment(
+    analytics: &mut crate::network::types::TcpAnalytics,
+    segment: TcpSegment,
+    at: SystemTime,
+) -> TcpMergeEvents {
+    let TcpSegment {
+        seq,
+        ack,
+        window,
+        payload_len,
+        is_outgoing,
+        has_ack_flag,
+        is_syn,
+        is_fin,
+        is_rst,
+        window_scale,
+    } = segment;
+    let mut events = TcpMergeEvents::default();
+    // Read before this segment overwrites it: RFC 5681 asks whether the
+    // window moved, which only the previous advertisement can answer.
+    let previous_window_in = analytics.last_window_in;
+    // A keepalive probe may carry one garbage byte at SND.NXT - 1 (RFC 1122
+    // §4.2.3.6), which Windows does. It re-covers a sent byte without being a
+    // resend, so it counts as neither loss nor reordering. SYN and FIN each
+    // consume a sequence number, so a resent bare one has this same shape.
+    let one_byte_data = payload_len == 1 && !is_syn && !is_fin && !is_rst;
+
+    // Learn each side's window-scale shift from its SYN. Only a fully
+    // examined SYN without the option turns scaling off (RFC 7323); a SYN
+    // whose options could not be examined (truncated capture, malformed
+    // options) proves nothing, and a complete retransmitted SYN may still
+    // supply the shift later.
+    if is_syn {
+        match window_scale {
+            Some(SynWindowScale::Present(shift)) => {
+                if is_outgoing {
+                    analytics.window_scale_out = Some(shift);
+                } else {
+                    analytics.window_scale_in = Some(shift);
+                }
+            }
+            Some(SynWindowScale::Absent) => analytics.window_scaling_disabled = true,
+            Some(SynWindowScale::Unknown) | None => {}
+        }
+    }
+
+    // Track the advertised window per direction, since each end advertises
+    // its own and one shared slot would flip between them packet by packet.
+    // A RST carries no meaningful window (RFC 9293 §3.1), so it must not
+    // overwrite the last real advertisement with a zero.
+    if !is_rst {
+        analytics.record_window(window, is_outgoing, is_syn);
+    }
 
     if is_outgoing {
         // Outbound packet - check for retransmissions
         if payload_len > 0 {
             // Only consider packets with payload for retransmit detection
-            if analytics.last_seq_outbound != 0 {
-                // Check if this sequence number is less than expected (retransmission)
-                let expected_seq = analytics.last_seq_outbound;
+            let seq_end = seq.wrapping_add(payload_len);
 
-                if seq < expected_seq {
-                    // This is a retransmission
-                    analytics.retransmit_count += 1;
-                    new_retransmits += 1;
-                    debug!(
-                        "TCP retransmission detected: seq={}, expected={}",
-                        seq, expected_seq
-                    );
-                } else if seq > expected_seq {
-                    // Gap in sequence numbers - might be out of order or packet loss
-                    debug!(
-                        "TCP sequence gap detected: seq={}, expected={}",
-                        seq, expected_seq
-                    );
-                } else {
-                    // seq == expected_seq, normal in-order packet
-                    analytics.last_seq_outbound = seq.wrapping_add(payload_len);
-                }
-            } else {
+            if !analytics.seen_outbound {
                 // First packet with data
-                analytics.last_seq_outbound = seq.wrapping_add(payload_len);
+                analytics.seen_outbound = true;
+                analytics.highest_seq_outbound = seq_end;
+                arm_rtt_probe(analytics, seq_end, at);
+            } else if one_byte_data && seq_end == analytics.highest_seq_outbound {
+                // Its reply cannot reliably time earlier data if capture
+                // missed the original ACK. A genuine last-byte resend also
+                // matches this heuristic, so Karn's ambiguity rule still applies.
+                analytics.rtt_probe = None;
+                debug!("TCP keepalive probe ignored: seq={}", seq);
+            } else if !seq_lt(analytics.highest_seq_outbound, seq_end) {
+                // Segment ends at or before the highest byte already sent, so
+                // it carries data the peer was sent before: a retransmission.
+                // Counted every time, as repeated resends of one segment are
+                // each a distinct retransmission.
+                analytics.retransmit_count += 1;
+                events.retransmits += 1;
+                // Karn's algorithm: after a retransmission the covering ACK
+                // is ambiguous (original or resend?), so the pending probe
+                // must not produce a sample.
+                analytics.rtt_probe = None;
+                debug!(
+                    "TCP retransmission detected: seq={}, len={}, highest={}",
+                    seq, payload_len, analytics.highest_seq_outbound
+                );
+            } else {
+                // Advances the stream. Covers both in-order segments and gaps
+                // left by dropped captures; either way the high-water mark
+                // resyncs so later retransmissions are still detected.
+                analytics.highest_seq_outbound = seq_end;
+                arm_rtt_probe(analytics, seq_end, at);
             }
         }
     } else {
         // Inbound packet - check for out-of-order and duplicate ACKs
         if payload_len > 0 {
-            if analytics.last_seq_inbound != 0 {
-                let expected_seq = analytics.last_seq_inbound;
+            let seq_end = seq.wrapping_add(payload_len);
 
-                if seq < expected_seq {
-                    // Out-of-order packet (arrived late)
-                    analytics.out_of_order_count += 1;
-                    new_out_of_order += 1;
-                    debug!(
-                        "TCP out-of-order packet: seq={}, expected={}",
-                        seq, expected_seq
-                    );
-                } else if seq > expected_seq {
-                    // Gap - possible packet loss
-                    analytics.last_seq_inbound = seq.wrapping_add(payload_len);
-                } else {
-                    // Normal in-order packet
-                    analytics.last_seq_inbound = seq.wrapping_add(payload_len);
-                }
-            } else {
+            if !analytics.seen_inbound {
                 // First inbound packet with data
-                analytics.last_seq_inbound = seq.wrapping_add(payload_len);
+                analytics.seen_inbound = true;
+                analytics.highest_seq_inbound = seq_end;
+            } else if one_byte_data && seq_end == analytics.highest_seq_inbound {
+                debug!("TCP keepalive probe ignored: seq={}", seq);
+            } else if !seq_lt(analytics.highest_seq_inbound, seq_end) {
+                // Re-covers data already received: arrived late or duplicated.
+                analytics.out_of_order_count += 1;
+                events.out_of_order += 1;
+                debug!(
+                    "TCP out-of-order packet: seq={}, len={}, highest={}",
+                    seq, payload_len, analytics.highest_seq_inbound
+                );
+            } else {
+                analytics.highest_seq_inbound = seq_end;
             }
         }
 
-        // Check for duplicate ACKs (fast retransmit indicator)
-        if has_ack_flag {
-            if analytics.last_ack_received != 0 {
-                if ack == analytics.last_ack_received {
-                    // Duplicate ACK
+        // Complete the pending RTT probe: an inbound segment acknowledging
+        // every timed byte closes it. Data segments carry ACKs too, so this
+        // is deliberately not limited to pure ACKs.
+        if has_ack_flag
+            && let Some((probe_seq, sent_at)) = analytics.rtt_probe
+            && !seq_lt(ack, probe_seq)
+        {
+            // Err means the ACK's capture time precedes the send: clocks or
+            // packet order went backwards, so no sample either way.
+            if let Ok(rtt) = at.duration_since(sent_at) {
+                analytics.smoothed_rtt = Some(match analytics.smoothed_rtt {
+                    // RFC 6298 smoothing: 7/8 previous + 1/8 new sample.
+                    Some(srtt) => (srtt * 7 + rtt) / 8,
+                    None => rtt,
+                });
+                events.rtt_sample = Some(rtt);
+            }
+            analytics.rtt_probe = None;
+        }
+
+        // Check for duplicate ACKs (fast retransmit indicator).
+        //
+        // RFC 5681 §2 counts an ACK as duplicate only when it carries no data
+        // (SYN and FIN consume sequence space, so `payload_len` covers both),
+        // this host still has data outstanding, the ack number does not
+        // advance, and the advertised window is unchanged. All four matter:
+        // without the no-data test every inbound segment of a download counts,
+        // and without the outstanding-data and window tests an idle
+        // connection's keepalives and the peer's window updates do, which ends
+        // in a phantom fast retransmit on a link that never lost a packet.
+        if has_ack_flag && payload_len == 0 {
+            // Anything we sent that this ACK does not yet cover.
+            let data_outstanding =
+                analytics.seen_outbound && seq_lt(ack, analytics.highest_seq_outbound);
+            // No previous advertisement is no evidence of a window update.
+            let window_unchanged = previous_window_in.is_none_or(|prev| prev.raw == window);
+            if !analytics.seen_ack {
+                // First ACK seen
+                analytics.seen_ack = true;
+                analytics.last_ack_received = ack;
+            } else if ack == analytics.last_ack_received {
+                // A repeat that fails the RFC's other conditions is a
+                // keepalive or a window update: not counted, but it does not
+                // end a run in progress either, so the run is left alone.
+                if data_outstanding && window_unchanged {
+                    analytics.dup_ack_run += 1;
                     analytics.duplicate_ack_count += 1;
 
-                    // RFC 2581: 3 duplicate ACKs trigger fast retransmit
-                    if analytics.duplicate_ack_count == 3 {
+                    // RFC 5681: 3 duplicate ACKs trigger fast retransmit
+                    if analytics.dup_ack_run == 3 {
                         analytics.fast_retransmit_count += 1;
-                        new_fast_retransmits += 1;
+                        events.fast_retransmits += 1;
                         debug!("TCP fast retransmit triggered (3 duplicate ACKs)");
                     }
-                } else {
-                    // New ACK - reset duplicate counter
-                    analytics.last_ack_received = ack;
-                    analytics.duplicate_ack_count = 0;
                 }
-            } else {
-                // First ACK seen
+            } else if seq_lt(analytics.last_ack_received, ack) {
+                // Only a forward-moving ACK ends the run. A reordered stale
+                // ACK must not clear it, or the run never reaches 3.
                 analytics.last_ack_received = ack;
+                analytics.dup_ack_run = 0;
             }
         }
     }
 
-    (new_retransmits, new_out_of_order, new_fast_retransmits)
+    events
+}
+
+/// Start timing an outbound segment unless a fresh probe is already in
+/// flight. Timing the oldest outstanding segment measures the true round
+/// trip; a probe past `RTT_PROBE_TIMEOUT` (its ACK was never captured) is
+/// replaced so the estimator recovers.
+fn arm_rtt_probe(
+    analytics: &mut crate::network::types::TcpAnalytics,
+    seq_end: u32,
+    at: SystemTime,
+) {
+    let stale = analytics.rtt_probe.is_none_or(|(_, sent_at)| {
+        at.duration_since(sent_at)
+            .map_or(true, |age| age > RTT_PROBE_TIMEOUT)
+    });
+    if stale {
+        analytics.rtt_probe = Some((seq_end, at));
+    }
 }
 
 /// Merge a parsed packet into an existing connection, mutating it in place.
-/// Returns (new_retransmits, new_out_of_order, new_fast_retransmits).
+/// Returns the TCP events this packet produced (loss counters, RTT sample).
 pub fn merge_packet_into_connection(
     conn: &mut Connection,
     parsed: &ParsedPacket,
     now: SystemTime,
-) -> (u64, u64, u64) {
-    let mut tcp_events = (0, 0, 0); // (retransmits, out_of_order, fast_retransmits)
-    // Update timing
-    conn.last_activity = now;
+) -> TcpMergeEvents {
+    let tcp_events = apply_packet(conn, parsed, now);
 
-    // Update packet counts and bytes
+    update_connection_rates(conn);
+
+    tcp_events
+}
+
+/// Fold one observed packet into `conn`: activity time, endpoint kinds,
+/// direction-keyed counters, protocol state, TCP analytics, DPI and PKTAP
+/// process metadata, and the terminal-since marker.
+///
+/// Shared by [`merge_packet_into_connection`], which then records a rate
+/// sample, and [`create_connection_from_packet`], which instead seeds the
+/// rate tracker so the creation packet never shows up as a delta.
+fn apply_packet(conn: &mut Connection, parsed: &ParsedPacket, now: SystemTime) -> TcpMergeEvents {
+    let mut tcp_events = TcpMergeEvents::default();
+    let was_terminal = conn.is_terminal();
+    if let Some(error) = &parsed.icmp_error {
+        conn.network_events
+            .get_or_insert_with(Default::default)
+            .record_icmp(error.error, parsed.is_outgoing, now);
+    }
+
+    // Record every observed packet. Terminal cleanup uses terminal_since, so
+    // late teardown retransmissions update last seen data without postponing
+    // archival.
+    let observation_time = conn.last_activity.max(now);
+    conn.last_activity = observation_time;
+
+    // Deterministic for a given interface snapshot; last-wins self-heals
+    // connections whose first packet raced interface enumeration.
+    conn.local_addr_kind = parsed.local_addr_kind;
+    conn.remote_addr_kind = parsed.remote_addr_kind;
+    conn.remote_is_gateway = parsed.remote_is_gateway;
+
+    // Keep observations from both directions, including priority tags. A
+    // packet without a visible tag cannot erase earlier evidence. The
+    // 12-bit VID bounds the set even when ingesting externally built packets.
+    if let Some(vlan_id) = parsed.vlan_id.filter(|id| *id <= 0x0fff)
+        && let Err(index) = conn.observed_vlan_ids.binary_search(&vlan_id)
+    {
+        conn.observed_vlan_ids.insert(index, vlan_id);
+    }
+
     if parsed.is_outgoing {
         conn.packets_sent += 1;
         conn.bytes_sent += parsed.packet_len as u64;
@@ -190,8 +377,13 @@ pub fn merge_packet_into_connection(
         conn.bytes_received += parsed.packet_len as u64;
     }
 
-    // Update protocol state (from packet flags/state)
     if let Some(tcp_header) = parsed.tcp_header {
+        if tcp_header.flags.rst {
+            conn.network_events
+                .get_or_insert_with(Default::default)
+                .tcp_resets
+                .record(parsed.is_outgoing);
+        }
         let current_tcp_state = match conn.protocol_state {
             ProtocolState::Tcp(state) => state,
             _ => {
@@ -212,24 +404,8 @@ pub fn merge_packet_into_connection(
 
         conn.protocol_state = ProtocolState::Tcp(new_tcp_state);
 
-        // Update TCP analytics for retransmission and quality metrics
         if let Some(analytics) = conn.tcp_analytics.as_mut() {
-            // Use actual TCP payload length from header
-            // Note: SYN and FIN flags also consume 1 sequence number each, even with no payload
-            let payload_len = tcp_header.payload_len;
-            let seq_consumed = payload_len
-                + if tcp_header.flags.syn { 1 } else { 0 }
-                + if tcp_header.flags.fin { 1 } else { 0 };
-
-            tcp_events = analyze_tcp_segment(
-                analytics,
-                tcp_header.seq,
-                tcp_header.ack,
-                tcp_header.window,
-                seq_consumed,
-                parsed.is_outgoing,
-                tcp_header.flags.ack,
-            );
+            tcp_events = analyze_tcp_segment(analytics, tcp_segment_from(parsed, &tcp_header), now);
         }
     } else {
         // If no TCP flags, keep existing state or use the one from packet
@@ -242,111 +418,132 @@ pub fn merge_packet_into_connection(
                 conn.protocol_state = parsed.protocol_state.clone();
             }
         }
+
+        // A flow first seen mid-capture starts with an unknown direction;
+        // a later echo request still settles who initiated it.
+        if conn.connection_direction.is_none() {
+            conn.connection_direction = icmp_echo_direction(parsed);
+        }
     }
 
-    // Update DPI info if available
     if let Some(dpi_result) = &parsed.dpi_result {
         merge_dpi_info(conn, dpi_result);
     }
 
-    // Update PKTAP process metadata if available
-    // Once set, process info should be immutable to prevent conflicts between sources
+    // Once set, process info is immutable to prevent conflicts between sources.
     if let Some(new_process_name) = &parsed.process_name {
-        match &conn.process_name {
-            None => {
-                // First time setting process name - this becomes immutable
-                conn.process_name = Some(new_process_name.clone());
-                info!(
-                    "🔒 Set IMMUTABLE process name for connection {} from PKTAP: '{}' (len:{})",
-                    conn.key(),
-                    new_process_name,
-                    new_process_name.len()
-                );
-            }
-            Some(existing_name) => {
-                // Process name is already set - it's now IMMUTABLE
-                // Log the attempt but NEVER change it
-                if existing_name != new_process_name {
-                    warn!(
-                        "🚫 IMMUTABILITY VIOLATION: Attempt to change process name for {} from '{}' to '{}' - REJECTED",
-                        conn.key(),
-                        existing_name,
-                        new_process_name
-                    );
-                    debug!(
-                        "🔒 Existing: '{}' (len:{}, bytes:{:?})",
-                        existing_name,
-                        existing_name.len(),
-                        existing_name.as_bytes()
-                    );
-                    debug!(
-                        "🚫 Rejected: '{}' (len:{}, bytes:{:?})",
-                        new_process_name,
-                        new_process_name.len(),
-                        new_process_name.as_bytes()
-                    );
-                } else {
-                    debug!(
-                        "✅ Process name confirmed unchanged for {}: '{}'",
-                        conn.key(),
-                        existing_name
-                    );
-                }
-                // NEVER update - process name is immutable once set
-            }
-        }
+        adopt_immutable(
+            conn,
+            |c| &mut c.process_name,
+            new_process_name,
+            "process name",
+        );
     }
-
     if let Some(new_pid) = parsed.process_id {
-        match conn.pid {
-            None => {
-                // First time setting PID - this becomes immutable
-                conn.pid = Some(new_pid);
-                info!(
-                    "🔒 Set IMMUTABLE process ID for connection {} from PKTAP: {}",
-                    conn.key(),
-                    new_pid
-                );
-            }
-            Some(existing_pid) if existing_pid != new_pid => {
-                warn!(
-                    "🚫 IMMUTABILITY VIOLATION: Attempt to change PID for {} from {} to {} - REJECTED",
-                    conn.key(),
-                    existing_pid,
-                    new_pid
-                );
-                // NEVER update - PID is immutable once set
-            }
-            Some(existing_pid) => {
-                debug!(
-                    "✅ Process ID confirmed unchanged for {}: {}",
-                    conn.key(),
-                    existing_pid
-                );
-            }
-        }
+        adopt_immutable(conn, |c| &mut c.pid, &new_pid, "PID");
     }
 
-    // Update rate calculations
-    update_connection_rates(conn);
+    let is_terminal = conn.is_terminal();
+    if is_terminal {
+        if !was_terminal || conn.terminal_since.is_none() {
+            conn.terminal_since = Some(observation_time);
+        }
+    } else {
+        conn.terminal_since = None;
+    }
 
     tcp_events
 }
 
+/// Adopt `new` into the `slot` field of `conn` the first time it is seen and
+/// treat it as immutable from then on: a later conflicting value is logged
+/// and rejected, a matching one is confirmed at debug level. Keeps PKTAP and
+/// other attribution sources from fighting over a connection's identity.
+///
+/// `slot` is a field accessor rather than a `&mut Option<T>` so the key used
+/// in log lines is only formatted when a line is actually emitted.
+fn adopt_immutable<T: PartialEq + Clone + Debug>(
+    conn: &mut Connection,
+    slot: fn(&mut Connection) -> &mut Option<T>,
+    new: &T,
+    what: &str,
+) {
+    match slot(conn) {
+        None => {
+            *slot(conn) = Some(new.clone());
+            debug!(
+                "🔒 Set IMMUTABLE {} for connection {} from PKTAP: {:?}",
+                what,
+                conn.key(),
+                new
+            );
+        }
+        Some(existing) if existing != new => {
+            let existing = existing.clone();
+            warn!(
+                "🚫 IMMUTABILITY VIOLATION: Attempt to change {} for {} from {:?} to {:?} - REJECTED",
+                what,
+                conn.key(),
+                existing,
+                new
+            );
+        }
+        Some(_) => {
+            debug!(
+                "✅ {} confirmed unchanged for {}: {:?}",
+                what,
+                conn.key(),
+                new
+            );
+        }
+    }
+}
+
+/// Flow direction from an ICMP echo request: whoever sends the request
+/// initiated the flow. Replies are ignored because loopback captures see
+/// them as outgoing too, which would misread a local ping as inbound.
+fn icmp_echo_direction(parsed: &ParsedPacket) -> Option<bool> {
+    match parsed.protocol_state {
+        ProtocolState::Icmp {
+            icmp_type: 8 | 128,
+            icmp_id: Some(_),
+            ..
+        } => Some(parsed.is_outgoing),
+        _ => None,
+    }
+}
+
 /// Create a new connection from a parsed packet
-pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> Connection {
+pub(crate) fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> Connection {
+    // TCP state is derived from the first packet's flags in `apply_packet`;
+    // other protocols carry their state in the packet itself.
+    let initial_state = if parsed.tcp_header.is_some() {
+        ProtocolState::Tcp(TcpState::Unknown)
+    } else {
+        parsed.protocol_state.clone()
+    };
     let mut conn = Connection::new(
         parsed.protocol,
         parsed.local_addr,
         parsed.remote_addr,
-        parsed.protocol_state.clone(),
+        initial_state,
     );
+    // Anchor both timestamps to the packet before folding it in, so the
+    // creation packet is the connection's first activity rather than a
+    // packet older than the connection.
+    conn.created_at = now;
+    conn.last_activity = now;
 
-    // Set initial TCP state based on flags if TCP
-    if let Some(tcp_header) = parsed.tcp_header {
-        let tcp_state = update_tcp_state(TcpState::Unknown, &tcp_header.flags, parsed.is_outgoing);
-        conn.protocol_state = ProtocolState::Tcp(tcp_state);
+    // The first packet counts too. For a connection this host initiates
+    // it is our own SYN, the only segment carrying this side's
+    // window-scale option, so skipping it left scaling unknown for the
+    // connection's whole life; it also seeds the sequence high-water
+    // marks the loss counters compare against.
+    apply_packet(&mut conn, parsed, now);
 
+    if let Some(tcp_header) = parsed.tcp_header
+        && let ProtocolState::Tcp(tcp_state) = conn.protocol_state
+    {
         // Set connection direction only if we observed the TCP handshake
         // SynSent = we initiated (outgoing), SynReceived = they initiated (incoming)
         // Also detect from SYN+ACK: receiving SYN+ACK means we initiated (outgoing)
@@ -373,59 +570,7 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
             conn.protocol_state,
             conn.connection_direction
         );
-    } else {
-        // For non-TCP protocols, use the provided state directly
-        // Connection direction is not determinable for stateless protocols
-        conn.protocol_state = parsed.protocol_state.clone();
     }
-
-    // Set initial stats based on packet direction
-    if parsed.is_outgoing {
-        conn.packets_sent = 1;
-        conn.bytes_sent = parsed.packet_len as u64;
-        conn.packets_received = 0;
-        conn.bytes_received = 0;
-    } else {
-        conn.packets_sent = 0;
-        conn.bytes_sent = 0;
-        conn.packets_received = 1;
-        conn.bytes_received = parsed.packet_len as u64;
-    }
-
-    // Apply DPI results if any
-    if let Some(dpi_result) = &parsed.dpi_result {
-        conn.dpi_info = Some(DpiInfo {
-            application: dpi_result.application.clone(),
-            last_update_time: Instant::now(),
-        });
-
-        debug!(
-            "New connection with DPI: {} - {}",
-            conn.key(),
-            dpi_result.application
-        );
-    }
-
-    // Apply PKTAP process metadata if available
-    if let Some(process_name) = &parsed.process_name {
-        conn.process_name = Some(process_name.clone());
-        debug!(
-            "✓ New connection {} with process name: {}",
-            conn.key(),
-            process_name
-        );
-    }
-    if let Some(process_id) = parsed.process_id {
-        conn.pid = Some(process_id);
-        debug!(
-            "✓ New connection {} with process ID: {}",
-            conn.key(),
-            process_id
-        );
-    }
-
-    conn.created_at = now;
-    conn.last_activity = now;
 
     // Initialize the rate tracker with the initial byte counts
     // This prevents incorrect delta calculation on the first update
@@ -442,7 +587,6 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
             // No existing DPI info, use the new one
             conn.dpi_info = Some(DpiInfo {
                 application: dpi_result.application.clone(),
-                last_update_time: Instant::now(),
             });
 
             debug!(
@@ -452,57 +596,77 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
             );
         }
         Some(dpi_info) => {
-            // Update the last update time
-            dpi_info.last_update_time = Instant::now();
-
             // Match on both the existing and new application protocols
             match (&mut dpi_info.application, &dpi_result.application) {
-                // HTTP merging
                 (ApplicationProtocol::Http(old_info), ApplicationProtocol::Http(new_info)) => {
                     merge_http_info(old_info, new_info);
                 }
 
-                // HTTPS/TLS merging
                 (ApplicationProtocol::Https(old_info), ApplicationProtocol::Https(new_info)) => {
-                    merge_https_info(old_info, new_info);
+                    merge_tls_info(&mut old_info.tls_info, &new_info.tls_info);
                 }
 
-                // QUIC merging - this is where the reassembly happens
                 (ApplicationProtocol::Quic(old_info), ApplicationProtocol::Quic(new_info)) => {
                     merge_quic_info(old_info.as_mut(), new_info.as_ref());
                 }
 
-                // DNS merging
                 (ApplicationProtocol::Dns(old_info), ApplicationProtocol::Dns(new_info)) => {
                     merge_dns_info(old_info, new_info);
                 }
 
-                // SSH - merge SSH info
+                (
+                    ApplicationProtocol::NetBios(old_info),
+                    ApplicationProtocol::NetBios(new_info),
+                ) => {
+                    merge_netbios_info(old_info, new_info);
+                }
+
                 (ApplicationProtocol::Ssh(old_info), ApplicationProtocol::Ssh(new_info)) => {
                     merge_ssh_info(old_info, new_info);
                 }
 
-                // BitTorrent - merge peer info
                 (
                     ApplicationProtocol::BitTorrent(old_info),
                     ApplicationProtocol::BitTorrent(new_info),
                 ) => {
-                    if old_info.client.is_none() {
-                        old_info.client.clone_from(&new_info.client);
-                    }
-                    if old_info.info_hash.is_none() {
-                        old_info.info_hash.clone_from(&new_info.info_hash);
-                    }
+                    set_if_absent(&mut old_info.client, &new_info.client);
+                    set_if_absent(&mut old_info.info_hash, &new_info.info_hash);
                 }
 
-                // MQTT - merge client_id and topic from subsequent packets
                 (ApplicationProtocol::Mqtt(old_info), ApplicationProtocol::Mqtt(new_info)) => {
                     merge_mqtt_info(old_info, new_info);
                 }
 
-                // FTP - dialog state evolves across requests/responses
                 (ApplicationProtocol::Ftp(old_info), ApplicationProtocol::Ftp(new_info)) => {
                     merge_ftp_info(old_info, new_info);
+                }
+
+                (ApplicationProtocol::MySql(old), ApplicationProtocol::MySql(new)) => {
+                    set_if_absent(&mut old.server_version, &new.server_version);
+                    set_if_absent(&mut old.connection_id, &new.connection_id);
+                    set_if_absent(&mut old.tls_supported, &new.tls_supported);
+                    old.tls_requested |= new.tls_requested;
+                    merge_tls_info(&mut old.tls_info, &new.tls_info);
+                }
+                (ApplicationProtocol::Redis(old), ApplicationProtocol::Redis(new)) => {
+                    old.command.clone_from(&new.command);
+                    overwrite_if_present(&mut old.requested_version, &new.requested_version);
+                    overwrite_if_present(&mut old.requested_database, &new.requested_database);
+                }
+                (ApplicationProtocol::PostgreSql(old), ApplicationProtocol::PostgreSql(new)) => {
+                    set_if_absent(&mut old.protocol_minor, &new.protocol_minor);
+                    set_if_absent(&mut old.database, &new.database);
+                    set_if_absent(&mut old.application_name, &new.application_name);
+                    old.tls_requested |= new.tls_requested;
+                    merge_tls_info(&mut old.tls_info, &new.tls_info);
+                }
+                // Preserve the database identity after an observed plaintext
+                // startup; the existing TLS decoder supplies handshake metadata.
+                (ApplicationProtocol::MySql(old), ApplicationProtocol::Https(new)) => {
+                    merge_tls_info(&mut old.tls_info, &new.tls_info);
+                }
+                (ApplicationProtocol::PostgreSql(old), ApplicationProtocol::Https(new)) => {
+                    merge_tls_info(&mut old.tls_info, &new.tls_info);
                 }
 
                 _ => {
@@ -513,53 +677,75 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
     }
 }
 
-/// Merge HTTP information
-fn merge_http_info(old_info: &mut HttpInfo, new_info: &HttpInfo) {
-    // Update method if not set
-    if old_info.method.is_none() && new_info.method.is_some() {
-        old_info.method = new_info.method.clone();
-    }
-
-    // Update path if not set
-    if old_info.path.is_none() && new_info.path.is_some() {
-        old_info.path = new_info.path.clone();
-    }
-
-    // Update host if not set
-    if old_info.host.is_none() && new_info.host.is_some() {
-        old_info.host = new_info.host.clone();
-    }
-
-    // Update user agent if not set
-    if old_info.user_agent.is_none() && new_info.user_agent.is_some() {
-        old_info.user_agent = new_info.user_agent.clone();
-    }
-
-    // Update status code if not set
-    if old_info.status_code.is_none() && new_info.status_code.is_some() {
-        old_info.status_code = new_info.status_code;
+/// First-wins merge: copy `src` into `dst` only when `dst` is unset.
+fn set_if_absent<T: Clone>(dst: &mut Option<T>, src: &Option<T>) {
+    if dst.is_none() && src.is_some() {
+        dst.clone_from(src);
     }
 }
 
-/// Merge HTTPS/TLS information
-fn merge_https_info(old_info: &mut HttpsInfo, new_info: &HttpsInfo) {
-    // Update version if not set or if new is more specific
-    if old_info.tls_info.is_none() && new_info.tls_info.is_some() {
-        old_info.tls_info = new_info.tls_info.clone();
-    } else if let (Some(old_tls), Some(new_tls)) = (&mut old_info.tls_info, &new_info.tls_info) {
-        // Merge TLS info - prefer more complete info
-        if old_tls.version.is_none() && new_tls.version.is_some() {
-            old_tls.version = new_tls.version;
-        }
-        if old_tls.sni.is_none() && new_tls.sni.is_some() {
-            old_tls.sni = new_tls.sni.clone();
-        }
-        if old_tls.alpn.is_empty() && !new_tls.alpn.is_empty() {
-            old_tls.alpn = new_tls.alpn.clone();
-        }
-        if old_tls.cipher_suite.is_none() && new_tls.cipher_suite.is_some() {
-            old_tls.cipher_suite = new_tls.cipher_suite;
-        }
+/// Latest-wins merge: overwrite `dst` whenever `src` carries a value.
+fn overwrite_if_present<T: Clone>(dst: &mut Option<T>, src: &Option<T>) {
+    if src.is_some() {
+        dst.clone_from(src);
+    }
+}
+
+/// Merge `src` TLS info into `dst` field by field, returning whether anything
+/// changed. Every field is first-wins except the SNI, which follows the QUIC
+/// partial-promotion policy adopted as the single merge policy for all TLS
+/// carriers: any SNI beats none, and a complete SNI replaces a `[PARTIAL]`
+/// marked one. Plain HTTPS parsing also emits `[PARTIAL]` SNIs from truncated
+/// ClientHellos, so it benefits from the promotion too. Promotion is per
+/// field: only the SNI is replaced, while version, ALPN, and cipher suite
+/// keep their first observed values.
+pub(crate) fn merge_tls_info(dst: &mut Option<TlsInfo>, src: &Option<TlsInfo>) -> bool {
+    let Some(src_tls) = src else {
+        return false;
+    };
+    let Some(dst_tls) = dst else {
+        *dst = Some(src_tls.clone());
+        return true;
+    };
+
+    let mut updated = false;
+
+    let promote_sni = match (&dst_tls.sni, &src_tls.sni) {
+        (None, Some(_)) => true,
+        (Some(old), Some(new)) => is_partial_sni(old) && !is_partial_sni(new),
+        _ => false,
+    };
+    if promote_sni {
+        dst_tls.sni.clone_from(&src_tls.sni);
+        updated = true;
+    }
+
+    if dst_tls.version.is_none() && src_tls.version.is_some() {
+        dst_tls.version = src_tls.version;
+        updated = true;
+    }
+    if dst_tls.alpn.is_empty() && !src_tls.alpn.is_empty() {
+        dst_tls.alpn.clone_from(&src_tls.alpn);
+        updated = true;
+    }
+    if dst_tls.cipher_suite.is_none() && src_tls.cipher_suite.is_some() {
+        dst_tls.cipher_suite = src_tls.cipher_suite;
+        updated = true;
+    }
+
+    updated
+}
+
+/// Merge HTTP information
+fn merge_http_info(old_info: &mut HttpInfo, new_info: &HttpInfo) {
+    set_if_absent(&mut old_info.method, &new_info.method);
+    set_if_absent(&mut old_info.path, &new_info.path);
+    set_if_absent(&mut old_info.host, &new_info.host);
+    set_if_absent(&mut old_info.user_agent, &new_info.user_agent);
+    // Keep the numeric code and observed token from the same first response.
+    if old_info.status_code.is_none() && old_info.status_token.is_none() {
+        old_info.status_code = new_info.status_code;
+        old_info.status_token.clone_from(&new_info.status_token);
     }
 }
 
@@ -567,8 +753,8 @@ fn merge_https_info(old_info: &mut HttpsInfo, new_info: &HttpsInfo) {
 fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
     // Update connection state only if it progresses forward
     // State progression: Unknown -> Initial -> Handshaking -> Connected -> Draining -> Closed
-    let old_priority = quic_state_priority(&old_info.connection_state);
-    let new_priority = quic_state_priority(&new_info.connection_state);
+    let old_priority = old_info.connection_state.priority();
+    let new_priority = new_info.connection_state.priority();
 
     if new_priority > old_priority {
         debug!(
@@ -578,163 +764,56 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
         old_info.connection_state = new_info.connection_state;
     }
 
-    // Update packet type
     old_info.packet_type = new_info.packet_type;
 
-    // Update connection ID if we didn't have it
     if old_info.connection_id.is_empty() && !new_info.connection_id.is_empty() {
         old_info.connection_id = new_info.connection_id.clone();
         old_info.connection_id_hex = new_info.connection_id_hex.clone();
     }
 
-    // Update version string if we didn't have it
-    if old_info.version_string.is_none() && new_info.version_string.is_some() {
-        old_info.version_string = new_info.version_string.clone();
-    }
+    set_if_absent(&mut old_info.version_string, &new_info.version_string);
 
-    // Merge CRYPTO frame reassembler state - this is crucial for proper SNI extraction
-    // The reassembler must persist across multiple packets to handle fragmented TLS handshakes
+    // Keep assembling the ClientHello even after its SNI is available: ALPN
+    // and supported_versions can arrive in later fragments.
     if let Some(new_reassembler) = &new_info.crypto_reassembler {
         if old_info.crypto_reassembler.is_none() {
-            // First time seeing crypto frames, initialize the connection-level reassembler
             old_info.crypto_reassembler = Some(new_reassembler.clone());
-            debug!(
-                "QUIC: Initialized crypto reassembler for connection with Connection ID: {:?}",
-                old_info.connection_id_hex
-            );
-        } else if let Some(old_reassembler) = &mut old_info.crypto_reassembler {
-            // Merge fragments from new reassembler into connection-level reassembler
-            // This handles out-of-order CRYPTO frames across packets
-            for (&offset, data) in new_reassembler.get_fragments() {
-                match old_reassembler.add_fragment(offset, data.clone()) {
-                    Ok(_) => {
-                        debug!(
-                            "QUIC: Merged CRYPTO fragment at offset {} for connection {}",
-                            offset,
-                            old_info.connection_id_hex.as_deref().unwrap_or("unknown")
-                        );
-                    }
-                    Err(e) => {
+        } else if let Some(old_reassembler) = &mut old_info.crypto_reassembler
+            && !old_reassembler.extraction_finished()
+        {
+            if new_reassembler.extraction_finished() {
+                old_reassembler.finish_extraction(new_reassembler.get_cached_tls_info().cloned());
+            } else {
+                for (offset, data) in new_reassembler.get_fragments() {
+                    if let Err(e) = old_reassembler.add_fragment(offset, data.to_vec()) {
                         warn!("QUIC: Failed to merge CRYPTO fragment: {}", e);
                     }
                 }
+                let extracted = try_extract_tls_from_reassembler(old_reassembler, false)
+                    .or_else(|| try_extract_tls_from_reassembler(old_reassembler, true));
+                merge_tls_info(&mut old_info.tls_info, &extracted);
             }
-
-            // If current SNI is partial or missing, try re-extracting from merged reassembler
-            let should_retry = match &old_info.tls_info {
-                None => true,
-                Some(tls) => {
-                    tls.sni.is_none() || tls.sni.as_ref().is_some_and(|s| is_partial_sni(s))
-                }
-            };
-
-            if should_retry {
-                debug!(
-                    "QUIC: SNI is partial or missing, attempting re-extraction from merged fragments"
-                );
-                // First try without partial extraction to get complete SNI
-                if let Some(new_tls) = try_extract_tls_from_reassembler(old_reassembler, false) {
-                    debug!(
-                        "QUIC: Re-extraction succeeded with complete SNI: {:?}",
-                        new_tls.sni
-                    );
-                    old_info.tls_info = Some(new_tls);
-                } else {
-                    // If complete extraction failed, allow partial as fallback
-                    if let Some(new_tls) = try_extract_tls_from_reassembler(old_reassembler, true) {
-                        debug!(
-                            "QUIC: Re-extraction returned partial SNI as fallback: {:?}",
-                            new_tls.sni
-                        );
-                        old_info.tls_info = Some(new_tls);
-                    }
-                }
-            }
-
-            // Update cached TLS info if new reassembler has it and it's better
-            if let Some(tls_info) = new_reassembler.get_cached_tls_info() {
-                let new_is_complete = tls_info.sni.as_ref().is_some_and(|s| !is_partial_sni(s));
-                let should_update = match &old_info.tls_info {
-                    None => true,
-                    Some(old_tls) => {
-                        let old_is_partial =
-                            old_tls.sni.as_ref().is_some_and(|s| is_partial_sni(s));
-                        old_tls.sni.is_none() || (old_is_partial && new_is_complete)
-                    }
-                };
-                if should_update {
-                    old_info.tls_info = Some(tls_info.clone());
-                    debug!(
-                        "QUIC: Updated TLS info from reassembler - SNI: {:?}, ALPN: {:?}",
-                        tls_info.sni, tls_info.alpn
-                    );
-                }
-            }
+        }
+        if let Some(reassembler) = &old_info.crypto_reassembler {
+            merge_tls_info(
+                &mut old_info.tls_info,
+                &reassembler.get_cached_tls_info().cloned(),
+            );
         }
     }
 
-    // Update TLS info if new packet has better info
-    match (&old_info.tls_info, &new_info.tls_info) {
-        (None, Some(new_tls)) => {
-            old_info.tls_info = Some(new_tls.clone());
-            debug!("QUIC: Added TLS info - SNI: {:?}", new_tls.sni);
-        }
-        (Some(old_tls), Some(new_tls)) => {
-            // Merge TLS info - prefer more complete info
-            let mut updated = false;
-            let mut merged_tls = old_tls.clone();
-
-            // Prefer complete SNI over partial, or any SNI over none
-            let old_sni_is_partial = old_tls.sni.as_ref().is_some_and(|s| is_partial_sni(s));
-            let new_sni_is_partial = new_tls.sni.as_ref().is_some_and(|s| is_partial_sni(s));
-
-            if old_tls.sni.is_none() && new_tls.sni.is_some() {
-                merged_tls.sni = new_tls.sni.clone();
-                updated = true;
-            } else if old_sni_is_partial && new_tls.sni.is_some() && !new_sni_is_partial {
-                // Replace partial with complete
-                debug!(
-                    "QUIC: Replacing partial SNI {:?} with complete SNI {:?}",
-                    old_tls.sni, new_tls.sni
-                );
-                merged_tls.sni = new_tls.sni.clone();
-                updated = true;
-            }
-
-            if old_tls.alpn.is_empty() && !new_tls.alpn.is_empty() {
-                merged_tls.alpn = new_tls.alpn.clone();
-                updated = true;
-            }
-
-            if old_tls.version.is_none() && new_tls.version.is_some() {
-                merged_tls.version = new_tls.version;
-                updated = true;
-            }
-
-            if old_tls.cipher_suite.is_none() && new_tls.cipher_suite.is_some() {
-                merged_tls.cipher_suite = new_tls.cipher_suite;
-                updated = true;
-            }
-
-            if updated {
-                old_info.tls_info = Some(merged_tls);
-                debug!("QUIC: Merged TLS info");
-            }
-        }
-        _ => {}
+    if merge_tls_info(&mut old_info.tls_info, &new_info.tls_info) {
+        debug!("QUIC: Merged TLS info");
     }
 
-    // Update has_crypto_frame flag
     if new_info.has_crypto_frame {
         old_info.has_crypto_frame = true;
     }
 
-    // Handle CONNECTION_CLOSE frame detection
     if let Some(new_close) = &new_info.connection_close {
-        // CONNECTION_CLOSE is final - always update
+        // CONNECTION_CLOSE is final, so it always overwrites.
         old_info.connection_close = Some(new_close.clone());
 
-        // Update connection state based on close frame
         old_info.connection_state = match new_close.frame_type {
             0x1c if new_close.error_code == 0 => {
                 // NO_ERROR transport close - enter draining state
@@ -773,23 +852,22 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
         );
     }
 
-    // Update idle timeout if provided
-    if new_info.idle_timeout.is_some() {
-        old_info.idle_timeout = new_info.idle_timeout;
+    if matches!(
+        old_info.connection_state,
+        QuicConnectionState::Draining | QuicConnectionState::Closed
+    ) && let Some(reassembler) = &mut old_info.crypto_reassembler
+        && !reassembler.extraction_finished()
+    {
+        reassembler.finish_extraction(old_info.tls_info.clone());
     }
+
+    overwrite_if_present(&mut old_info.idle_timeout, &new_info.idle_timeout);
 }
 
 /// Merge DNS information
 fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
-    // Update query name if not set
-    if old_info.query_name.is_none() && new_info.query_name.is_some() {
-        old_info.query_name = new_info.query_name.clone();
-    }
-
-    // Update query type if not set
-    if old_info.query_type.is_none() && new_info.query_type.is_some() {
-        old_info.query_type = new_info.query_type;
-    }
+    set_if_absent(&mut old_info.query_name, &new_info.query_name);
+    set_if_absent(&mut old_info.query_type, &new_info.query_type);
 
     // Merge response IPs (keep unique). Cap the accumulator: a long-lived
     // DNS-shaped UDP flow (the idle timeout is refreshed on every packet) would
@@ -806,42 +884,52 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
         }
     }
 
-    // Update response flag
     if new_info.is_response {
         old_info.is_response = true;
     }
+
+    // The txid identifies the most recent transaction on this socket
+    old_info.txid = new_info.txid;
+
+    // Latest response code wins; a query packet must not erase it
+    overwrite_if_present(&mut old_info.rcode, &new_info.rcode);
+
+    // Same rule for the NODATA flag: it is only ever set on responses, and
+    // the latest response describes the current transaction
+    overwrite_if_present(&mut old_info.nodata, &new_info.nodata);
+}
+
+/// Merge NetBIOS request and response information.
+fn merge_netbios_info(old_info: &mut NetBiosInfo, new_info: &NetBiosInfo) {
+    set_if_absent(&mut old_info.name, &new_info.name);
+
+    old_info.opcode = new_info.opcode;
+    old_info.transaction_id = new_info.transaction_id;
+
+    if new_info.is_response {
+        old_info.is_response = true;
+    }
+
+    // Keep the last completed response status. A later request on the same
+    // socket must not erase it before its response arrives.
+    overwrite_if_present(&mut old_info.response_status, &new_info.response_status);
 }
 
 /// Merge SSH information
 fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
-    // Update version if not set
-    if old_info.version.is_none() && new_info.version.is_some() {
-        old_info.version = new_info.version.clone();
-    }
-
-    // Update client software if not set
-    if old_info.client_software.is_none() && new_info.client_software.is_some() {
-        old_info.client_software = new_info.client_software.clone();
-    }
-
-    // Update server software if not set
-    if old_info.server_software.is_none() && new_info.server_software.is_some() {
-        old_info.server_software = new_info.server_software.clone();
-    }
+    set_if_absent(&mut old_info.version, &new_info.version);
+    set_if_absent(&mut old_info.client_software, &new_info.client_software);
+    set_if_absent(&mut old_info.server_software, &new_info.server_software);
 
     // Update connection state to the more advanced state
     use crate::network::types::SshConnectionState;
     match (&old_info.connection_state, &new_info.connection_state) {
-        (SshConnectionState::Banner, _) => {
-            old_info.connection_state = new_info.connection_state.clone()
-        }
-        (SshConnectionState::KeyExchange, SshConnectionState::Authentication) => {
-            old_info.connection_state = new_info.connection_state.clone()
-        }
-        (SshConnectionState::KeyExchange, SshConnectionState::Established) => {
-            old_info.connection_state = new_info.connection_state.clone()
-        }
-        (SshConnectionState::Authentication, SshConnectionState::Established) => {
+        (SshConnectionState::Banner, _)
+        | (
+            SshConnectionState::KeyExchange,
+            SshConnectionState::Authentication | SshConnectionState::Established,
+        )
+        | (SshConnectionState::Authentication, SshConnectionState::Established) => {
             old_info.connection_state = new_info.connection_state.clone()
         }
         _ => {} // Keep existing state if it's more advanced
@@ -853,15 +941,7 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
         (_, SshConnectionState::Established) if !new_info.algorithms.is_empty() => {
             old_info.algorithms = new_info.algorithms.clone();
         }
-        // If both are in Established state, merge unique algorithms
-        (SshConnectionState::Established, SshConnectionState::Established) => {
-            for algo in &new_info.algorithms {
-                if !old_info.algorithms.contains(algo) {
-                    old_info.algorithms.push(algo.clone());
-                }
-            }
-        }
-        // For earlier states, accumulate all seen algorithms
+        // Otherwise accumulate all seen algorithms
         _ => {
             for algo in &new_info.algorithms {
                 if !old_info.algorithms.contains(algo) {
@@ -871,10 +951,7 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
         }
     }
 
-    // Update auth method if not set
-    if old_info.auth_method.is_none() && new_info.auth_method.is_some() {
-        old_info.auth_method = new_info.auth_method.clone();
-    }
+    set_if_absent(&mut old_info.auth_method, &new_info.auth_method);
 }
 
 /// Merge FTP information across packets in the same control connection.
@@ -885,63 +962,181 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
 /// `response_message`) is latest-wins so the connection-table column reflects
 /// the most recent exchange.
 fn merge_ftp_info(old_info: &mut FtpInfo, new_info: &FtpInfo) {
-    if old_info.username.is_none() && new_info.username.is_some() {
-        old_info.username.clone_from(&new_info.username);
-    }
-    if old_info.server_software.is_none() && new_info.server_software.is_some() {
-        old_info
-            .server_software
-            .clone_from(&new_info.server_software);
-    }
-    if old_info.system_type.is_none() && new_info.system_type.is_some() {
-        old_info.system_type.clone_from(&new_info.system_type);
-    }
+    set_if_absent(&mut old_info.username, &new_info.username);
+    set_if_absent(&mut old_info.server_software, &new_info.server_software);
+    set_if_absent(&mut old_info.system_type, &new_info.system_type);
     old_info.message_type = new_info.message_type;
-    if new_info.command.is_some() {
-        old_info.command.clone_from(&new_info.command);
-    }
-    if new_info.args.is_some() {
-        old_info.args.clone_from(&new_info.args);
-    }
-    if new_info.response_code.is_some() {
-        old_info.response_code = new_info.response_code;
-    }
-    if new_info.response_message.is_some() {
-        old_info
-            .response_message
-            .clone_from(&new_info.response_message);
-    }
+    overwrite_if_present(&mut old_info.command, &new_info.command);
+    overwrite_if_present(&mut old_info.args, &new_info.args);
+    overwrite_if_present(&mut old_info.response_code, &new_info.response_code);
+    overwrite_if_present(&mut old_info.response_message, &new_info.response_message);
 }
 
 /// Merge MQTT information
 fn merge_mqtt_info(old_info: &mut MqttInfo, new_info: &MqttInfo) {
-    if old_info.version.is_none() && new_info.version.is_some() {
-        old_info.version = new_info.version;
-    }
-    if old_info.client_id.is_none() && new_info.client_id.is_some() {
-        old_info.client_id.clone_from(&new_info.client_id);
-    }
-    if old_info.topic.is_none() && new_info.topic.is_some() {
-        old_info.topic.clone_from(&new_info.topic);
-    }
-    if old_info.qos.is_none() && new_info.qos.is_some() {
-        old_info.qos = new_info.qos;
-    }
+    set_if_absent(&mut old_info.version, &new_info.version);
+    set_if_absent(&mut old_info.client_id, &new_info.client_id);
+    set_if_absent(&mut old_info.topic, &new_info.topic);
+    set_if_absent(&mut old_info.qos, &new_info.qos);
     // Always update packet_type to show the latest activity
     old_info.packet_type = new_info.packet_type;
 }
 
 /// Update connection rate calculations using sliding window
 fn update_connection_rates(conn: &mut Connection) {
-    // Use the new rate tracker with sliding window calculation
     conn.update_rates();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::types::{Protocol, ProtocolState, TcpState};
+    use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState, TlsVersion};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn observed_http_status_merge_keeps_the_first_response_pair() {
+        let make_http = |code, token: Option<&str>| HttpInfo {
+            version: crate::network::types::HttpVersion::Http11,
+            method: None,
+            host: None,
+            path: None,
+            status_code: code,
+            status_token: token.map(str::to_string),
+            user_agent: None,
+        };
+        let mut request = make_http(None, None);
+        let response = make_http(Some(200), Some("+200"));
+        merge_http_info(&mut request, &response);
+        assert_eq!(request.status_code, Some(200));
+        assert_eq!(request.status_token.as_deref(), Some("+200"));
+
+        let later_response = make_http(Some(404), Some("0404"));
+        merge_http_info(&mut request, &later_response);
+        assert_eq!(request.status_code, Some(200));
+        assert_eq!(request.status_token.as_deref(), Some("+200"));
+
+        // Older metadata with only a numeric status must not gain the token
+        // of a different response; Details can use its numeric fallback.
+        let mut numeric_only = make_http(Some(200), None);
+        merge_http_info(&mut numeric_only, &later_response);
+        assert_eq!(numeric_only.status_code, Some(200));
+        assert_eq!(numeric_only.status_token, None);
+    }
+
+    #[test]
+    fn quic_merge_assembles_late_metadata_after_complete_sni() {
+        use crate::network::dpi::test_fixtures::{RFC9001_CLIENT_HELLO, from_hex};
+        let hello = from_hex(RFC9001_CLIENT_HELLO);
+        let split = hello
+            .windows(11)
+            .position(|bytes| bytes == b"example.com")
+            .unwrap()
+            + 11;
+        let mut old = QuicInfo::new(1);
+        old.ensure_reassembler();
+        let reassembler = old.crypto_reassembler.as_mut().unwrap();
+        reassembler
+            .add_fragment(0, hello[..split].to_vec())
+            .unwrap();
+        old.tls_info = try_extract_tls_from_reassembler(reassembler, false);
+        assert_eq!(
+            old.tls_info.as_ref().unwrap().sni.as_deref(),
+            Some("example.com")
+        );
+        assert!(old.tls_info.as_ref().unwrap().alpn.is_empty());
+        let mut new = QuicInfo::new(1);
+        new.ensure_reassembler();
+        new.crypto_reassembler
+            .as_mut()
+            .unwrap()
+            .add_fragment(split as u64, hello[split..].to_vec())
+            .unwrap();
+        merge_quic_info(&mut old, &new);
+        assert_eq!(old.tls_info.as_ref().unwrap().alpn, vec!["alpn"]);
+        assert_eq!(
+            old.tls_info.as_ref().unwrap().version,
+            Some(TlsVersion::Tls13)
+        );
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .get_fragments()
+                .next()
+                .is_none()
+        );
+        merge_quic_info(&mut old, &new);
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .get_fragments()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn quic_merge_complete_packet_releases_old_partial_handshake() {
+        use crate::network::dpi::test_fixtures::{RFC9001_CLIENT_HELLO, from_hex};
+        let hello = from_hex(RFC9001_CLIENT_HELLO);
+        let mut old = QuicInfo::new(1);
+        old.ensure_reassembler();
+        old.crypto_reassembler
+            .as_mut()
+            .unwrap()
+            .add_fragment(0, hello[..20].to_vec())
+            .unwrap();
+        let mut new = QuicInfo::new(1);
+        new.ensure_reassembler();
+        let reassembler = new.crypto_reassembler.as_mut().unwrap();
+        reassembler.add_fragment(0, hello).unwrap();
+        new.tls_info = try_extract_tls_from_reassembler(reassembler, false);
+        merge_quic_info(&mut old, &new);
+        assert_eq!(old.tls_info.as_ref().unwrap().alpn, vec!["alpn"]);
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .extraction_finished()
+        );
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .get_fragments()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn quic_merge_close_releases_incomplete_handshake() {
+        let mut old = QuicInfo::new(1);
+        old.ensure_reassembler();
+        old.crypto_reassembler
+            .as_mut()
+            .unwrap()
+            .add_fragment(0, vec![1; 20])
+            .unwrap();
+        let mut closed = QuicInfo::new(1);
+        closed.connection_state = QuicConnectionState::Closed;
+        merge_quic_info(&mut old, &closed);
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .extraction_finished()
+        );
+        assert!(
+            old.crypto_reassembler
+                .as_ref()
+                .unwrap()
+                .get_fragments()
+                .next()
+                .is_none()
+        );
+    }
 
     fn create_test_connection() -> Connection {
         Connection::new(
@@ -955,12 +1150,10 @@ mod tests {
     fn create_test_packet(is_outgoing: bool, fin: bool) -> ParsedPacket {
         use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
 
-        ParsedPacket {
-            protocol: Protocol::Tcp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
-            tcp_header: Some(TcpHeaderInfo {
+        let mut packet = ParsedPacket::test_tcp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            TcpHeaderInfo {
                 seq: 1000,
                 ack: 2000,
                 window: 65535,
@@ -969,17 +1162,14 @@ mod tests {
                     ack: false,
                     fin,
                     rst: false,
-                    psh: false,
-                    urg: false,
                 },
                 payload_len: 60, // Simulated payload length
-            }),
-            is_outgoing,
-            packet_len: 100,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
-        }
+                window_scale: None,
+            },
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 100;
+        packet
     }
 
     #[test]
@@ -991,6 +1181,9 @@ mod tests {
             query_type: None,
             response_ips: Vec::new(),
             is_response: true,
+            txid: 0x1234,
+            rcode: Some(0),
+            nodata: None,
         };
 
         for i in 0..(MAX_MERGED_RESPONSE_IPS as u32 * 4) {
@@ -1002,11 +1195,156 @@ mod tests {
                     10, octets[1], octets[2], octets[3],
                 ))],
                 is_response: true,
+                txid: 0x1234,
+                rcode: Some(0),
+                nodata: None,
             };
             merge_dns_info(&mut old, &new);
         }
 
         assert_eq!(old.response_ips.len(), MAX_MERGED_RESPONSE_IPS);
+    }
+
+    /// A `[PARTIAL]` SNI is promoted to a complete one, but only the SNI
+    /// field: everything already observed stays first-wins.
+    #[test]
+    fn test_merge_tls_info_promotes_partial_sni_per_field() {
+        let mut dst = Some(TlsInfo {
+            version: None,
+            sni: Some("exa[PARTIAL]".to_string()),
+            alpn: vec!["h3".to_string()],
+            cipher_suite: None,
+        });
+        let src = Some(TlsInfo {
+            version: Some(TlsVersion::Tls13),
+            sni: Some("example.com".to_string()),
+            alpn: Vec::new(),
+            cipher_suite: None,
+        });
+
+        assert!(merge_tls_info(&mut dst, &src));
+        let merged = dst.as_ref().unwrap();
+        assert_eq!(merged.sni.as_deref(), Some("example.com"));
+        assert_eq!(merged.alpn, vec!["h3".to_string()]);
+        assert_eq!(merged.version, Some(TlsVersion::Tls13));
+
+        // A complete SNI is never displaced by a later one.
+        let other = Some(TlsInfo {
+            version: None,
+            sni: Some("other.example".to_string()),
+            alpn: Vec::new(),
+            cipher_suite: None,
+        });
+        assert!(!merge_tls_info(&mut dst, &other));
+        assert_eq!(dst.unwrap().sni.as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn test_merge_tls_info_fills_missing_sni() {
+        let mut dst = Some(TlsInfo {
+            version: Some(TlsVersion::Tls12),
+            sni: None,
+            alpn: Vec::new(),
+            cipher_suite: Some(0x1301),
+        });
+        let src = Some(TlsInfo {
+            version: Some(TlsVersion::Tls13),
+            sni: Some("example.com".to_string()),
+            alpn: Vec::new(),
+            cipher_suite: Some(0x1302),
+        });
+
+        assert!(merge_tls_info(&mut dst, &src));
+        let merged = dst.unwrap();
+        assert_eq!(merged.sni.as_deref(), Some("example.com"));
+        assert_eq!(merged.version, Some(TlsVersion::Tls12));
+        assert_eq!(merged.cipher_suite, Some(0x1301));
+    }
+
+    /// A follow-up query on the same socket must not erase the last response
+    /// code, while the txid always tracks the most recent transaction.
+    #[test]
+    fn test_merge_dns_keeps_rcode_and_tracks_latest_txid() {
+        let mut old = DnsInfo {
+            query_name: Some("example.com".to_string()),
+            query_type: None,
+            response_ips: Vec::new(),
+            is_response: true,
+            txid: 0x1111,
+            rcode: Some(3),
+            nodata: None,
+        };
+        let new_query = DnsInfo {
+            query_name: None,
+            query_type: None,
+            response_ips: Vec::new(),
+            is_response: false,
+            txid: 0x2222,
+            rcode: None,
+            nodata: None,
+        };
+
+        merge_dns_info(&mut old, &new_query);
+        assert_eq!(old.txid, 0x2222);
+        assert_eq!(old.rcode, Some(3), "a query must not erase the last rcode");
+
+        let new_response = DnsInfo {
+            query_name: None,
+            query_type: None,
+            response_ips: Vec::new(),
+            is_response: true,
+            txid: 0x2222,
+            rcode: Some(0),
+            nodata: None,
+        };
+        merge_dns_info(&mut old, &new_response);
+        assert_eq!(old.rcode, Some(0), "the latest response code wins");
+    }
+
+    #[test]
+    fn test_merge_netbios_keeps_status_and_tracks_latest_transaction() {
+        use crate::network::types::{NetBiosOpcode, NetBiosResponseStatus, NetBiosService};
+
+        let mut old = NetBiosInfo {
+            service: NetBiosService::NameService,
+            opcode: NetBiosOpcode::Response,
+            name: Some("FILESERVER".to_string()),
+            transaction_id: 0x1111,
+            is_response: true,
+            response_status: Some(NetBiosResponseStatus::NameService(3)),
+        };
+        let new_query = NetBiosInfo {
+            service: NetBiosService::NameService,
+            opcode: NetBiosOpcode::Query,
+            name: None,
+            transaction_id: 0x2222,
+            is_response: false,
+            response_status: None,
+        };
+
+        merge_netbios_info(&mut old, &new_query);
+        assert_eq!(old.opcode, NetBiosOpcode::Query);
+        assert_eq!(old.transaction_id, 0x2222);
+        assert_eq!(
+            old.response_status,
+            Some(NetBiosResponseStatus::NameService(3)),
+            "a request must not erase the last response status"
+        );
+
+        let new_response = NetBiosInfo {
+            service: NetBiosService::NameService,
+            opcode: NetBiosOpcode::Response,
+            name: None,
+            transaction_id: 0x2222,
+            is_response: true,
+            response_status: Some(NetBiosResponseStatus::NameService(0)),
+        };
+        merge_netbios_info(&mut old, &new_response);
+        assert_eq!(old.opcode, NetBiosOpcode::Response);
+        assert_eq!(
+            old.response_status,
+            Some(NetBiosResponseStatus::NameService(0))
+        );
     }
 
     #[test]
@@ -1032,30 +1370,59 @@ mod tests {
     }
 
     #[test]
-    fn test_new_connection_rate_tracker_initialization() {
-        // Test that the rate tracker is properly initialized for new connections
-        let packet = create_test_packet(true, false);
+    fn vlan_observations_accumulate_without_duplicates_or_erasure() {
+        let mut packet = create_test_packet(true, false);
+        packet.vlan_id = Some(42);
         let mut conn = create_connection_from_packet(&packet, SystemTime::now());
+        assert_eq!(conn.observed_vlan_ids, [42]);
 
-        // The connection should have initial bytes
-        assert_eq!(conn.bytes_sent, 100);
-        assert_eq!(conn.bytes_received, 0);
+        packet.is_outgoing = false;
+        for vlan_id in [
+            None,
+            Some(42),
+            Some(100),
+            Some(0),
+            Some(42),
+            Some(65535),
+            None,
+        ] {
+            packet.vlan_id = vlan_id;
+            merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+        }
+        assert_eq!(conn.observed_vlan_ids, [0, 42, 100]);
+        assert_eq!(conn.snapshot_clone().observed_vlan_ids, [0, 42, 100]);
+        let fresh = create_connection_from_packet(&packet, SystemTime::now());
+        assert!(fresh.observed_vlan_ids.is_empty());
+    }
 
-        // Now simulate merging another packet
-        let packet2 = create_test_packet(true, false);
-        let _tcp_events = merge_packet_into_connection(&mut conn, &packet2, SystemTime::now());
+    #[test]
+    fn endpoint_kinds_are_copied_and_refreshed_on_merge() {
+        let mut packet = create_test_packet(false, false);
+        packet.local_addr_kind = AddrKind::Broadcast;
+        let conn = create_connection_from_packet(&packet, SystemTime::now());
+        assert_eq!(conn.local_addr_kind, AddrKind::Broadcast);
+        assert_eq!(conn.remote_addr_kind, AddrKind::Unicast);
 
-        // Bytes should have increased
-        assert_eq!(conn.bytes_sent, 200);
-        assert_eq!(conn.bytes_received, 0);
+        // A connection first seen before a refresh added its subnet self-heals
+        // when a later packet carries the corrected kind.
+        let stale = create_test_packet(false, false);
+        let mut conn = create_connection_from_packet(&stale, SystemTime::now());
+        assert_eq!(conn.local_addr_kind, AddrKind::Unicast);
+        merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+        assert_eq!(conn.local_addr_kind, AddrKind::Broadcast);
+    }
 
-        // Update rates - this should not cause a huge spike
-        conn.update_rates();
+    #[test]
+    fn gateway_flag_is_copied_and_refreshed_on_merge() {
+        let mut packet = create_test_packet(false, false);
+        packet.remote_is_gateway = true;
+        let mut conn = create_connection_from_packet(&packet, SystemTime::now());
+        assert!(conn.remote_is_gateway);
 
-        // The rate should be reasonable (not include the initial 100 bytes as a spike)
-        // Since we just added 100 bytes, the rate should be based on that delta
-        // not on the full 200 bytes
-        assert!(conn.current_outgoing_rate_bps >= 0.0);
+        // A route change is reflected by the next packet after the refresh.
+        packet.remote_is_gateway = false;
+        merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+        assert!(!conn.remote_is_gateway);
     }
 
     #[test]
@@ -1066,8 +1433,6 @@ mod tests {
             ack: false,
             fin: false,
             rst: false,
-            psh: false,
-            urg: false,
         };
         let new_state = update_tcp_state(TcpState::Unknown, &flags, true);
         assert_eq!(new_state, TcpState::SynSent);
@@ -1078,8 +1443,6 @@ mod tests {
             ack: true,
             fin: false,
             rst: false,
-            psh: false,
-            urg: false,
         };
         let new_state = update_tcp_state(TcpState::SynSent, &flags, false);
         assert_eq!(new_state, TcpState::Established);
@@ -1090,8 +1453,6 @@ mod tests {
             ack: false,
             fin: true,
             rst: false,
-            psh: false,
-            urg: false,
         };
         let new_state = update_tcp_state(TcpState::Established, &flags, true);
         assert_eq!(new_state, TcpState::FinWait1);
@@ -1102,10 +1463,601 @@ mod tests {
             ack: false,
             fin: false,
             rst: true,
-            psh: false,
-            urg: false,
         };
         let new_state = update_tcp_state(TcpState::Established, &flags, true);
         assert_eq!(new_state, TcpState::Closed);
+    }
+
+    use crate::network::types::TcpAnalytics;
+
+    /// Fixed capture-time base for segment tests that don't care about time.
+    fn t0() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_000)
+    }
+
+    /// Send one outbound data segment. Window and ack are irrelevant here.
+    fn send(analytics: &mut TcpAnalytics, seq: u32, len: u32) {
+        send_at(analytics, seq, len, t0());
+    }
+
+    /// Baseline segment shared by the helpers below: a bare inbound ACK with
+    /// the largest unscaled window (65535 is deliberately not a `Default`).
+    fn base_segment() -> TcpSegment {
+        TcpSegment {
+            seq: 0,
+            ack: 0,
+            window: 65535,
+            payload_len: 0,
+            is_outgoing: false,
+            has_ack_flag: true,
+            is_syn: false,
+            is_fin: false,
+            is_rst: false,
+            window_scale: None,
+        }
+    }
+
+    fn send_at(analytics: &mut TcpAnalytics, seq: u32, len: u32, at: SystemTime) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq,
+                payload_len: len,
+                is_outgoing: true,
+                has_ack_flag: false,
+                ..base_segment()
+            },
+            at,
+        );
+    }
+
+    /// Receive one inbound segment.
+    fn recv(analytics: &mut TcpAnalytics, seq: u32, ack: u32, len: u32) -> TcpMergeEvents {
+        recv_at(analytics, seq, ack, len, t0())
+    }
+
+    fn recv_at(
+        analytics: &mut TcpAnalytics,
+        seq: u32,
+        ack: u32,
+        len: u32,
+        at: SystemTime,
+    ) -> TcpMergeEvents {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq,
+                ack,
+                payload_len: len,
+                ..base_segment()
+            },
+            at,
+        )
+    }
+
+    /// One data segment in the given direction advertising `window`.
+    fn window_segment(analytics: &mut TcpAnalytics, window: u16, is_outgoing: bool) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq: 1,
+                ack: 1,
+                window,
+                is_outgoing,
+                ..base_segment()
+            },
+            t0(),
+        );
+    }
+
+    /// One inbound bare ACK carrying a specific ack number and window.
+    fn window_recv_ack(analytics: &mut TcpAnalytics, ack: u32, window: u16) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                ack,
+                window,
+                ..base_segment()
+            },
+            t0(),
+        );
+    }
+
+    /// One inbound RST, which advertises a zero window.
+    fn reset_recv(analytics: &mut TcpAnalytics) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq: 1,
+                ack: 1,
+                window: 0,
+                is_rst: true,
+                ..base_segment()
+            },
+            t0(),
+        );
+    }
+
+    fn window_send(analytics: &mut TcpAnalytics, window: u16) {
+        window_segment(analytics, window, true);
+    }
+
+    fn window_recv(analytics: &mut TcpAnalytics, window: u16) {
+        window_segment(analytics, window, false);
+    }
+
+    /// One SYN (or SYN-ACK, via `is_outgoing`/`ack`) with the given
+    /// window-scale verdict and a raw window of 65535.
+    fn syn(analytics: &mut TcpAnalytics, is_outgoing: bool, window_scale: SynWindowScale) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                payload_len: 1,
+                is_outgoing,
+                has_ack_flag: !is_outgoing,
+                is_syn: true,
+                window_scale: Some(window_scale),
+                ..base_segment()
+            },
+            t0(),
+        );
+    }
+
+    #[test]
+    fn window_scale_applies_after_observed_handshake() {
+        let mut a = TcpAnalytics::new();
+        syn(&mut a, true, SynWindowScale::Present(7));
+        let out = a.last_window_out.unwrap();
+        assert_eq!(out.shift, 0, "SYN windows are never scaled");
+        assert!(out.scale_known, "a SYN window is an exact byte count");
+        syn(&mut a, false, SynWindowScale::Present(8));
+        assert_eq!(
+            a.last_window_in.unwrap().shift,
+            0,
+            "SYN-ACK windows are never scaled"
+        );
+
+        recv(&mut a, 1, 1, 100);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 8, "inbound uses the remote's shift");
+        assert_eq!(inbound.bytes(), 65535 << 8);
+
+        send(&mut a, 1, 100);
+        let outbound = a.last_window_out.unwrap();
+        assert_eq!(outbound.shift, 7, "outbound uses the local shift");
+        assert_eq!(outbound.bytes(), 65535 << 7);
+    }
+
+    /// A SYN (or SYN-ACK) packet advertising `shift`, as the parser hands it
+    /// to the tracker.
+    fn syn_packet(is_outgoing: bool, is_syn_ack: bool, shift: u8) -> ParsedPacket {
+        use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
+
+        let mut packet = ParsedPacket::test_tcp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            TcpHeaderInfo {
+                seq: 0,
+                ack: 0,
+                window: 65535,
+                flags: TcpFlags {
+                    syn: true,
+                    ack: is_syn_ack,
+                    fin: false,
+                    rst: false,
+                },
+                payload_len: 0,
+                window_scale: Some(SynWindowScale::Present(shift)),
+            },
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 74;
+        packet
+    }
+
+    #[test]
+    fn the_connections_first_packet_reaches_the_analytics() {
+        // The packet that creates the connection must feed the analytics too:
+        // for a connection this host initiates, that is our own SYN, the only
+        // carrier of the local window-scale option.
+        let now = t0();
+        let mut conn = create_connection_from_packet(&syn_packet(true, false, 7), now);
+        merge_packet_into_connection(&mut conn, &syn_packet(false, true, 8), now);
+        merge_packet_into_connection(&mut conn, &create_test_packet(false, false), now);
+
+        let analytics = conn.tcp_analytics.unwrap();
+        assert_eq!(analytics.window_scale_out, Some(7));
+        assert_eq!(analytics.window_scale_in, Some(8));
+        assert!(analytics.window_scale_known());
+        assert_eq!(analytics.last_window_in.unwrap().bytes(), 65535 << 8);
+    }
+
+    #[test]
+    fn window_directions_are_tracked_separately() {
+        // Each direction keeps its own window slot, so the displayed window
+        // must not flip between the two ends' advertisements.
+        let mut a = TcpAnalytics::new();
+        syn(&mut a, true, SynWindowScale::Present(7));
+        syn(&mut a, false, SynWindowScale::Present(7));
+
+        window_recv(&mut a, 8);
+        window_send(&mut a, 1100);
+
+        assert_eq!(a.last_window_in.unwrap().bytes(), 8 << 7);
+        assert_eq!(a.last_window_out.unwrap().bytes(), 1100 << 7);
+    }
+
+    #[test]
+    fn window_scale_off_when_one_side_lacks_the_option() {
+        let mut a = TcpAnalytics::new();
+        syn(&mut a, true, SynWindowScale::Present(7));
+        syn(&mut a, false, SynWindowScale::Absent); // peer refused scaling
+        recv(&mut a, 1, 1, 100);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 0);
+        assert!(inbound.scale_known, "absence of the option is a conclusion");
+        assert_eq!(inbound.bytes(), 65535);
+    }
+
+    #[test]
+    fn truncated_syn_options_do_not_disable_scaling() {
+        // A SYN-ACK whose options were cut off by the snaplen proves
+        // nothing; a complete retransmitted SYN-ACK must still be able to
+        // enable scaling afterwards.
+        let mut a = TcpAnalytics::new();
+        syn(&mut a, true, SynWindowScale::Present(7));
+        syn(&mut a, false, SynWindowScale::Unknown); // options unexaminable
+        recv(&mut a, 1, 1, 100);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 0, "no conclusion yet, raw window");
+        assert!(!inbound.scale_known);
+
+        syn(&mut a, false, SynWindowScale::Present(8)); // retransmitted, complete
+        recv(&mut a, 101, 1, 100);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 8);
+        assert!(inbound.scale_known);
+        assert_eq!(inbound.bytes(), 65535 << 8);
+    }
+
+    #[test]
+    fn window_unscaled_when_handshake_not_observed() {
+        // Connection picked up mid-stream: no SYNs seen, so the shift is
+        // unknown and the raw field is all that can honestly be reported.
+        let mut a = TcpAnalytics::new();
+        recv(&mut a, 1, 1, 100);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 0);
+        assert!(!inbound.scale_known);
+        assert_eq!(inbound.raw, 65535);
+    }
+
+    #[test]
+    fn detects_retransmit_after_a_sequence_gap() {
+        // A capture gap must not freeze the outbound tracker; seq 0 is a legal start.
+        let mut a = TcpAnalytics::new();
+
+        send(&mut a, 0, 100); // in order, high-water = 100
+        assert!(a.seen_outbound);
+
+        send(&mut a, 5000, 100); // gap (capture drop), must resync to 5100
+        assert_eq!(a.retransmit_count, 0, "a gap is not a retransmission");
+        assert_eq!(a.highest_seq_outbound, 5100, "tracker must resync on a gap");
+
+        send(&mut a, 5000, 100); // genuine resend of data already sent
+        assert_eq!(a.retransmit_count, 1);
+
+        send(&mut a, 5100, 100); // stream continues normally afterwards
+        assert_eq!(a.retransmit_count, 1);
+        assert_eq!(a.highest_seq_outbound, 5200);
+    }
+
+    #[test]
+    fn one_byte_keepalive_probe_is_not_a_retransmit() {
+        // Windows keepalive probes carry one garbage byte at SND.NXT - 1.
+        let mut a = TcpAnalytics::new();
+
+        send(&mut a, 1000, 100); // highest is now 1100
+        send(&mut a, 1099, 1); // probe
+        send(&mut a, 1099, 1); // and the next one
+        assert_eq!(a.retransmit_count, 0, "a keepalive probe is not a resend");
+        assert_eq!(a.highest_seq_outbound, 1100);
+
+        send(&mut a, 1000, 100); // genuine resend still counts
+        assert_eq!(a.retransmit_count, 1);
+    }
+
+    #[test]
+    fn one_byte_resend_below_the_top_is_a_retransmit() {
+        let mut a = TcpAnalytics::new();
+
+        send(&mut a, 1000, 100);
+        send(&mut a, 1050, 1); // not at SND.NXT - 1, so not a probe
+        assert_eq!(a.retransmit_count, 1);
+    }
+
+    #[test]
+    fn resent_fin_is_a_retransmit_not_a_keepalive_probe() {
+        // A bare FIN consumes one sequence number, so a resend of it has the
+        // same shape as a one-byte probe.
+        let mut a = TcpAnalytics::new();
+        let fin = || TcpSegment {
+            seq: 1100,
+            payload_len: 1,
+            is_outgoing: true,
+            has_ack_flag: false,
+            is_fin: true,
+            ..base_segment()
+        };
+
+        send(&mut a, 1000, 100);
+        analyze_tcp_segment(&mut a, fin(), t0());
+        assert_eq!(a.retransmit_count, 0);
+        analyze_tcp_segment(&mut a, fin(), t0());
+        assert_eq!(a.retransmit_count, 1);
+    }
+
+    #[test]
+    fn inbound_one_byte_keepalive_probe_is_not_out_of_order() {
+        let mut a = TcpAnalytics::new();
+
+        recv(&mut a, 1000, 0, 100);
+        recv(&mut a, 1099, 0, 1); // probe from a Windows peer
+        assert_eq!(a.out_of_order_count, 0);
+
+        recv(&mut a, 1000, 0, 100); // genuine late segment still counts
+        assert_eq!(a.out_of_order_count, 1);
+    }
+
+    #[test]
+    fn sequence_comparison_survives_wraparound() {
+        // Straddle the u32 boundary, where a raw `<` inverts.
+        let mut a = TcpAnalytics::new();
+
+        send(&mut a, u32::MAX - 50, 100); // wraps to 49
+        assert_eq!(a.highest_seq_outbound, 49);
+
+        send(&mut a, 49, 100); // advances past the wrap, not a retransmit
+        assert_eq!(a.retransmit_count, 0);
+
+        send(&mut a, u32::MAX - 50, 100); // pre-wrap data resent
+        assert_eq!(a.retransmit_count, 1);
+    }
+
+    #[test]
+    fn inbound_data_segments_are_not_duplicate_acks() {
+        // A download repeats the same ack number on every data segment while
+        // we have nothing to send. Those are not dup ACKs and must not count
+        // as fast retransmits.
+        let mut a = TcpAnalytics::new();
+
+        let mut seq = 1000;
+        for _ in 0..20 {
+            recv(&mut a, seq, 500, 1400);
+            seq += 1400;
+        }
+
+        assert_eq!(a.duplicate_ack_count, 0);
+        assert_eq!(a.fast_retransmit_count, 0);
+        assert_eq!(a.out_of_order_count, 0);
+    }
+
+    #[test]
+    fn fast_retransmit_fires_once_per_dup_ack_run() {
+        let mut a = TcpAnalytics::new();
+
+        // A duplicate ACK is only meaningful with data outstanding, so put
+        // some in flight first: every ack below covers only part of it.
+        send(&mut a, 1000, 500);
+
+        recv(&mut a, 0, 500, 0); // first ACK establishes the baseline
+        recv(&mut a, 0, 500, 0); // dup 1
+        recv(&mut a, 0, 500, 0); // dup 2
+        assert_eq!(a.fast_retransmit_count, 0);
+
+        recv(&mut a, 0, 500, 0); // dup 3 -> fast retransmit
+        assert_eq!(a.fast_retransmit_count, 1);
+
+        recv(&mut a, 0, 500, 0); // dup 4 must not re-trigger
+        assert_eq!(a.fast_retransmit_count, 1);
+        assert_eq!(a.duplicate_ack_count, 4, "cumulative, not the run length");
+
+        // A new ACK ends the run; the next run triggers again.
+        recv(&mut a, 0, 900, 0);
+        assert_eq!(a.dup_ack_run, 0);
+        for _ in 0..3 {
+            recv(&mut a, 0, 900, 0);
+        }
+        assert_eq!(a.fast_retransmit_count, 2);
+        assert_eq!(a.duplicate_ack_count, 7);
+    }
+
+    #[test]
+    fn keepalives_without_outstanding_data_are_not_duplicate_acks() {
+        // An idle connection the capture joined mid-stream sees only bare ACKs
+        // and keepalives, all repeating the same ack number. Those must not
+        // report a fast retransmit.
+        let mut a = TcpAnalytics::new();
+
+        for _ in 0..13 {
+            recv(&mut a, 0, 500, 0);
+        }
+
+        assert_eq!(a.duplicate_ack_count, 0);
+        assert_eq!(a.fast_retransmit_count, 0);
+    }
+
+    #[test]
+    fn acks_covering_everything_sent_are_not_duplicate_acks() {
+        // Nothing is outstanding once the peer has acked it all, so its
+        // repeated ACKs cannot be duplicates in the RFC 5681 sense.
+        let mut a = TcpAnalytics::new();
+        send(&mut a, 1000, 500);
+
+        for _ in 0..5 {
+            recv(&mut a, 0, 1500, 0);
+        }
+
+        assert_eq!(a.duplicate_ack_count, 0);
+        assert_eq!(a.fast_retransmit_count, 0);
+    }
+
+    #[test]
+    fn window_updates_are_not_duplicate_acks() {
+        // Same ack number, moving window: a window update, not a duplicate.
+        let mut a = TcpAnalytics::new();
+        send(&mut a, 1000, 500);
+        recv(&mut a, 0, 1200, 0); // baseline, window 65535
+
+        window_recv_ack(&mut a, 1200, 32768);
+        window_recv_ack(&mut a, 1200, 16384);
+
+        assert_eq!(a.duplicate_ack_count, 0);
+
+        // A repeat at the same window is a genuine duplicate again.
+        window_recv_ack(&mut a, 1200, 16384);
+        assert_eq!(a.duplicate_ack_count, 1);
+    }
+
+    #[test]
+    fn reset_does_not_overwrite_the_last_advertised_window() {
+        // A RST's window field carries no advertisement, so the last real
+        // one has to survive the teardown.
+        let mut a = TcpAnalytics::new();
+        window_recv(&mut a, 501);
+        reset_recv(&mut a);
+
+        assert_eq!(a.last_window_in.unwrap().raw, 501);
+    }
+
+    #[test]
+    fn covering_ack_completes_an_rtt_probe() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0()); // times bytes up to 100
+        let events = recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(40));
+
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(40)));
+        assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(40)));
+        assert_eq!(a.rtt_probe, None, "a completed probe must not re-fire");
+    }
+
+    #[test]
+    fn partial_ack_does_not_complete_the_probe() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        let events = recv_at(&mut a, 0, 50, 0, t0() + Duration::from_millis(40));
+
+        assert_eq!(events.rtt_sample, None, "50 acks only half the timed bytes");
+        assert!(a.rtt_probe.is_some(), "the probe stays armed");
+
+        let events = recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(80));
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(80)));
+    }
+
+    #[test]
+    fn retransmission_invalidates_the_probe() {
+        // Karn's algorithm: after a resend, the covering ACK is ambiguous
+        // (original or retransmission?) and must not produce a sample.
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        send_at(&mut a, 0, 100, t0() + Duration::from_millis(10)); // resend
+        assert_eq!(a.retransmit_count, 1);
+
+        let events = recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(50));
+        assert_eq!(events.rtt_sample, None);
+    }
+
+    #[test]
+    fn one_byte_keepalive_discards_pending_rtt_after_a_missed_ack() {
+        let mut a = TcpAnalytics::new();
+        send_at(&mut a, 1000, 100, t0());
+
+        // The peer ACKed the data, but capture missed that ACK. Its reply to
+        // a later keepalive must not time the original data from a minute ago.
+        send_at(&mut a, 1099, 1, t0() + Duration::from_secs(60));
+        assert_eq!(a.retransmit_count, 0);
+        let events = recv_at(&mut a, 5000, 1100, 0, t0() + Duration::from_millis(60_020));
+        assert_eq!(events.rtt_sample, None);
+        assert_eq!(a.smoothed_rtt, None);
+        assert_eq!(a.rtt_probe, None);
+
+        // Fresh data still arms a probe and produces a valid measurement.
+        let sent = t0() + Duration::from_secs(61);
+        send_at(&mut a, 1100, 100, sent);
+        let events = recv_at(&mut a, 5000, 1200, 0, sent + Duration::from_millis(20));
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(20)));
+        assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn one_byte_keepalive_shape_discards_ambiguous_retransmission_rtt() {
+        let mut a = TcpAnalytics::new();
+        send_at(&mut a, 1000, 1, t0());
+
+        // A genuine resend of the last byte also matches the keepalive
+        // heuristic. Excluding it from loss must not allow an ambiguous RTT.
+        send_at(&mut a, 1000, 1, t0() + Duration::from_millis(200));
+        assert_eq!(a.retransmit_count, 0);
+        let events = recv_at(&mut a, 5000, 1001, 0, t0() + Duration::from_millis(220));
+        assert_eq!(events.rtt_sample, None);
+        assert_eq!(a.smoothed_rtt, None);
+        assert_eq!(a.rtt_probe, None);
+    }
+
+    #[test]
+    fn smoothed_rtt_is_an_ewma_of_samples() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(80));
+        assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(80)));
+
+        // Second sample of 16ms: 7/8 * 80 + 1/8 * 16 = 72ms.
+        let sent = t0() + Duration::from_millis(100);
+        send_at(&mut a, 100, 100, sent);
+        recv_at(&mut a, 0, 200, 0, sent + Duration::from_millis(16));
+        assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(72)));
+    }
+
+    #[test]
+    fn a_young_probe_is_not_replaced_but_a_stale_one_is() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        send_at(&mut a, 100, 100, t0() + Duration::from_millis(5));
+        assert_eq!(
+            a.rtt_probe.map(|(seq, _)| seq),
+            Some(100),
+            "the oldest outstanding segment stays the timed one"
+        );
+
+        // Its ACK never arrives; past the timeout the next send re-arms.
+        let late = t0() + RTT_PROBE_TIMEOUT + Duration::from_secs(1);
+        send_at(&mut a, 200, 100, late);
+        assert_eq!(a.rtt_probe, Some((300, late)));
+    }
+
+    #[test]
+    fn probe_completion_survives_sequence_wraparound() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, u32::MAX - 50, 100, t0()); // timed bytes end at 49
+        let events = recv_at(&mut a, 0, 49, 0, t0() + Duration::from_millis(30));
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(30)));
+    }
+
+    #[test]
+    fn inbound_data_segments_can_complete_the_probe() {
+        // Request/response traffic: the response carries both the payload and
+        // the ACK of the request. Requiring a pure ACK would starve the
+        // estimator on exactly the flows users care about.
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        let events = recv_at(&mut a, 0, 100, 1400, t0() + Duration::from_millis(25));
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(25)));
     }
 }

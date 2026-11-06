@@ -43,7 +43,7 @@ firefox flamegraph.svg
 
 ```bash
 # 构建带调试符号的版本
-cargo build --release
+CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release
 
 # 记录性能数据（运行 30-60 秒，然后按 Ctrl+C 停止）
 sudo perf record -F 99 -g ./target/release/rustnet -i eth0
@@ -92,21 +92,30 @@ sudo perf report
 | 基准测试 | 命令 |
 |-----------|---------|
 | 数据包解析 | `cargo bench --bench packet_parsing` |
+| DPI 开销及混合解析/跟踪 | `cargo bench --bench dpi_overhead` |
 | 连接合并 | `cargo bench --bench connection_merge` |
 | 快照创建 | `cargo bench --bench snapshot` |
+| 速率跟踪 | `cargo bench --bench rate_tracker` |
+| 跟踪器摄取 | `cargo bench --bench tracker_ingest` |
 | 全部基准测试 | `cargo bench` |
 | 结构体大小 | `cargo test --lib struct_sizes -- --nocapture` |
 
 Criterion 会在 `target/criterion/` 中生成 HTML 报告，并对多次运行结果进行统计比较。
+
+`dpi_overhead` 基准测试包含普通流量和数据库流量的固定 Ethernet/TCP 数据包，以及混合解析/连接跟踪负载，无需抓包文件。如需按抓包文件记录的链路类型回放受控流量，请设置 `RUSTNET_BENCH_PCAP=/path/to/capture.pcap`；文件无法读取、为空或包含不支持的数据包时，测试会失败。
+
+比较修改前后的性能时，两版应使用相同的基准测试源码、抓包文件、编译器、构建配置和机器。先完成两版构建，再交替重复测量，避免同时运行其他高负载任务。数据库识别增加了基础版本没有执行的工作，因此应将其开销与普通流量的变化分别报告。这些测量覆盖解析和连接跟踪的 CPU 耗时，不代表实时抓包丢包率或界面响应速度。
 
 ## 临时基准测试<a id="ad-hoc-benchmarking"></a>
 
 要获得稳定一致的基准测试：
 
 ```bash
-# 在稳定的流量下运行
-sudo ./target/release/rustnet --interface eth0 &
-PID=$!
+# 在稳定的流量下运行；没有终端时必须启用无界面模式
+sudo -v
+sudo ./target/release/rustnet --headless --interface eth0 > /dev/null &
+sleep 1
+PID=$(pgrep -n -x rustnet)
 
 # 监控 CPU 占用
 top -p $PID
@@ -118,16 +127,19 @@ sudo perf stat -p $PID sleep 60
 sudo kill $PID
 ```
 
+以上无界面示例需要 v1.7.0 或更高版本；v1.6.0 不支持 `--headless`。
+运行该示例时不要同时运行其他 `rustnet` 进程，以确保 `pgrep` 选中刚启动的进程。
+
 ## 性能回归测试<a id="performance-regression-testing"></a>
 
 在改动之后，对比改动前后：
 
 ```bash
 # 基线（改动前）
-sudo perf stat -r 3 timeout 60s ./target/release/rustnet-before > /dev/null
+sudo perf stat -r 3 ./target/release/rustnet-before --headless --duration 60 --output json > /dev/null
 
 # 改动后
-sudo perf stat -r 3 timeout 60s ./target/release/rustnet > /dev/null
+sudo perf stat -r 3 ./target/release/rustnet --headless --duration 60 --output json > /dev/null
 ```
 
 需要对比的关键指标：
@@ -190,7 +202,7 @@ timeout 60 sudo -E ~/.cargo/bin/flamegraph -- ./target/release/rustnet
 
 如果 TUI 感觉迟钝：
 
-1. **检查刷新频率**：默认是 1000ms，可通过 `--refresh-interval` 调整
+1. **检查刷新频率**：默认是 500ms，可通过 `--refresh-interval` 调整
 2. **检查连接数量**：连接数过高会增加排序开销
 3. **分析 UI 循环**：在 `run_ui_loop`、`draw` 或 `sort_connections` 中查找热点
 4. **监控线程争用**：检查数据包处理线程是否阻塞了快照提供者

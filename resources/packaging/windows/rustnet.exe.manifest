@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Declares UTF-8 as the process's active code page (Windows 10 1903+).
+     Npcap returns device descriptions and error strings in the ANSI code
+     page; on systems where that page is not UTF-8 (e.g. CP936), the pcap
+     crate's strict UTF-8 decoding would otherwise fail on any non-ASCII
+     text, breaking device listing and masking capture errors. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

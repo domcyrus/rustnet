@@ -155,8 +155,6 @@ mod tests {
         IpAddr::V6(s.parse().unwrap())
     }
 
-    // The three cases the user explicitly asked for.
-
     #[test]
     fn rfc1918_10_slash_8_is_private() {
         assert_eq!(classify(v4("10.0.0.1")), Scope::Private);

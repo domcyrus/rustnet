@@ -1,0 +1,54 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
+                                                                                                                                            
+▌ proc (4242)           203.0.113.7:4433        192.168.1.10:50000 -          TCP·HTTPS                ESTABLISHED       - ok            -/-
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+▎ proc → 203.0.113.7:4433 [ESTABLISHED] · click a field to copy ────────────────────────────────────────────────────────────────────────────
+Connection                                                            Application: HTTPS                                                    
+Protocol              TCP                                             SNI                   -                                               
+Status                Active (last seen <T> ago)                       ALPN                  -                                               
+Local Address         192.168.1.10:50000                              TLS Version           -                                               
+Remote Address        203.0.113.7:4433                                Cipher Suite          -                                               
+Scope                 DOCUMENTATION                                                                                                         
+State                 ESTABLISHED                                                                                                           
+Process               proc                                                                                                                  
+PID                   4242                                                                                                                  
+Service               -                                               Attributed Name       -                                               
+Observed VLANs        -                                               Attributed Via        -                                               
+                                                                                                                                            
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               Initial RTT           -                                               
+Local MAC             -                                               Live RTT              -                                               
+Remote Hostname       -                                               TCP Retransmits (R)   0                                               
+Remote MAC            -                                               Out-of-Order (O)      0                                               
+Country               -                                               Duplicate ACKs        0                                               
+City                  -                                               Fast Retransmits      0                                               
+ASN                   -                                               Window Size           -                                               
+                                                                                                                                            
+Attribution                                                                                                                                 
+PID                   4242                                                                                                                  
+PPID                  -                                                                                                                     
+Process Tree          -                                                                                                                     
+Executable            -                                                                                                                     
+User                  -                                                                                                                     
+Match                 -                                                                                                                     
+                                                                                                                                            
+▎ Traffic Statistics · smoothed avg · 60s · B/s ────────────────────────────────────────────────────────────────────────────────────────────
+↓ RX Now 0 B/s       →                             peak       0 B/s   ↑ TX Now 0 B/s       →                             peak       0 B/s   
+Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
+Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ j/k connection  c copy remote addr  esc back                                                                                h help  q quit

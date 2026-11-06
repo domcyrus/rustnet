@@ -2,6 +2,8 @@
 
 # Architecture
 
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased implementation details. For v1.7.0, use the [v1.7.0 architecture guide](https://github.com/domcyrus/rustnet/blob/v1.7.0/ARCHITECTURE.md). Check `rustnet --version` for your installed version.
+
 This document describes the technical architecture and implementation details of RustNet.
 
 ## Table of Contents
@@ -16,14 +18,15 @@ This document describes the technical architecture and implementation details of
 
 ## Crate Structure
 
-RustNet is a Cargo workspace of four crates. The analysis logic, capture backend, and process attribution each live in their own reusable library crate; the binary composes them into the TUI application.
+RustNet is a Cargo workspace of five crates. The analysis logic, capture backend, process attribution, and sandboxing each live in their own reusable library crate; the binary composes them into the TUI application.
 
 | Crate | Type | Responsibility |
 | --- | --- | --- |
-| [`rustnet-core`](crates/rustnet-core) | library | Platform- and capture-independent analysis core: packet parsing, protocol/connection types, deep packet inspection, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups, and a reusable `ConnectionTracker` (live table + RTT + QUIC coalescing + lifecycle) for headless tools. Operates only on byte slices and parsed structures -- no libpcap, raw sockets, or OS process tables. |
+| [`rustnet-core`](crates/rustnet-core) | library | Platform- and capture-independent analysis core: packet parsing, protocol/connection types, deep packet inspection, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups, a reusable `ConnectionTracker`, and bounded retained process-activity accounting. Operates only on byte slices and parsed structures, with no libpcap, raw sockets, or OS process tables. |
 | [`rustnet-capture`](crates/rustnet-capture) | library | libpcap/Npcap packet-capture backend: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame `PacketReader`. |
-| [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution behind one `ProcessLookup` trait: eBPF/procfs on Linux, PKTAP/lsof on macOS, the IP Helper API on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
-| `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, app event loop, sandboxing (Landlock/Seatbelt), and interface statistics. Dogfoods `ConnectionTracker` as the single source of truth. |
+| [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution plus a host TCP/UDP socket inventory: eBPF/procfs on Linux, PKTAP/lsof on macOS, ETW/IP Helper on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
+| [`rustnet-sandbox`](crates/rustnet-sandbox) | library | Post-initialization sandboxing and root privilege dropping behind one `apply_sandbox` entry point: Landlock + capability drops on Linux, Seatbelt on macOS, token privilege removal + job object on Windows, and the shared uid drop on Linux/macOS/FreeBSD. Depends on no other workspace crate. |
+| `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, and the app event loop. Dogfoods `ConnectionTracker` as the single source of truth. |
 
 The package is named `rustnet-monitor` because the `rustnet` crate name is taken on crates.io; the installed binary is `rustnet`.
 
@@ -34,20 +37,28 @@ flowchart TD
     BIN[rustnet-monitor<br/>bin: rustnet]
     CAP[rustnet-capture]
     HOST[rustnet-host]
+    SBX[rustnet-sandbox]
     CORE[rustnet-core]
 
     BIN --> CAP
     BIN --> HOST
+    BIN --> SBX
     BIN --> CORE
     CAP --> CORE
     HOST --> CORE
 ```
 
-The graph is acyclic: `rustnet-core` has no workspace dependencies, and both `rustnet-capture` and `rustnet-host` depend only on it. Keeping `rustnet-core` a leaf lets it be published and reused independently -- a headless front-end (e.g. a Prometheus exporter) can pair `rustnet-capture` + `rustnet-core` without the TUI.
+The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-capture` and `rustnet-host` depend only on it, and `rustnet-sandbox` depends on no workspace crate at all. Keeping `rustnet-core` a leaf lets it be published and reused independently -- a headless front-end (e.g. a Prometheus exporter) can pair `rustnet-capture` + `rustnet-core` without the TUI; [`examples/headless.rs`](examples/headless.rs) shows the full pairing including `rustnet-host` and `rustnet-sandbox`.
 
 ### Re-export Facade
 
-To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module still hosts the OS sandboxing (Landlock/Seatbelt) and interface-stats collectors, and wires in `rustnet-host`'s process lookup.
+To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. Process and socket lookup are imported directly from `rustnet-host`. The per-platform interface-stats providers live in `rustnet-core` behind `interface_stats::create_stats_provider`; sandboxing and the root uid drop live in `rustnet-sandbox`.
+
+### Frontend Modules
+
+`src/main.rs` delegates to the library's `bootstrap::run`. `src/bootstrap.rs` parses options, validates output paths, prepares privileged resources, applies the sandbox, starts workers through the runtime permit, and selects the frontend. `src/tui.rs` owns the interactive event loop. Headless orchestration lives in `src/headless/mod.rs`, the versioned snapshot projection in `src/headless/schema.rs`, and the bounded latest-value writer in `src/headless/output.rs`. Both frontends use the same application state, filters, signal flag, and owned shutdown report.
+
+Configured JSON log, PCAP, PCAP sidecar, and PCAPNG destinations receive early pathname validation and an opened-file identity check before capture outputs are truncated. Their descriptors stay open through the UID drop and sandbox transition, without output-path write grants or later reopening. Shutdown stops and joins producers before rebuilding the final snapshot; if a worker misses the deadline, the terminal headless record reports `stopping` rather than claiming shutdown completed.
 
 ## Multi-threaded Architecture
 
@@ -59,15 +70,21 @@ flowchart LR
     CH([Crossbeam Channel])
     PP[Packet Processors<br/>Thread 0..N]
     PE[Process Enrichment<br/>Platform API]
-    DM[(DashMap)]
+    DM[(Active Connections)]
+    HI[(Historic Pool<br/>up to 5,000)]
     SP[Snapshot Provider]
     UI[/RwLock&lt;Vec&lt;Connection&gt;&gt;<br/>for UI/]
     CT[Cleanup Thread]
+    PA[Process Activity Sampler]
+    PS[/Process Activity Snapshot/]
 
     PC -- packets --> CH --> PP --> DM
     PE --> DM
     DM --> SP --> UI
     DM --> CT
+    CT --> HI
+    HI --> SP
+    SP --> PA --> PS
 ```
 
 ## Key Components
@@ -81,6 +98,7 @@ Uses libpcap to capture raw packets from the network interface. This thread runs
 - Apply BPF filters if needed
 - Capture raw packets
 - Stream packets to PCAP file if `--pcap-export` is enabled (direct disk write, no memory buffering)
+- Feed parsed packets to the annotated PCAPNG writer if `--pcapng-export` is enabled (bounded best-effort queue)
 - Send packets to processing queue
 
 ### 2. Packet Processors
@@ -98,7 +116,10 @@ Multiple worker threads (up to 4 by default, based on CPU cores) that parse pack
   - FTP control channel with commands, response codes, username, server software, and system type
   - QUIC protocol with CONNECTION_CLOSE frame detection
   - MQTT with packet types, version, and client identifier
+  - MySQL classic greetings/SSLRequest, Redis RESP commands, and PostgreSQL
+    startup/SSLRequest, using bounded packet-local inspection (available since v1.7.0)
   - BitTorrent handshakes and DHT messages
+  - WireGuard and OpenVPN tunnel traffic
   - STUN for WebRTC and NAT traversal
   - NTP with version, mode, and stratum
   - mDNS and LLMNR for local name resolution
@@ -124,7 +145,7 @@ See [Platform-Specific Implementations](#platform-specific-implementations) for 
 
 ### 4. Snapshot Provider
 
-Creates consistent snapshots of connection data for the UI at regular intervals (default: 1 second). This ensures the UI has a stable view of connections without race conditions.
+Creates consistent snapshots of connection data for the UI at regular intervals (default: 500ms). This ensures the UI has a stable view of connections without race conditions.
 
 **Responsibilities:**
 - Read from DashMap at configured intervals
@@ -133,7 +154,61 @@ Creates consistent snapshots of connection data for the UI at regular intervals 
 - Create immutable snapshot for UI rendering
 - Provide RwLock-protected Vec<Connection> for UI thread
 
-### 5. Cleanup Thread
+### 5. DNS Attribution Cache
+
+`network::dns_attribution::DnsAttributionCache` in `rustnet-core` is an `IpAddr -> recent domains` map populated from DNS responses observed on the wire, owned by the `ConnectionTracker` (toggle via `TrackerConfig::dns_attribution`, on by default). When a connection has no SNI / Host header to identify it (encrypted QUIC after the handshake, plain TCP, fragmented ClientHello), the cache provides a hostname inferred from a DNS resolution the user just performed.
+
+The design is **event-driven**: connections that can't be attributed at creation time (no fresh DNS yet) are enrolled into a side index keyed by their remote IP, and the eventual matching DNS response drains the waiters. There is no per-packet polling and no timer.
+
+**Data flow:**
+
+```
+1. DNS response ──record──► IP→domains cache      IP→[ConnectionKey]
+                                 ▲    │            pending waiters
+                                 │    │                ▲    │
+2. New connection ──attribute────┘    │                │    │ 3. drain on
+      │  hit: tag attributed_hostname ◄────────────────┼──────  DNS arrival
+      └─ miss: enroll ─────────────────────────────────┘
+
+4. Cleanup thread (every sweep): cleanup_tick(now)
+    ├─ prune cache entries past retention (10 min)
+    └─ prune pending enrollments past the 10s freshness window
+
+5. Connection removal: forget_pending(remote_ip, key)
+```
+
+Cache properties:
+
+- **Freshness window**: 10s, applied symmetrically to cached `IP -> domain` entries (a connection is only attributed when the DNS response for its remote IP was observed within this window) and to pending enrollments (a new DNS resolution only attributes connections opened within this window). Matches Little Snitch's `MAX_QUERY_AGE`.
+- **Retention** (cache entries): 10 minutes. Older entries are pruned but never used for attribution.
+- **Cap**: 8192 IPs in the cache, up to 4 recent domains per IP, up to 256 pending waiters per IP.
+- **First-write-wins** per connection: once tagged, not retagged from a later resolution to the same IP.
+
+**Hot-path cost**: zero per-packet DNS lookups for established connections. Attribution is attempted once per connection (at creation), and again at most once per matching DNS response. Connections that already carry a hostname in the payload (checked via the unified `ApplicationProtocol::hostname()` accessor, so TLS SNI for HTTPS and QUIC plus the HTTP `Host:` header) and protocols where attribution is meaningless (DNS, mDNS, LLMNR, DHCP, SSDP, NetBIOS, ARP) short-circuit before any cache touch.
+
+**Race safety**: `attribute()` enrolls the connection in the pending index, then re-checks the cache. If a concurrent `record_and_drain_pending()` for the same IP landed between the lookup and the enrollment, the re-check tags the connection; the now-stale enrollment is harmless and is removed by `forget_pending` when the connection is cleaned up or by the pending prune after the freshness window.
+
+**Distinct from `network::dns::DnsResolver`**: that component performs *reverse* DNS (IP to PTR) via the system resolver; the attribution cache is *forward* DNS (domain to IPs) harvested from observed packets. The two are complementary. Since v1.7.0, the UI shows reverse DNS in Remote and DNS attribution in App, with SNI / Host taking precedence over inferred names.
+
+CNAME chains need no separate map: the DNS DPI parser records the original *question* name, and the answer's A/AAAA records map directly to it. Capturing at the wire sees fewer signals than an eBPF socket-level approach (no app-to-stub traffic on `lo` unless captured, no D-Bus resolutions, no DoH/DoT plaintext); this is a known limitation.
+
+#### Passive DNS Analytics
+
+`network::dns_analytics::DnsAnalyticsTracker` is a separate bounded aggregate owned by `ConnectionTracker`. For captured unicast UDP DNS, it pairs each outgoing query with an incoming response using the host-oriented connection key and 16-bit transaction ID. Retransmissions refresh the pending entry, unmatched responses are ignored, and an unanswered query is finalized as a timeout after 10 seconds.
+
+Snapshot collection prunes completed transactions older than one hour and expired recent issues. Packet ingestion checks pending-query timeouts and enforces storage caps without scanning retained history. Host snapshots filter them to the selected 60-second, five-minute, or one-hour window; default snapshot methods and Overview retain 60-second health semantics. The tracker caps pending transactions at 4,096 and completed transactions at 8,192; capacity pressure is surfaced as a sampled indicator in the Host DNS view. Snapshots contain response-code and NODATA totals, latency percentiles and buckets, normalized question-name aggregates, and the DNS health classification used by Overview. `ConnectionTracker::clear()` resets both pending and completed DNS state.
+
+Health is deliberately evidence based. NXDOMAIN counts as a normal resolver response, while SERVFAIL, REFUSED, other response codes, and timeouts count as operational failures. At least three failed observations are required for a failing or no-replies state. Degraded status requires either five completed observations with at least 20% operational failures, or five latency samples with p95 of at least 500 ms. No observed plaintext DNS remains unknown rather than healthy because encrypted DNS, caches, capture loss, and interface selection can hide activity.
+
+**Development version:** loopback DNS packets are oriented by query/response role so local IPv4 and IPv6 stub replies match the client flow. Matching checks available question names and types as well as transaction IDs. Retries retain the first-attempt timestamp for analytics latency and pending age, while the 10-second inactivity timeout restarts on each retry.
+
+Snapshots also aggregate observed resolver endpoints and retain at most 64 error or slow-response observations for 15 minutes. Resolver health uses the same thresholds; any unhealthy resolver degrades an otherwise responsive aggregate. The separate issue history remains available after live samples expire, is ordered by observation time, and is cleared with the tracker. It is passive UDP evidence, independent of system resolver configuration or active probing.
+
+Rolling and since-startup views use the same DNS aggregate for outcomes, resolver health, questions, and snapshot construction. Rolling snapshots rebuild it from retained transactions with exact latency samples. The since-startup aggregate is updated once per finalized transaction and stores bounded latency histograms. It survives raw-history expiry and eviction. Overall counters remain complete for tracked transactions, with bounded maps for the first 128 resolver endpoints and 1,024 question-name/type pairs. Fixed logarithmic histograms provide explicitly approximate percentiles, while maximum latency, latency-bucket counts, and slow-response threshold classification remain exact. Detail limits and lost query correlation have separate indicators. Clearing resets both accumulators and labels cumulative results as since-clear.
+
+Host shares a `TimeWindow` selector across DNS, network events, and interface errors. Event and interface counters use bounded one-second buckets for an hour plus separate session totals. Interface polling establishes a baseline, records positive deltas, and starts a new counter epoch on decreases; absent interfaces lose their history. Clearing resets observed counts and rebaselines interfaces without changing OS counters.
+
+### 6. Cleanup Thread
 
 Removes inactive connections using smart, protocol-aware timeouts. This prevents memory leaks and keeps the connection list relevant. When `--pcap-export` is enabled, also streams connection metadata (PID, process name, timestamps) to a JSONL sidecar file as connections close.
 
@@ -142,10 +217,9 @@ Removes inactive connections using smart, protocol-aware timeouts. This prevents
 #### TCP Connections
 - **HTTP/HTTPS** (detected via DPI): **10 minutes** - supports HTTP keep-alive
 - **SSH** (detected via DPI): **30 minutes** - accommodates long interactive sessions
-- **Active established** (< 1 min idle): **10 minutes**
-- **Idle established** (> 1 min idle): **5 minutes**
+- **Generic established**: **5 minutes**
 - **TIME_WAIT**: 30 seconds - standard TCP timeout
-- **CLOSED**: 5 seconds - rapid cleanup
+- **CLOSED**: 15 seconds - terminal archival grace
 - **SYN_SENT, FIN_WAIT, etc.**: 30-60 seconds
 
 #### UDP Connections
@@ -157,21 +231,30 @@ Removes inactive connections using smart, protocol-aware timeouts. This prevents
 
 #### QUIC Connections (Detected State)
 - **Connected**: 3 minutes default, or the peer's `max_idle_timeout` transport parameter when present
-- **With CONNECTION_CLOSE frame**: 1-10 seconds (based on close type)
+- **With CONNECTION_CLOSE frame**: 15 seconds
 - **Initial/Handshaking**: 60 seconds - allow connection establishment
-- **Draining**: 10 seconds - RFC 9000 draining period
-- **Closed**: 1 second - immediate cleanup
+- **Draining/Closed**: 15 seconds - terminal archival grace
+
+Terminal connections retain the timestamp of their first terminal state.
+Repeated teardown packets update final counters without postponing archival.
+When a new TCP SYN reuses a closing tuple, cleanup and packet ingestion perform
+one lifecycle-safe transition: the old generation is archived immutably and a
+fresh live generation is created. A bounded 30-second tombstone prevents late
+TCP teardown packets from creating phantom established rows.
 
 **Visual Staleness Indicators:**
 
-Connections change color based on proximity to timeout:
-- **White** (default): < 75% of timeout
-- **Yellow**: 75-90% of timeout (warning)
-- **Red**: > 90% of timeout (critical)
+Once a connection has used at least half of its cleanup timeout and both
+displayed traffic rates have decayed to zero, its row shows a left-edge stripe
+and a removal countdown. Context columns soften toward the muted color on
+truecolor themes; signal columns retain their colors. The stripe and countdown
+progress from yellow toward red as cleanup approaches. A selected row with a
+selection background keeps its context colors for readability. Unselected
+historic rows appear gray when history is enabled.
 
-### 6. Rate Refresh Thread
+### 7. Rate Refresh Thread
 
-Updates bandwidth calculations every second with gentle decay. This provides smooth bandwidth visualization without abrupt changes.
+Updates bandwidth calculations every 500ms with gentle decay. This provides smooth bandwidth visualization without abrupt changes.
 
 **Responsibilities:**
 - Calculate bytes/second for download and upload
@@ -179,13 +262,13 @@ Updates bandwidth calculations every second with gentle decay. This provides smo
 - Update visual bandwidth indicators
 - Maintain rolling window of packet rates
 
-### 7. DashMap
+### 8. DashMap
 
-Concurrent hashmap (`DashMap<ConnectionKey, Connection>`) for storing connection state. This lock-free data structure enables efficient concurrent access from multiple threads.
+Concurrent hashmap (`DashMap<ConnectionKey, Connection>`) for storing connection state. It uses per-shard locks for concurrent access; lifecycle transitions also use a separate synchronization lock.
 
 **Key Features:**
 - Fine-grained locking (per-shard)
-- No global lock contention
+- Sharded access to connection entries
 - Safe concurrent reads and writes
 - High performance under concurrent load
 
@@ -193,43 +276,52 @@ Concurrent hashmap (`DashMap<ConnectionKey, Connection>`) for storing connection
 
 ### Process Lookup
 
-RustNet uses platform-specific APIs to associate network connections with processes:
+RustNet uses platform-specific APIs to associate network connections with processes. On every platform, an attribution also carries a capped parent-process chain (up to four ancestors with PID, name, executable path, and start time), shown as a process tree in the Details tab and exported in JSONL.
+
+The same backend publishes a socket snapshot every 5 seconds for the Host tab. This snapshot is independent of packet capture and therefore includes TCP LISTEN sockets and UDP BOUND endpoints that may not have emitted a packet. TCP state aggregates come from this native snapshot, while RTT remains an observed packet-derived metric. Per platform:
 
 #### Linux
 
 **Standard Mode (procfs):**
 - Parses `/proc/net/tcp` and `/proc/net/udp` to get socket inodes
+- Reads `tcp6`, `udp`, and `udp6` alongside the IPv4 tables and retains every native TCP state for the Host snapshot
 - Iterates through `/proc/<pid>/fd/` to find socket file descriptors
-- Maps inodes to process IDs and resolves process names from `/proc/<pid>/cmdline`
+- Maps inodes to process IDs and resolves process names from `/proc/<pid>/comm`, recovering comm-truncated names from the executable's file name
+- Resolves the executable path, PPID, and UID/GID from `/proc/<pid>/`
 
 **eBPF Mode (Default on Linux):**
 - Uses kernel eBPF programs attached to socket syscalls
 - Captures socket creation events with process context
+- On Linux 5.11+, runs a one-shot task-file iterator after attaching the live probes to capture owners of sockets that predate RustNet, including other users' sockets in file-capability mode
 - Provides lower overhead than procfs scanning
+- Records the group leader's TGID, the acting TID, credentials, and process name
+- Since v1.7.0, also snapshots the executable and immediate parent (PID, name, executable, and birth time) at socket observation, retaining them after exit or exec. Procfs extends the parent chain only while task birth times still match.
 - **Limitations:**
-  - Process names limited to 16 characters (kernel `comm` field)
-  - May show thread names instead of full executable names
-  - Multi-threaded applications show internal thread names
+  - Names originate from the 16-byte kernel `comm` field; a retained executable basename can recover truncation. Executable snapshots are bounded to 255 path bytes and 32 directory/mount steps; incomplete paths remain unknown. Scripts identify the running interpreter. Ancestors beyond the immediate parent remain best effort.
 - **Capability requirements:**
   - Modern Linux (5.8+): `CAP_NET_RAW` (packet capture), `CAP_BPF`, `CAP_PERFMON` (eBPF)
-  - Legacy Linux (pre-5.8): `CAP_NET_RAW` (packet capture), `CAP_SYS_ADMIN` (eBPF)
+  - Legacy Linux (pre-5.8): eBPF requires broad `CAP_SYS_ADMIN`; RustNet packages do not grant it automatically and fall back to procfs instead
   - Note: CAP_NET_ADMIN is NOT required (uses read-only, non-promiscuous packet capture)
 
 **Fallback Behavior:**
-- If eBPF fails to load (permissions, kernel compatibility), automatically falls back to procfs mode
+- If the task-file iterator is unavailable, keeps the live eBPF tracker and uses the procfs startup inventory
+- If the live eBPF tracker fails to load, automatically falls back to procfs mode
 - TUI Statistics panel shows active detection method
 
 #### macOS
 
 **PKTAP Mode (with sudo):**
 - Uses PKTAP (Packet Tap) kernel interface
-- Extracts process information directly from packet metadata
+- Extracts PID and process name directly from packet metadata
+- Uses libproc to add the PPID, executable path, and effective UID/GID
 - Requires root privileges (privileged kernel interface)
 - Faster and more accurate than lsof
 
 **lsof Mode (without sudo or fallback):**
-- Uses `lsof -i -n -P` to list network connections
-- Parses output to associate sockets with processes
+- Uses `lsof -i -n -P -l` to list network connections with numeric UIDs
+- Keeps the lsof socket inventory active for the Host tab even when PKTAP supplies packet process metadata
+- Parses output to associate sockets with processes, then uses libproc for the
+  PPID and executable path
 - Higher CPU overhead but works without root
 - Used automatically when PKTAP is unavailable
 
@@ -237,26 +329,54 @@ RustNet uses platform-specific APIs to associate network connections with proces
 - TUI Statistics panel shows "pktap" or "lsof" based on active method
 - Automatically selects best available method
 
+#### FreeBSD
+
+- Uses `sockstat -s` to associate TCP and UDP sockets with processes and retain native TCP states
+- Uses native `KERN_PROC_PID` and `KERN_PROC_PATHNAME` sysctl queries to add
+  PPID, effective UID/GID, and executable path
+- Caches process details by PID for each socket-table refresh
+
 #### Windows
 
-**IP Helper API:**
-- Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` from Windows IP Helper API
-- Retrieves connection tables with process IDs
-- Supports both IPv4 and IPv6 connections
-- Resolves process names using `OpenProcess` and `QueryFullProcessImageNameW`
+**ETW + IP Helper API:**
+- Starts a real-time user trace for the kernel network and process providers
+- Consumes TCP/UDP events with their process IDs, direction, and connection tuples
+- Caches tuple ownership and process lifecycle metadata so short-lived processes remain attributable after exit
+- Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` for reconciliation, cache misses, and complete fallback when ETW cannot start
+- Uses the same IP Helper owner tables as the Host socket inventory, including TCP LISTEN and all assigned UDP endpoints
+- Supports TCP and UDP over both IPv4 and IPv6
+- Resolves process names using lifecycle events or `OpenProcess` and `QueryFullProcessImageNameW`
 
 **Requirements:**
-- May require Administrator privileges depending on system configuration
-- Requires Npcap or WinPcap for packet capture
+- Starting the ETW session may require Administrator or **Performance Log Users** membership, subject to provider security policy
+- ETW failure does not stop capture; the detection method becomes `IP Helper`, which is snapshot-based and can miss short-lived processes
+- Npcap is required for packet capture, and its capture permissions are independent of ETW permissions
 
 ### Network Interfaces
 
-The tool automatically detects and lists available network interfaces using platform-specific methods:
+The capture backend lists devices through libpcap/Npcap and selects a suitable
+active device when `--interface` is omitted. Separately, the packet parser
+collects the host's assigned addresses to determine traffic direction:
 
-- **Linux**: Uses `netlink` or falls back to `/sys/class/net/`
-- **macOS**: Uses `getifaddrs()` system call
-- **Windows**: Uses `GetAdaptersInfo()` from IP Helper API
-- **All platforms**: Falls back to pcap's `pcap_findalldevs()` when native methods fail
+- **Linux, macOS, and FreeBSD**: `pnet_datalink` enumerates assigned IPv4 and IPv6 addresses.
+- **Windows**: IP Helper's `GetAdaptersAddresses()` enumerates assigned IPv4 and IPv6 addresses.
+
+Packet endpoint orientation maintains a snapshot of the addresses currently assigned to
+the host. Packet-processing workers refresh it every 30 seconds and, when neither unicast
+endpoint is recognized as local, perform a rate-limited refresh and retry that packet once.
+This keeps direction detection correct across DHCP changes, VPN connections, roaming, and
+IPv6 privacy-address rotation. On Windows, `GetAdaptersAddresses()` supplies
+both temporary and stable IPv6 addresses without relying on the capture driver.
+
+### Process Activity Accounting
+
+`ProcessActivityTracker` receives active and retained historic connections from the existing snapshot provider every 500ms. It calculates current rates, a 60-second window, peaks, retained totals, bandwidth shares, connection counts, and bounded destination summaries per process identity.
+
+The interface-statistics collector keeps a compact 60-second counter window per interface. Activity coverage compares captured process bytes with interface bytes over that shared duration instead of dividing independently sampled instantaneous rates.
+
+The cleanup thread already moves closed rows into `ConnectionTracker`'s historic pool, which retains up to 5,000 connections. Activity reuses that pool as its source of truth. It does not keep a second copy of full connections or run a separate sampling thread. Only compact rate histories, peaks, and the latest process snapshot remain Activity-specific. Historic overflow is folded into bounded process and destination buckets for each sample.
+
+Activity and the connection UI are fed by the same active and historic sources. This keeps short-lived helper processes visible after exit until their historic rows are evicted or the user clears the connections.
 
 ## Performance Considerations
 
@@ -269,45 +389,40 @@ Packet processing is distributed across multiple threads (up to 4 by default, ba
 
 ### Concurrent Data Structures
 
-**DashMap** provides lock-free concurrent access with:
-- Per-shard locking (16 shards by default)
-- No global lock contention
-- Read-heavy workload optimization
-- Safe concurrent modifications
+**DashMap** uses per-shard locking for concurrent connection-map access. It
+avoids one global map lock, but operations on the same shard can still contend.
 
 ### Batch Processing
 
-Packets are processed in batches to improve cache efficiency:
-- Multiple packets processed before context switching
-- Reduced system call overhead
-- Better CPU cache utilization
+The capture thread sends bounded packet batches to the processing queue. A
+single worker processes each packet immediately; multiple workers may combine
+already queued batches before ordered tracker updates.
 
 ### Selective DPI
 
 Deep packet inspection can be disabled with `--no-dpi` for lower overhead:
-- Reduces CPU usage by 20-40% on high-traffic networks
+- Can reduce CPU usage on busy networks; measure the effect on your workload
 - Still tracks basic connection information
 - Useful for performance-constrained environments
 
 ### Configurable Intervals
 
 Adjust refresh rates based on your needs:
-- **UI refresh**: Default 1000ms (adjustable with `--refresh-interval`)
+- **UI refresh**: Default 500ms (adjustable with `--refresh-interval`)
 - **Process enrichment**: Every 2 seconds
 - **Cleanup check**: Every 5 seconds
-- **Rate calculation**: Every 1 second
+- **Rate calculation**: Every 500ms
 
 ### Memory Management
 
 **Connection cleanup** prevents unbounded memory growth:
 - Protocol-aware timeouts remove stale connections
 - Visual staleness warnings before removal
-- Configurable timeout thresholds
 
 **Snapshot isolation** prevents UI blocking:
 - UI reads from immutable snapshots
 - Background threads update DashMap concurrently
-- No lock contention between UI and packet processing
+- UI rendering does not hold connection-map locks used by packet processing
 
 ## Dependencies
 
@@ -347,7 +462,7 @@ RustNet is built with the following key dependencies:
 - **libbpf-rs** (Linux) - eBPF program loading and management
 - **landlock** (Linux) - Filesystem and network sandboxing
 - **caps** (Linux) - Linux capability management
-- **windows** (Windows) - Windows API bindings for IP Helper API
+- **windows** (Windows) - Windows API bindings for ETW and IP Helper API
 
 ### Utilities
 
@@ -368,7 +483,7 @@ Port-to-service-name mappings (e.g., 80/tcp -> http). Loaded by `ServiceLookup` 
 
 ### OUI Vendor Database (`crates/rustnet-core/assets/oui.gz`)
 
-IEEE MA-L OUI prefix-to-vendor mappings for MAC address vendor resolution (e.g., `00:1B:63` -> Apple). Gzip-compressed to reduce binary size (~400KB compressed vs ~1.2MB raw). Decompressed at startup by `OuiLookup` in `crates/rustnet-core/src/network/oui.rs` using `include_bytes!` + `flate2`. Currently used for ARP connections only.
+IEEE MA-L OUI prefix-to-vendor mappings for MAC address vendor resolution (e.g., `00:1B:63` -> Apple). Gzip-compressed to reduce binary size (~400KB compressed vs ~1.2MB raw). Decompressed at startup by `OuiLookup` in `crates/rustnet-core/src/network/oui.rs` using `include_bytes!` + `flate2`. Used for ARP connections and for the Local/Remote MAC rows in the Details tab, which are backed by a neighbor cache (`crates/rustnet-core/src/network/neighbors.rs`) that passively learns IP-to-MAC mappings from observed ARP (IPv4) and NDP (IPv6) traffic. ARP never crosses a router, and NDP messages are trusted only at hop limit 255 — which proves they were not routed (RFC 4861) — with fragmented NDP ignored entirely (RFC 6980), so the cache only ever labels on-link addresses (LAN devices and the gateway), never public remotes.
 
 A GitHub Action (`.github/workflows/update-oui.yml`) updates this file monthly from the [IEEE public database](https://standards-oui.ieee.org/oui/oui.txt) and opens a PR if there are changes.
 
@@ -376,111 +491,30 @@ A GitHub Action (`.github/workflows/update-oui.yml`) updates this file monthly f
 
 For security documentation including Landlock sandboxing, privilege requirements, and threat model, see [SECURITY.md](SECURITY.md).
 
-## Comparison with Similar Tools
+## Packet Capture and Process Attribution <a id="comparison-with-similar-tools"></a>
 
-Network monitoring tools exist on a spectrum from simple connection listing to full packet forensics:
+RustNet combines packet capture with operating-system process lookup to show
+connection metadata in the terminal. Process attribution is best effort: it can
+be unavailable or delayed when privileges, the capture interface, or a platform
+backend limit visibility. RustNet does not decode every protocol or retain full
+packet payloads in its connection view.
 
-```
-Simple ←─────────────────────────────────────────────────────→ Complex
+Use `--pcap-export` to save captured packets to a standard PCAP file. RustNet
+also writes `capture.pcap.connections.jsonl` when the PCAP path is
+`capture.pcap`; this sidecar records connection metadata as connections close.
+The sidecar is a separate file and is not embedded in the PCAP.
 
-netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
-   │          │           │            │            │            │
-   └── Socket ┴── Bandwidth ──────────┴── Live DPI ┴── Capture ──┴── Forensics
-       state      monitoring             + Process     & CLI        & Deep
-                                         tracking                   Analysis
-```
-
-**RustNet's position**: Real-time connection monitoring with DPI and process identification - more capable than bandwidth monitors, more focused than forensic capture tools.
-
-### Feature Comparison
-
-| Feature | RustNet | bandwhich | sniffnet | iftop | netstat | ss | tcpdump/wireshark |
-|---------|---------|-----------|----------|-------|---------|-----|-------------------|
-| **Language** | Rust | Rust | Rust | C | C | C | C |
-| **Interface** | TUI | TUI | GUI | TUI | CLI | CLI | CLI/GUI |
-| **Real-time monitoring** | Yes | Yes | Yes | Yes | Snapshot | Snapshot | Yes |
-| **Process identification** | Yes | Yes | No | No | Yes | Yes | No |
-| **Deep Packet Inspection** | Yes | No | No | No | No | No | Yes |
-| **SNI/Host extraction** | Yes | No | No | No | No | No | Yes |
-| **Protocol state tracking** | Yes | No | Partial | No | Yes | Yes | Yes |
-| **Bandwidth per connection** | Yes | Yes | Yes | Yes | No | No | No |
-| **Connection filtering** | Yes | No | Yes | Yes | No | Yes | Yes (BPF) |
-| **DNS reverse lookup** | Yes | Yes | Yes | Yes | No | No | Yes |
-| **GeoIP lookup** | Yes | No | Yes | No | No | No | Yes |
-| **Notifications** | No | No | Yes | No | No | No | No |
-| **i18n (translations)** | No | No | Yes | No | No | No | No |
-| **Cross-platform** | Linux, macOS, Windows, FreeBSD | Linux, macOS | Linux, macOS, Windows | Linux, macOS, BSD | All | Linux | All |
-| **eBPF support** | Yes (Linux) | No | No | No | No | Yes | No |
-| **Landlock sandboxing** | Yes (Linux) | No | No | No | No | No | No |
-| **JSON event logging** | Yes | No | No | No | No | No | Yes |
-| **PCAP export** | Yes (+ process sidecar) | No | Yes | No | No | No | Yes |
-| **Packet capture** | libpcap | Raw sockets | libpcap | libpcap | Kernel | Kernel | libpcap |
-
-### Tool Focus Areas
-
-- **RustNet**: Real-time connection monitoring with DPI, protocol state tracking, and process identification in a TUI
-- **bandwhich**: Bandwidth utilization by process/connection with minimal overhead
-- **sniffnet**: Network traffic analysis with a graphical interface and notifications
-- **iftop**: Interface bandwidth monitoring with per-host traffic display
-- **netstat/ss**: System socket and connection state inspection (ss is the modern replacement for netstat on Linux)
-- **tcpdump/wireshark/tshark**: Full packet capture and protocol analysis for deep debugging
-
-### Choosing the Right Tool
-
-| Your Goal | Best Tool |
-|-----------|-----------|
-| See which process is making a connection | RustNet |
-| Decode packets byte-by-byte | Wireshark |
-| Monitor connection states (SYN_SENT, ESTABLISHED, etc.) | RustNet |
-| Extract files or credentials from traffic | Wireshark |
-| Attribute network activity to specific applications | RustNet |
-| Deep protocol dissection (3000+ protocols) | Wireshark |
-| Quick terminal-based network overview | RustNet |
-| Save captures with process attribution | RustNet (`--pcap-export`) |
-| Save captures for deep analysis | Wireshark/tcpdump |
-
-### RustNet and Wireshark: Different Strengths
-
-The key difference: **RustNet knows which process owns each connection. Wireshark cannot.**
-
-Wireshark operates at the packet capture layer (libpcap) - it sees raw network traffic but has no visibility into which application created it. RustNet combines packet capture with OS-level socket introspection (via eBPF on Linux, /proc, or platform APIs) to attribute every connection to its owning process.
-
-| Capability | RustNet | Wireshark |
-|------------|---------|-----------|
-| Process identification | Yes (eBPF, procfs, platform APIs) | No |
-| Connection state tracking | Native (TCP FSM, QUIC states) | Via dissectors |
-| Protocol dissectors | ~15 common protocols | 3000+ protocols |
-| Packet-level inspection | Metadata only | Full payload |
-| Interface | TUI (terminal) | GUI |
-| Capture to file | Yes (`--pcap-export`) | Yes (native) |
-
-Both tools can run in real-time. Choose based on what you need to see:
-- **"What is making this connection?"** → RustNet
-- **"What's inside this packet?"** → Wireshark
-
-### Bridging the Gap: PCAP Export with Process Attribution
-
-RustNet can now export packet captures while preserving process attribution - something neither tcpdump nor Wireshark can do alone:
+Use `--pcapng-export` to write packet comments with the process information
+available at capture time. These annotations are best effort and can be absent
+when ownership has not yet been resolved. Both capture formats can be opened in
+Wireshark for packet analysis.
 
 ```bash
-# Capture packets with RustNet (includes process tracking)
 sudo rustnet -i eth0 --pcap-export capture.pcap
+sudo rustnet -i eth0 --pcapng-export annotated.pcapng
 
-# Creates:
-#   capture.pcap                    - Standard PCAP file
-#   capture.pcap.connections.jsonl  - Process attribution (PID, name, timestamps)
-
-# Enrich PCAP with process info and create annotated PCAPNG
-python scripts/pcap_enrich.py capture.pcap -o annotated.pcapng
-
-# Open in Wireshark - packets now show process info in comments
-wireshark annotated.pcapng
+# Optional: combine a saved PCAP with its sidecar after capture.
+python scripts/pcap_enrich.py capture.pcap -o enriched.pcapng
 ```
 
-This workflow gives you the best of both worlds:
-- **RustNet's process attribution**: Know which application generated each packet
-- **Wireshark's deep analysis**: Full protocol dissection with 3000+ analyzers
-
-The enrichment script correlates packets with their originating processes and embeds the information as PCAPNG packet comments, visible in Wireshark's packet details pane.
-
-See [USAGE.md - PCAP Export](USAGE.md#pcap-export) for detailed documentation.
+See [PCAP Export](USAGE.md#pcap-export) for output details and limitations.

@@ -2,9 +2,13 @@
 
 # 安装指南
 
+> **文档版本：** `main` 分支上的本指南描述开发中的代码，可能包含尚未发布的变更。使用 v1.7.0 时，请参阅 [v1.7.0 安装指南](https://github.com/domcyrus/rustnet/blob/v1.7.0/INSTALL.zh-CN.md)。运行 `rustnet --version` 查看已安装的版本。
+
 本文档涵盖 RustNet 在各平台上的所有安装方法。
 
 > **提示：** 想一眼看清哪些发行版打包了 RustNet、各自分发的版本号是多少，请查看 [Repology 上的 RustNet 页面](https://repology.org/project/rustnet/versions)。
+
+[![软件包收录状态](https://repology.org/badge/vertical-allrepos/rustnet.svg)](https://repology.org/project/rustnet/versions)
 
 ## 目录
 
@@ -12,6 +16,7 @@
   - [macOS DMG 安装](#macos-dmg-installation)
   - [Windows MSI 安装](#windows-msi-installation)
   - [Windows Chocolatey 安装](#windows-chocolatey-installation)
+  - [Windows Scoop 安装](#windows-scoop-installation)
   - [Linux 包安装](#linux-package-installation)
   - [FreeBSD 安装](#freebsd-installation)
   - [Android（Termux）安装](#android-termux-installation)
@@ -66,7 +71,7 @@
 
 1. **安装 Npcap Runtime**（包捕获必需）：
    - 从 https://npcap.com/dist/ 下载
-   - 运行安装程序并选择 **"WinPcap API compatible mode"**
+   - 使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持 Npcap 默认设置
 
 2. **下载并安装**适合的 MSI 包：
    - 64 位 Windows 使用 `Rustnet_Windows_64-bit.msi`
@@ -77,7 +82,7 @@
 4. **运行 RustNet**：
    - 打开命令提示符或 PowerShell
    - 运行：`rustnet.exe`
-   - 如果未安装 Npcap 或未处于 WinPcap 兼容模式，RustNet 会显示一条有用的错误消息及安装说明
+   - 如果未安装 Npcap 或无法加载 Npcap，RustNet 会显示一条有用的错误消息及安装说明
    - 注意：根据你的 Npcap 安装设置，你可能需要或不需要 Administrator 特权
 
 ### Windows Chocolatey 安装<a id="windows-chocolatey-installation"></a>
@@ -89,16 +94,32 @@
 choco install rustnet
 ```
 
-**注意：** 你仍需要单独安装 [Npcap](https://npcap.com)，并启用 "WinPcap API compatible mode"。
+**注意：** 请单独安装 [Npcap](https://npcap.com)。使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持 Npcap 默认设置。
+
+### Windows Scoop 安装<a id="windows-scoop-installation"></a>
+
+RustNet 已收录在 [Scoop main bucket](https://github.com/ScoopInstaller/Main/blob/master/bucket/rustnet.json) 中：
+
+```powershell
+scoop install rustnet
+```
+
+**注意：** 请单独安装 [Npcap](https://npcap.com)。使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持 Npcap 默认设置。
 
 ### Linux 包安装<a id="linux-package-installation"></a>
 
-#### Ubuntu PPA（推荐用于 Ubuntu 25.10 Questing 和 26.04 LTS Resolute）
+#### Ubuntu PPA（推荐用于 Ubuntu 22.04+、Linux Mint 和 Pop!_OS）
 
-在 Ubuntu 上安装 RustNet 最简单的方式是通过官方 PPA。该 PPA 为以下 Ubuntu 系列发布构建：
+在 Ubuntu 及其衍生发行版上安装 RustNet 最简单的方式是通过官方 PPA。该 PPA 为以下 Ubuntu 系列发布构建：
 
-- Ubuntu 25.10（Questing Quokka）
+- Ubuntu 22.04 LTS（Jammy Jellyfish）
+- Ubuntu 24.04 LTS（Noble Numbat）
 - Ubuntu 26.04 LTS（Resolute Raccoon）
+
+衍生发行版会将 PPA 注册到对应的 Ubuntu 基础系列，因此相同的命令同样适用：
+
+- Linux Mint 21.x（基于 Jammy）和 22.x（基于 Noble）
+- Pop!_OS 22.04（基于 Jammy）和 24.04（基于 Noble）。Pop!_OS 使用 `apt-manage` 而非 `add-apt-repository`：请运行 `sudo apt-manage add ppa:domcyrus/rustnet`。
 
 ```bash
 # 添加 RustNet PPA
@@ -110,19 +131,21 @@ sudo apt update
 # 安装 rustnet
 sudo apt install rustnet
 
-# 使用 sudo 运行
-sudo rustnet
-
-# 可选：授予 Linux capabilities 以无需 sudo 运行（现代内核 5.8+）
+# 授予 Linux capabilities，以普通用户身份运行（现代内核 5.8+）
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**重要：** 该 PPA 仅支持上述两个系列（Ubuntu 25.10 Questing 和 26.04 LTS Resolute），因为构建需要 Rust 1.88+（项目中使用了 let-chains）。早期 Ubuntu 版本的仓库中没有足够新的 `rustc`。对于旧版 Ubuntu，请使用 GitHub releases 中的 [.deb 包](#debianubuntu-deb-packages)或[从源码构建](#building-from-source)。
+**重要：** 该 PPA 仅支持上述三个系列，因为构建需要 Rust 1.88+（项目中使用了 let-chains）。其他 Ubuntu 系列的仓库中没有足够新的 `rustc`。对于这些版本，请使用 GitHub releases 中的 [.deb 包](#debianubuntu-deb-packages)或[从源码构建](#building-from-source)。
 
 #### Debian/Ubuntu（.deb 包）<a id="debianubuntu-deb-packages"></a>
 
 用于手动安装或非 Ubuntu 的 Debian 系发行版：
+
+**自 v1.7.0 起可用：** GNU 发布二进制文件要求 glibc 2.35 或更高版本。
+ARM64 DEB 支持 Ubuntu 22.04+ 和 Debian 12/13；ARMv7 DEB 支持 Debian 12/13，
+并静态链接 libpcap，以确保在 time64 库迁移前后数据包时间戳的兼容性。
+这些修复不适用于 v1.6.0 的发布文件。
 
 ```bash
 # 下载适合你架构的包：
@@ -130,20 +153,20 @@ rustnet
 # - Rustnet_LinuxDEB_arm64.deb（ARM64）
 # - Rustnet_LinuxDEB_armhf.deb（ARMv7）
 
-# 安装包（Linux capabilities 会自动配置）
+# 安装包（安装后脚本会尝试设置 Linux capabilities）
 sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
 
 # 如有需要安装依赖
 sudo apt-get install -f
 
-# 无需 sudo 运行（post-install 脚本已设置 Linux capabilities）
-rustnet
-
 # 验证 Linux capabilities
 getcap /usr/bin/rustnet
+
+# 若存在 CAP_NET_RAW，可无需 sudo 运行；否则使用 sudo
+rustnet
 ```
 
-**注意：** .deb 包通过 post-install 脚本自动设置 Linux capabilities，因此你可以无需 sudo 运行 RustNet。
+**注意：** .deb 包的安装后脚本会在 `setcap` 可用时尝试设置 Linux capabilities。请用 `getcap /usr/bin/rustnet` 验证；若缺少 `CAP_NET_RAW`，请手动配置 capabilities 或使用 `sudo`。
 
 #### RedHat/Fedora/CentOS（.rpm 包）<a id="redhatfedoracentos-rpm-packages"></a>
 
@@ -154,19 +177,29 @@ getcap /usr/bin/rustnet
 # - Rustnet_LinuxRPM_x86_64.rpm
 # - Rustnet_LinuxRPM_aarch64.rpm
 
-# 安装包（Linux capabilities 会自动配置）
+# 安装包（安装后脚本会尝试设置 Linux capabilities）
 sudo rpm -i Rustnet_LinuxRPM_x86_64.rpm
 # 或使用 dnf/yum：
 sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
 
-# 无需 sudo 运行（post-install 脚本已设置 Linux capabilities）
-rustnet
-
 # 验证 Linux capabilities
 getcap /usr/bin/rustnet
+
+# 若存在 CAP_NET_RAW，可无需 sudo 运行；否则使用 sudo
+rustnet
 ```
 
-**注意：** .rpm 包通过 post-install 脚本自动设置 Linux capabilities，因此你可以无需 sudo 运行 RustNet。
+**注意：** .rpm 包的安装后脚本会在 `setcap` 可用时尝试设置 Linux capabilities。请用 `getcap /usr/bin/rustnet` 验证；若缺少 `CAP_NET_RAW`，请手动配置 capabilities 或使用 `sudo`。
+
+#### Alpine Linux
+
+RustNet 已收录到 Alpine 的 [edge/community 仓库](https://pkgs.alpinelinux.org/packages?name=rustnet&branch=edge&repo=community)。在已启用 `community` 仓库的 Alpine edge 上，以 root 身份运行：
+
+```sh
+apk add rustnet
+```
+
+该软件包会自动设置抓包所需的 capabilities。如果无法抓包，请参阅[权限配置](#permissions-setup)。
 
 #### Arch Linux
 
@@ -247,10 +280,7 @@ sudo dnf copr enable domcyrus/rustnet
 # 安装 rustnet
 sudo dnf install rustnet
 
-# 使用 sudo 运行
-sudo rustnet
-
-# 可选：授予 Linux capabilities 以无需 sudo 运行（现代内核 5.8+）
+# 授予 Linux capabilities，以普通用户身份运行（现代内核 5.8+）
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
@@ -266,10 +296,7 @@ sudo zypper addrepo https://download.opensuse.org/repositories/home:/domcyrus:/r
 sudo zypper refresh
 sudo zypper install rustnet
 
-# 使用 sudo 运行
-sudo rustnet
-
-# 可选：授予 Linux capabilities 以无需 sudo 运行（现代内核 5.8+）
+# 授予 Linux capabilities，以普通用户身份运行（现代内核 5.8+）
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
@@ -534,8 +561,7 @@ cargo build --release --no-default-features
 
 1. **安装 Npcap Runtime**：
    - 从 https://npcap.com/dist/ 下载 Npcap 安装程序
-   - 运行安装程序并在安装期间**选择 "WinPcap API compatible mode"**
-   - 这确保与包捕获库的兼容性
+   - 使用 RustNet v1.6.0 时，请启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持 Npcap 默认设置
 
 2. **运行 RustNet**：
    ```cmd
@@ -546,7 +572,7 @@ cargo build --release --no-default-features
 
 ## 使用 Docker<a id="using-docker"></a>
 
-RustNet 可作为 Docker 容器从 GitHub Container Registry 获取：
+RustNet 可作为 Docker 容器从 GitHub Container Registry 获取。镜像默认以**非 root** 用户运行，二进制文件内置 `CAP_NET_RAW` file capability，因此基础数据包捕获无需额外参数。
 
 ```bash
 # 拉取最新镜像
@@ -555,19 +581,22 @@ docker pull ghcr.io/domcyrus/rustnet:latest
 # 或拉取特定版本
 docker pull ghcr.io/domcyrus/rustnet:0.7.0
 
-# 使用 eBPF 支持所需的 Linux capabilities 运行（latest）
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
+# 方案 A：基础监控（非 root，推荐）
+# 通过内置 CAP_NET_RAW file capability 捕获数据包。
+# 进程归属使用 /proc（禁用 eBPF），无需 --cap-add。
+docker run --rm -it --net=host ghcr.io/domcyrus/rustnet:latest
+
+# 方案 B：完整 eBPF 进程归属（以 root 运行并增加 capabilities）
+# eBPF 需要 CAP_BPF 和 CAP_PERFMON。仅使用 --cap-add 无法让非 root
+# 用户获得这些有效 capabilities，因此还需要以 root 运行。
+docker run --rm -it --user root \
+  --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
   ghcr.io/domcyrus/rustnet:latest
 
-# 使用特定版本运行
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
-  ghcr.io/domcyrus/rustnet:0.7.0
+# 使用指定接口（两种方案均可，在末尾添加 -i）
+docker run --rm -it --net=host ghcr.io/domcyrus/rustnet:latest -i eth0
 
-# 使用指定接口运行
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
-  ghcr.io/domcyrus/rustnet:latest -i eth0
-
-# 替代方案：使用 privileged 模式（安全性较低但更简单）
+# 替代方案：privileged 模式（最简单，安全性最低）
 docker run --rm -it --privileged --net=host \
   ghcr.io/domcyrus/rustnet:latest
 
@@ -575,7 +604,7 @@ docker run --rm -it --privileged --net=host \
 docker run --rm ghcr.io/domcyrus/rustnet:latest --help
 ```
 
-**注意：** 容器需要 Linux capabilities（`NET_RAW`、`BPF` 和 `PERFMON`）或 privileged 模式才能进行带 eBPF 支持的数据包捕获。推荐使用主机网络（`--net=host`）以监控所有网络接口。
+**注意：** 基础捕获（方案 A）不需要特殊参数，镜像通过 `CAP_NET_RAW` file capability 以非 root 用户运行。基于 eBPF 的进程归属（方案 B）还需要 `CAP_BPF` 和 `CAP_PERFMON`；这些 capabilities 无法通过 file capabilities 授予非 root 用户，因此需要使用 `--user root` 和对应的 `--cap-add` 参数。无论使用哪种方案，rustnet 都会在启动后立即丢弃这些 capabilities 并启用沙箱。建议使用主机网络（`--net=host`）监控所有接口。
 
 ## 权限配置<a id="permissions-setup"></a>
 
@@ -716,8 +745,8 @@ cargo build --release
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
 ./target/release/rustnet
 
-# 旧版 Linux（无 CAP_BPF 的旧内核）- 使用 CAP_SYS_ADMIN 作为回退：
-sudo setcap 'cap_net_raw,cap_sys_admin+eip' ./target/release/rustnet
+# 仅包捕获（eBPF 会回退到 procfs）
+sudo setcap 'cap_net_raw+eip' ./target/release/rustnet
 ./target/release/rustnet
 
 # 检查 TUI 统计面板 - 应显示 "Process Detection: eBPF + procfs"
@@ -735,7 +764,8 @@ sudo setcap 'cap_net_raw,cap_sys_admin+eip' ./target/release/rustnet
 - `CAP_PERFMON` —— 性能监控和追踪操作
 
 **旧版 Linux（pre-5.8）：**
-- `CAP_SYS_ADMIN` —— 在没有 CAP_BPF 支持的老内核上进行 BPF 操作所需
+- eBPF 操作需要宽泛的 `CAP_SYS_ADMIN`。不建议默认授予它；请使用
+  `CAP_NET_RAW` 进行包捕获，并让 RustNet 回退到 procfs 进程检测，除非你明确接受该风险。
 
 **注意：** 不需要 CAP_NET_ADMIN。RustNet 使用不带混杂模式的只读数据包捕获。
 
@@ -753,13 +783,37 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/local/bin/rustnet
 rustnet
 ```
 
-### Windows 权限配置<a id="windows-permission-setup"></a>
+### Windows 权限与进程归属配置<a id="windows-permission-setup"></a>
 
-Windows 支持目前有限，但可用时：
+Windows 上有两套相互独立的权限：
 
-- RustNet 需要 **Administrator 特权**
-- 必须安装 **WinPcap** 或 **Npcap** 用于数据包捕获
-- 以 Administrator 身份运行命令提示符或 PowerShell
+1. **数据包捕获**使用 Npcap。RustNet 是否必须以 Administrator 身份运行，
+   取决于安装 Npcap 时选择的选项。如果 Npcap 被配置为仅允许管理员捕获，
+   请使用**以管理员身份运行**启动命令提示符、PowerShell 或 Windows Terminal；
+   否则标准用户进程也可以捕获数据包。
+2. **进程归属**优先使用 Windows 事件跟踪（ETW），并始终保留 IP Helper API
+   用于校准和回退。
+
+启动时，RustNet 会尝试订阅 Windows 内核网络与进程 ETW provider。概览标签页会显示实际使用的模式：
+
+| Detection 显示 | 含义 |
+|---|---|
+| `ETW + IP Helper` | 事件驱动的进程归属已启用。ETW 可捕获短生命周期进程，IP Helper 用于补全缓存未命中项并校准当前 socket。 |
+| `IP Helper` | ETW 无法启动。RustNet 不会因此退出，而是继续使用 `GetExtendedTcpTable` 和 `GetExtendedUdpTable`；在两次表快照之间结束的极短生命周期进程可能会被遗漏。 |
+
+以 Administrator 身份运行是启用 ETW 兼容性最好的方式。作为权限更小的
+替代方案，本地管理员可以将用户加入内置的 **Performance Log Users（性能日志用户）**
+组（SID `S-1-5-32-559`），然后让该用户注销并重新登录。特定 ETW provider
+仍可能被系统安全策略拒绝，因此应以概览标签页显示的模式为准，而不要假定
+ETW 一定已启用。
+
+ETW 授权与 Npcap 授权彼此独立。加入 **Performance Log Users** 不会授予
+数据包捕获权限；ETW 不可用时，非管理员仍可使用 IP Helper 进行进程归属。
+无需手动选择回退选项，RustNet 会自动使用当前可用的最佳模式。
+
+即使 ETW 已启用，仍可能出现少量 `<unknown>`。常见情况包括没有 socket
+所有者的 ARP 与 ICMP 流量、系统所有的流量、ETW 会话启动前已经观察到的数据包，
+以及 Windows 不允许读取进程映像的事件。
 
 ### 验证权限<a id="verifying-permissions"></a>
 
@@ -792,7 +846,7 @@ getcap ~/.cargo/bin/rustnet
 getcap $(which rustnet)
 
 # 现代（5.8+）：应显示 cap_net_raw,cap_bpf,cap_perfmon+eip
-# 旧版：应显示 cap_net_raw,cap_sys_admin+eip
+# 如果 eBPF capability 不可用：应显示 cap_net_raw+eip
 
 # 不使用 sudo 测试
 rustnet --help
@@ -1028,7 +1082,7 @@ docker run --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON \
 #### Windows：未找到 Npcap<a id="windows-npcap-not-found"></a>
 
 - 确保从 https://npcap.com/dist/ 安装了 Npcap
-- 在 Npcap 安装期间，选择 **"WinPcap API compatible mode"**
+- 使用 RustNet v1.6.0 时，请在安装 Npcap 时启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持默认设置
 - 验证 Npcap 服务正在运行：`sc query npcap`
 - 尝试使用管理员权限重新安装 Npcap
 
@@ -1063,6 +1117,23 @@ sudo yum install make pkgconfig libpcap-devel elfutils-libelf-devel zlib-devel c
 **替代方案：** 使用 [Windows Terminal](https://aka.ms/terminal)，它开箱即用地提供更好的 Unicode 支持。
 
 参见：[ratatui#457](https://github.com/ratatui/ratatui/issues/457)、[gtop#21](https://github.com/aksakalli/gtop/issues/21)
+
+#### macOS：终端 CPU 占用高或图表有缺口（iTerm2）<a id="macos-high-terminal-cpu-or-gappy-graphs-iterm2"></a>
+
+RustNet 的图表使用 Unicode Braille 字符绘制。macOS 经典的等宽字体（Monaco、Menlo）不包含 Braille 字形，因此 iTerm2 会对每个图表单元格进行字体回退渲染。这不仅很慢（仅显示图表就可能占用 iTerm2 10-20% 的 CPU），回退字形还常常在波形中留下明显的缺口。
+
+**解决方案：** 为 iTerm2 的非 ASCII 文本指定一个包含 Braille 字形的字体：
+
+1. 安装一个 [Nerd Font](https://www.nerdfonts.com/)，例如：
+
+   ```bash
+   brew install --cask font-jetbrains-mono-nerd-font
+   ```
+
+2. 在 iTerm2 中：**Settings → Profiles → Text**，启用 **"Use a different font for non-ASCII text"**（为非 ASCII 文本使用不同的字体）并选择该 Nerd Font。常规文本保持当前字体不变；只有符号和图表字形使用新字体。
+3. 可选：**Settings → General → Preferences → "Maximize throughput"**（最大化吞吐量）将 iTerm2 的重绘率限制在 30 fps，可进一步降低频繁刷新的 TUI 应用的 CPU 占用。
+
+**替代方案：** 使用 GPU 加速的终端，如 [WezTerm](https://wezterm.org/)、[Ghostty](https://ghostty.org/) 或 [kitty](https://sw.kovidgoyal.net/kitty/)。它们渲染 RustNet 的 CPU 占用远低于 iTerm2，其中 WezTerm 内置 JetBrains Mono 及符号回退字体，图表开箱即用即可正确渲染。
 
 ### 获取帮助<a id="getting-help"></a>
 

@@ -1,6 +1,6 @@
 # Multi-stage Docker build for RustNet
 # Base images are pinned by digest for reproducible, tamper-evident builds.
-FROM rust:1.96-slim@sha256:6abf73f05806f36362d0ff2722f2250c6153398831edd0455e0e0baa1f78ecc7 AS builder
+FROM rust:1.98-slim@sha256:4cd829461bd5c4d511c32e269da9cb8929223b666519d8004e35fc8d1d771ab7 AS builder
 
 # Install rustfmt component (required for eBPF compilation)
 RUN rustup component add rustfmt
@@ -33,12 +33,20 @@ COPY benches ./benches
 # bundled vmlinux headers compiled by its own build.rs.
 COPY crates ./crates
 
-# Build the application in release mode (eBPF is enabled by default on Linux)
-RUN cargo build --release
+# Build the application in release mode (eBPF is enabled by default on Linux).
+# Optional features can be added with --build-arg CARGO_FEATURES=kubernetes
+# (additive: default features stay on). The CI Kubernetes image variant passes
+# CARGO_FEATURES=kubernetes; the default image leaves it empty.
+ARG CARGO_FEATURES=""
+RUN if [ -n "$CARGO_FEATURES" ]; then \
+        cargo build --release --features "$CARGO_FEATURES"; \
+    else \
+        cargo build --release; \
+    fi
 
 # Runtime stage - use trixie-slim to match GLIBC version from builder
 # Pinned by digest for a reproducible, tamper-evident base image.
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 # Install runtime dependencies
 # libcap2-bin provides setcap, used below to grant packet-capture capabilities
@@ -61,9 +69,6 @@ WORKDIR /app
 
 # Copy the binary from builder stage
 COPY --from=builder /app/target/release/rustnet /usr/local/bin/rustnet
-
-# Copy the services asset for reference (the binary already embeds it at build time)
-COPY --from=builder /app/crates/rustnet-core/assets/services ./assets/services
 
 # Create logs directory
 RUN mkdir -p /app/logs && chown rustnet:rustnet /app/logs
@@ -95,9 +100,9 @@ LABEL org.opencontainers.image.licenses="Apache License, Version 2.0"
 # bounding set and can't be granted to a non-root user via file capabilities.
 # Enable eBPF by running as root with the extra caps (modern kernels 5.8+):
 #   docker run --user root --cap-add=BPF --cap-add=PERFMON rustnet
-# Older kernels use CAP_SYS_ADMIN instead of BPF+PERFMON:
-#   docker run --user root --cap-add=SYS_ADMIN rustnet
-# Without those, rustnet falls back to /proc-based process detection.
+# Legacy kernels require broad CAP_SYS_ADMIN for eBPF. RustNet does not
+# recommend granting it by default; without eBPF caps, rustnet falls back to
+# /proc-based process detection.
 # CAP_NET_ADMIN is NOT required (read-only, non-promiscuous capture).
 USER rustnet
 ENTRYPOINT ["rustnet"]

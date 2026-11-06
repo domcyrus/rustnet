@@ -1,19 +1,27 @@
-<p align="center"><strong>English</strong> | <a href="USAGE.zh-CN.md">简体中文</a></p>
+<p align="center"><strong>English</strong> | <a href="USAGE.zh-CN.md">简体中文</a> | <a href="USAGE.ja.md">日本語</a></p>
 
 # Usage Guide
+
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased features. For v1.7.0, use the [v1.7.0 usage guide](https://github.com/domcyrus/rustnet/blob/v1.7.0/USAGE.md). Check `rustnet --version` for your installed version and `rustnet --help` for its supported options.
 
 This guide covers detailed usage of RustNet, including command-line options, keyboard controls, filtering, sorting, and understanding connection lifecycle.
 
 ## Table of Contents
 
+- [Terminal views](#compact-terminals)
+- [Traffic charts](#traffic-charts)
 - [Running RustNet](#running-rustnet)
 - [Command-line Options](#command-line-options)
+- [Headless Mode](#headless-mode)
 - [Keyboard Controls](#keyboard-controls)
 - [Mouse Controls](#mouse-controls)
 - [Filtering](#filtering)
 - [Sorting](#sorting)
 - [Process Grouping](#process-grouping)
 - [Network Statistics Panel](#network-statistics-panel)
+- [Process Activity](#process-activity)
+- [Host Socket Inventory](#host-socket-inventory)
+- [Passive DNS Analytics](#passive-dns-analytics)
 - [Interface Statistics](#interface-statistics)
 - [Connection Lifecycle & Visual Indicators](#connection-lifecycle--visual-indicators)
 - [Logging](#logging)
@@ -25,7 +33,7 @@ Packet capture requires elevated privileges on most systems. See [INSTALL.md](IN
 **Quick start:**
 
 ```bash
-# Run with sudo (works on all platforms)
+# Run with sudo on Unix-like systems
 sudo rustnet
 
 # Or grant capabilities to run without sudo (see INSTALL.md for details)
@@ -33,6 +41,10 @@ sudo rustnet
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /path/to/rustnet
 rustnet
 ```
+
+On Windows, install Npcap and run `rustnet.exe` from PowerShell or Command
+Prompt. Capture permissions depend on the Npcap installation. See the
+[Windows installation steps](INSTALL.md#windows-msi-installation).
 
 **Basic usage examples:**
 
@@ -55,15 +67,15 @@ rustnet --no-localhost
 # Show localhost connections (override default filtering)
 rustnet --show-localhost
 
-# Set UI refresh interval (in milliseconds)
+# Set the UI or headless snapshot refresh interval (in milliseconds)
 rustnet -r 500
 rustnet --refresh-interval 2000
 
 # Disable deep packet inspection
 rustnet --no-dpi
 
-# Restore the original full-color palette
-rustnet --theme classic
+# Pick a color theme (muted, vivid, catppuccin-mocha, tokyo-night, gruvbox, nord)
+rustnet --theme tokyo-night
 
 # Disable reverse DNS lookups (enabled by default)
 rustnet --no-resolve-dns
@@ -85,26 +97,92 @@ Options:
   -i, --interface <INTERFACE>            Network interface to monitor
       --no-localhost                     Filter out localhost connections (default: filtered)
       --show-localhost                   Show localhost connections (overrides default filtering)
-  -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 1000]
+      --headless                         Run without the interactive terminal UI
+      --duration <SECONDS>               Stop headless monitoring after this many seconds
+      --output <FORMAT>                  Headless output format: jsonl (stream snapshots) or
+                                         json (final snapshot)
+      --filter <QUERY>                   Filter headless output using the shared connection filter syntax
+  -r, --refresh-interval <MILLISECONDS>  UI and headless snapshot refresh interval in milliseconds
+                                         [default: 500]
       --no-dpi                           Disable deep packet inspection
       --no-resolve-dns                   Disable reverse DNS lookups (enabled by default)
       --show-ptr-lookups                 Show PTR lookup connections (hidden by default)
   -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
       --json-log <FILE>                  Enable JSON logging of connection events to specified file
       --pcap-export <FILE>               Export captured packets to PCAP file for Wireshark analysis
+      --pcapng-export <FILE>             Export captured packets to annotated PCAPNG file for Wireshark analysis
       --no-color                         Disable all colors in the UI (also respects NO_COLOR env var)
-      --theme <PRESET>                   Color theme preset: "muted" (single accent, color reserved
-                                         for signals, default) or "classic" (original full-color palette)
+      --theme <PRESET>                   Color theme: muted (default), vivid, catppuccin-mocha,
+                                         tokyo-night, gruvbox, nord. Overrides the theme set in the
+                                         config file (~/.config/rustnet/config.toml)
       --geoip-country <PATH>             Path to GeoLite2-Country.mmdb (auto-discovered if not specified)
       --geoip-asn <PATH>                 Path to GeoLite2-ASN.mmdb (auto-discovered if not specified)
       --geoip-city <PATH>                Path to GeoLite2-City.mmdb (auto-discovered if not specified)
       --no-geoip                         Disable GeoIP lookups entirely
   -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
-      --no-sandbox                       Disable Landlock sandboxing (Linux only)
-      --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
+      --no-sandbox                       Disable platform sandboxing
+      --sandbox-strict                   Require full sandbox enforcement or exit
+      --no-uid-drop                      Keep running as root instead of dropping to
+                                         SUDO_UID/SUDO_GID (or nobody) after initialization (Linux, macOS, and FreeBSD)
   -h, --help                             Print help
   -V, --version                          Print version
 ```
+
+Builds compiled with the optional `kubernetes` feature (including the official Docker image) additionally expose `--kubernetes <MODE>`. See [`--kubernetes`](#--kubernetes-mode-optional-feature) below.
+
+### Headless Mode
+
+> **Available since v1.7.0.**
+
+RustNet starts its interactive TUI by default. If either stdin or stdout is not a terminal, interactive startup is refused before packet capture begins. Scripts, pipelines, schedulers, and services must opt in explicitly with `--headless`.
+
+```bash
+# Stream snapshots until interrupted
+rustnet --headless
+
+# Stop after 60 seconds and emit one final snapshot
+rustnet --headless --duration 60 --output json
+
+# Stream only matching connections
+rustnet --headless --filter 'process:curl app:https'
+```
+
+The headless controls are:
+
+- **`--headless`**: disables terminal setup and reserves stdout for machine-readable records only. Diagnostics go to stderr or configured log files.
+- **`--duration <SECONDS>`**: stops after a positive whole number of seconds. Without it, monitoring continues until a supported shutdown signal arrives. JSONL also stops when it discovers that its output pipe has closed. Headless shutdown signals are SIGINT, SIGTERM, and SIGHUP on Unix, and Ctrl+C and Ctrl+Break on Windows.
+- **`--output jsonl|json`**: selects the output shape. JSONL is the default and writes versioned latest-value snapshots, one JSON object per line. Under output backpressure, a stale queued snapshot is replaced by the newest one; consumers can detect skipped `runtime.snapshot_generation` values. After a duration or signal shutdown, JSONL also writes a final terminal record containing the termination reason and shutdown result. JSON waits for shutdown and writes exactly one final versioned record.
+- **`--filter <QUERY>`**: applies the same connection-filter syntax as the TUI, including fields such as `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, and `proto:`, plus `/pattern/` regular expressions.
+
+#### Schema contract
+
+The current wire schema is `schema_version = 1`. Every record is a snapshot object with these top-level fields: `schema_version`, `type`, `timestamp`, `runtime`, `sandbox`, `stats`, `filter`, `connection_count`, and `connections`. A terminal record sets `runtime.status` to `stopping`, `stopped`, or `stopped_with_errors`, and includes `runtime.termination_reason` and `runtime.shutdown`. Connection records cover endpoints, process attribution, traffic, protocol timing, GeoIP, and optional Kubernetes metadata. The `rtt` object includes current, initial, smoothed TCP, DNS, LLMNR, NetBIOS, ICMP echo, STUN, and NTP timings in milliseconds. Optional enrichment and timing fields remain null until discovered; connections drained during shutdown can appear before process, GeoIP, or Kubernetes enrichment completes. Consumers must branch on `schema_version` and tolerate unknown additive fields.
+
+Development builds reuse encoded JSON for unchanged historic headless connections. The cache retains at most 10,000 records and 16 MiB of encoded connection JSON, plus their projected fields and bookkeeping. It compares all exported connection fields, so late metadata and final counters still update. Every output record remains a full snapshot with schema version 1; snapshot construction and output size still grow with the number of visible connections.
+
+Connection `id` values are opaque identifiers that remain stable when a connection becomes historic and distinguish later connections reusing the same endpoints. Traffic rates use `traffic.outgoing_bytes_per_second` and `traffic.incoming_bytes_per_second`, both in bytes per second. If workers exceed the shutdown deadline, the terminal status remains `stopping` and `runtime.shutdown.timed_out_workers` reports their count. That record can contain the last published snapshot rather than fully drained state; the process exits unsuccessfully.
+
+Closing a JSONL pipeline early, for example with `head`, produces a broken pipe. RustNet treats that as a successful request to stop, shuts down its workers, and does not attempt a terminal record on the closed pipe. A packet-capture initialization failure or a later capture failure exits with a nonzero status. `--duration`, `--output`, and `--filter` require `--headless`.
+
+`stats.packets_captured` and `stats.bytes_captured` are cumulative totals since startup, independent of connection retention, `--filter`, and TUI clears. Every packet delivered by libpcap is counted before attribution gating, processing queue drops, parsing, or tracking limits. Bytes use libpcap's original packet length before snaplen truncation, including the capture link type's headers; they are neither application payload bytes nor exact physical wire usage. Capture interface selection and `--bpf-filter` determine coverage. Packets lost before delivery or bypassing capture are excluded, and duplicate observations on multiple interfaces are counted separately. These totals have no ingress/egress or client attribution. The fields extend schema version 1 additively; older producers may omit them. External exporters can expose them as Prometheus counters, treating restart as a reset and checking snapshot freshness and capture drops. Values are sampled independently while capture is running.
+
+#### Traffic history and capture files
+
+Snapshot JSONL is not a packet log or a complete connection-event history. Short-lived connections, especially generations that reuse the same endpoints between snapshots, can be absent from the entire stream. This can happen with zero packet drops and no gaps in `runtime.snapshot_generation`. Global `stats.packets_processed` can therefore be correct while the sum of the visible connection counters is smaller. Do not sum cumulative counters across snapshots or treat a terminal snapshot as a complete session history.
+
+For packet-level analysis, save a separate PCAP alongside the snapshots:
+
+```bash
+umask 077
+rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
+  --pcap-export capture.pcap > snapshots.jsonl
+```
+
+When export succeeds, PCAP preserves the packets received by the capture backend, subject to capture filters and captured packet length; it cannot recover packets dropped before capture. Inspect `stats.packets_dropped` (processing queue), `stats.capture_packets_dropped` (capture backend), and `stats.interface_packets_dropped` (interface, when available). Also require zero `stats.pcap_export_errors`, check the shutdown result, and compare `stats.pcap_records_written` with the actual saved file: write or flush failures can leave an incomplete capture even with zero packet drops. These counters measure different stages and are not an unconditional proof of completeness. When validating coverage, compare against an independent capture using the same interface and capture filter, check its own drop counters, and compare packet identities and lengths rather than only totals. `--filter` filters snapshot rows, whereas `--bpf-filter` limits captured traffic. `--json-log` is a separate connection-event stream, not a packet capture.
+
+Stdout, JSON logs, PCAP, its generated `.connections.jsonl` sidecar, and PCAPNG must use distinct files. RustNet rejects regular-file stdout aliases before it truncates or writes configured outputs. However, shell redirection with `>` can truncate a file before RustNet starts, so always choose a separate snapshot path.
+
+Every emitted record contains a full selected snapshot. More connections, richer metadata, and shorter refresh intervals increase CPU, memory, and disk usage. A five-second interval reduces output frequency but does not preserve connections missed between snapshots or remove background collection costs. Measure your own traffic and storage budget before unattended use.
 
 ### Option Details
 
@@ -129,6 +207,11 @@ rustnet -i eth0          # Monitor Ethernet interface
 rustnet -i wlan0         # Monitor WiFi interface
 rustnet -i en0           # Monitor macOS primary interface
 
+# Windows (available since v1.7.0): use the adapter's friendly name; it is resolved to the
+# \Device\NPF_{GUID} device automatically
+rustnet -i Ethernet
+rustnet -i "Wi-Fi"
+
 # Monitor VPN and tunnel interfaces (TUN/TAP support)
 rustnet -i utun0         # macOS VPN tunnel (TUN, Layer 3)
 rustnet -i tun0          # Linux/BSD VPN tunnel (TUN, Layer 3)
@@ -152,7 +235,7 @@ RustNet automatically detects TUN/TAP interfaces and adjusts packet parsing acco
 **Platform-specific notes:**
 - **macOS**: Without `-i`, PKTAP is used automatically for better process detection. Use `-i <interface>` to monitor a specific interface instead
 - **Linux**: Use `-i any` to capture on all interfaces simultaneously (not available on other platforms)
-- **TUN/TAP**: Fully supported on all platforms - RustNet detects interface type by name and adjusts parsing
+- **TUN/TAP**: When libpcap/Npcap exposes the interface, RustNet detects its type by name and adjusts parsing
 - **All platforms**: If you specify a non-existent interface, an error will show available interfaces
 
 **Finding your interfaces:**
@@ -171,17 +254,17 @@ This is useful for reducing noise in the connection list, as most users don't ne
 
 #### `-r, --refresh-interval <MILLISECONDS>`
 
-Set the UI refresh rate in milliseconds. Lower values provide more responsive updates but increase CPU usage.
+Set the UI and headless snapshot refresh rate in milliseconds. The minimum is 1ms. Lower values provide more responsive updates and more frequent JSONL records, but increase CPU usage.
 
 **Recommendations:**
-- **Default (1000ms)**: Good balance for most users
-- **High-traffic networks (2000ms)**: Reduce CPU usage on busy networks
-- **Real-time monitoring (500ms)**: More responsive updates for quick analysis
+- **Default (500ms)**: Smooth live graphs and responsive updates
+- **High-traffic networks (1000-2000ms)**: Reduce CPU usage on busy networks
 - **Low-end systems (2000-3000ms)**: Reduce load on resource-constrained machines
 
 #### `--no-dpi`
 
-Disable Deep Packet Inspection (DPI). This reduces CPU usage by 20-40% on high-traffic networks but disables:
+Disable Deep Packet Inspection (DPI). This can reduce CPU usage on busy
+networks, but disables:
 - HTTP host detection
 - HTTPS/TLS SNI extraction
 - DNS query/response detection
@@ -189,6 +272,20 @@ Disable Deep Packet Inspection (DPI). This reduces CPU usage by 20-40% on high-t
 - QUIC protocol detection
 
 Useful for performance-constrained environments or when application-level details aren't needed.
+
+#### Database DPI (available since v1.7.0)
+
+With DPI enabled, **Details → Application** shows:
+
+| Protocol | Metadata |
+| --- | --- |
+| MySQL | Server version, connection ID, TLS capability/request |
+| Redis | Command, requested HELLO version and SELECT database index |
+| PostgreSQL | Requested protocol version, database, application name, TLS request |
+
+Filter with `app:mysql`, `app:redis`, or `app:postgresql`. These protocol names also appear in headless output and JSON logs.
+
+Only complete messages within a single TCP packet are inspected; encrypted or split traffic may remain unidentified. Credentials, SQL, Redis keys and values are excluded from DPI metadata.
 
 #### `--no-resolve-dns` / `--show-ptr-lookups`
 
@@ -205,15 +302,71 @@ Select the color theme preset:
 
 - **`muted`** (default): A restrained palette with one cyan accent. Addresses
   keep calm colors (remote = blue, local = cyan); everything else uses color
-  only for *signals* — transitional connection states, staleness (yellow/red
-  rows), and live bandwidth.
-- **`classic`**: The original full-color palette from earlier releases, with a
-  distinct color per column.
+  only for *signals*: transitional connection states, staleness (a removal
+  stripe and countdown running yellow to red while context cells soften),
+  and live bandwidth.
+- **`vivid`**: The same ANSI-16 palette as `muted`, but the chrome itself takes
+  color: yellow headings and keys, magenta borders, and a distinct color per
+  column.
+- **`catppuccin-mocha`**, **`tokyo-night`**, **`gruvbox`**, **`nord`**:
+  Truecolor renditions of the popular palettes. On terminals without truecolor
+  support they fall back to the nearest ANSI-16 colors.
 
 ```bash
-# Bring back the original full-color look
-rustnet --theme classic
+# Color the chrome too, with a distinct color per column
+rustnet --theme vivid
+
+# Use a truecolor theme
+rustnet --theme tokyo-night
 ```
+
+The theme can also be set in an optional config file at
+`~/.config/rustnet/config.toml` (`$XDG_CONFIG_HOME/rustnet/config.toml` when
+set; `%APPDATA%\rustnet\config.toml` on Windows), so the flag is not needed on
+every run. The `[theme.overrides]` table optionally replaces individual colors:
+
+```toml
+[theme]
+name = "tokyo-night"
+
+[theme.overrides]
+accent = "#ff9e64"
+border = "darkgray"
+```
+
+Override values are ANSI color names (`red`, `lightblue`, `darkgray`, ...) or
+`#rrggbb` hex. Valid keys: `accent`, `ok`, `warn`, `err`, `info`, `special`,
+`muted`, `faint`, `text`, `heading`, `label`, `key`, `border`, `rx`, `tx`,
+`rx_wave`, `tx_wave`, `selection_bg`, `selection_fg`, `status_bg`.
+
+Precedence: `--theme` on the command line overrides the config file, which
+overrides the `muted` default. A missing config file is fine; an unreadable or
+invalid file, or a bad override value, prints a warning at startup and falls
+back to the defaults. Overrides that leave a foreground/background pair below
+3:1 contrast also print a startup warning, though the colors are used as
+given. Under `sudo rustnet`, the config of the user who ran sudo is read
+rather than root's, and the file must be owned by that user.
+
+On light terminal backgrounds, ANSI Gray (the muted/label text tier of the
+`muted` and `vivid` presets) is nearly unreadable, so at startup rustnet asks
+the terminal for its background color (an OSC 11 query, Unix only) and darkens
+those gray tiers to ANSI DarkGray when the background reports as light; the
+per-process name tints darken likewise. Terminals that do not answer the query
+keep the theme as-is, and explicit `[theme.overrides]` values are never
+touched.
+
+**Available since v1.7.0:** The same file accepts an optional `[view]` table. Set `group_by_process = true`
+to start Overview with collapsed process groups. The default is `false` (flat).
+`a` toggles grouping for the session, `Space` expands a group, and `r` restores
+the configured grouping preference. These settings do not affect headless output.
+
+```toml
+[view]
+group_by_process = true
+```
+
+For an optional Help shadow, add `[ui]` with `popup_shadow = true` to the same
+config file (default: `false`). `NO_COLOR` or `--no-color` disables the shadow.
 
 Related: `--no-color` disables all colors entirely (also honors the `NO_COLOR`
 environment variable).
@@ -266,9 +419,45 @@ Enable logging with the specified level. Logging is **disabled by default**.
 - `debug` - Detailed debugging information
 - `trace` - Very verbose output (includes packet-level details)
 
-Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`
+Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`. Since v1.7.0, RustNet adds a numeric suffix if that name already exists.
+
+#### `--kubernetes <MODE>` (optional feature) <a id="--kubernetes-mode-optional-feature"></a>
+
+Attribute connections to their owning Kubernetes pod and container. This flag only exists in builds compiled with the `kubernetes` cargo feature: the official Docker image (`ghcr.io/domcyrus/rustnet`) ships with it enabled, while native installs (cargo, Homebrew, deb/rpm) leave it off.
+
+**Modes:**
+
+- `auto` (default): Enable attribution only when RustNet itself is running inside a pod
+- `on`: Always enable (e.g. when running directly on a node)
+- `off`: Disable attribution
+
+When active, RustNet maps each connection's PID to its pod UID and container ID via cgroups (`/proc/<pid>/cgroup`) and resolves human-readable pod and container names from the kubelet log directories (`/var/log/containers`, `/var/log/pods`). This is runtime-agnostic and needs no CRI socket or kubelet credentials. Pod-owned sockets are attributed even when RustNet runs with `hostNetwork: true`, because the per-PID socket tables are network-namespace aware.
+
+Attribution is surfaced in:
+
+- The **Details tab**, as a "Kubernetes" section showing pod name, namespace, pod UID, container name, and container ID
+- **JSON logs** (`--json-log`) and the `--pcap-export` sidecar JSONL, as a `kubernetes` object per connection event
+- **PCAPNG packet comments** (`--pcapng-export`), as `pod=`, `ns=`, `pod_uid=`, `container=`, and `container_id=` fields
+- The `pod:`, `ns:`, and `container:` [filter keywords](#keyword-filters)
+
+**Running on a cluster:** the easiest way to use this is the [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) plugin (`kubectl krew install rustnet`). It launches RustNet as an ephemeral debug pod on a node using the official image, mounts the kubelet log directories read-only for name resolution, and cleans up the pod on exit. Since the plugin runs RustNet inside a pod, the default `auto` mode enables attribution without any flags.
+
+**Short flows (available since v1.7.0):** eBPF retains cgroup v2 pod/container identity after process exit. See [Kubernetes capture](KUBERNETES.md) for retention limits and the separate plugin’s `--output-dir` follow-up.
+
+```bash
+# On a Kubernetes cluster: run as an ephemeral debug pod via the plugin
+kubectl rustnet --node worker-3
+
+# Native build with the feature enabled
+cargo build --release --features kubernetes
+
+# Force attribution on outside a pod (e.g. directly on a node)
+rustnet --kubernetes on
+```
 
 ## Keyboard Controls
+
+> **Available since v1.7.0.**
 
 ### Navigation
 
@@ -281,29 +470,83 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 
 ### Views and Tabs
 
-- `Tab` or `]` - Next tab
-- `Shift+Tab` or `[` - Previous tab
-- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Interfaces / Graph / Help
+- `Tab` - Next tab
+- `Shift+Tab` - Previous tab
+- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Host
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
-- `h` - Toggle help screen
+- `h` - Toggle a help overlay containing controls for the active tab
+
+The help overlay keeps the active tab visible underneath it and only lists
+controls and concepts that apply to that tab. Tab navigation (`Tab`,
+`Shift+Tab`, `1`-`5`) stays available while the overlay is open, and a mouse
+click anywhere dismisses it.
+
+### Compact terminals
+
+When the dashboard does not fit, use `v` / Shift+`v` or click a section name to
+switch views. Host always uses these controls for Sockets, Interfaces, and DNS.
+In Details they also page through long sections; `j` / `k` and the mouse wheel
+switch connections. The selected section survives resizing and connection changes.
+
+Host's Sockets and Interfaces use wrapped records when tables do not fit.
+Scroll with `j` / `k`, arrows, Page Up/Down, `g` / `G`, or the mouse wheel.
+In compact Overview, Esc returns from System to Connections; `i` toggles the
+System sidebar on wider terminals. Press `h` for the active view's controls.
+
+### Traffic charts
+
+Graph uses the selected capture interface's counters. `any` and macOS default
+`pktap` show all-interface totals, which can count the same traffic more than once.
+Missing counters leave RX/TX plots unavailable until sampling resumes.
+
+Graph and Details preserve sampled bursts on independent automatic linear RX/TX
+scales in bytes per second (KiB/MiB/GiB are binary units). Compare numeric readings
+across directions. Headers show current rate, window peak, and `2s avg` when space
+permits. `0 B/s` means observed idle traffic; a placeholder means unavailable data.
+Details and Top Processes use smoothed connection rates; Graph uses interface rates.
+
+In Activity, `s` selects `2s Avg TX/RX` sorting and `d` switches TX/RX. Share bars
+cover the last 60 seconds; interface shares can overlap for virtual/VPN interfaces.
+Overview's filter and history toggle do not limit Activity. Both views hide PTR
+traffic when DNS resolution is enabled unless `--show-ptr-lookups` is set.
+
+### Observed VLAN IDs
+
+> **Available since v1.7.0.**
+
+Details shows **Observed VLANs** in the Connection section, with the sorted,
+unique 802.1Q IDs seen for that connection. The field supports click-to-copy.
+A placeholder means no tag was observed, not proof that the traffic is untagged.
+VID `0` denotes a priority tag, not VLAN membership. Later packets without a
+visible tag do not erase earlier observations.
+
+Headless JSON/JSONL connections include `observed_vlan_ids` (an empty array
+when none were observed), an additive field in schema version 1. JSON event
+logs and PCAP sidecars include the same array when nonempty, using the IDs
+known at the time of the record.
+
+Tags must be present in captured Ethernet, Linux SLL, or SLL2 frames. OS/NIC
+stripping, including macOS PKTAP, can hide them. Only the existing single
+802.1Q tag parser is supported; this does not add stacked VLAN parsing.
+Connection grouping still uses the protocol and endpoint tuple: multiple IDs
+are observations for that row, not a VLAN stack or isolation between VLANs.
 
 ### Actions
 
 - `c` - Copy remote address to clipboard
 - `p` - Toggle between service names and port numbers
-- `d` - Toggle between hostnames and IP addresses (disabled by `--no-resolve-dns`)
+- `d` - Toggle hostnames/IPs on Overview or Egress (TX)/Ingress (RX) on Activity
 - `/` - Enter filter mode (vim-style search with real-time results)
 - `x` - Clear all connections and reset statistics (press twice to confirm)
 - `t` - Toggle display of historic (closed) connections
-- `i` - Toggle the System info sidebar
 - `r` - Reset view to defaults (clears grouping, sort, filter, and historic)
 
 ### Process Grouping
 
 - `a` - Toggle process grouping mode (aggregate connections by process)
 - `Space` - Expand/collapse selected process group
-- `←` or `h` - Collapse selected group
+- `←` - Collapse selected group
 - `→` or `l` - Expand selected group
 
 ### Sorting
@@ -343,7 +586,17 @@ RustNet has full mouse support. Mouse capture is enabled automatically — all i
 
 | Action | Effect |
 |--------|--------|
+| **Scroll wheel** | Show the previous/next connection, skipping group headers |
+| **Click** a connection in the top strip | Select that connection |
 | **Click** on any field line | Copy the field value to the system clipboard |
+
+Since v1.7.0, `v` / Shift+`v` moves through information pages and
+sections when the complete dashboard does not fit; clicking a section opens its
+first page. Details uses no information scrollbar. `j` / `k`, up/down arrows,
+Page Up/Down (or Ctrl+B/F), and the mouse wheel navigate connections, skipping
+group headers. `g` / `G` select the first/last connection. Changing connections
+preserves the section and opens its first page. The Traffic section keeps its
+RX/TX plots when space permits, otherwise it displays paged statistics.
 
 Clicking a field copies just the value (not the label). For example, clicking the "Remote Address: 142.250.80.46:443" line copies `142.250.80.46:443` to your clipboard. A confirmation message appears in the status bar for 3 seconds.
 
@@ -374,12 +627,19 @@ Use keyword filters for targeted searches:
 | `dport:` | `dstport:`, `dest-port:`, `destination-port:` | Destination port (exact or regex) | `dport:443` matches only destination port 443 |
 | `src:` | `source:` | Source IPs/hostnames | `src:192.168` matches 192.168.x.x |
 | `dst:` | `dest:`, `destination:` | Destinations | `dst:github.com` matches github.com |
-| `process:` | `proc:` | Process names | `process:ssh` matches ssh, sshd |
-| `sni:` | `host:`, `hostname:` | SNI hostnames (HTTPS) | `sni:api` matches api.example.com |
+| `process:` | `proc:` | Process names; `unknown` includes unresolved names | `process:ssh` matches ssh, sshd |
+| `pid:` | | Exact process ID (available since v1.7.0) | `pid:1234` matches PID 1234 |
+| `sni:` | `host:`, `hostname:` | SNI hostnames (HTTPS) and DNS-attributed hostnames | `sni:api` matches api.example.com |
 | `service:` | `svc:` | Service names | `service:https` matches HTTPS service |
 | `app:` | `application:` | Detected application protocol | `app:ssh` matches SSH connections |
 | `state:` | | Protocol states | `state:established` matches established connections |
 | `proto:` | `protocol:` | Protocol type | `proto:tcp` matches TCP connections |
+| `pod:` | | Kubernetes pod name or UID * | `pod:nginx` matches nginx-86644db9cc-mf5lx |
+| `ns:` | `namespace:` | Kubernetes pod namespace * | `ns:kube-system` matches pods in kube-system |
+| `container:` | `cont:` | Container name or ID (generic Linux support since v1.7.0) | `container:nginx` matches the nginx container |
+| `runtime:` | | Container manager (available since v1.7.0) | `runtime:docker`, `runtime:podman`, `runtime:lxc` |
+
+\* Requires a build with the `kubernetes` feature and active pod attribution. See [`--kubernetes`](#--kubernetes-mode-optional-feature).
 
 ### State Filtering
 
@@ -470,6 +730,8 @@ Press `s` to cycle through columns in left-to-right order:
 | **Service** | ↑ Ascending | Sort by service name or port number |
 | **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.), with TCP/UDP as tie-break |
 | **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
+| **RTT** | ↓ Descending | Sort by round-trip time (slowest connections first by default) |
+| **Health** (available since v1.7.0) | ↓ Descending | Sort protocol-aware health signals by severity, then event count |
 | **Bandwidth (Rx/Tx)** | ↓ Descending | Sort by **combined up+down** bandwidth (highest first by default) |
 
 Columns hidden at narrow terminal widths stay in the cycle — the active sort is always named in the table's section title.
@@ -497,7 +759,7 @@ Section title shows current sort:
 **Press `s` (lowercase) - Cycle Columns:**
 - Moves to the next column in left-to-right visual order
 - **Resets to default direction** for that column
-- Bandwidth column defaults to descending (↓) to show highest values first
+- Bandwidth, RTT, and Health default to descending (↓) to show the most significant values first
 - Text columns default to ascending (↑) for alphabetical order
 
 **Press `S` (Shift+s) - Toggle Direction:**
@@ -565,6 +827,11 @@ Press `a` to toggle process grouping mode. When enabled:
 - Groups can be expanded/collapsed to show individual connections
 
 Press `a` again to return to the flat (ungrouped) connection list.
+
+The Overview status bar highlights `a grouped` while this mode is active. It
+also promotes the selected group's immediate action to `space expand` or
+`space collapse`, including while an individual connection inside that group
+is selected.
 
 ### Grouped View Display
 
@@ -636,9 +903,12 @@ Press `r` to reset all view settings at once:
 
 ## Network Statistics Panel
 
-The Network Statistics panel appears on the right side of the interface, below the Traffic panel. It provides real-time TCP connection quality metrics derived directly from packet capture analysis, making it platform-independent across Linux, macOS, Windows, and FreeBSD.
+The Network Statistics panel appears in the right-side system panel between Statistics and Traffic. It provides passive DNS health and real-time TCP connection quality metrics derived directly from packet capture analysis, making it platform-independent across Linux, macOS, Windows, and FreeBSD.
 
 ### Available Metrics
+
+**DNS Health**
+Summarizes the last 60 seconds of captured unicast DNS activity. It distinguishes normal responses, degraded service, operational failures, and queries that received no reply. A responsive line also includes p95 response time when matched samples are available. No observed DNS traffic is reported as `not observed`, not as healthy.
 
 **TCP Retransmits**
 Detects when a TCP segment is retransmitted due to packet loss or timeout. RustNet identifies retransmissions by analyzing TCP sequence numbers: when a packet arrives with a sequence number lower than expected, it indicates the original packet was lost and is being resent.
@@ -666,6 +936,28 @@ Active TCP Flows: 18
 
 ### Per-Connection Statistics
 
+> **Available since v1.7.0.**
+
+The Overview table shows observable connection quality in the **Health**
+column. The badge adapts to the protocol:
+
+- `R3/O1` for TCP means three retransmits and one out-of-order packet.
+- `R1/V0` for QUIC means one explicit Retry and no Version Negotiation packet.
+- `R2/T1` for outgoing DNS, LLMNR, NetBIOS, STUN, or NTP transactions means
+  two repeated request IDs and one request that expired unanswered. NTP polls
+  carry a fresh transmit timestamp each time, so NTP surfaces timeouts rather
+  than retries.
+
+Clean, gradable connections show `ok`. Generic UDP, unsupported protocols, and
+transaction rows where no outgoing request was observed show `-`. Double-digit
+counts are displayed as `+`, while Details retains the exact counters. The
+Details Transport Health card marks the two counters behind the badge with
+their letters (`TCP Retransmits (R)`, `Out-of-Order (O)`), so the compact badge
+maps back to exact numbers. Health
+sorting is severity-first: TCP retransmits and request timeouts rank above
+warning-only out-of-order, retry, and version events, then higher counts rank
+first.
+
 When viewing connection details (press `Enter` on a connection), TCP analytics are shown for that specific connection:
 
 ```
@@ -675,6 +967,22 @@ Fast Retransmits: 0
 ```
 
 These counters are tracked independently for each connection, allowing you to identify problematic connections experiencing packet loss or network issues.
+
+**Window Size**
+The same card reports each end's last advertised receive window as a pair:
+`↓` is the window this host advertised, which bounds inbound data, and `↑` the
+one the remote advertised, which bounds outbound data.
+
+```
+Window Size  ↓ 137.50 KB · ↑ 1.00 KB
+```
+
+Window scaling is negotiated only in the SYN handshake (RFC 7323), so a
+connection that was already open when RustNet started reads
+`unknown (no handshake)`. The 16-bit header field on its own stands for
+anything up to 16384 times its value, so it is reported as unknown rather than
+as a size that cannot be acted on. Connections opened while RustNet is running
+show byte counts.
 
 ### Use Cases
 
@@ -697,6 +1005,179 @@ Fast retransmit frequency indicates how well TCP is recovering from packet loss 
 - SYN and FIN flags are properly accounted for in sequence number tracking (each consumes 1 sequence number)
 - Only TCP connections show analytics; UDP, ICMP, and other protocols do not have these metrics
 
+## Process Activity
+
+> **Available since v1.7.0.**
+
+The Activity tab derives bounded process traffic totals from active connections and RustNet's existing pool of up to 5,000 retained historic connections. A short-lived uploader remains visible after its socket closes, until its historic connection is evicted or the connections are cleared. Press `3` to open it.
+
+Activity groups traffic by exact process name, matching Overview's process-name
+groups. For example, all retained `gh` PIDs contribute to one application row.
+Overview browses connections; Activity compares application traffic over time.
+Activity includes traffic in its retained pool, regardless of the
+Overview filter or history toggle. An active Overview filter adds an `all traffic`
+label to Activity's summary.
+
+**Available since v1.7.0:** Activity follows Overview's PTR visibility setting. When reverse
+DNS resolution is enabled, DNS PTR queries and responses are excluded from both
+views unless `--show-ptr-lookups` is set. With `--no-resolve-dns`, captured PTR
+traffic from other programs remains visible. Interface counters still include it.
+
+The application browser switches between Egress (TX) and Ingress (RX). Its table
+and inline application or process details expose:
+
+- Current and peak rates, plus the process share of captured traffic in the selected direction over the rolling 60-second window
+- Retained bytes in the selected direction, including active and retained historic connections
+- Active and total connection counts
+- Unique remote destinations and the highest-volume remote peer
+- Process attribution coverage, with unresolved traffic grouped as `Unknown`
+- Rolling 60-second process traffic as a percentage of interface traffic in the selected direction
+
+The table shows one row per application, with no ten-row display cap. Use arrows
+/ `j` / `k`, Page Up/Down (or Ctrl+B/F), Home/End (or `g` / `G`), and the mouse
+wheel to navigate. A scrollbar and visible row range show your position.
+Selection follows the application or process across sorting, updates, and resizing.
+
+Enter or a double-click opens the application summary. Enter again opens its
+PID list, where Enter or a double-click opens individual process details. Both
+lists share the same sorting, scrolling, and selection controls. Details retain
+all fields omitted by narrow tables and scroll with the same keys or mouse wheel.
+Esc returns one level. An expired selection is identified instead of silently
+replaced with another application or process.
+
+Press `o` from an application or PID to open its connections in Overview. This
+replaces the Overview filter with an exact process-name query, adds `pid:` for an
+individual PID, and enables historic connections. The accounting overflow bucket
+`Other` has no connection shortcut because it combines unrelated names.
+
+Metrics apply to the selected application or individual process. Application
+peers are deduplicated across PIDs; its top peer uses combined traffic. Its peak
+is the highest combined rate observed in one sample, rather than the sum of peaks
+that individual PIDs reached at different times. Table columns and fields mean:
+
+| Column | Meaning |
+|---|---|
+| **Application / Process** | Process name, with PID in the application's process list. Unresolved names are grouped as `Unknown`. |
+| **Share · 60s** | Relative share of the selected direction's rolling 60-second captured traffic. |
+| **TX/s / RX/s** | Current traffic rate for the process in the selected direction. |
+| **Peak/s / Peak rate** | Highest observed current rate while the process remains in the retained Activity view. |
+| **60s %** | Process share of all captured process traffic in the selected direction over the rolling 60-second window. |
+| **Share of interface 60s** | Process traffic over 60 seconds as a percentage of the matching interface traffic. A `~` prefix indicates an approximate host-wide comparison for multi-interface capture. |
+| **Last 60s** | Captured bytes attributed to the process in the selected direction over the rolling 60-second window. |
+| **Retained** | Total bytes across the process's active and retained historic connections in the selected direction. This is bounded retained data, not a lifetime counter. |
+| **Conns** | `active/total`, for example `41/66` means 41 active connections and 66 retained connections in total. The total includes active plus recently completed historic connections. |
+| **Remote peers** | Number of unique remote socket endpoints across the retained connections. An endpoint is an IP address plus port, so one host contacted on two ports counts as two remotes. Repeated connections to the same endpoint count once. A `+` suffix means the count exceeded the 256-destination display cap. |
+| **Top remote peer** | Remote endpoint with the most retained traffic in the selected direction. |
+
+The compact TX/RX summary shows current captured rates. Capture calculates coverage from captured bytes and interface-counter bytes over the same rolling 60-second window. This avoids the large fluctuations caused by comparing independently sampled instantaneous rates. Coverage divides the captured total by the interface total and caps the displayed percentage at 100%, because slightly different window endpoints or counter visibility can otherwise produce small overages. Capture shows both raw totals and their interface basis. When RustNet captures one named interface, it compares directly with that interface. With multi-interface capture, RustNet compares against a host-wide interface aggregate and prefixes the value with `~` because VPN and virtual interface counters can overlap.
+
+Wide terminals place Capture beside the application table. When both do not fit,
+`v` / Shift+`v` or clicking Applications / Capture switches sections using the shared
+tab strip. Capture scrolls and preserves its position across resizing. It separates
+coverage over the last 60 seconds from process attribution over retained traffic,
+including mapped, unknown, and total bytes. Interface inventory and rate tables
+live in Host. Activity only retains the interface basis needed to explain coverage.
+Share bars use the theme's traffic colours and appear inline when space permits.
+
+Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `5`, then select Interfaces with `v` / Shift+`v`).
+
+For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
+
+## Host Socket Inventory
+
+> **Available since v1.7.0.**
+
+Press `5` to open the Host tab. Unlike the Overview connection list, this view reads the operating system's socket table and does not require a packet to have been captured for a row to appear.
+
+The Sockets view includes:
+
+- Counts for TCP LISTEN, ESTABLISHED, opening, closing, and TIME_WAIT states
+- The total number of UDP BOUND endpoints
+- Average and maximum RTT from connections observed by packet capture
+- A table of TCP LISTEN sockets and UDP BOUND endpoints with local address, optional peer, service, PID, and process name
+
+UDP does not have a LISTEN state. Every UDP row represents a local bound endpoint, including endpoints that were bound implicitly by their first send. A connected UDP endpoint may also have a peer.
+
+The inventory refreshes every 5 seconds. Process ownership is best effort because a process can exit during a scan or permissions can hide its details. The socket row remains visible when ownership is unavailable.
+
+On Linux, cached startup owners remain visible for unchanged sockets after
+sandboxing. Shared sockets, exited processes, changed identities, or insufficient
+permissions can leave ownership unknown. Newly created sockets still require procfs access.
+
+| Platform | Socket source |
+|---|---|
+| Linux | `/proc/net/tcp`, `tcp6`, `udp`, and `udp6`, joined to socket inodes in `/proc/<pid>/fd` |
+| macOS | Numeric `lsof` socket inventory, also used for this view while PKTAP supplies packet process metadata |
+| FreeBSD | `sockstat -s` for native TCP states plus UDP socket rows |
+| Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |
+
+Use `v` / Shift+`v` or click Sockets / Interfaces / DNS to select a section. The footer shows the shortcut. Tab / Shift+Tab and 1-5 switch main tabs.
+
+### Observed network events (unreleased)
+
+Host > Sockets counts sent/received TCP resets and ICMPv4/v6 errors: unreachable,
+prohibited, packet too big/fragmentation needed, time exceeded, and parameter problems.
+Counts cover captured traffic since startup or clear, independent of display filters
+and connection retention. They are observations, not firewall verdicts or OS-wide
+counters; MTU and traceroute messages can be normal.
+
+Details > Health shows counts and the latest error's type/code, reporter, direction,
+age, and advertised MTU when available. TCP/UDP correlation uses quoted endpoints
+without changing connection state or traffic totals. Truncated quotes, fragments,
+IPv6 extensions, NAT, or missing/reused connections can prevent or confuse matching.
+Unmatched errors still count in Host; individual error records are not retained.
+
+### Host timeframes (development version)
+
+Press `w` in any Host section to cycle **60s / 5m / 1h / since startup**. The selection is shared by Sockets, Interfaces, and DNS. Socket inventory and interface rates remain live.
+
+- **Network events:** sent and received counts show the selected window alongside the cumulative Rustnet total since startup or clear, including event types whose selected-window count is zero.
+- **Interfaces:** errors, drops, and collisions show `window/OS total`. Only increases observed after the first interface sample enter the selected window. OS totals and packet totals remain visible; existing OS errors are not counted as new errors. Highlighting follows the selected window.
+- `x` resets Rustnet's histories and cumulative counts, changes the session label to **since clear**, and establishes fresh interface baselines on the next post-clear poll. Samples collected before the clear are ignored. It does not reset OS totals. A decreasing OS counter starts a new counter epoch; disappearing interfaces lose their history and reappearing interfaces establish a new baseline.
+
+Event and interface histories use bounded one-second buckets. Counts near a rolling cutoff can remain visible for up to one extra second. Interface increments are assigned to the poll that observes them, so the exact time within a polling interval is unknown. The session choice covers observed data, including interfaces first seen after startup.
+
+## Passive DNS Analytics
+
+Press `5` for Host, then select DNS with `v` / Shift+`v` or click its name. The view summarizes captured unicast UDP DNS traffic over a rolling 60-second window. **Development version:** press `w` to cycle through 60 seconds, 5 minutes, 1 hour, and since startup. Outcomes, latency, resolver evidence, and question names use the selected window; Overview always keeps its 60-second health window:
+
+- **Outcomes**: lookup, answer, pending, timeout, NOERROR, NXDOMAIN, NODATA, SERVFAIL, REFUSED, and other response-code counts
+- **Response time**: p50, p95, maximum, and latency buckets for responses paired by connection and transaction ID
+- **Question names**: normalized query name and type with lookup, NXDOMAIN, failure, and p95 latency totals
+
+Queries become timeouts after 10 seconds without a matching response. A retransmitted query with the same connection and transaction ID remains one logical lookup and restarts that timeout. **Development version:** retries and the oldest pending age are shown per resolver, and analytics latency measures from the first observed attempt, including retry delays. Press `o` to sort question names by lookups, NXDOMAIN, failures, or p95 latency. The up/down arrow keys, Page Up, Page Down, and mouse wheel scroll the table.
+
+The DNS health state uses enough recent evidence to avoid alarming on a single packet:
+
+- `not observed`: no captured DNS lookup is in the rolling window
+- `checking`: queries are pending or fewer than three completed lookups are inconclusive
+- `responsive`: at least one NOERROR or NXDOMAIN response was observed without a degradation threshold being crossed
+- `degraded`: at least five completed lookups have a 20% operational failure rate, or at least five latency samples have p95 of 500 ms or more
+- `failing`: at least three completed lookups produced no NOERROR or NXDOMAIN response
+- `no replies`: no response was captured and at least three lookups timed out
+
+**Development version:** health is also evaluated per observed resolver. If any resolver is degraded, failing, or has no replies, an otherwise responsive overall status becomes `degraded`, so a busy healthy server cannot hide a failing secondary server.
+
+NXDOMAIN is a valid resolver response, so it does not by itself make DNS unhealthy. Operational failures include SERVFAIL, REFUSED, other response codes, and timeouts.
+
+This is passive evidence, not an active DNS probe. DNS over HTTPS, DNS over TLS, cached answers, and traffic not present on the selected capture interface are not visible. Missing replies can also indicate capture loss or asymmetric routing. If capture stops, Overview reports DNS health as unknown. Pressing `x` to clear captured state also resets these DNS aggregates.
+
+### Resolver evidence (unreleased)
+
+Host > DNS shows observed resolver addresses with separate health, failures/finalized lookups, pending queries (`wait`), repeated queries (`retry`), and oldest pending age or p95 latency. Problematic resolvers appear first. Depending on terminal height, two or three resolver rows are shown; an additional count indicates omitted rows.
+
+The three rolling windows share a bounded buffer of up to 8,192 completed transactions and 4,096 pending queries. A `sampled` indicator means capacity pressure omitted evidence from the selected window; at high query rates, the selected duration of complete detail may not fit. Switching windows does not clear data, and data is collected only while RustNet is capturing.
+
+**Since startup** uses cumulative outcome counts for all tracked transactions, even after rolling details expire or are evicted. It retains cumulative detail for the first 128 resolver endpoints and 1,024 question-name/type pairs; `details limited` indicates that additional detail was omitted while overall totals continue. Session p50/p95 values (including per-question and per-resolver p95) use bounded histograms and are marked `~` as estimates. Counts, maximum latency, and the four latency buckets remain exact for tracked transactions; health uses exact slow-response threshold counts. `sampled` still indicates queries lost to tracking limits. Pressing `x` resets these totals and changes the label to **since clear**. This is session history, not current health; Overview continues to show the last 60 seconds.
+
+The view retains up to 64 individual timeout, SERVFAIL, REFUSED, other error, or slow-reply (at least 500 ms) observations for 15 minutes. Recent issues group those retained observations by resolver and cause, newest first, with a count, last-seen age, and the latest question name. Counts cover only retained observations, and the heading shows how many groups fit. This history survives the 60-second health window and does not imply an outage is still ongoing. `x` clears it together with the live aggregates.
+
+Guidance distinguishes missing replies, resolver errors, refused queries, retries, and slow replies. Missing packets cannot prove a resolver outage: inspect Host > Sockets for ICMP errors and Host > Interfaces for errors/drops, and check capture scope. When capture fails, Host displays `unknown` rather than continuing to claim live resolver health.
+
+On Linux, `sudo rustnet -i any --no-resolve-dns` includes loopback DNS stubs as well as upstream traffic. `127.0.0.53:53` is commonly a local systemd-resolved stub; loopback resolvers such as `127.0.0.1:53` and `[::1]:53` are supported. Capturing only a physical interface misses local stub exchanges. If both stub and upstream traffic are visible, they are separate wire transactions, not unique application lookups. `resolvectl status` can identify configured per-link servers when systemd-resolved is in use; RustNet's list contains only observed endpoints. The host configuration is not changed and no active probes are sent.
+
+These diagnostics cover unicast UDP DNS. They cannot establish success of TCP fallback, encrypted DNS, cached or `/etc/hosts` answers, or requests made through NSS/D-Bus without a DNS packet. macOS resolver activity can likewise be hidden by caching or attributed to mDNSResponder; captured unicast UDP DNS still provides resolver-level evidence.
+
 ## Interface Statistics
 
 RustNet provides real-time network interface statistics across all supported platforms (Linux, macOS, FreeBSD, Windows). Interface stats are displayed in two locations:
@@ -705,12 +1186,13 @@ RustNet provides real-time network interface statistics across all supported pla
 
 **Overview Tab (Main Screen):**
 - Interface stats appear in the right panel below Network Stats
+- Network Stats includes the compact rolling DNS health line
 - Shows up to 3 active interfaces with current rates
 - Displays: `InterfaceName: X KB/s ↓ / Y KB/s ↑`
 - Shows cumulative totals: `Errors (Total): N  Drops (Total): M`
 
-**Interfaces Tab (Detailed View):**
-- Press `i` to toggle the Interface Statistics view
+**Host Tab (Detailed View):**
+- Press `5` for Host, then select Interfaces with `v` / Shift+`v` or click its name
 - Shows a detailed table of all network interfaces
 - Displays comprehensive metrics for each interface
 
@@ -722,19 +1204,19 @@ RustNet provides real-time network interface statistics across all supported pla
 | **TX Rate** | Current transmit rate (bytes/sec) | Calculated from recent activity |
 | **RX Packets** | Total packets received | Cumulative since boot/interface up |
 | **TX Packets** | Total packets transmitted | Cumulative since boot/interface up |
-| **RX Err** | Receive errors | Cumulative total (not recent) |
-| **TX Err** | Transmit errors | Cumulative total (not recent) |
-| **RX Drop** | Dropped incoming packets | Cumulative total (not recent) |
-| **TX Drop** | Dropped outgoing packets | Cumulative total (not recent) |
+| **RX Err** | Receive errors | OS cumulative total; development Host also shows window increments |
+| **TX Err** | Transmit errors | OS cumulative total; development Host also shows window increments |
+| **RX Drop** | Dropped incoming packets | OS cumulative total; development Host also shows window increments |
+| **TX Drop** | Dropped outgoing packets | OS cumulative total; development Host also shows window increments |
 | **Collisions** | Network collisions | Platform-dependent availability |
 
-**Important**: Error and drop counters are **cumulative totals** since the system booted or the interface came up, not recent activity. These help identify long-term interface reliability but won't show immediate issues.
+**Important**: OS error and drop totals can predate RustNet and cannot establish when a problem occurred. In the **development version**, Host shows selected-window increments alongside these totals; Overview retains cumulative totals.
 
 ### Platform-Specific Behavior
 
 **All Platforms:**
-- All counters (bytes, packets, errors, drops) are cumulative from boot/interface up
-- Rates (bytes/sec) are calculated from snapshots taken every 2 seconds
+- Underlying OS counters (bytes, packets, errors, drops) are cumulative; development Host window counts are differences between observations
+- Rates (bytes/sec) are calculated from snapshots taken every 500ms
 - Loopback interface is included for monitoring local traffic
 
 **Windows:**
@@ -778,7 +1260,7 @@ High error/drop counts may indicate:
 - Network congestion
 - Driver or hardware problems
 
-**Note**: Since error/drop counters are cumulative, evaluate them relative to total packets. A few errors out of millions of packets is normal; thousands of errors with low packet counts indicates problems.
+**Note**: Evaluate OS error/drop totals relative to total packets. In the development Host view, use the selected-window increments to identify recent changes; the OS packet total covers a different period.
 
 ### Interface Filtering
 
@@ -792,7 +1274,7 @@ High error/drop counts may indicate:
 - macOS/Linux: Shows interfaces with recent traffic (`rx_bytes > 0 || tx_bytes > 0 || rx_packets > 0 || tx_packets > 0`)
 - Special interfaces (`any`, `pktap`): Shows all interfaces with any activity
 
-**Interfaces Tab:**
+**Host Interface Details:**
 - Shows all detected interfaces that pass the platform-specific filters
 - Sorts to show the currently captured interface first (highlighted)
 - Other interfaces appear in alphabetical order
@@ -821,21 +1303,49 @@ On systems with multiple network interfaces:
 
 RustNet uses intelligent timeout management to automatically clean up inactive connections while providing visual warnings before removal.
 
+### Hostname Display
+
+Hostnames extracted from the connection itself (TLS SNI from HTTPS or QUIC, the HTTP `Host:` header) are shown in the **App** column. Since v1.7.0, DNS-attributed names also appear in **App**, for example `TCP·HTTPS (~example.com)` or `UDP (~example.com)` when no application protocol is detected. They appear when no SNI / Host name is available and a DNS resolution to the remote IP was observed within the last **10 seconds**. Compact App columns omit hostname metadata.
+
+The **Remote** column shows reverse DNS (unless disabled with `--no-resolve-dns`), falling back to the raw IP address. The `d` key toggles reverse-DNS names without hiding application names.
+
+The leading `~` glyph signals that the hostname was *inferred* from a DNS response seen on the wire, not extracted from the connection. This is most useful for QUIC sessions after the handshake (where SNI is encrypted) and for plain TCP/UDP connections that carry no hostname-bearing payload. Attribution needs no active lookups, so it works even with `--no-resolve-dns`. Since v1.7.0, the Details tab’s **Application** card shows a separate **Attributed Name** row with the full inferred hostname, plus an **Attributed Via** row with the source and observation age (`Captured DNS, 5s ago`) so the provenance is explicit. Attributed names are searchable like any other hostname: both the `sni:` / `host:` / `hostname:` keyword filter and the free-text search match them.
+
+**Caveats** (RustNet learns names by sniffing DNS on the wire):
+
+- **DoH / DoT** (encrypted DNS): no plaintext to observe, no attribution.
+- **`/etc/hosts`, NSCD cache, `systemd-resolved` D-Bus API** (`org.freedesktop.resolve1`): no DNS packet is emitted, so attribution is impossible regardless of capture method.
+- **Local stub resolvers** (e.g. `systemd-resolved` on `127.0.0.53`): if you only capture a physical interface, you see the stub's upstream queries but not which app talked to the stub. Capture on `lo` as well to see the application side.
+- **VPN/WireGuard tunnels**: capture on the tunnel interface (e.g. `utun0`, `wg0`) rather than the underlay so you see plaintext DNS.
+
 ### Visual Staleness Indicators
 
-Connections change color based on how close they are to being cleaned up:
+> **Available since v1.7.0.**
 
-| Color | Meaning | Staleness |
-|-------|---------|-----------|
-| **White** (default) | Active connection | < 75% of timeout |
-| **Yellow** | Stale - approaching timeout | 75-90% of timeout |
-| **Red** | Critical - will be removed soon | > 90% of timeout |
+The cleanup clock uses the time since the last packet for nonterminal connections
+and the first terminal observation for terminal connections. The visual cue also
+requires both displayed traffic rates to have decayed to zero, so it can start
+later than halfway through the timeout:
 
-**Example**: An HTTP connection with a 10-minute timeout will:
-- Stay **white** for the first 7.5 minutes
-- Turn **yellow** from 7.5 to 9 minutes (warning)
-- Turn **red** after 9 minutes (critical)
-- Be removed at 10 minutes
+| Look | Meaning | Condition |
+|------|---------|-----------|
+| **Full color** | Live rates and connection details remain visible | Before halfway through the timeout, or while either displayed rate is nonzero |
+| **Stripe + countdown** | A `▎` stripe and time left in ↓/↑, e.g. `45s left`, run yellow through orange to red | At least halfway through the timeout, with both displayed rates at zero |
+| **Gray** | Historic, archived connection; `closed` in State, `n/a` in ↓/↑ | After cleanup or replacement by a new connection generation (toggle `t`) |
+
+Only the Process, Remote, Local, Loc, Service, and App columns soften. Truecolor
+themes blend these context colors toward the muted tier; ANSI themes switch them
+to the muted color around 75% of the timeout. State, RTT, and Health retain
+their colors. A selected row with a selection background keeps its context
+colors, and `NO_COLOR` disables color softening. The stripe and countdown still
+identify a connection approaching cleanup. The Details Status line shows the
+same countdown. Unselected historic rows alone use the faint gray row style.
+
+**Example**: An HTTP connection with a 10-minute timeout keeps its live display
+until at least 5 minutes without packets and until its displayed rates reach
+zero. It then shows the stripe and countdown. The next cleanup sweep after the
+10-minute deadline removes it; with history visible, its archived row reads
+`closed`.
 
 This gives you advance warning when a connection is about to disappear from the list.
 
@@ -846,10 +1356,9 @@ RustNet adjusts connection timeouts based on the protocol and detected applicati
 #### TCP Connections
 - **HTTP/HTTPS** (detected via DPI): **10 minutes** - supports HTTP keep-alive
 - **SSH** (detected via DPI): **30 minutes** - accommodates long interactive sessions
-- **Active established** (< 1 min idle): **10 minutes**
-- **Idle established** (> 1 min idle): **5 minutes**
+- **Generic established**: **5 minutes**
 - **TIME_WAIT**: 30 seconds - standard TCP timeout
-- **CLOSED**: 5 seconds - rapid cleanup
+- **CLOSED**: 15 seconds - terminal archival grace
 - **SYN_SENT, FIN_WAIT, etc.**: 30-60 seconds
 
 #### UDP Connections
@@ -859,30 +1368,47 @@ RustNet adjusts connection timeouts based on the protocol and detected applicati
 
 #### QUIC Connections (Detected State)
 - **Connected**: **3 minutes** default (or uses idle timeout from transport parameters if available)
-- **With CONNECTION_CLOSE frame**: 1-10 seconds (based on close type)
+- **With CONNECTION_CLOSE frame**: 15 seconds
 - **Initial/Handshaking**: 60 seconds - allow connection establishment
-- **Draining**: 10 seconds - RFC 9000 draining period
+- **Draining/Closed**: 15 seconds - terminal archival grace
 
-### Activity-Based Adjustment
+Every packet resets the idle timer for nonterminal connections. Terminal TCP
+and QUIC connections use the time when they first entered their terminal state,
+so repeated FIN, ACK, RST, or close packets do not postpone archival.
 
-Connections showing recent packet activity get longer timeouts:
-- **Last packet < 60 seconds ago**: Uses "active" timeout (longer)
-- **Last packet > 60 seconds ago**: Uses "idle" timeout (shorter)
-
-This ensures active connections stay visible while idle connections are cleaned up more quickly.
+A new TCP SYN observed against a closing connection starts a new live
+generation and archives the previous generation as an immutable historic
+record. Delayed teardown-only TCP packets matching a recently archived
+terminal connection are ignored for 30 seconds rather than creating a phantom
+established row.
 
 ### Why Connections Disappear
 
-A connection is removed when:
-1. **No packets received** for the duration of its timeout period
-2. The connection enters a **closed state** (TCP CLOSED, QUIC CLOSED)
-3. **Explicit close frames** detected (QUIC CONNECTION_CLOSE)
+A connection is removed by the periodic cleanup sweep after its protocol and
+state-specific timeout elapses. For nonterminal connections, packets reset the
+idle clock. TCP TIME_WAIT/CLOSED and terminal QUIC states use the first terminal
+observation as the cleanup clock; entering those states or seeing a QUIC close
+frame does not remove the row immediately. A new TCP SYN reusing a closing
+connection's tuple can archive the old generation sooner.
 
-**Note**: Rate indicators (bandwidth display) show *decaying* traffic based on recent activity. A connection may show declining bandwidth (yellow bars) but remain in the list until it exceeds its idle timeout. This is intentional - the visual decay gives you time to see the connection winding down before it's removed.
+**Development version:** TCP/UDP flows can close earlier using process-exit or
+socket evidence. Details shows the status in `Exit Cleanup`. Shared sockets or
+unavailable evidence retain normal timeouts. macOS requires root visibility;
+FreeBSD also requires running outside a jail.
+
+**Note**: Rate indicators show decaying traffic based on recent activity. A
+connection may show declining bandwidth while it approaches its idle or
+terminal timeout. Historic rows show `n/a` for current bandwidth because a
+closed connection has no live rate; final byte and packet totals remain
+available in Details.
 
 ### Historic Connections
 
 By default, connections disappear from the list once they time out or close. Press `t` to toggle **historic connections** mode, which keeps closed connections visible alongside active ones.
+
+While historic connections are visible, the Overview status bar highlights
+`t history`. This indicator can be active alongside the process-grouping
+indicator.
 
 **How it works:**
 
@@ -890,6 +1416,7 @@ When a connection is cleaned up, it is archived into a historic connections pool
 
 - **Active connections** display normally with standard color indicators
 - **Historic connections** appear in **dim gray** to clearly distinguish them from active connections
+- **Historic bandwidth** displays as `n/a`; final byte and packet totals remain available
 - The table title changes to **"Active + Historic Connections"** when historic mode is on
 
 **Details view:**
@@ -908,6 +1435,8 @@ In process grouping mode (`a`), group headers show the historic connection count
 
 The graph tab always shows only active connections, even when historic mode is on.
 
+Observed Network Health, Observed TCP States, and Application Distribution use the same bar style as Activity: theme-derived shading, fractional tips, and dotted tracks, with textured blocks for ANSI themes. Health bars match their numeric value's healthy, warning, or error colour; missing RTT uses an empty dotted track and `--`. Distribution bars match their state or protocol label colour. TCP bars are scaled to the largest state count, with counts aligned on the right; application bars show each protocol's percentage of active connections.
+
 **Resetting:**
 
 - Press `r` to reset all view settings, which also hides historic connections
@@ -915,7 +1444,7 @@ The graph tab always shows only active connections, even when historic mode is o
 
 ## Logging
 
-Logging is **disabled by default**. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`.
+Logging is **disabled by default**. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`. Since v1.7.0, RustNet adds a numeric suffix when that name already exists and requires a trusted launch directory on Unix.
 
 ### Log File Contents
 
@@ -1034,6 +1563,7 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 | `protocol` | string | Protocol (TCP, UDP, etc.) |
 | `source_ip` | string | Local IP address |
 | `source_port` | number | Local port number |
+| `local_port_status` | string | `opened`, `closed`, or `unknown` for new incoming TCP/UDP flows (unreleased) |
 | `destination_ip` | string | Remote IP address |
 | `destination_port` | number | Remote port number |
 | `pid` | number | Process ID (if available) |
@@ -1045,6 +1575,13 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 | `bytes_sent` | number | Total bytes sent (connection_closed only) |
 | `bytes_received` | number | Total bytes received (connection_closed only) |
 | `duration_secs` | number | Connection duration in seconds (connection_closed only) |
+
+`local_port_status` (unreleased) uses the cached host inventory: `opened` means a
+matching TCP listener or UDP bind, `closed` means no observed match, and `unknown`
+means an unavailable/failed inventory or ambiguous IPv4/IPv6 wildcard binding.
+It is included only on incoming `new_connection` events, using the TCP handshake
+direction when known, otherwise the first packet's direction. The five-second
+refresh and OS visibility limit accuracy; this is not a firewall verdict.
 
 **Example output:**
 
@@ -1120,6 +1657,18 @@ python scripts/pcap_enrich.py capture.pcap -o annotated.pcapng
 ```
 
 The annotated PCAPNG embeds process information as packet comments, visible in Wireshark's packet details.
+
+#### Native Annotated PCAPNG Export
+
+The `--pcapng-export` option writes a PCAPNG file directly with RustNet packet comments. This avoids the Python enrichment step when you want to open the capture in Wireshark immediately:
+
+```bash
+sudo rustnet -i eth0 --pcapng-export capture.pcapng
+```
+
+Packet comments are live best-effort annotations. RustNet waits briefly for process and GeoIP enrichment, then writes the packet even if attribution is still unavailable; packets may still have DPI/SNI, direction, or GeoIP comments without `process=`/`pid=` fields. Under heavy load, packets dropped before the processor stage or dropped by the bounded PCAPNG export queue will not appear in the PCAPNG, so a simultaneous `--pcap-export` file can contain packets missing from the PCAPNG. Packet blocks may be written out of capture order, but they keep their true capture timestamps and Wireshark can sort/display them by time.
+
+Use `--pcap-export` plus `capture.pcap.connections.jsonl` when cleanup-time metadata completeness matters more than a single annotated file.
 
 **Manual correlation:**
 

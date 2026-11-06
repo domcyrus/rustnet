@@ -18,17 +18,23 @@ on:
         description: 'Version string for archive naming (e.g., v0.3.0)'
         type: string
         default: ''
+      artifact-retention-days:
+        description: 'Artifact retention in days; 0 uses the repository default'
+        type: number
+        default: 0
 
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  # DEB installation checks only wait for the GNU/Linux build matrix.
+  build-linux:
     permissions:
       contents: read
     name: build-${{ matrix.build }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -36,10 +42,6 @@ jobs:
           - linux-x64-gnu
           - linux-aarch64-gnu
           - linux-armv7-gnueabihf
-          - macos-aarch64
-          - macos-x64
-          - windows-x64-msvc
-          - windows-x86-msvc
         include:
           - os: ubuntu-22.04
           - cargo: cargo
@@ -52,23 +54,10 @@ jobs:
           - build: linux-armv7-gnueabihf
             target: armv7-unknown-linux-gnueabihf
             cargo: cross
-          - build: macos-aarch64
-            os: macos-14
-            target: aarch64-apple-darwin
-            run-tests: true
-          - build: macos-x64
-            os: macos-14
-            target: x86_64-apple-darwin
-          - build: windows-x64-msvc
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - build: windows-x86-msvc
-            os: windows-latest
-            target: i686-pc-windows-msvc
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -80,27 +69,57 @@ jobs:
           targets: ${{ matrix.target }}
           components: rustfmt
 
+      - name: Cache Cargo builds
+        uses: ./.github/actions/cache-cargo
+        with:
+          key: ${{ matrix.build }}-${{ inputs.strip-symbols }}-${{ hashFiles('.github/actions/build-rustnet/**', '.github/actions/cache-cargo/**', '.github/workflows/build-platforms.yml', 'Cross.toml') }}
+
       - name: Install cross
         if: matrix.cargo == 'cross'
-        run: cargo install cross@0.2.5
+        uses: ./.github/actions/install-cargo-tool
+        with:
+          tool: cross
+          version: '0.2.5'
 
       - name: Build
         uses: ./.github/actions/build-rustnet
         with:
           target: ${{ matrix.target }}
           cargo-command: ${{ matrix.cargo }}
-          default-features: ${{ contains(matrix.target, 'linux') && 'true' || 'false' }}
+          default-features: ${{ (contains(matrix.target, 'linux') || contains(matrix.target, 'apple')) && 'true' || 'false' }}
           strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
 
-      - name: Run tests
+      - name: Install cargo-deb
+        if: contains(matrix.target, 'linux-gnu')
+        uses: ./.github/actions/install-cargo-tool
+        with:
+          tool: cargo-deb
+          version: '3.8.0'
+
+      - name: Build and validate DEB
+        if: contains(matrix.target, 'linux-gnu')
+        run: |
+          bash scripts/package-deb.sh '${{ matrix.target }}' rustnet.deb
+
+      - name: Upload DEB for installation tests
+        if: contains(matrix.target, 'linux-gnu')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          retention-days: ${{ inputs.artifact-retention-days }}
+          name: deb-${{ matrix.target }}
+          path: rustnet.deb
+          if-no-files-found: error
+
+      - name: Run workspace tests
         if: matrix.run-tests
-        run: cargo test --verbose
+        run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
 
       # For test builds: upload raw binary
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-${{ matrix.build }}
           path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
           if-no-files-found: error
@@ -108,121 +127,237 @@ jobs:
       # For release builds: create archive with README/LICENSE
       - name: Create release archive
         if: ${{ inputs.create-archives }}
-        shell: bash
-        env:
-          RUSTNET_BIN: ${{ contains(matrix.os, 'windows') && 'rustnet.exe' || 'rustnet' }}
-        run: |
-          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
-          mkdir -p "$staging"
-
-          cp "target/${{ matrix.target }}/release/$RUSTNET_BIN" "$staging/"
-
-          if [ -d "crates/rustnet-core/assets" ] && [ -f "crates/rustnet-core/assets/services" ]; then
-            mkdir -p "$staging/assets"
-            cp "crates/rustnet-core/assets/services" "$staging/assets/"
-          fi
-
-          cp README.md "$staging/"
-          cp LICENSE "$staging/" 2>/dev/null || true
-
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a "$staging.zip" "$staging"
-            echo "ASSET=$staging.zip" >> $GITHUB_ENV
-          else
-            tar czf "$staging.tar.gz" "$staging"
-            echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
-          fi
+        id: archive
+        uses: ./.github/actions/package-archive
+        with:
+          binary: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
+          target: ${{ matrix.target }}
+          version: ${{ inputs.version }}
+          format: ${{ contains(matrix.os, 'windows') && 'zip' || 'tar' }}
 
       - name: Upload release archive
         if: ${{ inputs.create-archives }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
-          path: ${{ env.ASSET }}
+          path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
 
-  build-static:
+  build:
     permissions:
       contents: read
-    name: build-linux-static-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    name: build-${{ matrix.build }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - macos-aarch64
+          - macos-x64
+          - windows-x64-msvc
+          - windows-x86-msvc
+        include:
+          - cargo: cargo
+          - build: macos-aarch64
+            os: macos-15
+            target: aarch64-apple-darwin
+            run-tests: true
+          - build: macos-x64
+            os: macos-15
+            target: x86_64-apple-darwin
+          - build: windows-x64-msvc
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - build: windows-x86-msvc
+            os: windows-latest
+            target: i686-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt
+
+      - name: Cache Cargo builds
+        uses: ./.github/actions/cache-cargo
+        with:
+          key: ${{ matrix.build }}-${{ inputs.strip-symbols }}-${{ hashFiles('.github/actions/build-rustnet/**', '.github/actions/cache-cargo/**', '.github/workflows/build-platforms.yml', 'Cross.toml') }}
+
+      - name: Build
+        uses: ./.github/actions/build-rustnet
+        with:
+          target: ${{ matrix.target }}
+          cargo-command: ${{ matrix.cargo }}
+          default-features: ${{ (contains(matrix.target, 'linux') || contains(matrix.target, 'apple')) && 'true' || 'false' }}
+          strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
+
+      - name: Run workspace tests
+        if: matrix.run-tests
+        run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
+
+      - name: Test macOS capture idle waits and packet arrival
+        if: matrix.run-tests && runner.os == 'macOS'
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_executable=$(cargo test --locked -p rustnet-capture --test live_capture --target '${{ matrix.target }}' --no-run --message-format=json |
+            jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_capture" and .executable != null) | .executable')
+          test -n "$test_executable"
+          sudo /usr/bin/perl -e 'alarm 15; exec @ARGV or die "exec: $!"' "$test_executable" --ignored
+
+      # For test builds: upload raw binary
+      - name: Upload binary artifact
+        if: ${{ !inputs.create-archives }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          retention-days: ${{ inputs.artifact-retention-days }}
+          name: rustnet-${{ matrix.build }}
+          path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
+          if-no-files-found: error
+
+      # For release builds: create archive with README/LICENSE
+      - name: Create release archive
+        if: ${{ inputs.create-archives }}
+        id: archive
+        uses: ./.github/actions/package-archive
+        with:
+          binary: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
+          target: ${{ matrix.target }}
+          version: ${{ inputs.version }}
+          format: ${{ contains(matrix.os, 'windows') && 'zip' || 'tar' }}
+
+      - name: Upload release archive
+        if: ${{ inputs.create-archives }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          retention-days: ${{ inputs.artifact-retention-days }}
+          name: build-${{ matrix.target }}
+          path: ${{ steps.archive.outputs.asset }}
+          if-no-files-found: error
+
+  # Tests prepare their own verified SDK instead of waiting for a release build.
+  test-windows:
+    permissions:
+      contents: read
+    name: test-${{ matrix.build }}
+    runs-on: windows-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
+          - build: windows-x64-msvc
+            target: x86_64-pc-windows-msvc
+          - build: windows-x86-msvc
+            target: i686-pc-windows-msvc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt
+      - name: Configure Windows workspace test linking
+        uses: ./.github/actions/setup-windows-tests
+        with:
+          target: ${{ matrix.target }}
+      - name: Cache Cargo builds
+        uses: ./.github/actions/cache-cargo
+        with:
+          key: ${{ matrix.build }}-tests-${{ hashFiles('.github/actions/setup-windows-tests/**', '.github/actions/cache-cargo/**', '.github/workflows/build-platforms.yml') }}
+      - name: Run workspace tests
+        run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
+
+  # x86_64 and the native Android build link against Alpine's static libpcap.
+  # armv7 and x86 (i686) are cross-compiled with zig cc as the C compiler and
+  # linker (no external toolchain download needed): the `Install cross toolchain`
+  # step runs for matrix entries that set `zig-target` and builds a static
+  # libpcap for them under /cross-sysroot.
+  build-static:
+    permissions:
+      contents: read
+    name: build-linux-static-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # -C strip=symbols: strip debug symbols for a smaller binary.
+          # -C link-arg=-l:libzstd.a: fix elfutils 0.189+ zstd dependency
+          # (libbpf/bpftool#152); Alpine's libpcap-dev links against zstd too.
           - arch: x86_64
-            runner: ubuntu-latest
             target: x86_64-unknown-linux-musl
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            features: '--features default'
-          - arch: aarch64-android
-            runner: ubuntu-24.04-arm
-            target: aarch64-linux-android-musl # Note: it's not a real rust target but we rename the artifact
-            features: '--no-default-features'
+            bin: target/release/rustnet
+            rustflags: '-C strip=symbols -C link-arg=-l:libzstd.a'
           - arch: x86_64-android
-            runner: ubuntu-latest
             target: x86_64-linux-android-musl
             features: '--no-default-features'
+            bin: target/release/rustnet
+            rustflags: '-C strip=symbols -C link-arg=-l:libzstd.a'
+          # -C link-self-contained=no: let zig provide the musl CRT (avoids a
+          # duplicate _start when both Rust's self-contained crt1.o and zig's
+          # crt1.o are linked). zig bundles musl libc for all targets, so no
+          # -l:libzstd.a is needed. `cross-host` is the config.sub-style triple
+          # used for the compiler wrapper name and libpcap's --host.
           - arch: armv7-android
-            runner: ubuntu-latest
             target: armv7-linux-android-musl
             features: '--no-default-features'
+            rust-target: armv7-unknown-linux-musleabihf
+            zig-target: arm-linux-musleabihf
+            cross-host: arm-linux-musleabihf
+            bin: target/armv7-unknown-linux-musleabihf/release/rustnet
+            rustflags: '-C strip=symbols -C link-self-contained=no'
           - arch: x86-android
-            runner: ubuntu-latest
             target: i686-linux-android-musl
             features: '--no-default-features'
+            rust-target: i686-unknown-linux-musl
+            zig-target: x86-linux-musl
+            cross-host: i686-linux-musl
+            bin: target/i686-unknown-linux-musl/release/rustnet
+            rustflags: '-C strip=symbols -C link-self-contained=no'
     container:
       image: rust:alpine
     steps:
-      # x86_64: use standard checkout action
       - name: Checkout repository
-        if: matrix.arch == 'x86_64' || matrix.arch == 'x86_64-android' || matrix.arch == 'armv7-android' || matrix.arch == 'x86-android'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # aarch64: JS actions don't work in Alpine containers on ARM runners
-      - name: Checkout repository (ARM workaround)
-        if: contains(matrix.arch, 'aarch64')
-        run: |
-          apk add --no-cache git
-          git config --global --add safe.directory /__w/rustnet/rustnet
-          git clone --depth 1 https://github.com/${{ github.repository }}.git .
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            git fetch --depth 1 origin tag "${{ github.ref_name }}"
-            git checkout "${{ github.ref_name }}"
-          fi
-
-      # x86_64: use composite action
-      - name: Build static binary
-        if: matrix.arch == 'x86_64'
-        uses: ./.github/actions/build-static
-
-      # aarch64 & android: inline build (composite actions don't work with ARM workaround/zig wrapper easily here)
-      - name: Install dependencies (ARM & Android)
-        if: matrix.arch != 'x86_64'
+      - name: Install dependencies
         run: |
           apk add --no-cache \
             musl-dev libpcap-dev pkgconfig build-base perl \
             elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
-            clang llvm linux-headers curl github-cli
+            clang llvm linux-headers curl git bash tar zstd
           rustup component add rustfmt
 
-      - name: Install cross-compiler and libpcap (armv7)
-        if: matrix.arch == 'armv7-android'
+      - name: Install cross toolchain
+        if: matrix.zig-target
         run: |
-          rustup target add armv7-unknown-linux-musleabihf
+          rustup target add ${{ matrix.rust-target }}
           apk add zig flex bison bash
 
+          # zig cc wrapper: cc-rs detects it as clang and passes --target=<rust triple>
+          # (armv7-*, i686-*) which zig rejects (zig spells them arm and x86), so
+          # filter those args out and pass the zig target instead. cc-rs also emits
+          # -Wl,-melf_i386 for i686, which zig's linker does not accept.
+          # shellcheck disable=SC2016
           printf '%s\n' \
             '#!/bin/bash' \
             'args=()' \
             'for arg in "$@"; do' \
-            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
+            '  case "$arg" in --target=*|-Wl,-melf_i386) ;; *) args+=("$arg") ;; esac' \
             'done' \
-            'exec zig cc -target arm-linux-musleabihf "${args[@]}"' \
-            > /usr/local/bin/arm-linux-musleabihf-gcc
-          chmod +x /usr/local/bin/arm-linux-musleabihf-gcc
+            'exec zig cc -target ${{ matrix.zig-target }} "${args[@]}"' \
+            > /usr/local/bin/${{ matrix.cross-host }}-gcc
+          chmod +x /usr/local/bin/${{ matrix.cross-host }}-gcc
 
           # libpcap is pinned by version + sha256 (Dependabot does not track
           # tarballs fetched in run steps, so bump the URL and the hash together).
@@ -231,123 +366,199 @@ jobs:
           echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
           tar xzf libpcap.tar.gz
           cd libpcap-1.10.5
-          CC=arm-linux-musleabihf-gcc \
-            ./configure --host=arm-linux-musleabihf \
+          CC=${{ matrix.cross-host }}-gcc \
+            ./configure --host=${{ matrix.cross-host }} \
               --disable-shared --enable-static \
               --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
-              --prefix=/arm-sysroot
-          make -j$(nproc) && make install
+              --prefix=/cross-sysroot
+          make -j"$(nproc)" && make install
           cd ..
 
-      - name: Install cross-compiler and libpcap (x86/i686)
-        if: matrix.arch == 'x86-android'
+          # Point cargo at the wrapper and pkg-config at the cross libpcap.
+          linker_var="CARGO_TARGET_$(echo '${{ matrix.rust-target }}' | tr 'a-z-' 'A-Z_')_LINKER"
+          {
+            echo "$linker_var=${{ matrix.cross-host }}-gcc"
+            echo "PKG_CONFIG_PATH=/cross-sysroot/lib/pkgconfig"
+            echo "PKG_CONFIG_SYSROOT_DIR=/cross-sysroot"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Cache Cargo builds
+        uses: ./.github/actions/cache-cargo
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        with:
+          key: static-${{ matrix.arch }}-${{ hashFiles('.github/workflows/build-platforms.yml', '.github/actions/cache-cargo/**') }}
+
+      - name: Build static binary
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo build --release ${{ matrix.features }} ${{ matrix.rust-target && format('--target {0}', matrix.rust-target) || '' }}
+
+      - name: Verify static linking
         run: |
-          rustup target add i686-unknown-linux-musl
-          apk add zig flex bison bash
-
-          printf '%s\n' \
-            '#!/bin/bash' \
-            'args=()' \
-            'for arg in "$@"; do' \
-            '  case "$arg" in --target=*) ;; -Wl,-melf_i386) ;; *) args+=("$arg") ;; esac' \
-            'done' \
-            'exec zig cc -target x86-linux-musl "${args[@]}"' \
-            > /usr/local/bin/i686-linux-musl-gcc
-          chmod +x /usr/local/bin/i686-linux-musl-gcc
-
-          # libpcap is pinned by version + sha256 (Dependabot does not track
-          # tarballs fetched in run steps, so bump the URL and the hash together).
-          curl -fsSL --retry 3 --retry-delay 5 \
-            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
-          echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
-          tar xzf libpcap.tar.gz
-          cd libpcap-1.10.5
-          CC=i686-linux-musl-gcc \
-            ./configure --host=i686-linux-musl \
-              --disable-shared --enable-static \
-              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
-              --prefix=/x86-sysroot
-          make -j$(nproc) && make install
-          cd ..
-
-      - name: Build static binary (AArch64 / AArch64 Android)
-        if: matrix.arch == 'aarch64' || matrix.arch == 'aarch64-android'
-        env:
-          # -mno-outline-atomics: Prevent GCC from generating calls to __aarch64_ldadd4_sync etc.
-          # which aren't in Alpine's libatomic. Uses inline atomics instead.
-          CFLAGS: "-mno-outline-atomics"
-          CXXFLAGS: "-mno-outline-atomics"
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release ${{ matrix.features }}
-
-      - name: Build static binary (x86_64 Android)
-        if: matrix.arch == 'x86_64-android'
-        env:
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release ${{ matrix.features }}
-
-      - name: Build static binary (armv7-android)
-        if: matrix.arch == 'armv7-android'
-        env:
-          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
-          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-musleabihf-gcc
-          PKG_CONFIG_PATH: /arm-sysroot/lib/pkgconfig
-          PKG_CONFIG_SYSROOT_DIR: /arm-sysroot
-          PKG_CONFIG_ALLOW_CROSS: "1"
-        run: cargo build --release --target armv7-unknown-linux-musleabihf ${{ matrix.features }}
-
-      - name: Build static binary (x86-android)
-        if: matrix.arch == 'x86-android'
-        env:
-          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
-          CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_LINKER: i686-linux-musl-gcc
-          PKG_CONFIG_PATH: /x86-sysroot/lib/pkgconfig
-          PKG_CONFIG_SYSROOT_DIR: /x86-sysroot
-          PKG_CONFIG_ALLOW_CROSS: "1"
-        run: cargo build --release --target i686-unknown-linux-musl ${{ matrix.features }}
-
-      - name: Verify static linking (ARM & Android)
-        if: matrix.arch != 'x86_64'
-        run: |
-          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
-          file "$BIN"
-          file "$BIN" | grep -q "static.* linked" || \
+          file "${{ matrix.bin }}"
+          # Use file command to verify (ldd behaves differently inside Alpine)
+          file "${{ matrix.bin }}" | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
 
       # For test builds: upload raw binary
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
-        continue-on-error: ${{ matrix.arch != 'x86_64' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-linux-static-${{ matrix.arch }}
-          path: ${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}
+          path: ${{ matrix.bin }}
           if-no-files-found: error
 
       # For release builds: create archive
       - name: Create release archive
         if: ${{ inputs.create-archives }}
-        run: |
-          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
-
-          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
-          mkdir -p "$staging/assets"
-
-          cp "$BIN" "$staging/rustnet"
-          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
-          cp README.md "$staging/"
-          cp LICENSE "$staging/" 2>/dev/null || true
-
-          tar czf "$staging.tar.gz" "$staging"
+        id: archive
+        uses: ./.github/actions/package-archive
+        with:
+          binary: ${{ matrix.bin }}
+          target: ${{ matrix.target }}
+          version: ${{ inputs.version }}
 
       - name: Upload release archive
         if: ${{ inputs.create-archives }}
-        # JS actions don't work in Alpine containers on ARM runners;
-        # release.yml has dedicated upload-arm-static/upload-android-static jobs as fallback
-        continue-on-error: ${{ contains(matrix.arch, 'aarch64') }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
-          path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz
+          path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
 
+  # aarch64 static builds run on a native ARM runner WITHOUT a job-level container:
+  # JS actions (checkout, upload-artifact) cannot run in an Alpine container on ARM
+  # runners. The musl build itself happens inside `docker run rust:alpine`, so the
+  # workspace and all actions stay on the host where they work.
+  build-static-arm:
+    permissions:
+      contents: read
+    name: build-linux-static-${{ matrix.arch }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            features: '--features default'
+          - arch: aarch64-android
+            target: aarch64-linux-android-musl # Note: it's not a real rust target but we rename the artifact
+            features: '--no-default-features'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Identify container toolchain
+        id: container
+        run: |
+          docker pull rust:alpine
+          echo "image=$(docker image inspect rust:alpine --format '{{.Id}}' | cut -d: -f2)" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/cargo-registry" "$RUNNER_TEMP/cargo-git"
+
+      # Cache the container's Cargo paths, not the host's unrelated toolchain.
+      - name: Cache container Cargo builds
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target
+            ${{ runner.temp }}/cargo-registry
+            ${{ runner.temp }}/cargo-git
+          key: cargo-arm-v1-${{ matrix.arch }}-${{ steps.container.outputs.image }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.github/workflows/build-platforms.yml') }}
+
+      - name: Build static binary
+        run: |
+          docker run --rm \
+            -v "$PWD:/build" -w /build \
+            -v "$RUNNER_TEMP/cargo-registry:/usr/local/cargo/registry" \
+            -v "$RUNNER_TEMP/cargo-git:/usr/local/cargo/git" \
+            -e CARGO_TERM_COLOR -e RUST_BACKTRACE \
+            -e CFLAGS="-mno-outline-atomics" \
+            -e CXXFLAGS="-mno-outline-atomics" \
+            -e RUSTFLAGS="-C strip=symbols -C link-arg=-l:libzstd.a" \
+            rust:alpine sh -euc '
+              apk add --no-cache \
+                musl-dev libpcap-dev pkgconfig build-base perl \
+                elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
+                clang llvm linux-headers
+              rustup component add rustfmt
+              cargo build --release ${{ matrix.features }}
+            '
+          sudo chown -R "$(id -u):$(id -g)" target "$RUNNER_TEMP/cargo-registry" "$RUNNER_TEMP/cargo-git"
+
+      - name: Verify static linking
+        run: |
+          file target/release/rustnet
+          file target/release/rustnet | grep -q "static.* linked" || \
+            (echo "ERROR: Binary is not statically linked" && exit 1)
+
+      # For test builds: upload raw binary
+      - name: Upload binary artifact
+        if: ${{ !inputs.create-archives }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          retention-days: ${{ inputs.artifact-retention-days }}
+          name: rustnet-linux-static-${{ matrix.arch }}
+          path: target/release/rustnet
+          if-no-files-found: error
+
+      # For release builds: create archive
+      - name: Create release archive
+        if: ${{ inputs.create-archives }}
+        id: archive
+        uses: ./.github/actions/package-archive
+        with:
+          binary: target/release/rustnet
+          target: ${{ matrix.target }}
+          version: ${{ inputs.version }}
+
+      - name: Upload release archive
+        if: ${{ inputs.create-archives }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          retention-days: ${{ inputs.artifact-retention-days }}
+          name: build-${{ matrix.target }}
+          path: ${{ steps.archive.outputs.asset }}
+          if-no-files-found: error
+
+  test-deb:
+    name: deb-${{ matrix.arch }}-${{ matrix.image }}
+    needs: build-linux
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, target: x86_64-unknown-linux-gnu, platform: linux/amd64, runner: ubuntu-24.04, image: 'ubuntu:22.04' }
+          - { arch: arm64, target: aarch64-unknown-linux-gnu, platform: linux/arm64, runner: ubuntu-24.04-arm, image: 'ubuntu:22.04' }
+          - { arch: arm64, target: aarch64-unknown-linux-gnu, platform: linux/arm64, runner: ubuntu-24.04-arm, image: 'ubuntu:24.04' }
+          - { arch: arm64, target: aarch64-unknown-linux-gnu, platform: linux/arm64, runner: ubuntu-24.04-arm, image: 'debian:bookworm-slim' }
+          - { arch: arm64, target: aarch64-unknown-linux-gnu, platform: linux/arm64, runner: ubuntu-24.04-arm, image: 'debian:trixie-slim' }
+          - { arch: armhf, target: armv7-unknown-linux-gnueabihf, platform: linux/arm/v7, runner: ubuntu-24.04, image: 'debian:bookworm-slim' }
+          - { arch: armhf, target: armv7-unknown-linux-gnueabihf, platform: linux/arm/v7, runner: ubuntu-24.04, image: 'debian:trixie-slim' }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: deb-${{ matrix.target }}
+          path: packages
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: matrix.arch == 'armhf'
+      - name: Install, capture and uninstall
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE: ${{ matrix.image }}
+          CAPTURE_SMOKE: ${{ matrix.arch != 'armhf' }}
+        run: |
+          docker run --rm --platform "$PLATFORM" -e CAPTURE_SMOKE \
+            -v "$PWD/packages:/packages:ro" -v "$PWD/scripts:/checks:ro" \
+            "$IMAGE" bash /checks/test-deb-install.sh

@@ -2,9 +2,13 @@
 
 # Installation Guide
 
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased changes. For v1.7.0, use the [v1.7.0 installation guide](https://github.com/domcyrus/rustnet/blob/v1.7.0/INSTALL.md). Check `rustnet --version` for your installed version.
+
 This guide covers all installation methods for RustNet across different platforms.
 
 > **Tip:** For an at-a-glance view of which distributions package RustNet and which version each carries, see [RustNet on Repology](https://repology.org/project/rustnet/versions).
+
+[![Packaging status](https://repology.org/badge/vertical-allrepos/rustnet.svg)](https://repology.org/project/rustnet/versions)
 
 ## Table of Contents
 
@@ -12,6 +16,7 @@ This guide covers all installation methods for RustNet across different platform
   - [macOS DMG Installation](#macos-dmg-installation)
   - [Windows MSI Installation](#windows-msi-installation)
   - [Windows Chocolatey Installation](#windows-chocolatey-installation)
+  - [Windows Scoop Installation](#windows-scoop-installation)
   - [Linux Package Installation](#linux-package-installation)
   - [FreeBSD Installation](#freebsd-installation)
   - [Android (Termux) Installation](#android-termux-installation)
@@ -29,7 +34,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 
 ### macOS DMG Installation
 
-> ** Prefer Homebrew?** If you have Homebrew installed, using `brew install` is easier and avoids Gatekeeper bypass steps. See [Homebrew Installation](#homebrew-installation) for instructions.
+> **Prefer Homebrew?** If you have Homebrew installed, using `brew install` is easier and avoids Gatekeeper bypass steps. See [Homebrew Installation](#homebrew-installation) for instructions.
 
 1. **Download** the appropriate DMG for your architecture:
    - `Rustnet_macOS_AppleSilicon.dmg` for Apple Silicon Macs (M1/M2/M3)
@@ -66,7 +71,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 
 1. **Install Npcap Runtime** (required for packet capture):
    - Download from https://npcap.com/dist/
-   - Run the installer and select **"WinPcap API compatible mode"**
+   - For RustNet v1.6.0, enable **"WinPcap API compatible mode"**. Default Npcap settings are supported since v1.7.0
 
 2. **Download and install** the appropriate MSI package:
    - `Rustnet_Windows_64-bit.msi` for 64-bit Windows
@@ -77,7 +82,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 4. **Run RustNet**:
    - Open Command Prompt or PowerShell
    - Run: `rustnet.exe`
-   - If Npcap is not installed or not in WinPcap compatible mode, RustNet will display a helpful error message with installation instructions
+   - If Npcap is not installed or cannot be loaded, RustNet will display a helpful error message with installation instructions
    - Note: Depending on your Npcap installation settings, you may or may not need Administrator privileges
 
 ### Windows Chocolatey Installation
@@ -89,16 +94,32 @@ The easiest way to install RustNet on Windows is via [Chocolatey](https://commun
 choco install rustnet
 ```
 
-**Note:** You still need to install [Npcap](https://npcap.com) separately with "WinPcap API compatible mode" enabled.
+**Note:** Install [Npcap](https://npcap.com) separately. For RustNet v1.6.0, enable **"WinPcap API compatible mode"**. Default Npcap settings are supported since v1.7.0.
+
+### Windows Scoop Installation
+
+RustNet is available in [Scoop's main bucket](https://github.com/ScoopInstaller/Main/blob/master/bucket/rustnet.json):
+
+```powershell
+scoop install rustnet
+```
+
+**Note:** Install [Npcap](https://npcap.com) separately. For RustNet v1.6.0, enable **"WinPcap API compatible mode"**. Default Npcap settings are supported since v1.7.0.
 
 ### Linux Package Installation
 
-#### Ubuntu PPA (Recommended for Ubuntu 25.10 Questing and 26.04 LTS Resolute)
+#### Ubuntu PPA (Recommended for Ubuntu 22.04+, Linux Mint and Pop!_OS)
 
-The easiest way to install RustNet on Ubuntu is via the official PPA. The PPA publishes builds for the following Ubuntu series:
+The easiest way to install RustNet on Ubuntu and its derivatives is via the official PPA. The PPA publishes builds for the following Ubuntu series:
 
-- Ubuntu 25.10 (Questing Quokka)
+- Ubuntu 22.04 LTS (Jammy Jellyfish)
+- Ubuntu 24.04 LTS (Noble Numbat)
 - Ubuntu 26.04 LTS (Resolute Raccoon)
+
+Derivatives register PPAs under their Ubuntu base series, so the same commands work there:
+
+- Linux Mint 21.x (Jammy base) and 22.x (Noble base)
+- Pop!_OS 22.04 (Jammy base) and 24.04 (Noble base). Pop!_OS ships `apt-manage` instead of `add-apt-repository`: use `sudo apt-manage add ppa:domcyrus/rustnet`.
 
 ```bash
 # Add the RustNet PPA
@@ -110,19 +131,21 @@ sudo apt update
 # Install rustnet
 sudo apt install rustnet
 
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
+# Grant capabilities to run as a regular user (modern kernel 5.8+)
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**Important:** The PPA supports only the two series listed above (Ubuntu 25.10 Questing and 26.04 LTS Resolute) because the build requires Rust 1.88+ (used for let-chains in the project). Earlier Ubuntu versions don't ship a recent enough `rustc` in their repositories. For older Ubuntu versions, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
+**Important:** The PPA supports only the three series listed above because the build requires Rust 1.88+ (used for let-chains in the project). Other Ubuntu series don't ship a recent enough `rustc` in their repositories. For those, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
 
 #### Debian/Ubuntu (.deb packages)
 
 For manual installation or non-Ubuntu Debian-based distributions:
+
+**Available since v1.7.0:** GNU release binaries require glibc 2.35
+or newer. ARM64 DEBs support Ubuntu 22.04+ and Debian 12/13; ARMv7 DEBs
+support Debian 12/13 and embed libpcap to keep its packet timestamps compatible
+across the time64 library transition. These fixes do not apply to v1.6.0 assets.
 
 ```bash
 # Download the appropriate package for your architecture:
@@ -130,20 +153,20 @@ For manual installation or non-Ubuntu Debian-based distributions:
 # - Rustnet_LinuxDEB_arm64.deb (ARM64)
 # - Rustnet_LinuxDEB_armhf.deb (ARMv7)
 
-# Install the package (capabilities are automatically configured)
+# Install the package (post-install script attempts to set capabilities)
 sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
 
 # Install dependencies if needed
 sudo apt-get install -f
 
-# Run without sudo (capabilities were set by post-install script)
-rustnet
-
 # Verify capabilities
 getcap /usr/bin/rustnet
+
+# Run without sudo if CAP_NET_RAW is present; otherwise use sudo
+rustnet
 ```
 
-**Note:** The .deb package automatically sets Linux capabilities via post-install script, so you can run RustNet without sudo.
+**Note:** The .deb post-install script attempts to set Linux capabilities when `setcap` is available. Check with `getcap /usr/bin/rustnet`; if `CAP_NET_RAW` is absent, configure capabilities manually or run with `sudo`.
 
 #### RedHat/Fedora/CentOS (.rpm packages)
 
@@ -154,19 +177,29 @@ For manual installation or distributions not using COPR:
 # - Rustnet_LinuxRPM_x86_64.rpm
 # - Rustnet_LinuxRPM_aarch64.rpm
 
-# Install the package (capabilities are automatically configured)
+# Install the package (post-install script attempts to set capabilities)
 sudo rpm -i Rustnet_LinuxRPM_x86_64.rpm
 # Or with dnf/yum:
 sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
 
-# Run without sudo (capabilities were set by post-install script)
-rustnet
-
 # Verify capabilities
 getcap /usr/bin/rustnet
+
+# Run without sudo if CAP_NET_RAW is present; otherwise use sudo
+rustnet
 ```
 
-**Note:** The .rpm package automatically sets Linux capabilities via post-install script, so you can run RustNet without sudo.
+**Note:** The .rpm post-install script attempts to set Linux capabilities when `setcap` is available. Check with `getcap /usr/bin/rustnet`; if `CAP_NET_RAW` is absent, configure capabilities manually or run with `sudo`.
+
+#### Alpine Linux
+
+RustNet is available in Alpine's [edge/community repository](https://pkgs.alpinelinux.org/packages?name=rustnet&branch=edge&repo=community). On Alpine edge with `community` enabled, run as root:
+
+```sh
+apk add rustnet
+```
+
+The package installs capture capabilities automatically. See [Permissions Setup](#permissions-setup) if packet capture is unavailable.
 
 #### Arch Linux
 
@@ -248,10 +281,7 @@ sudo dnf copr enable domcyrus/rustnet
 # Install rustnet
 sudo dnf install rustnet
 
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
+# Grant capabilities to run as a regular user (modern kernel 5.8+)
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
@@ -267,10 +297,7 @@ sudo zypper addrepo https://download.opensuse.org/repositories/home:/domcyrus:/r
 sudo zypper refresh
 sudo zypper install rustnet
 
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
+# Grant capabilities to run as a regular user (modern kernel 5.8+)
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
@@ -535,8 +562,7 @@ Building RustNet on Windows requires the Npcap SDK and proper environment config
 
 1. **Install Npcap Runtime**:
    - Download the Npcap installer from https://npcap.com/dist/
-   - Run the installer and **select "WinPcap API compatible mode"** during installation
-   - This ensures compatibility with the packet capture library
+   - For RustNet v1.6.0, enable **"WinPcap API compatible mode"**. Default Npcap settings are supported since v1.7.0
 
 2. **Run RustNet**:
    ```cmd
@@ -716,9 +742,15 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ~/.cargo/bin/rustnet
 rustnet
 ```
 
-**For eBPF-enabled builds (enhanced Linux performance - enabled by default):**
+**For eBPF-enabled builds (enhanced Linux performance, enabled by default):**
 
-eBPF is enabled by default on Linux and provides lower-overhead process identification using kernel probes:
+eBPF is enabled by default on Linux. RustNet first attempts BPF trampoline
+programs using fentry/fexit, then falls back to legacy kprobes, and finally to
+procfs. Backend support is determined by actual program load and attachment
+results, not the reported kernel version. Both BPF backends use CO-RE socket
+field reads and require usable target BTF. When target BTF is unavailable,
+RustNet falls directly to procfs rather than using fixed kernel-structure
+offsets that could produce incorrect attribution.
 
 ```bash
 # Build in release mode (eBPF is enabled by default)
@@ -728,11 +760,11 @@ cargo build --release
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
 ./target/release/rustnet
 
-# Legacy Linux (older kernels without CAP_BPF) - use CAP_SYS_ADMIN as fallback:
-sudo setcap 'cap_net_raw,cap_sys_admin+eip' ./target/release/rustnet
+# Packet capture only - eBPF falls back to procfs:
+sudo setcap 'cap_net_raw+eip' ./target/release/rustnet
 ./target/release/rustnet
 
-# Check TUI Statistics panel - should show "Process Detection: eBPF + procfs"
+# Check the TUI Statistics panel for the selected backend.
 ```
 
 **Capability requirements:**
@@ -740,20 +772,33 @@ sudo setcap 'cap_net_raw,cap_sys_admin+eip' ./target/release/rustnet
 **Base capability (always required):**
 - `CAP_NET_RAW` - Raw socket access for read-only packet capture (non-promiscuous mode)
 
-**eBPF-specific capabilities (choose based on kernel version):**
-
-**Modern Linux (5.8+):**
+**eBPF-specific capabilities (Linux 5.8+):**
 - `CAP_BPF` - BPF program loading and map operations
 - `CAP_PERFMON` - Performance monitoring and tracing operations
 
 **Legacy Linux (pre-5.8):**
-- `CAP_SYS_ADMIN` - Required for BPF operations on older kernels without CAP_BPF support
+Older kernels require broad `CAP_SYS_ADMIN` for eBPF operations. RustNet does
+not recommend or automatically grant it. Use `CAP_NET_RAW` only and let process
+attribution fall back to procfs unless you explicitly accept the extra risk.
+
+Kernels without memcg-based BPF memory accounting may also require a larger
+`RLIMIT_MEMLOCK`. libbpf raises it automatically when permitted. For a systemd
+service, set `LimitMEMLOCK=infinity` if BPF loading reports a memlock failure.
 
 **Note:** CAP_NET_ADMIN is NOT required. RustNet uses read-only packet capture without promiscuous mode.
 
-**Fallback behavior**: If eBPF cannot load (e.g., insufficient capabilities, incompatible kernel), the application automatically uses procfs-only mode. The TUI Statistics panel displays which detection method is active:
-- `Process Detection: eBPF + procfs` - eBPF successfully loaded
-- `Process Detection: procfs` - Using procfs fallback
+**Fallback behavior:** RustNet attempts the backends in this order:
+
+1. `eBPF fentry/fexit + procfs`
+2. `eBPF kprobe + procfs`
+3. `procfs`
+
+The TUI Statistics panel reports the selected backend. A missing optional ICMP
+hook produces partial ICMP coverage without disabling TCP and UDP attribution.
+Falling back from fentry/fexit to kprobes is not reported as a degradation —
+both backends provide the same attribution coverage, and the fentry error is
+written to the log. If both BPF backends fail, the panel shows the classified
+reason for the legacy backend's failure and the log retains both full errors.
 
 **Note:** eBPF is enabled by default on Linux builds and may have limitations with process name display. See [ARCHITECTURE.md](ARCHITECTURE.md) for details on eBPF implementation. To build without eBPF, use `cargo build --release --no-default-features`.
 
@@ -765,13 +810,43 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/local/bin/rustnet
 rustnet
 ```
 
-### Windows Permission Setup
+### Windows Permission and Process Attribution Setup<a id="windows-permission-setup"></a>
 
-Windows support is currently limited, but when available:
+Windows has two independent permission paths:
 
-- RustNet will require **Administrator privileges**
-- Must install **WinPcap** or **Npcap** for packet capture
-- Run Command Prompt or PowerShell "As Administrator"
+1. **Packet capture** uses Npcap. Whether RustNet must run as Administrator is
+   determined by the options selected when Npcap was installed. If Npcap was
+   configured to restrict capture to administrators, start Command Prompt,
+   PowerShell, or Windows Terminal with **Run as administrator**. Otherwise a
+   standard-user process can capture packets.
+2. **Process attribution** prefers Event Tracing for Windows (ETW) and always
+   keeps the IP Helper API available for reconciliation and fallback.
+
+At startup RustNet attempts to subscribe to the Windows kernel network and
+process ETW providers. The Overview tab reports the resulting mode:
+
+| Detection display | Meaning |
+|---|---|
+| `ETW + IP Helper` | Event-driven attribution is active. ETW catches short-lived processes; IP Helper fills cache misses and reconciles current sockets. |
+| `IP Helper` | ETW could not be started. RustNet continues without failing, using `GetExtendedTcpTable` and `GetExtendedUdpTable`. Very short-lived processes may be missed between table snapshots. |
+
+An Administrator shell is the most compatible way to enable ETW. A local
+administrator can instead grant a user trace-session rights by adding that user
+to the built-in **Performance Log Users** group (SID `S-1-5-32-559`). Sign out
+and back in after changing group membership. Provider security policy can still
+deny a particular ETW provider, so check the Overview tab rather than assuming
+ETW is active.
+
+ETW authorization and Npcap authorization are separate. Membership in
+**Performance Log Users** does not grant packet-capture access, and a
+non-administrator can still use IP Helper process attribution when ETW is
+unavailable. No manual fallback option is necessary: RustNet selects the best
+available mode automatically.
+
+Some rows may remain `<unknown>` even with ETW. Examples include ARP and ICMP
+traffic without a socket owner, system-owned traffic, packets seen before the
+ETW session started, and events for which Windows does not expose a readable
+process image.
 
 ### Verifying Permissions
 
@@ -803,8 +878,8 @@ getcap ~/.cargo/bin/rustnet
 # For system-wide installations:
 getcap $(which rustnet)
 
-# Modern (5.8+): Should show cap_net_raw,cap_bpf,cap_perfmon+eip
-# Legacy: Should show cap_net_raw,cap_sys_admin+eip
+# eBPF enabled: Should show cap_net_raw,cap_bpf,cap_perfmon+eip
+# Packet capture only: Should show cap_net_raw=eip
 
 # Test without sudo
 rustnet --help
@@ -962,17 +1037,28 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/local/bin/rustnet
 /usr/local/bin/rustnet
 ```
 
-**2. `BPF denied (check perf_event_paranoid / AppArmor / unprivileged_bpf_disabled)`**
+**2. `BPF denied` or all eBPF backends failed**
 
-Caps were granted, but the kernel returned `EPERM` or `EACCES`. Three layers
-can do that — check them in this order:
+Caps were granted, but the kernel returned `EPERM` or `EACCES`. Check these
+layers in order:
 
 ```bash
-# 2a. perf_event_paranoid (THE most common cause on Debian).
+# 2a. AppArmor or another LSM may confine rustnet.
+sudo aa-status | grep rustnet
+# If listed, allow capability bpf, capability perfmon, and the bpf() syscall.
+
+# 2b. unprivileged_bpf_disabled (Debian sets =2; file caps should bypass).
+sysctl kernel.unprivileged_bpf_disabled
+
+# Confirm caps actually became effective at exec:
+grep ^Cap /proc/$(pgrep -n rustnet)/status
+# CapEff must include CAP_BPF (bit 39) and CAP_PERFMON (bit 38).
+
+# 2c. perf_event_paranoid affects only the legacy kprobe fallback.
 #     Debian 13 ships with kernel.perf_event_paranoid=3, which blocks
-#     perf_event_open(2) — and therefore kprobe attach — for non-root
-#     users *even with CAP_PERFMON*. Upstream kernels only go up to 2,
-#     where CAP_PERFMON correctly bypasses the restriction.
+#     perf_event_open(2) for non-root users even with CAP_PERFMON.
+#     The preferred fentry/fexit backend uses BPF_LINK_CREATE and does not call
+#     perf_event_open(2), so a compatible fentry kernel needs no sysctl change.
 #
 #     Ubuntu uses a different patch (paranoid=4) that was updated in
 #     late 2025 to honor CAP_PERFMON, so on recent Ubuntu kernels
@@ -987,40 +1073,33 @@ sudo sysctl kernel.perf_event_paranoid=2
 # Make it persist across reboot:
 echo 'kernel.perf_event_paranoid = 2' | \
   sudo tee /etc/sysctl.d/99-rustnet.conf
-
-# 2b. AppArmor confining rustnet (Debian/Ubuntu install AppArmor by default).
-sudo aa-status | grep rustnet
-# If listed, either disable the profile or add a rule allowing capability bpf,
-# capability perfmon, and the bpf() syscall for this binary.
-
-# 2c. unprivileged_bpf_disabled (Debian sets =2; file caps should bypass).
-sysctl kernel.unprivileged_bpf_disabled
-
-# Confirm caps actually became effective at exec:
-grep ^Cap /proc/$(pgrep -n rustnet)/status
-# CapEff must include CAP_BPF (bit 39) and CAP_PERFMON (bit 38).
 ```
 
 **3. `kprobe attach failed: <symbol>`**
 
 The kernel is missing the symbol the eBPF probe wants to attach to. This is
 usually a kernel-config issue (e.g. CONFIG_IPV6 disabled, CONFIG_KPROBES
-off, or the symbol was inlined). RustNet currently attaches to
-`tcp_connect`, `inet_csk_accept`, `udp_sendmsg`, `tcp_v6_connect`,
-`udpv6_sendmsg`, `ping_v4_sendmsg`, and `ping_v6_sendmsg`.
+off, or the symbol was inlined). The legacy backend attaches to `tcp_connect`
+(the common tail of both IPv4 and IPv6 connects), `inet_csk_accept`,
+`udp_sendmsg`, `udpv6_sendmsg`, `ping_v4_sendmsg`, and `ping_v6_sendmsg`. The
+fentry/fexit backend additionally hooks `tcp_v6_connect`.
 
 ```bash
 # Check whether the failing symbol exists in the running kernel:
 sudo grep '<symbol_name>' /proc/kallsyms
 ```
 
-If the symbol is genuinely missing, eBPF process detection will not work
-on this kernel build; procfs fallback continues to function.
+Missing `ping_v4_sendmsg` or `ping_v6_sendmsg` disables only that optional ICMP
+capability. Missing TCP or UDP hooks prevents the legacy backend from providing
+complete core coverage. RustNet then uses procfs if the modern backend was also
+unavailable.
 
 **4. `kernel BTF unavailable`**
 
-CO-RE relocations require `/sys/kernel/btf/vmlinux`. On stripped-down
-kernels (some embedded / minimal cloud images) this file is absent.
+Both the fentry/fexit and legacy kprobe objects use CO-RE relocations and need
+usable target BTF. On stripped-down kernels (some embedded / minimal cloud
+images) `/sys/kernel/btf/vmlinux` and other discoverable vmlinux BTF sources may
+be absent. RustNet uses procfs in that case.
 
 ```bash
 ls /sys/kernel/btf/vmlinux
@@ -1052,7 +1131,7 @@ for memlock, etc.) that points at the root cause.
 #### Windows: Npcap Not Found
 
 - Ensure Npcap is installed from https://npcap.com/dist/
-- During Npcap installation, select **"WinPcap API compatible mode"**
+- For RustNet v1.6.0, enable **"WinPcap API compatible mode"** when installing Npcap. Default settings are supported since v1.7.0
 - Verify Npcap service is running: `sc query npcap`
 - Try reinstalling Npcap with administrator privileges
 
@@ -1087,6 +1166,37 @@ If graphs and sparklines appear corrupted (showing question marks or garbled cha
 **Alternative:** Use [Windows Terminal](https://aka.ms/terminal) which has better Unicode support out of the box.
 
 See also: [ratatui#457](https://github.com/ratatui/ratatui/issues/457), [gtop#21](https://github.com/aksakalli/gtop/issues/21)
+
+#### macOS: High Terminal CPU or Gappy Graphs (iTerm2)
+
+RustNet's graphs are drawn with Unicode Braille characters. The classic
+macOS monospace fonts (Monaco, Menlo) have no Braille glyphs, so iTerm2
+renders every graph cell through font fallback. This is slow (iTerm2 can
+use 10-20% CPU just displaying the graphs) and the fallback glyphs often
+leave visible gaps in the waves.
+
+**Solution:** Give iTerm2 a font with Braille coverage for non-ASCII text:
+
+1. Install a [Nerd Font](https://www.nerdfonts.com/), e.g.:
+
+   ```bash
+   brew install --cask font-jetbrains-mono-nerd-font
+   ```
+
+2. In iTerm2: **Settings → Profiles → Text**, enable **"Use a different
+   font for non-ASCII text"** and select the Nerd Font. Your regular
+   text keeps its current font; only symbols and graph glyphs use the
+   new one.
+3. Optional: **Settings → General → Preferences → "Maximize throughput"**
+   caps iTerm2's redraw rate at 30 fps, which further reduces CPU with
+   frequently updating TUIs.
+
+**Alternative:** Use a GPU-accelerated terminal such as
+[WezTerm](https://wezterm.org/), [Ghostty](https://ghostty.org/), or
+[kitty](https://sw.kovidgoyal.net/kitty/). These render RustNet with
+much lower CPU than iTerm2, and WezTerm ships JetBrains Mono with symbol
+fallback built in, so the graphs render correctly with zero
+configuration.
 
 ### Getting Help
 

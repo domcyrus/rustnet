@@ -1,13 +1,14 @@
 // Linux process attribution: eBPF (optional) with a procfs fallback.
 
+pub(crate) mod lifecycle;
 mod process;
 
 #[cfg(feature = "ebpf")]
-pub mod ebpf;
+mod ebpf;
 #[cfg(feature = "ebpf")]
 mod enhanced;
 
-pub use process::LinuxProcessLookup;
+use process::LinuxProcessLookup;
 
 use crate::ProcessLookup;
 use anyhow::Result;
@@ -18,7 +19,6 @@ use anyhow::Result;
 pub fn create_process_lookup(_use_pktap: bool) -> Result<Box<dyn ProcessLookup>> {
     #[cfg(feature = "ebpf")]
     {
-        // Try enhanced lookup first (with eBPF if available), fall back to basic
         match enhanced::EnhancedLinuxProcessLookup::new() {
             Ok(enhanced) => {
                 log::info!("Using enhanced Linux process lookup (eBPF + procfs)");
@@ -32,7 +32,6 @@ pub fn create_process_lookup(_use_pktap: bool) -> Result<Box<dyn ProcessLookup>>
             }
         }
     }
-    // Use basic procfs lookup (either as fallback or when eBPF is not enabled)
     log::info!("Using Linux process lookup (procfs)");
     Ok(Box::new(LinuxProcessLookup::new()?))
 }

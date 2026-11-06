@@ -1,88 +1,276 @@
-//! Human-readable formatters for byte counts and per-second rates,
-//! shared across the connection list, stats panel, interface table,
-//! and graph tab. Returns the parent module's `NONE_PLACEHOLDER`
-//! ("-") for zero/absent rates so the UI reads consistently.
+//! Human-readable formatters for byte counts, per-second rates, and
+//! ellipsis truncation, shared across the connection list, stats
+//! panel, interface table, activity tab, and graph tab. Binary units use
+//! IEC labels. Observed idle rates render as zero; callers handle missing data.
 
 use std::borrow::Cow;
 
-/// Format rate to human readable form.
-///
-/// Returns `Cow::Borrowed` for the idle (`NONE_PLACEHOLDER`) case so the
-/// common all-zero rows — most of an idle connection list — don't allocate.
 pub(super) fn format_rate(bytes_per_second: f64) -> Cow<'static, str> {
-    const KB_PER_SEC: f64 = 1024.0;
-    const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
-    const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
+    const KIB_PER_SEC: f64 = 1024.0;
+    const MIB_PER_SEC: f64 = KIB_PER_SEC * 1024.0;
+    const GIB_PER_SEC: f64 = MIB_PER_SEC * 1024.0;
 
-    if bytes_per_second >= GB_PER_SEC {
-        Cow::Owned(format!("{:.2} GB/s", bytes_per_second / GB_PER_SEC))
-    } else if bytes_per_second >= MB_PER_SEC {
-        Cow::Owned(format!("{:.2} MB/s", bytes_per_second / MB_PER_SEC))
-    } else if bytes_per_second >= KB_PER_SEC {
-        Cow::Owned(format!("{:.2} KB/s", bytes_per_second / KB_PER_SEC))
+    if bytes_per_second >= GIB_PER_SEC {
+        Cow::Owned(format!("{:.2} GiB/s", bytes_per_second / GIB_PER_SEC))
+    } else if bytes_per_second >= MIB_PER_SEC {
+        Cow::Owned(format!("{:.2} MiB/s", bytes_per_second / MIB_PER_SEC))
+    } else if bytes_per_second >= KIB_PER_SEC {
+        Cow::Owned(format!("{:.2} KiB/s", bytes_per_second / KIB_PER_SEC))
     } else if bytes_per_second > 0.0 {
         Cow::Owned(format!("{:.0} B/s", bytes_per_second))
     } else {
-        Cow::Borrowed(super::NONE_PLACEHOLDER)
+        Cow::Borrowed("0 B/s")
     }
 }
 
-/// Format rate to compact form for tight spaces.
-///
-/// Like [`format_rate`], the idle case borrows `NONE_PLACEHOLDER` instead
-/// of allocating — this one feeds the per-row bandwidth cell.
-pub(super) fn format_rate_compact(bytes_per_second: f64) -> Cow<'static, str> {
-    const KB_PER_SEC: f64 = 1024.0;
-    const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
-    const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
+/// Format rate to compact form for tight spaces. `zero` is what a
+/// zero/absent rate renders as: the "-" placeholder in tables, "0B"
+/// in the activity bars.
+pub(super) fn format_rate_compact(bytes_per_second: f64, zero: &str) -> Cow<'_, str> {
+    if bytes_per_second <= 0.0 || !bytes_per_second.is_finite() {
+        return Cow::Borrowed(zero);
+    }
+    // Each half of the 11-cell RX/TX column has five cells. Promote before
+    // rounding would produce a four-digit value with a two-cell unit.
+    let mut value = bytes_per_second;
+    let units = ["B", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei"];
+    for (index, unit) in units.iter().enumerate() {
+        let limit = if index == 0 { 1023.5 } else { 999.5 };
+        if value < limit || index == units.len() - 1 {
+            return if index >= 2 && value < 9.95 {
+                Cow::Owned(format!("{value:.1}{unit}"))
+            } else {
+                Cow::Owned(format!("{value:.0}{unit}"))
+            };
+        }
+        value /= 1024.0;
+    }
+    unreachable!("the final unit always formats the value")
+}
 
-    if bytes_per_second >= GB_PER_SEC {
-        Cow::Owned(format!("{:.1}G", bytes_per_second / GB_PER_SEC))
-    } else if bytes_per_second >= MB_PER_SEC {
-        Cow::Owned(format!("{:.1}M", bytes_per_second / MB_PER_SEC))
-    } else if bytes_per_second >= KB_PER_SEC {
-        Cow::Owned(format!("{:.0}K", bytes_per_second / KB_PER_SEC))
-    } else if bytes_per_second > 0.0 {
-        Cow::Owned(format!("{:.0}B", bytes_per_second))
+/// Format a round-trip time for the fixed-width RTT column: one decimal
+/// below 10ms ("3.4ms"), whole milliseconds up to a second ("234ms"),
+/// seconds above that ("1.2s"). Always fits 7 cells.
+pub(super) fn format_rtt_compact(rtt: std::time::Duration) -> String {
+    let ms = rtt.as_secs_f64() * 1000.0;
+    if ms < 10.0 {
+        format!("{:.1}ms", ms)
+    } else if ms < 1000.0 {
+        format!("{:.0}ms", ms)
     } else {
-        Cow::Borrowed(super::NONE_PLACEHOLDER)
+        format!("{:.1}s", ms / 1000.0)
     }
 }
 
-/// Format bytes to human readable form
-pub(super) fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
+/// Compact time-left display for cleanup countdowns: whole seconds under
+/// a minute ("45s"), whole minutes under an hour ("2m"), whole hours
+/// beyond that ("3h"). Integer division, so the value never overstates
+/// what remains.
+pub(super) fn format_countdown(remaining: std::time::Duration) -> String {
+    let s = remaining.as_secs();
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{}h", s / 3600)
+    }
+}
 
-    if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
+pub(super) fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.2} KiB", bytes as f64 / KIB as f64)
     } else {
         format!("{} B", bytes)
     }
 }
 
+/// Terminal display width, using the same Unicode rules as the renderer.
+pub(super) fn cell_width(s: &str) -> usize {
+    use ratatui::buffer::CellWidth;
+    usize::from(s.cell_width())
+}
+
+/// Truncate at grapheme boundaries, reserving one cell for the ellipsis.
+pub(super) fn truncate_with_ellipsis(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if cell_width(s) <= width {
+        return s.to_string();
+    }
+    let span = ratatui::text::Span::raw(s);
+    let mut kept = String::new();
+    let mut used = 0;
+    for grapheme in span.styled_graphemes(ratatui::style::Style::default()) {
+        let cells = cell_width(grapheme.symbol);
+        if used + cells > width - 1 {
+            break;
+        }
+        kept.push_str(grapheme.symbol);
+        used += cells;
+    }
+    format!("{}…", kept.trim_end())
+}
+
+/// Keep the end of a path without splitting wide or combining graphemes.
+pub(super) fn ellipsize_left(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if cell_width(s) <= width {
+        return s.to_string();
+    }
+    let span = ratatui::text::Span::raw(s);
+    let graphemes: Vec<_> = span
+        .styled_graphemes(ratatui::style::Style::default())
+        .collect();
+    let mut used = 0;
+    let mut start = graphemes.len();
+    for grapheme in graphemes.iter().rev() {
+        let cells = cell_width(grapheme.symbol);
+        if used + cells > width - 1 {
+            break;
+        }
+        start -= 1;
+        used += cells;
+    }
+    let mut result = String::from("…");
+    for grapheme in &graphemes[start..] {
+        result.push_str(grapheme.symbol);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ellipsize_left, format_countdown};
+    use std::borrow::Cow;
+    use std::time::Duration;
 
     #[test]
-    fn idle_rate_borrows_placeholder() {
-        // The common idle row must not allocate.
-        assert!(matches!(format_rate(0.0), Cow::Borrowed(_)));
-        assert!(matches!(format_rate_compact(0.0), Cow::Borrowed(_)));
-        assert_eq!(format_rate(0.0), super::super::NONE_PLACEHOLDER);
-        assert_eq!(format_rate_compact(0.0), super::super::NONE_PLACEHOLDER);
+    fn idle_rates_borrow_display_text() {
+        for value in [0.0, -1.0, f64::NEG_INFINITY, f64::NAN] {
+            assert!(matches!(super::format_rate(value), Cow::Borrowed("0 B/s")));
+        }
+        let custom_zero = String::from("idle");
+        for zero in ["-", "0B", custom_zero.as_str()] {
+            for value in [0.0, -1.0, f64::NEG_INFINITY, f64::INFINITY, f64::NAN] {
+                let formatted = super::format_rate_compact(value, zero);
+                assert!(matches!(formatted, Cow::Borrowed(_)));
+                assert_eq!(formatted, zero);
+            }
+        }
     }
 
     #[test]
-    fn live_rate_owns_formatted_value() {
-        assert!(matches!(format_rate(2048.0), Cow::Owned(_)));
-        assert_eq!(format_rate(2048.0), "2.00 KB/s");
-        assert_eq!(format_rate_compact(2048.0), "2K");
+    fn compact_live_rates_preserve_units_and_rounding() {
+        for (value, expected) in [
+            (1.0, "1B"),
+            (1023.0, "1023B"),
+            (1023.5, "1Ki"),
+            (999.0 * 1024.0, "999Ki"),
+            (999.5 * 1024.0, "1.0Mi"),
+            (1048576.0, "1.0Mi"),
+            (1073741824.0, "1.0Gi"),
+        ] {
+            let formatted = super::format_rate_compact(value, "-");
+            assert!(matches!(formatted, Cow::Owned(_)));
+            assert_eq!(formatted, expected);
+        }
+    }
+
+    #[test]
+    fn observed_rates_use_binary_units_and_explicit_zero() {
+        for (value, expected) in [
+            (0.0, "0 B/s"),
+            (1023.0, "1023 B/s"),
+            (1024.0, "1.00 KiB/s"),
+            (1048576.0, "1.00 MiB/s"),
+            (1073741824.0, "1.00 GiB/s"),
+        ] {
+            assert_eq!(super::format_rate(value), expected);
+        }
+        assert_eq!(super::format_bytes(1048576), "1.00 MiB");
+    }
+
+    #[test]
+    fn truncation_respects_cells_and_keeps_graphemes_whole() {
+        use super::{cell_width, truncate_with_ellipsis};
+        assert_eq!(truncate_with_ellipsis("日本語-server", 6), "日本…");
+        assert_eq!(truncate_with_ellipsis("e\u{301}clair", 3), "e\u{301}c…");
+        assert_eq!(truncate_with_ellipsis("👩‍💻server", 3), "👩‍💻…");
+        assert_eq!(ellipsize_left("prefix-e\u{301}", 2), "…e\u{301}");
+        assert_eq!(ellipsize_left("prefix-👩‍💻", 3), "…👩‍💻");
+        for text in ["日本語-server", "e\u{301}clair", "👩‍💻server", "ｶﾞ-data"] {
+            for width in 0..20 {
+                assert!(cell_width(&truncate_with_ellipsis(text, width)) <= width);
+                assert!(cell_width(&ellipsize_left(text, width)) <= width);
+            }
+        }
+    }
+
+    #[test]
+    fn truncation_preserves_fitting_text_and_trims_spaces_before_ellipsis() {
+        for (text, width, expected) in [
+            ("short", 10, "short"),
+            ("exactly-10", 10, "exactly-10"),
+            ("hello world", 7, "hello…"),
+            ("0123456789ab", 10, "012345678…"),
+            ("héllö wörld!", 6, "héllö…"),
+        ] {
+            assert_eq!(
+                super::truncate_with_ellipsis(text, width),
+                expected,
+                "{text:?}, width {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn countdown_buckets_round_down() {
+        assert_eq!(format_countdown(Duration::ZERO), "0s");
+        assert_eq!(format_countdown(Duration::from_secs(45)), "45s");
+        assert_eq!(format_countdown(Duration::from_secs(59)), "59s");
+        assert_eq!(format_countdown(Duration::from_secs(60)), "1m");
+        assert_eq!(format_countdown(Duration::from_secs(150)), "2m");
+        assert_eq!(format_countdown(Duration::from_secs(3599)), "59m");
+        assert_eq!(format_countdown(Duration::from_secs(3600)), "1h");
+        assert_eq!(format_countdown(Duration::from_secs(7199)), "1h");
+    }
+
+    #[test]
+    fn fitting_strings_are_returned_unchanged() {
+        assert_eq!(ellipsize_left("/usr/bin/curl", 13), "/usr/bin/curl");
+        assert_eq!(ellipsize_left("/usr/bin/curl", 40), "/usr/bin/curl");
+        assert_eq!(ellipsize_left("", 0), "");
+    }
+
+    #[test]
+    fn truncation_keeps_the_tail_and_fits_the_budget() {
+        let cut = ellipsize_left("/usr/libexec/ApplicationFirmwareUpdater", 10);
+        assert_eq!(cut, "…reUpdater");
+        assert_eq!(cut.chars().count(), 10);
+    }
+
+    #[test]
+    fn hopeless_budgets_collapse_to_the_ellipsis() {
+        assert_eq!(ellipsize_left("/usr/bin/curl", 1), "…");
+        assert_eq!(ellipsize_left("/usr/bin/curl", 0), "");
+    }
+
+    #[test]
+    fn multibyte_input_is_cut_on_char_boundaries() {
+        // Wide characters consume two terminal cells.
+        assert_eq!(ellipsize_left("/日本語/データ/ファイル", 6), "…イル");
+        assert_eq!(ellipsize_left("ααββγγ", 3), "…γγ");
     }
 }

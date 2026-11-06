@@ -1,0 +1,5 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ Capture stopped: The interface disappeared. Restart rustnet to resume. Press 'q' to quit.

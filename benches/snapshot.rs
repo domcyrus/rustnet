@@ -19,7 +19,6 @@ fn populate_connections(n: usize) -> DashMap<String, Connection> {
             remote,
             ProtocolState::Tcp(TcpState::Established),
         );
-        // Add a few rate samples to simulate a real connection
         conn.bytes_sent = 5000;
         conn.bytes_received = 15000;
         conn.packets_sent = 10;
@@ -37,7 +36,6 @@ fn bench_snapshot(c: &mut Criterion) {
     for n_conns in [100, 1000, 5000, 10000, 50000] {
         let connections = populate_connections(n_conns);
 
-        // Benchmark: iterate + clone + collect (mirrors start_snapshot_provider)
         group.bench_with_input(
             BenchmarkId::new("clone_and_collect", n_conns),
             &connections,
@@ -52,9 +50,9 @@ fn bench_snapshot(c: &mut Criterion) {
             },
         );
 
-        // Benchmark: snapshot_clone (drops rate samples) + collect — what
-        // start_snapshot_provider actually does now, leaving the live
-        // connections as unique owners of their sample buffers.
+        // snapshot_clone (drops rate samples) + collect: what
+        // start_snapshot_provider does, leaving the live connections as unique
+        // owners of their sample buffers.
         group.bench_with_input(
             BenchmarkId::new("snapshot_clone_and_collect", n_conns),
             &connections,
@@ -69,7 +67,6 @@ fn bench_snapshot(c: &mut Criterion) {
             },
         );
 
-        // Benchmark: clone + collect + sort by created_at
         group.bench_with_input(
             BenchmarkId::new("clone_collect_sort", n_conns),
             &connections,
