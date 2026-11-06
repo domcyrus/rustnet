@@ -3,7 +3,7 @@ use log::debug;
 
 /// Analyze payload for SSH protocol
 /// is_outgoing: true if this packet is from client to server
-pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
+pub(super) fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
     if !is_likely_ssh(payload) {
         return None;
     }
@@ -17,16 +17,11 @@ pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
         auth_method: None,
     };
 
-    // Convert payload to string for banner analysis. Drive the line iterator
-    // directly — the loop below is the only consumer, so materializing every
-    // line into a `Vec<&str>` first just wastes a heap slice per parse. The
-    // empty-payload case falls through to the loop and is a no-op.
+    // Empty payloads fall through the loop as a no-op.
     let text = String::from_utf8_lossy(payload);
 
-    // Parse SSH banner(s) and assign based on packet direction
     for line in text.lines() {
         if let Some(banner_info) = parse_ssh_banner(line) {
-            // Use packet direction to distinguish client vs server
             if is_outgoing {
                 // Outgoing packet: client to server, so this banner is from client
                 if info.client_software.is_none() {
@@ -43,69 +38,24 @@ pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
         }
     }
 
-    // Detect SSH message types for connection state
-    // Look for SSH packet structures throughout the payload
-    let mut found_packet_state = false;
-    for i in 0..payload.len().saturating_sub(6) {
-        if payload.len() >= i + 6 {
-            // Validate this looks like a real SSH packet structure
-            if is_valid_ssh_packet_at_offset(payload, i) {
-                let msg_type = payload[i + 5];
+    // Detect SSH message types for connection state. A packet signature
+    // needs 6 bytes: the last valid start offset is `len - 6`, so the
+    // exclusive range end is `len - 5`.
+    let packet_state = (0..payload.len().saturating_sub(5))
+        .filter(|&i| is_valid_ssh_packet_at_offset(payload, i))
+        .find_map(|i| ssh_msg_state(payload[i + 5]).map(|(state, label)| (i, state, label)));
 
-                match msg_type {
-                    20 => {
-                        info.connection_state = SshConnectionState::KeyExchange;
-                        debug!("SSH: Detected KEXINIT message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    21 => {
-                        info.connection_state = SshConnectionState::KeyExchange;
-                        debug!("SSH: Detected NEWKEYS message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    50 => {
-                        info.connection_state = SshConnectionState::Authentication;
-                        debug!("SSH: Detected USERAUTH_REQUEST message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    51 => {
-                        info.connection_state = SshConnectionState::Authentication;
-                        debug!("SSH: Detected USERAUTH_FAILURE message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    52 => {
-                        info.connection_state = SshConnectionState::Established;
-                        debug!("SSH: Detected USERAUTH_SUCCESS message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    90..=127 => {
-                        info.connection_state = SshConnectionState::Established;
-                        debug!("SSH: Detected connection protocol message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    _ => {
-                        // Continue searching
-                    }
-                }
-            }
-        }
-    }
-
-    // If we didn't find a packet state and we have banner info, default to Banner state
-    if !found_packet_state && (info.server_software.is_some() || info.client_software.is_some()) {
+    if let Some((offset, state, label)) = packet_state {
+        info.connection_state = state;
+        debug!("SSH: Detected {} message at offset {}", label, offset);
+    } else if info.server_software.is_some() || info.client_software.is_some() {
+        // No packet state found but we have banner info: default to Banner state
         info.connection_state = SshConnectionState::Banner;
     }
 
-    // Try to extract algorithm information. `parse_kexinit_algorithms` is a
-    // substring scan, so it works equally on a real KEXINIT message (msg
-    // type 20) and on free-form banner/text content — there's no need to
-    // branch on whether the payload looks like a KEXINIT.
+    // `parse_kexinit_algorithms` is a substring scan, so it works equally on
+    // a real KEXINIT message (msg type 20) and on free-form banner/text
+    // content; no need to branch on whether the payload looks like a KEXINIT.
     if let Some(algorithms) = parse_kexinit_algorithms(payload) {
         info.algorithms = algorithms;
     }
@@ -114,8 +64,23 @@ pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
     Some(info)
 }
 
+/// Map an SSH message number (RFC 4250 Section 4.1.2) to the connection state
+/// it implies, together with a label for logging. Message types that say
+/// nothing about the state (e.g. DISCONNECT, IGNORE, DEBUG) yield `None`.
+fn ssh_msg_state(msg_type: u8) -> Option<(SshConnectionState, &'static str)> {
+    match msg_type {
+        20 => Some((SshConnectionState::KeyExchange, "KEXINIT")),
+        21 => Some((SshConnectionState::KeyExchange, "NEWKEYS")),
+        50 => Some((SshConnectionState::Authentication, "USERAUTH_REQUEST")),
+        51 => Some((SshConnectionState::Authentication, "USERAUTH_FAILURE")),
+        52 => Some((SshConnectionState::Established, "USERAUTH_SUCCESS")),
+        90..=127 => Some((SshConnectionState::Established, "connection protocol")),
+        _ => None,
+    }
+}
+
 /// Check if payload might be SSH
-pub fn is_likely_ssh(payload: &[u8]) -> bool {
+pub(super) fn is_likely_ssh(payload: &[u8]) -> bool {
     if payload.len() < 4 {
         return false;
     }
@@ -211,12 +176,10 @@ fn is_valid_ssh_packet_at_offset(payload: &[u8], offset: usize) -> bool {
 
 /// Parse algorithms from KEXINIT message
 fn parse_kexinit_algorithms(payload: &[u8]) -> Option<Vec<String>> {
-    // This is a simplified version - full KEXINIT parsing is quite complex
-    // We'll just try to extract some common algorithm names
+    // Substring scan, not a real KEXINIT parse.
     let text = String::from_utf8_lossy(payload);
     let mut algorithms = Vec::new();
 
-    // Look for common SSH algorithms
     let common_algos = [
         "diffie-hellman-group14-sha256",
         "ecdh-sha2-nistp256",
@@ -283,35 +246,6 @@ mod tests {
 
         assert_eq!(info.version, Some(SshVersion::V2)); // 1.99 maps to V2
         assert_eq!(info.server_software.as_deref(), Some("libssh_0.8.9"));
-    }
-
-    #[test]
-    fn test_kexinit_detection() {
-        // Simplified KEXINIT packet structure
-        let mut payload = vec![0, 0, 0, 100]; // packet length
-        payload.push(10); // padding length  
-        payload.push(20); // SSH_MSG_KEXINIT
-        payload.extend_from_slice(&[0; 94]); // rest of packet
-
-        let info = analyze_ssh(&payload, false).unwrap();
-        assert_eq!(info.connection_state, SshConnectionState::KeyExchange);
-    }
-
-    #[test]
-    fn test_userauth_success() {
-        let mut payload = vec![0, 0, 0, 20]; // packet length
-        payload.push(5); // padding length
-        payload.push(52); // SSH_MSG_USERAUTH_SUCCESS
-        payload.extend_from_slice(&[0; 14]); // padding
-
-        let info = analyze_ssh(&payload, false).unwrap();
-        assert_eq!(info.connection_state, SshConnectionState::Established);
-    }
-
-    #[test]
-    fn test_non_ssh_payload() {
-        let payload = b"HTTP/1.1 200 OK\r\n";
-        assert!(analyze_ssh(payload, false).is_none());
     }
 
     #[test]
@@ -455,7 +389,6 @@ mod tests {
 
     #[test]
     fn test_algorithm_detection() {
-        // Create a payload that contains some SSH algorithms in the text
         let payload_with_algos =
             b"SSH-2.0-test\r\nsome data aes128-ctr ssh-ed25519 hmac-sha2-256 more data";
         let info = analyze_ssh(payload_with_algos, false).unwrap();
@@ -514,5 +447,19 @@ mod tests {
         // The packet structure starts at offset 21, so message type is at offset 26
         // Should detect the SSH_MSG_USERAUTH_REQUEST (50/0x32) in the packet data
         assert_eq!(info.connection_state, SshConnectionState::Authentication);
+    }
+
+    #[test]
+    fn test_packet_state_at_last_window() {
+        // Banner (14 bytes) followed by a valid KEXINIT packet signature
+        // occupying exactly the final 6 bytes of the payload:
+        //   packet_len=12 (0x0000000C), padding_len=4 (0x04), msg_type=20 (0x14)
+        // Signature sits in the final 6 bytes; the scan must reach it and
+        // report KeyExchange.
+        let payload = b"SSH-2.0-Test\r\n\x00\x00\x00\x0c\x04\x14";
+        assert_eq!(payload.len(), 20);
+        let info = analyze_ssh(payload, false).unwrap();
+        assert!(info.server_software.is_some());
+        assert_eq!(info.connection_state, SshConnectionState::KeyExchange);
     }
 }

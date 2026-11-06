@@ -16,7 +16,8 @@ on:
         default: 'resolute'
         type: choice
         options:
-          - questing # 25.10
+          - jammy # 22.04 LTS (also Linux Mint 21.x, Pop!_OS 22.04)
+          - noble # 24.04 LTS (also Linux Mint 22.x)
           - resolute # 26.04 LTS
       tarball_suffix:
         description: 'Tarball suffix (e.g., ds1, ds2) - leave empty for new releases'
@@ -44,8 +45,8 @@ jobs:
             echo 'releases=["${{ inputs.ubuntu_release }}"]' >> $GITHUB_OUTPUT
             echo "Dispatch: building only ${{ inputs.ubuntu_release }}"
           else
-            echo 'releases=["questing","resolute"]' >> $GITHUB_OUTPUT
-            echo "Auto: building questing and resolute"
+            echo 'releases=["jammy","noble","resolute"]' >> $GITHUB_OUTPUT
+            echo "Auto: building jammy, noble and resolute"
           fi
 
   build-and-upload:
@@ -58,25 +59,14 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            debhelper \
-            devscripts \
-            dput \
-            gnupg \
-            libpcap-dev \
-            libelf-dev \
-            elfutils \
-            zlib1g-dev \
-            clang \
-            llvm \
-            pkg-config
+      - name: Setup Linux dependencies
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          extra-packages: debhelper devscripts dput gnupg
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
@@ -132,7 +122,8 @@ jobs:
           # packages. We pin to the lowest version available on the target
           # release that still satisfies our >= 1.88 floor (let-chains).
           case "${{ matrix.ubuntu_release }}" in
-            questing) RUST_VERSION=1.88 ;;
+            jammy) RUST_VERSION=1.89 ;;
+            noble) RUST_VERSION=1.89 ;;
             resolute) RUST_VERSION=1.91 ;;
             *) echo "::error::Unknown release ${{ matrix.ubuntu_release }} - add it to the case statement"; exit 1 ;;
           esac
@@ -159,11 +150,12 @@ jobs:
           RELEASE_TAG="v${BASE_VERSION}"
           if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "✓ Found release tag: $RELEASE_TAG"
-            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$RELEASE_TAG" | tar -x -C build-ppa
+            SRC_REF="$RELEASE_TAG"
           else
             echo "⚠ Release tag $RELEASE_TAG not found, using HEAD"
-            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD | tar -x -C build-ppa
+            SRC_REF="HEAD"
           fi
+          git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$SRC_REF" | tar -x -C build-ppa
 
           # Vendor dependencies separately from orig tarball
           echo "Vendoring Rust dependencies..."
@@ -185,7 +177,12 @@ jobs:
           echo "Creating orig tarball..."
           cd ..
           ORIG_TARBALL="${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
-          tar -czf "${ORIG_TARBALL}" "${PACKAGE_NAME}-${VERSION}"
+          # Repacking the extracted tree with `tar -czf` embeds a gzip
+          # timestamp, so each matrix job produced a byte-different tarball
+          # and Launchpad rejected every series after the first (one
+          # upstream version must have one identical orig tarball).
+          # `git archive` piped through `gzip -n` is deterministic.
+          git -C "$GITHUB_WORKSPACE" archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$SRC_REF" | gzip -n > "${ORIG_TARBALL}"
 
           # Add debian directory and vendor tarball
           cp -r "$GITHUB_WORKSPACE/debian" "${PACKAGE_NAME}-${VERSION}/"
@@ -222,7 +219,7 @@ jobs:
           dput ${{ env.PPA }} ${CHANGES_FILE}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ppa-source-${{ matrix.ubuntu_release }}
           path: |

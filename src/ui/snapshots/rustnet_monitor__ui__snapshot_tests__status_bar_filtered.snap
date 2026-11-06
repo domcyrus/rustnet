@@ -1,6 +1,5 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 703
 expression: output
 ---
- 'h' help | 1-5 jump | Tab/[/] cycle | Showing 7 filtered connections (Esc to clear)
+ esc clear filter  ↑↓ select  / filter  a group  t history  i info  c copy                               h help  q quit

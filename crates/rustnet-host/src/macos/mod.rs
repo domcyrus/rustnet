@@ -2,11 +2,13 @@
 
 mod process;
 
-pub use process::MacOSProcessLookup;
+use process::MacOSProcessLookup;
 
-use crate::{DegradationReason, ProcessLookup};
+use crate::{DegradationReason, MatchQuality, ProcessAttribution, ProcessLookup, SocketSnapshot};
 use anyhow::Result;
+use rustnet_core::network::types::Connection;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 
 /// Why the PKTAP fast path is unavailable, as reported by the orchestrator.
 ///
@@ -33,34 +35,137 @@ pub(crate) fn pktap_degradation() -> DegradationReason {
         .unwrap_or(DegradationReason::MissingRootPrivileges)
 }
 
-/// No-op process lookup for when PKTAP is providing process metadata
-pub struct NoOpProcessLookup;
+/// Enrich process identity carried directly in PKTAP packet metadata.
+struct PktapProcessLookup {
+    socket_lookup: MacOSProcessLookup,
+}
 
-impl ProcessLookup for NoOpProcessLookup {
-    fn get_process_for_connection(
-        &self,
-        _conn: &rustnet_core::network::types::Connection,
-    ) -> Option<(u32, String)> {
-        None // PKTAP provides this information directly
+impl ProcessLookup for PktapProcessLookup {
+    fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
+        let pid = conn.pid?;
+        let name = conn.process_name.clone()?;
+        let mut attribution = ProcessAttribution::new(pid, name, MatchQuality::ExactTuple)
+            .with_executable(process::resolve_executable(pid));
+        if let Some(details) = process::resolve_process_details(pid) {
+            attribution = attribution.with_details(
+                details.ppid,
+                Some((details.uid, details.gid)),
+                None,
+                process::resolve_process_lineage(pid, details.ppid),
+            );
+        }
+        Some(attribution)
     }
 
     fn refresh(&self) -> Result<()> {
-        Ok(()) // Nothing to refresh
+        self.socket_lookup.refresh()
+    }
+
+    fn refresh_interruptible(&self, cancelled: &AtomicBool) -> Result<()> {
+        self.socket_lookup.refresh_interruptible(cancelled)
     }
 
     fn get_detection_method(&self) -> &str {
         "pktap"
     }
+
+    fn socket_snapshot(&self) -> SocketSnapshot {
+        self.socket_lookup.socket_snapshot()
+    }
 }
 
 /// Create a macOS process lookup implementation.
-/// Uses NoOp when PKTAP is active, otherwise falls back to lsof.
+/// Enriches PKTAP packet metadata when active, otherwise falls back to lsof.
 pub fn create_process_lookup(use_pktap: bool) -> Result<Box<dyn ProcessLookup>> {
     if use_pktap {
-        log::info!("Using no-op process lookup - PKTAP provides process metadata");
-        Ok(Box::new(NoOpProcessLookup))
+        log::info!("Using PKTAP process metadata with libproc enrichment");
+        Ok(Box::new(PktapProcessLookup {
+            socket_lookup: MacOSProcessLookup::new()?,
+        }))
     } else {
         log::info!("Using macOS process lookup (lsof)");
         Ok(Box::new(MacOSProcessLookup::new()?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::tcp_connection;
+
+    fn connection() -> Connection {
+        tcp_connection("127.0.0.1:5000", "1.1.1.1:443")
+    }
+
+    #[test]
+    fn pktap_identity_is_enriched_with_exact_libproc_attribution() {
+        let mut conn = connection();
+        conn.pid = Some(std::process::id());
+        conn.process_name = Some("rustnet-host-test".to_string());
+
+        let lookup = PktapProcessLookup {
+            socket_lookup: MacOSProcessLookup::empty_for_test(),
+        };
+        let attribution = lookup.get_process_attribution(&conn).unwrap();
+
+        assert_eq!(attribution.tgid, std::process::id());
+        assert_eq!(attribution.name, "rustnet-host-test");
+        assert_eq!(attribution.quality, MatchQuality::ExactTuple);
+        assert_eq!(attribution.executable, std::env::current_exe().ok());
+        assert_eq!(
+            attribution.ppid,
+            Some(u32::try_from(unsafe { libc::getppid() }).unwrap())
+        );
+        // SAFETY: these libc calls only read the credentials of this process.
+        let expected_credentials = unsafe { (libc::geteuid(), libc::getegid()) };
+        assert_eq!(
+            (attribution.uid, attribution.gid),
+            (Some(expected_credentials.0), Some(expected_credentials.1))
+        );
+        assert_eq!(
+            attribution
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.ancestors.last())
+                .map(|ancestor| ancestor.pid),
+            attribution.ppid
+        );
+    }
+
+    #[test]
+    fn pktap_lookup_requires_packet_process_identity() {
+        let lookup = PktapProcessLookup {
+            socket_lookup: MacOSProcessLookup::empty_for_test(),
+        };
+        let mut conn = connection();
+        assert!(lookup.get_process_attribution(&conn).is_none());
+
+        conn.pid = Some(std::process::id());
+        assert!(lookup.get_process_attribution(&conn).is_none());
+    }
+
+    #[test]
+    fn pktap_factory_reports_its_detection_method() {
+        let lookup = create_process_lookup(true).unwrap();
+        assert_eq!(lookup.get_detection_method(), "pktap");
+    }
+
+    #[test]
+    fn pktap_socket_refresh_honors_cancellation() {
+        let lookup = PktapProcessLookup {
+            socket_lookup: MacOSProcessLookup::empty_for_test(),
+        };
+        let cancelled = AtomicBool::new(true);
+
+        let error = lookup
+            .refresh_interruptible(&cancelled)
+            .expect_err("cancelled refresh must not launch lsof");
+
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::Interrupted)
+        );
     }
 }

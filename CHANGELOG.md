@@ -7,6 +7,814 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Limit Npcap SDK ZIP support to Deflate, removing unused encryption and compression dependencies (#718)
+- Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
+
+### Changed
+- Reuse unchanged historic headless connection JSON with a bounded cache while preserving full snapshots and late metadata updates (#707)
+- Share DNS/RTT pending-request bookkeeping, procfs socket parsing, and JSON log construction while preserving protocol and output behavior (#699)
+- Remove redundant `IngestOutcome` timing fields and the `network::platform` shim; library callers read retained timings from `Connection` and import host lookup from `rustnet_host` (#699)
+- Run Windows CI tests independently and start DEB installation checks after GNU/Linux builds, preserving all existing checks (#686)
+- Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
+
+### Added
+- Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible
+- Show per-resolver DNS health, retries, pending age, selectable 60s/5m/1h/since-startup windows, and 15-minute recent issue evidence in Host
+- Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
+- Show observed TCP resets and ICMP errors in Host, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
+- Retire observed TCP/UDP flows after confirmed socket disappearance on macOS, Windows, and FreeBSD; keep timeout fallback for incomplete or restricted inventories (#684)
+- Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
+
+### Fixed
+- Discard pending TCP RTT probes on one-byte keepalives to prevent inflated or ambiguous timing samples after missed ACKs or last-byte retransmissions
+- Match local IPv4/IPv6 DNS stub replies correctly and prevent healthy resolvers from hiding a failing secondary resolver
+- Fall back to a pinned, checksum-verified Npcap SDK mirror when the primary download fails during Windows builds or CI test setup.
+- Stop classifying successful DNS ANY answers as NODATA in Details and passive DNS statistics (#689)
+- Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)
+- Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0
+- Stop counting one-byte TCP keepalive probes as retransmits or out-of-order segments (#713)
+
+### Documentation
+- Consolidate terminal guidance into concise usage documentation in English, Chinese, and Japanese (#683)
+- Add Repology packaging badges, Alpine edge installation instructions, and credit the Alpine maintainer (#671)
+- Refresh the demo GIF and screenshots for v1.7.0, including Host sockets and DNS analytics
+
+## [1.7.0] - 2026-10-06
+
+### Security
+- Reject Unix output files owned by unrelated users before changing or writing them, anchor opens to validated directories, and create diagnostic logs exclusively
+
+### Added
+- Preserve original HTTP response status tokens in Details and mark malformed values as `invalid format`, without changing protocol detection
+- **Traffic surge visibility**: automatic linear scales, preserved sampled peaks,
+  time labels, and two-second rate averages in Graph/Details and Activity sorting
+- **Traffic reporting clarity**: graphs follow the capture interface; label smoothed
+  process rates, use binary byte units, and show explicit idle rates
+- **Retained Linux process identity**: eBPF preserves bounded executable paths
+  and immediate-parent metadata after exit or exec, and checks task birth times
+  before extending ancestry through procfs (#640)
+- **Generic container attribution (Linux)**: identify Docker, Podman and LXC
+  from socket/process cgroups without daemon sockets. Show runtime, ID and
+  available names in Details, `container:` / `runtime:` filters, headless JSON,
+  JSONL logs, PCAP sidecars and PCAPNG comments
+- **Database DPI**: identify MySQL classic greetings and TLS requests, Redis
+  RESP command arrays, and PostgreSQL startup messages and TLS requests.
+  Details shows bounded metadata without retaining credentials, SQL, Redis
+  keys, or values. Recognition uses complete messages within one TCP payload;
+  no stream reassembly or TLS decryption is added
+- **Observed VLAN IDs**: preserve captured 802.1Q IDs in connection details,
+  headless snapshots, JSON event logs, and PCAP sidecars, including priority
+  tags (VID 0). Supports Ethernet and Linux cooked capture; stripped tags
+  remain unknown
+- **Headless Traffic Counters**: JSON/JSONL stats include lifetime packet and
+  original-length byte totals from capture, independent of connection snapshots
+  and TUI clears, for external metrics exporters
+- **Initial Connection View**: `[view] group_by_process` in `config.toml`
+  enables process grouping at startup and on view reset; the default stays flat.
+- **Headless Mode**: `--headless` runs without the TUI, with optional
+  `--duration` and shared `--filter` syntax. Versioned snapshots stream as
+  JSONL by default, while `--output json` emits one final snapshot. Stdout is
+  reserved for machine-readable output. A bounded asynchronous writer replaces
+  stale queued snapshots before JSON serialization and prevents blocked
+  consumers from delaying shutdown, while runtime capture and critical
+  worker failures emit terminal error state and return a nonzero status.
+  Connection IDs remain stable through archival and distinguish reused
+  endpoints, traffic rates have explicit bytes-per-second field names, and
+  timed-out workers retain a `stopping` terminal status. Documentation clarifies
+  snapshot-history limits, separate PCAP collection, and full-snapshot costs
+- **Reusable Connection Filters**: the complete filter language now lives in
+  `rustnet-core`, with the existing TUI path retained as a compatibility
+  re-export for future headless frontends
+- **Inline Connection Health**: connection rows now show compact TCP
+  retransmit/out-of-order, QUIC Retry/version, and transactional UDP
+  retry/timeout badges, with a severity-first Health sort. The Details
+  Transport Health card marks the counters behind the badge with their
+  letters, e.g. `TCP Retransmits (R)` and `Out-of-Order (O)` (#583)
+- **VPN Traffic Detection**: identify WireGuard and OpenVPN connections through
+  packet signatures, including OpenVPN over UDP and TCP (#581)
+- **Passive DNS Analytics**: the Host tab now shows rolling response codes,
+  timeouts, matched latency, question names, and DNS health, with a compact
+  health line in Overview
+- **Host Socket Inventory**: the new Host tab shows TCP LISTEN sockets, UDP
+  BOUND endpoints, TCP state totals, observed RTT, process owners, and the
+  detailed interface table on Linux, macOS, FreeBSD, and Windows
+- **State-Aware Status Bar**: the Overview footer highlights active process
+  grouping and history modes and shows whether Space will expand or collapse
+  the selected process group
+
+### Changed
+- Publish the internal workspace crates as 0.6.0 for the changed library APIs.
+- Label the Overview interface error and drop counters as Interfaces.
+- Simplify Graph and Details to automatic independent RX/TX scales, with no scale,
+  log, or lock controls.
+  Current rates and peak labels retain raw measurements. Details gains taller
+  plots, aligned totals, and clear messages when no live history is available.
+- Smooth scrolling in Overview, Graph, and Details at 20 fps, preserving the
+  500 ms sampling interval. Activity, DNS, and Graph bars animate value changes
+  over 250 ms; numeric readings update immediately and settled bars redraw slowly.
+- Restore Activity's application and interface traffic-share charts on roomy
+  terminals, plus capture coverage bars, while keeping the table and drill-down.
+  Share charts use 60-second totals and live interface rates stay in fixed columns.
+- Improve TUI readability with wrapped Host records on narrow terminals,
+  Unicode cell-aware truncation, consistent headings and gutters, and labeled
+  RX/TX chart scales. TCP state rows can scroll; Help shadows are opt-in
+  through `[ui] popup_shadow = true`
+- Move DNS-inferred hostnames from Remote to App and their Details metadata
+  into the Application card, retaining the `~` marker and SNI / Host precedence (#638)
+- **Documentation accuracy**: Align English, Chinese, and Japanese feature
+  claims, installation and profiling steps, sandbox limits, and the roadmap
+  with the current implementation.
+- **App artwork**: use a cyan and green terminal signal for desktop icons,
+  the macOS installer, and the README logo in all three languages.
+- Document Scoop installation in all three README languages and both
+  installation guides
+- **Contextual help**: each tab and Host section now explains its purpose before
+  listing controls. Activity defines Egress (TX) and Ingress (RX) from the device's
+  perspective; Host DNS explains passive lookup outcomes and coverage limits.
+- **Compact layouts**: Overview, Details, Activity, and Graph share clickable section
+  selectors with `v` / Shift+`v` when the full layout does not fit. Overview
+  shows System inline with dividers; Host uses the same controls for its two views.
+  Section tabs share the main tabs' styling and show shortcuts in the footer.
+  Activity groups traffic by application name, with scrollable PID lists, stable
+  selection, inline details, and exact connection jumps to Overview. Application
+  peers are deduplicated and peaks use simultaneous rates. Overview filters do
+  not affect Activity totals. The new `pid:` filter matches exact process IDs.
+  Capture stays accessible at every size; interface inventory lives in Host.
+  Capture panels omit explanatory footnotes.
+- **TUI visual polish**: Activity uses compact TX/RX summaries, a roomier
+  process ranking, and a separate capture-quality sidebar on wide terminals.
+  Share bars use theme-derived gradients with textured ANSI fallbacks.
+  The default keeps TX blue / RX green; other themes retain their own traffic
+  tokens. Shared section rules and table headings improve hierarchy throughout
+  the TUI, with responsive navigation and NO_COLOR support.
+  Graph's health, TCP state, and application distribution bars share Activity's
+  shading, fractional tips, and dotted tracks while preserving semantic colours.
+- **Frontend Modules**: startup and the TUI loop now live in library modules;
+  headless orchestration, schema projection, and output handling are separate
+  modules. Overlapping JSON, PCAP, sidecar, PCAPNG, and regular-file stdout
+  destinations are rejected before RustNet truncates or writes output data
+- **Packet Processing**: consolidate tracker lookups, reuse parsed-packet buffers,
+  and group up to 16 already queued batches per ordered update without waiting
+  to fill the group. A sole processor parses and updates each packet immediately,
+  without staging DPI allocations. Parallel workers keep packet cleanup outside
+  the ordered commit and skip notifications without waiters.
+  The queue remains bounded at 10,000 packets,
+  plus up to 1,600 in-flight packets per worker (6,400 across at most four workers).
+  A full queue uses a 5 ms send timeout. Linux, macOS, FreeBSD, and Windows capture
+  share bounded idle-wait and fallback handling, using Unix descriptor readiness
+  or Npcap events where supported to wake promptly for new traffic.
+  Overload can still cause queue or capture-backend loss
+- **Runtime Lifecycle Foundation**: privileged capture and process attribution
+  are prepared synchronously before sandboxing, while all long-lived workers
+  start through a typed post-sandbox handoff and stop under one owned,
+  bounded supervisor
+- **Staleness Cue**: idle connection rows now show a stripe at their left
+  edge and a removal countdown in the bandwidth column from halfway through
+  their timeout (previously 75%), both running yellow to red as cleanup
+  nears, while the rest of the row softens toward gray
+  instead of recoloring whole rows, so Health, RTT, and State keep their
+  colors and stale rows stay distinct from gray historic rows on dark
+  terminals
+- **Responsive System Sidebar**: Traffic now appears before the static Security
+  details, which collapse to the sandbox status when terminal height is limited
+- **Contextual Help Overlay**: Help now opens above the active tab and only
+  shows controls and concepts relevant to that view. The tab bar now contains
+  the five application views, with direct shortcuts `1` through `5`
+- **Internal Deduplication**: duplicated helpers, fixtures, and workflow steps
+  were consolidated across the workspace, removing about 2,000 lines with no
+  intended change in behaviour. Small visible differences: truncated names in
+  the connection table, Activity tab, and filter chip no longer leave a space
+  before the ellipsis, GeoIP lookups also skip multicast, reserved,
+  benchmarking, documentation, and discard addresses, hostnames stuck in a
+  pending DNS state are retried after 30 seconds, a connection superseded by
+  a new SYN is archived with its cached rates zeroed like an expired one, the
+  sandbox report uses one wording for a failed root uid drop on every
+  platform and, on builds without Landlock, for the success case as well, the
+  standalone aarch64 and Android static build workflows are removed since the
+  release workflow already produces those binaries, and dispatching the
+  release workflow with `skip_downstream` now also skips the crates.io,
+  Docker, COPR, PPA, and OBS publish jobs so a backfill cannot republish
+- **Release Backfills**: a re-run of the release workflow no longer overwrites
+  assets that are already on the release unless `overwrite_assets` is set,
+  since Chocolatey, Scoop, and the AUR binary package pin checksums of the
+  published files
+
+- **Acronym Casing**: the Details header chip reads `RTT` instead of `rtt`
+  and PCAPNG export errors spell the format in uppercase
+
+### Fixed
+- Restore FreeBSD builds with mio 1.2.4, which supports libc 0.2.190.
+- Apply Overview's PTR visibility setting to Activity totals, including retained
+  connections; use `--show-ptr-lookups` to include reverse DNS traffic in both tabs.
+- Preserve Linux Host socket owners discovered at startup across restricted procfs refreshes, including listeners and bound UDP sockets
+- Keep packet rates, connection lifecycle, and health updating when interface counters are unavailable; prevent compact RX/TX rates from losing leading digits.
+- **macOS traffic graphs**: use aggregate counters for default PKTAP capture, keep
+  Details scrolling independently, and publish complete interface-rate snapshots
+- Add the missing divider between Overview traffic and interface counters.
+- Keep the filter cursor on UTF-8 character boundaries when typing, moving, or deleting non-ASCII text, avoiding TUI panics.
+- Preserve regex syntax in connection filters, including uppercase escapes such as `\D` and explicit case-sensitive groups.
+- ARM DEB compatibility with Ubuntu 22.04 and Debian 12/13: use a glibc 2.35
+  build baseline, declare runtime dependencies, and embed ARMv7 libpcap to
+  avoid Debian 13's time64 ABI mismatch. Test package installation and capture.
+- **Traffic graph stability**: remove hollow outlines and preserve the scroll position
+  across sample arrivals; interpolate before rasterizing to prevent contour wobble
+- Keep Activity summary TX/RX labels, numbers, and units aligned as live rates change
+- **QUIC handshake storage**: coalesce bounded CRYPTO ranges in either arrival
+  order, keep assembling through ClientHello for ALPN, and release bytes after
+  extraction. UI/history snapshots retain metadata only. Library consumers must
+  adapt `get_fragments()` from a map reference to an `(offset, slice)` iterator
+- **32-bit parser validation**: test QUIC and SNMP length boundaries in debug
+  and release CI; constrain SNMP nested fields to their declared containers
+- **Short Kubernetes flows**: retain cgroup v2 pod/container identity with eBPF
+  socket records after process exit, match both endpoint orientations, and
+  evict old records when the map fills.
+  Track evidence export before debug-pod cleanup in the separate
+  [kubectl-rustnet follow-up](https://github.com/domcyrus/kubectl-rustnet/issues/20).
+- Clarify unreleased features and Windows setup in all three documentation
+  languages; link v1.6.0 docs and add release checks for availability notes (#620)
+- **Connection viewport**: paging, scrollbars, and mouse targets track the current
+  layout immediately after resizing, including filters and two-row capture errors.
+- **Details information pages**: replace overflowing information scrollbars with
+  sections and numbered pages reached with v/V. Keep j/k, paging, and the wheel
+  for connection navigation; retain Traffic plots when they fit
+- **Details layout**: use the terminal's full width and anchor RX/TX plots
+  above the footer with a proportional height capped at 18 rows
+- **TUI alignment**: align Activity pane headings, expand Host interface columns,
+  and size Graph process names and rows to the available space
+- **Required UID Drop**: abort startup before packet-processing workers when a
+  requested root UID/GID drop fails, including in best-effort mode
+- **Windows Connection History**: connections that reuse a tuple with the
+  same capture timestamp keep distinct history entries
+- **Idle Capture Shutdown**: nonblocking capture reads and bounded idle
+  polling let worker shutdown finish even after packet traffic stops
+- **Windows Address Discovery**: collect IPv4, IPv6, and subnet broadcasts
+  through IP Helper without loading the Npcap capture driver
+- **Loss and Export Accounting**: queue backpressure drops are reported
+  separately from libpcap and interface drops, partial batches drain during
+  shutdown, and classic PCAP output remains bound to its securely pre-opened
+  file descriptor
+- **32-bit eBPF Map ABI**: explicitly align the shared C and Rust `ConnInfo`
+  structures to 8 bytes, fixing compilation on i586 (#611)
+- **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now
+  show as SYN received instead of an unknown state
+
+- **Bogus "unknown" Process Group on Linux**: a process that exited while
+  RustNet scanned `/proc` was recorded under the literal name `unknown`, which
+  showed up as its own process group next to the real `<unknown>` bucket and,
+  with eBPF attribution, overrode the correct name the kernel had captured at
+  socket creation. Such a process is now skipped instead (#590)
+- **TCP Window Size Per Direction**: the Details Transport Health card kept a
+  single window slot that every segment overwrote, so the value flipped
+  between the local and remote advertised windows. Both are now shown (`↓`
+  local, `↑` remote), in bytes only when the captured handshake proved the
+  window scale. Without it the scale is unknowable from the wire, so the row
+  reads `unknown (no handshake)` rather than a raw header field that stands
+  for anything up to 16384 times its value; the Details help and USAGE explain
+  it (#589)
+- **TCP Analytics for a Connection's First Packet**: the packet that creates a
+  connection now reaches the TCP analytics. For a connection this host
+  initiates that packet is its own SYN, the only carrier of the local
+  window-scale option, so windows could never be reported in bytes even with
+  the whole handshake captured (#589)
+- **Duplicate ACK False Positives**: a repeated ACK only counts as a duplicate
+  when this host has data outstanding and the advertised window is unchanged
+  (RFC 5681), so an idle connection's keepalives and the peer's window updates
+  no longer inflate the counter or report a fast retransmit on a connection
+  that never retransmitted. A RST no longer overwrites the last advertised
+  window with its meaningless zero (#589)
+- **Default Npcap Installations on Windows**: RustNet now finds Npcap in its
+  standard `System32\Npcap` directory, so WinPcap API-compatible mode is no
+  longer required. `--help` and `--version` also work without Npcap installed
+- **Attribution of Pre-Existing Connections on Linux**: connections that were
+  already open before RustNet started keep their process name after privilege
+  reduction, including root services when RustNet runs with file capabilities
+  on Linux 5.11 and newer. A one-shot BPF task-file inventory and the
+  privileged procfs scan feed a validated fallback shown as the "startup
+  snapshot" match quality (#575)
+
+- Keep new releases in draft until Linux, macOS and Windows installer jobs
+  all succeed, preventing publication with missing installer assets.
+
+### Removed
+- Unused screenshots, the macOS PNG export, duplicate PPA setup notes,
+  obsolete manual build/debug tools, and redundant services copies in local
+  installers and Docker. Release archives retain services for the AUR package.
+- Unused internal APIs, ineffective DPI packet limits, and sandbox pathname
+  write exceptions. Capture outputs continue using descriptors opened before
+  sandboxing
+- **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and
+  Launchpad rejects new uploads for it, so the PPA build matrix and install
+  docs drop it. Already-published questing packages stay in the PPA archive
+
+## [1.6.0] - 2026-08-20
+
+### Added
+- **Light Background Detection**: at startup rustnet asks the terminal for its
+  background color (OSC 11, Unix only) and, on a light background, darkens the
+  ANSI Gray muted/label text tiers to DarkGray, which were nearly unreadable on
+  white; the per-process identity tints darken likewise. Terminals that stay
+  silent past a 150 ms timeout keep the theme unchanged, and explicit
+  `[theme.overrides]` values are never touched (#563)
+- **Theme Contrast Warning**: config file color overrides that leave a
+  foreground/background pair below 3:1 contrast now print a startup warning.
+  Only pairs the override touches are judged, so the built-in palettes are
+  never second-guessed, and the colors are never altered. Body text is the
+  terminal's own foreground, so pairs involving it cannot be measured (#563)
+- **Truecolor Detection on Direct-Color Terminals**: `TERM=*-direct` entries
+  advertise 24-bit color without setting `COLORTERM`, and are no longer
+  downgraded to ANSI-16 (#563)
+- **Config File Under sudo**: `sudo rustnet` now reads the invoking user's
+  config rather than root's, resolving their home from the passwd database
+  the same way the privilege drop resolves `SUDO_UID`. A config not owned by
+  that user is refused, since the read happens with root privileges (#563)
+- **New Theme Presets**: `--theme` gains `catppuccin-mocha`, `tokyo-night`,
+  `gruvbox`, and `nord` truecolor themes with ANSI fallback (#563)
+- **Config File**: optional `~/.config/rustnet/config.toml` sets the theme and
+  per-color overrides; `--theme` takes precedence (#563)
+- **Passive DNS Attribution**: connections without an SNI or HTTP Host header
+  (encrypted QUIC, plain TCP/UDP) are now tagged with a hostname inferred from
+  DNS responses observed on the wire within the last 10 seconds, shown as a
+  dimmed `~name` in the Remote column and as an Attributed Name row with source
+  and age in the Details tab; attributed names match the hostname filters and
+  free-text search. Event-driven cache in `rustnet-core`, no per-packet
+  lookups; works without reverse DNS (#553)
+- **LLMNR Response Time**: UDP LLMNR lookups now show their query-to-first-
+  response time in the Details Transport Health card. Pairing reuses the DNS
+  transaction tracker, scoped to the local socket so multicast queries match
+  unicast replies, and stamps the timing on both connection rows. Pending
+  queries share the existing 10s expiry and hard cap. `rustnet-core` API note:
+  `LlmnrInfo` gained `txid`, while `Connection` and `IngestOutcome` gained
+  `llmnr_response_time` (#552)
+- **Headless Example**: `examples/headless.rs` shows the library-crate
+  pairing without the TUI: capture, parsing, connection tracking, process
+  attribution, interface stats, and sandboxing, printing connection
+  summaries to stdout. ROADMAP.md documents the remaining headless
+  workstream (#550)
+- **NetBIOS Response Time**: UDP Name Service and Datagram Service requests now
+  show response time and the latest response status in Details. Pairing uses the
+  16-bit transaction ID plus the local socket and service, so broadcast requests
+  match replies from individual hosts, and the round trip is shown on both the
+  broadcast request row and the responder's connection. WACK packets keep the
+  request pending until its final response, and pending requests have a 10s
+  expiry and hard cap (#538)
+- **Ubuntu 22.04 LTS (Jammy) PPA**: The PPA now also builds for Ubuntu 22.04
+  LTS using its backported `rustc-1.89` toolchain, covering Linux Mint 21.x
+  and Pop!_OS 22.04. Install docs now list the supported derivatives and the
+  Pop!_OS `apt-manage` command (#534)
+- **Ubuntu 24.04 LTS (Noble) PPA**: The PPA now also builds for Ubuntu 24.04
+  LTS using its backported `rustc-1.89` toolchain, which makes the documented
+  `add-apt-repository` install work on Ubuntu 24.04 and Linux Mint 22.x.
+  Install docs updated accordingly (#533)
+- **DNS Query Name in Details**: The Details tab's DNS card now shows the
+  queried domain as `DNS Query` alongside the query type and response IPs.
+  The name was already parsed from query and response packets but only used
+  for filtering and the Overview protocol column. The card also flags NODATA
+  answers: a NOERROR response whose answer section holds no record of the
+  queried type (e.g. an HTTPS-type lookup for a name with only A/AAAA
+  records) shows `DNS Answer: no data` instead of silently omitting the
+  response rows. The claim follows RFC 2308: truncated (TC) responses,
+  referrals (NS-without-SOA authority), and answer sections that do not
+  parse completely leave the flag unset rather than reporting a false
+  "no data". `rustnet-core` API note: `DnsInfo` gained a `nodata` field,
+  a breaking change for code constructing that struct with a literal (#532)
+- **LAN Device Identification**: The Details tab's Network Context card shows
+  Local MAC and Remote MAC rows with the OUI vendor (e.g. "Apple, Inc.") for
+  addresses the neighbor cache has resolved, learned passively from observed
+  ARP (IPv4) and NDP (IPv6) traffic. NDP messages are trusted only at hop
+  limit 255 (RFC 4861), fragmented NDP is ignored (RFC 6980), and messages
+  carrying any malformed option are discarded whole (RFC 4861 §7.1.1). Since
+  neither protocol crosses routers, normally only on-link addresses (LAN
+  devices and the gateway) populate; randomized MACs are labeled "locally
+  administered". The cache holds up to 4096 neighbors — when full, entries
+  idle for 30+ minutes are swept out to make room — and the clear-connections
+  action resets it. `rustnet-core` API note: `ProtocolState::Icmp` gained an
+  `ndp_neighbor` field, a breaking change for code constructing or
+  exhaustively matching that variant (#530, #531)
+- **Default Gateway Marker**: Connections whose remote endpoint is the host's
+  default gateway (the local router) are now marked. The Overview Remote
+  column appends `(gw)` when it fits, the Details tab annotates the remote
+  address with `(gateway)`, and JSONL logs gain `remote_is_gateway` (sidecar)
+  and `destination_is_gateway` (event log) keys, emitted only when true.
+  Gateways are read from the OS routing table (`/proc/net/route` and
+  `/proc/net/ipv6_route` on Linux, a `PF_ROUTE` sysctl dump on macOS/FreeBSD,
+  `GetIpForwardTable2` on Windows) and refreshed with the local-address
+  snapshot, so VPN or network changes are picked up (#529)
+- **NTP RTT**: NTP client connections now show the latest request→response
+  round trip in the Details Transport Health card, along with the server
+  stratum. Polls pair with responses through the originate timestamp echo
+  (RFC 5905), so daemons polling several servers stay distinct. Pending
+  requests are bounded (hard cap plus 10s expiry) like DNS queries (#527)
+- **STUN RTT**: STUN connections now show the latest request→response round
+  trip in the Details Transport Health card, paired by the 96-bit transaction
+  ID that retransmits reuse. Pending requests are bounded (hard cap plus 10s
+  expiry) like DNS queries (#526)
+- **Ping RTT**: ICMPv4 and ICMPv6 echo connections now show their latest RTT
+  in the Overview RTT column and the Details Transport Health card. Requests
+  and replies are paired by identifier and sequence number using per-packet
+  capture timestamps, so overlapping or reordered exchanges from commands such
+  as `ping 8.8.8.8 -i .2` remain distinct. Loopback pings are timed too, and
+  inbound echo flows skip the RTT row since only the remote sender can measure
+  it. Pending requests expire after 10 seconds and have a hard cap (#525)
+- **DNS Response Time**: Unicast UDP DNS connections now show a transport
+  metric in the Details Transport Health card instead of "No transport metrics
+  for this protocol". Queries and responses are paired by their 16-bit
+  transaction ID using capture timestamps, the latest completed round trip is
+  shown as `DNS Response Time`, and the card also surfaces the last response
+  code (NOERROR, NXDOMAIN, SERVFAIL, ...). Pending queries are bounded (hard
+  cap plus 10s expiry), so floods cost samples, not memory. mDNS/LLMNR
+  first-response timing is a possible follow-up (#523)
+- **Cross-Platform Process Lineage**: The Details tab shows up to four parent
+  processes for each attributed connection on Linux, macOS, Windows, and
+  FreeBSD. JSONL exports include each ancestor's PID, name, executable path,
+  start time, and whether the chain was truncated (#520)
+- **Per-Connection RTT**: Every TCP connection now carries a live round-trip
+  estimate for its whole lifetime, not just a one-shot handshake RTT. An
+  outbound data segment is timed until the ACK that covers it, with Karn's
+  algorithm discarding samples around retransmissions, and the samples feed an
+  RFC 6298 style smoothed value. The Overview table gains a sortable RTT
+  column (descending by default, so the slowest connections surface first),
+  the Details Transport Health card shows `Live RTT` next to `Initial RTT`,
+  and JSON event logs plus the PCAP sidecar gain `rtt_ms`. QUIC connections
+  keep their handshake RTT, since QUIC ACKs are encrypted on the wire. Data
+  round trips also feed the Graph tab's aggregate RTT, which previously only
+  saw new-connection handshakes (#515)
+- **Capture Failure Reporting**: Capture startup and runtime failures are retained in
+  application state and shown as a persistent status-bar error with restart and quit
+  guidance, instead of the TUI running on silently after capture stopped. The status
+  bar grows a second row when the message and hint do not fit on one (#497)
+- **Rich Process Attribution**: `ProcessLookup::get_process_attribution()` returns a
+  `ProcessAttribution` carrying TGID, PPID, effective UID/GID, executable path,
+  process lineage, and match quality instead of only `(pid, name)`. `MatchQuality`
+  records how a connection was matched, so a relaxed wildcard or listener guess is
+  no longer indistinguishable from a proven 4-tuple hit. On Linux the eBPF backends
+  carry the kernel-recorded identity through unchanged and resolve process metadata
+  in user space; the enhanced cache stores the full result, so metadata and match
+  quality survive the first lookup. Every platform implements the rich lookup
+  directly (#505, #513)
+- **Process Identity, User, and Match Quality in the UI and Exports**: Connections now
+  carry the owning process's PPID, executable path, effective UID/GID, and how
+  confidently the attribution matched. The Attribution card in the Details pane
+  repeats PID, shows PPID, and resolves user/group names with numeric fallbacks. It
+  appears only when a backend actually resolved something, so platforms that cannot
+  supply a field show nothing rather than a permanent placeholder. A relaxed
+  wildcard or listener match renders in the warning color instead of passing for a
+  proven one. The JSONL sidecar gains `process_ppid`, `process_executable`,
+  `process_uid`, `process_gid`, and `attribution_match`; PCAPNG packet comments gain
+  `ppid=`, `uid=`, and `attr=` but deliberately omit the executable path, which would
+  repeat in every packet block. Executable paths are interned behind an `Arc`, so
+  bulk connection snapshots stay allocation-free. Long paths shorten from the middle at render time
+  (`/nix/store/…/bin/hello`), keeping the location prefix and the basename visible,
+  and a leading `$HOME` renders as `~`; click-to-copy still yields the full
+  path (#506, #511, #512, #513)
+- **Rich macOS Process Attribution**: PKTAP keeps its kernel-provided per-packet PID
+  and process name, marks the result as an exact PKTAP attribution, and uses libproc
+  to add the PPID, executable path, and effective UID/GID. The lsof fallback
+  requests and parses numeric UIDs, resolves executable paths through libproc, and
+  reports exact, wildcard-address, or listener match quality. Packet-seeded PKTAP connections now
+  receive one rich-enrichment pass without making permanently unavailable optional
+  fields hot-loop retries (#510, #513)
+- **Rich FreeBSD Process Attribution**: `sockstat` ownership is enriched through
+  native `KERN_PROC_PID` and `KERN_PROC_PATHNAME` sysctl queries with PPID,
+  effective UID/GID, and executable path. Process details are cached by PID for
+  each socket-table refresh (#513)
+
+### Changed
+- **Library Crates 0.5.0**: the workspace library crates are released as
+  0.5.0: `rustnet-core`, `rustnet-capture`, `rustnet-host`, and the new
+  `rustnet-sandbox`, carrying the breaking API changes noted in this
+  section's entries
+- **Scrollbar**: the thumb is now a thin accent-colored bar on the outer edge
+  of its column instead of a full block in the terminal foreground, and the
+  track rule is gone, so the bar reads as a cue rather than a second vertical
+  line beside the data (#563)
+- **`--theme classic` Renamed to `vivid`**: the name now describes the colors
+  rather than the provenance. It is the same ANSI-16 palette as `muted` with
+  the chrome colored: yellow headings and keys, magenta borders. `classic` is
+  no longer accepted (#563)
+- **Status Bar Rebuilt Around Priority**: the footer now shows the active
+  tab's context actions on the left and a fixed `h help  q quit` cluster
+  pinned right. The cluster is reserved before any context action is placed,
+  so quit never falls off the edge; when the terminal is too narrow to spell
+  the actions out, the labels go first and the keys stand alone. Tab
+  navigation hints are gone, since the numbered tab bar already advertises
+  them, and the exhaustive keymap lives on the Help tab. Trailing actions
+  are dropped one at a time to keep the remaining labels readable, and only
+  a very narrow terminal falls back to bare keys. Keys are bright text on
+  the terminal background rather than a reverse-video band, and Details
+  only offers `ctrl-d/u` when the record outgrows its pane (#563)
+- **Status Bar Alerts Match the Chrome**: the quit prompt, copy feedback,
+  and capture errors now carry their meaning in a bold signal color instead
+  of filling the row with a solid yellow, green, or red band. `NO_COLOR`
+  keeps the reverse-video band, where it is the only cue available (#563)
+- **Copy Hints Follow the Sandbox**: on Linux under the default sandbox the
+  clipboard cannot be reached, so the `c copy` hints and the Details
+  "click a field to copy" affordance are hidden rather than offering a key
+  that can only report an error. `--no-sandbox` restores them (#563)
+- **Filtering Is a Mode, Not Four Notices**: the filter input row now shows
+  only while a query is being typed. Once confirmed it collapses, leaving the
+  query chip in the Connections title and the activity dot on the Overview
+  tab, and the status bar returns to actions with `esc clear filter` first.
+  While typing, the footer offers only what the filter editor handles, since
+  every other key types a character into the query (#563)
+- **Connection Table Cues**: the selected row now leads with an accent bar,
+  and process names get a stable per-name tint (#563)
+- **Tab Bar Status Cues**: the tab row right-aligns the capture interface and
+  its link type, with a dot that turns red while capture is failing, and marks
+  Overview with a `•` while a filter is active. The active filter query also
+  shows next to the connection count in the Connections title. The capture
+  cluster drops its link type, then itself, when the tab row gets tight (#563)
+- **Details Header Badges**: the Details header shows the connection state as a
+  colored pill plus chips for the current rates and RTT, dropping chips
+  right to left as the terminal narrows. Scrolled Details and Help panes dim the
+  line where the content continues, and long process paths now truncate from the
+  left so the binary name stays visible (#563)
+- **Loading Shimmer**: the loading screen text shimmers across the accent color
+  on truecolor terminals and stays static everywhere else (#563)
+- **TUI Restyle**: keycap-style status bar, realigned Help tab, and refined
+  bar, scrollbar, and selection styling (#563)
+- **Details Tab Application Card Alignment**: every protocol's Application
+  card now renders a fixed row set with `-` placeholders instead of rows that
+  appear and disappear with data availability; HTTPS shows its four rows even
+  before the TLS handshake is parsed, and QUIC's SNI/ALPN rows are no longer
+  hidden behind it. ICMP/ICMPv6 and IGMP gain their own cards (message name,
+  echo ID/sequence, NDP neighbor, group address), HTTP gains Version, Host,
+  and User-Agent rows, and ARP gains an Operation row plus the same
+  protocol-colored heading as DPI protocols. SSH version/state and DNS, mDNS,
+  and LLMNR response IPs render human-readable instead of Rust debug output,
+  and FTP's response code and message merge into one row. DNS, LLMNR, and
+  NetBIOS expose their transaction IDs like STUN already did. Transport Health
+  drops its duplicate NTP Stratum and STUN Last Message rows; those now live
+  only in the Application card (#557)
+- **Library Internals Deduplicated and Narrowed**: Removed remaining dead code
+  and test-only public API from the workspace crates, narrowed public items
+  with no external consumers to crate or module visibility (including
+  cfg-gated macOS and Windows internals the Linux lint pass could not see),
+  and deduplicated repeated logic: the four Windows socket-table refreshes,
+  the macOS/FreeBSD BPF privilege probe, PKTAP and lsof process-name
+  normalization, `ParsedPacket` construction, and the Details tab field
+  rendering (#556)
+- **Dead Library-Crate API Removed**: The workspace crates dropped public API
+  nothing in the workspace uses: a never-compiling procfs-only module and
+  write-only lookup statistics in `rustnet-host`, the unused thread-id and
+  monotonic-timestamp attribution fields, and assorted unused methods and
+  write-only fields in `rustnet-core` (including the crate-root flat
+  re-exports and the `psh`/`urg` TCP flags) (#551)
+- **Interface Stats Moved to rustnet-core**: The per-platform interface
+  statistics providers (sysfs on Linux, getifaddrs on macOS/FreeBSD, IP
+  Helper on Windows) moved from the binary into `rustnet-core` behind a new
+  `interface_stats::create_stats_provider()` composition point, and the
+  macOS/FreeBSD getifaddrs walkers now share one implementation (#549)
+- **Sandboxing Moved to rustnet-sandbox**: Sandboxing and the root uid drop
+  now live in the new dependency-free `rustnet-sandbox` crate with one
+  `apply_sandbox` entry point per platform. `--no-sandbox` and
+  `--sandbox-strict` now exist on all platforms: FreeBSD honors them for the
+  uid drop (previously ignored), macOS builds without Seatbelt honor them
+  too, and macOS now reports partial enforcement (e.g. Seatbelt applied but
+  uid drop failed) instead of only fully-enforced/not-applied (#548)
+- **Unified TLS Handshake Parser**: The HTTPS (TCP) and QUIC DPI paths now
+  share one TLS handshake parser. TCP SNI values are validated with the same
+  strict hostname rules as QUIC (values containing characters like `/ @ : ?`
+  or single-label names are no longer shown), ClientHellos larger than 16 KB
+  (e.g. post-quantum key shares) are now parsed on TCP, and the 100-extension
+  parsing cap now also applies to QUIC. Invalid older supported-version values
+  cannot cause QUIC handshakes to be reported below TLS 1.3 (#546)
+- **Shared OUI Database**: The OUI vendor table is now shared between
+  packet-processor threads via `Arc` instead of being cloned per thread,
+  saving roughly 10 MB of memory (#542)
+- **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
+  trampoline programs (fentry/fexit) and falls back to legacy kprobes and then procfs,
+  choosing the backend from actual BTF, load, and attach results rather than the
+  reported kernel version. The preferred backend avoids `perf_event_open(2)`, so
+  Debian's `kernel.perf_event_paranoid=3` default no longer blocks eBPF attribution.
+  Both BPF backends use CO-RE socket reads and fall through to procfs when target BTF
+  is unavailable rather than risking misattribution with fixed offsets. The Statistics
+  panel reports the selected backend, a missing optional ICMP hook now degrades only
+  ICMP coverage instead of disabling TCP/UDP attribution, and BPF capabilities are
+  dropped on the capture workers after privileged initialization (#498)
+
+### Fixed
+- **Linux Aggregate Capture Recovery**: Capturing with `-i any` now retries
+  transient libpcap "interface disappeared" errors during VPN or other
+  interface removal instead of stopping immediately. Named-interface failures
+  and persistent errors remain fatal (#559)
+- **Details Tab ARP Layout**: ARP connections were exempt from the fixed
+  Details layout and dropped the Network Context MAC/attribution rows and the
+  whole Attribution card, so Traffic Statistics and the cards below jumped
+  when moving between ARP and non-ARP entries. ARP now renders the same
+  left-column row set with `-` placeholders, and its MAC rows resolve from
+  the neighbor cache like any other on-link connection. The Status and
+  Attributed Via ages now share one formatter, so connections closed or idle
+  for over an hour show `2h ago` instead of a large minute count (#555)
+- **Details Tab Layout Stability**: rows in the Details tab no longer appear
+  or disappear with data availability. MAC, Attributed Name/Via, the
+  Attribution card's process fields, the Kubernetes card's fields, and the
+  inbound Ping RTT row now always render for their connection class, showing
+  `-` when unresolved, so labels and the cards below keep fixed positions
+  while navigating between connections. Placeholder rows are not
+  click-to-copy targets (#554)
+- **macOS lsof Attribution UID**: When libproc details resolve, lsof-based
+  attribution now reports the process's live effective UID from libproc
+  instead of the UID captured in the earlier lsof scan, matching the other
+  platforms (#545)
+- **Broadcast/Multicast Endpoint Display**: A broadcast or multicast datagram
+  sent by a peer (e.g. NetBIOS to 192.168.0.255) used to render its
+  destination as a normal-looking Local address. Such endpoints now render as
+  `bcast:PORT` / `mcast:PORT` in the Overview table, the Details tab annotates
+  the full address with `(broadcast)` / `(multicast)`, and the Scope field
+  reports BROADCAST for subnet-directed broadcasts instead of PRIVATE.
+  Interface prefixes are now collected alongside local addresses to recognize
+  each subnet's broadcast address; recognized broadcasts no longer trigger
+  ambiguous-endpoint interface re-enumeration. JSONL logs gain
+  `local_addr_kind`/`remote_addr_kind` (sidecar) and
+  `source_addr_kind`/`destination_addr_kind` (event log) keys, emitted only
+  for non-unicast endpoints (#528)
+- **FreeBSD User Names in Connection Details**: Numeric socket-owner UIDs from
+  `sockstat` now survive process attribution, so Details can resolve user names
+  even when live process metadata is unavailable (#522)
+- **Linux User Names in Connection Details**: The Landlock profile now permits
+  read-only access to the public NSS account files, so the Details tab resolves
+  process UID/GID values to user/group names instead of showing numeric values
+  such as `1000:1000` (#519)
+- **Comm-Truncated Linux Process Names**: The kernel `comm` field holds at most
+  15 bytes, so both the eBPF and procfs backends showed names like
+  "chromium-browse". When a name sits at that limit and the resolved
+  executable's file name strictly extends it, the executable name now wins
+  ("chromium-browse" becomes "chromium-browser"). Shorter names and interpreter
+  cases (comm "myscript", exe "python3") are left untouched, so deliberately
+  renamed comms keep working (#514)
+- **Initial RTT Measured Against The Wrong Clock**: `Initial RTT` in the Details
+  pane reported round trips as `0.0ms`. RTT was timed with a clock read taken while
+  processing a packet rather than from the packet's capture timestamp, and capture
+  hands packets to processing in batches spanning up to 100 packets or 100ms — wide
+  enough that a whole handshake usually lands in one batch and gets timed as the
+  batch loop's own microseconds. Connections are now stamped with each packet's
+  libpcap timestamp, which costs no extra clock reads and also makes RTTs correct
+  when a saved pcap is replayed. Separately, RTT could be measured from an inbound
+  packet to this host's own reply, which spans no network at all; the clock now
+  starts only on a packet leaving this host. This affected TCP as well — any
+  connection to a local listener reported a handshake RTT of roughly 60µs (#507)
+- **Transport Health On QUIC Connections**: The Details pane labelled every
+  connection's Transport Health card with TCP loss counters, so a QUIC flow showed
+  `TCP Retransmits`, `Duplicate ACKs`, and `Window Size` sitting empty as if the
+  measurement had failed. QUIC encrypts its ACK frames and protects its packet
+  numbers, so those counters are unobservable on the wire rather than merely
+  unmeasured. QUIC connections now get their own rows — `Idle Timeout` and
+  `Connection Close` from the transport parameters and CONNECTION\_CLOSE frame,
+  plus a note about the encrypted counters — and `Initial RTT` is filled in from
+  the long-header handshake exchange, the QUIC analogue of SYN/SYN-ACK timing.
+  Other UDP flows say so instead of showing six blank TCP fields. All variants keep
+  the card's height so the dashboard doesn't resize between connections (#507)
+- **TCP Transport Health Counters**: `TCP Retransmits` in the Details pane stayed
+  at 0 for the life of a connection while `Fast Retransmits` climbed into the
+  dozens. Outbound sequence tracking desynchronized permanently the first time a
+  segment was missed, so no later retransmission was counted; it now tracks a
+  high-water mark that resyncs across gaps. Duplicate-ACK detection also counted
+  inbound data segments, which repeat the same ack number throughout any download
+  and inflated `Fast Retransmits` on healthy connections. `Duplicate ACKs` now
+  reports a lifetime total rather than the length of the run in progress, and
+  sequence comparisons use RFC 1982 serial arithmetic so they survive the 32-bit
+  wraparound (#501)
+- **JSON Outputs After Privilege Drop**: JSON event logs and PCAP sidecars are opened
+  before sandboxing and the UID drop and written through retained descriptors, so
+  logging no longer stops silently when the target path lives under a directory the
+  unprivileged user cannot traverse (for example `/root`). Unopenable outputs now fail
+  before terminal setup instead of failing quietly at runtime (#486)
+- **eBPF Attribution Correctness**: Fixed TCP accept attribution and UID/GID
+  extraction, stored dual-stack `AF_INET6` sockets with IPv4-mapped peers under the
+  `AF_INET` key that matches the wire packets, removed a per-thread handoff map that
+  leaked on missed kretprobes, and made socket-map cleanup skip unreadable entries
+  instead of aborting the sweep and letting the map fill (#498)
+
+### Documentation
+- **Roadmap Audit**: Synced completed capabilities and clarified remaining DPI,
+  platform, and analysis work (#547)
+- **eBPF Install and Troubleshooting**: Documented the fentry/kprobe/procfs backend
+  order, BTF and `RLIMIT_MEMLOCK` requirements, and reworked the BPF-denied
+  troubleshooting steps now that `perf_event_paranoid` affects only the legacy
+  backend (#498)
+- **Localized Docs**: Added a Japanese README and synchronized the Simplified Chinese
+  README, install, and usage docs (#484)
+
+## [1.5.0] - 2026-07-21
+
+This release makes RustNet Kubernetes-aware: connections can be attributed to their
+owning pod and container, and the new native PCAPNG export writes Wireshark-ready
+captures with process, DPI, GeoIP, and pod annotations. A new Activity view ranks
+processes by traffic, the graphs got a gradient braille overhaul, Windows process
+attribution went event-driven with ETW, and rustnet now drops root privileges after
+initialization on Linux, macOS, and FreeBSD.
+
+### Added
+- **Kubernetes Pod/Container Attribution**: New optional `kubernetes` feature
+  (off by default, no extra dependencies) that attributes connections to their
+  owning pod and container on a node, including `hostNetwork` pods. Pod, namespace,
+  and container appear in the Details pane, JSONL/PCAPNG exports, and the new
+  `pod:`, `ns:`, and `container:` filter keywords. The container image enables the
+  feature by default (#299, #450)
+- **Native Annotated PCAPNG Export**: New `--pcapng-export FILE` writes a
+  Wireshark-ready PCAPNG file whose packet comments carry best-effort process, PID,
+  direction, DPI/SNI, and GeoIP metadata, preserving libpcap timestamps and original
+  packet lengths. The Overview panel reports export progress and annotation stats (#432)
+- **Process Activity View**: The Interfaces tab is now a process-focused Activity
+  view (key `3`) ranking egress and ingress traffic with 60-second share bars,
+  retained totals, connection counts, and top remote peers; `d` flips direction,
+  `s` changes the sort metric, and `i` opens the detailed interface table (#465)
+- **Gradient Braille Graphs and Adaptive Rendering**: Flow-inspired braille area
+  graphs with gradient ramps across the Graph tab, Overview mini graphs, and
+  per-connection Details waves, plus a draw-on-demand main loop with event
+  coalescing that roughly halves terminal-emulator CPU (#459)
+- **Pane Scrolling and Filled Traffic Chart**: Details, Help, and Interfaces tabs
+  scroll with mouse wheel and vim keys instead of silently clipping, and the
+  traffic chart renders RX/TX as filled areas (#452)
+- **Event-driven Windows Process Attribution**: Use kernel network and process ETW
+  events to retain connection ownership for short-lived processes, with IP Helper
+  polling as reconciliation and fallback. IPv6 UDP ownership is now included (#474)
+
+### Security
+- **Drop Root Privileges After Initialization**: Under sudo, rustnet now drops to
+  `SUDO_UID`/`SUDO_GID` (or `nobody` for plain root) once capture and eBPF are
+  initialized on Linux, macOS, and FreeBSD, so a DPI compromise no longer runs as
+  root. Opt out with the new `--no-uid-drop` flag; `--sandbox-strict` fails hard if
+  the drop fails. Trade-offs are documented in SECURITY.md (#456, #457, #458)
+- **No More `CAP_SYS_ADMIN` Auto-Grant**: DEB/RPM installs no longer grant the
+  broad `cap_sys_admin` eBPF fallback capability; on pre-5.8 kernels process
+  detection degrades to procfs instead (#431)
+- **Hardened File Writes**: Log and capture files are created atomically with
+  `O_NOFOLLOW` and mode `0600`, and `lsof`/`sockstat` are invoked by absolute path
+  to prevent symlink and `$PATH` attacks (#430)
+
+### Fixed
+- **Dynamic local-address detection**: Refresh endpoint-orientation addresses after
+  network changes and retry ambiguous unicast packets once. On Windows, supplement
+  the IPv4-only adapter data with `GetAdaptersAddresses()` so IPv6 traffic is not
+  shown with reversed local and remote endpoints (#475)
+- **Transport Payload Length**: Trim the transport slice to the IP datagram length,
+  so Ethernet frame padding no longer produces phantom 6-byte payloads, false
+  retransmission counts, resurrected closed connections, or DPI misclassification
+  from trailing bytes (#479, thanks @0xghost42)
+- **Connection Lifecycle**: Reused connection tuples no longer inherit their
+  predecessor's process/DPI metadata in PCAPNG annotations or rate history in
+  Details; immutable history is preserved across tuple reuse; UI-side expiry no
+  longer hides tracked connections; rows stay yellow through the whole warning
+  window; and the recently-closed tombstone table keeps a capacity floor for tiny
+  archive configs (#469, #470, #473)
+- **Grouped Overview Navigation**: Space collapses or expands a process group from
+  a child row, and `g`/`G` jump to the first and last visible rows in grouped
+  mode (#471)
+- **Live Graph Rendering**: Graphs sample and redraw more frequently with stable
+  scaling, so waves no longer wobble or flatten after spikes, and the connection
+  count graph now shows opened/closed lifecycle activity (#472)
+- **Overview Status Polish**: Clarified filtered result counts, kept Statistics
+  totals unfiltered with process counts, and added an expiry color gradient with a
+  matching Help legend (#466)
+- **Stable Details Layout**: The Details tab uses fixed Connection, Network
+  Context, Application, and Transport Health cards with placeholder rows, so
+  sections no longer shift while navigating (#462)
+- **Help Scrollbar**: Restored the inset Help scrollbar and the `Help · ↑/↓ scroll`
+  title hint (#460)
+- **QUIC DPI**: Parse Retry and Version Negotiation packets correctly, merge CRYPTO
+  fragments across coalesced Initial packets (restoring SNI for large ClientHellos),
+  and use the right Initial salts for draft/mvfst versions (#453)
+- **Protocol Detection Switches**: Correct DPI misclassifications (SIP/RTSP as
+  HTTP, SMTP as FTP, WireGuard as BitTorrent uTP), add MQTT QoS 2/AUTH types and
+  structural SNMPv3 parsing, fix NetBIOS datagram offsets, and drop non-first IP
+  fragments at the parser (#454)
+- **DNS Label Parsing**: Reject RFC 1035 reserved label top-bits in
+  `parse_question`, matching `skip_dns_name` (#434, thanks @0xghost42)
+- **SSH State Detection**: Inspect the final 6-byte packet window, so signatures at
+  the end of the payload are no longer missed (#406, thanks @0xghost42)
+- **TLS Cipher Names**: Correct six mislabeled ARIA and Camellia cipher-suite
+  names (#404, thanks @0xghost42)
+- **macOS PKTAP PIDs**: Accept PIDs up to Darwin's 99999 ceiling instead of
+  dropping attribution for PIDs at or above 65535 (#415, thanks @0xghost42)
+- **eBPF Map Cleanup**: Compare map timestamps against `CLOCK_MONOTONIC` instead of
+  wall-clock time, so cleanup no longer flushes the entire map and attribution no
+  longer silently falls back to procfs (#451)
+
+### Performance
+- **Ratatui Hot Paths**: Cache selected row positions, aggregate Graph tab metrics
+  in one borrowed pass, and select only the top process rows instead of sorting
+  every process (#461)
+- **HTTP Parser**: Drop the per-packet `Vec` allocation in the HTTP start-line
+  parser (#402, thanks @0xghost42)
+
+### Internal
+- **Library Crates 0.4.0**: `rustnet-core`, `rustnet-capture`, and `rustnet-host`
+  are released as 0.4.0 with the new Kubernetes, PCAPNG, and parser APIs
+- **CI Auditing**: Replaced cargo-deny with RustSec cargo-audit for CI and
+  scheduled supply-chain checks (#464)
+- **OUI Database**: Monthly vendor database refresh (#439)
+- **Dependencies**: Routine dependency and GitHub Actions updates across the cycle
+  (Dependabot)
+
+### Contributors
+
+Special thanks to the contributors in this release:
+- [@0xghost42](https://github.com/0xghost42): the transport payload-length fix,
+  TLS cipher-suite corrections, SSH and DNS DPI fixes, the PKTAP PID ceiling fix,
+  and HTTP parser performance (#402, #404, #406, #415, #434, #479)
+
 ## [1.4.0] - 2026-06-16
 
 This release redesigns the TUI around a calmer visual hierarchy and, under the hood,
@@ -259,7 +1067,7 @@ Special thanks to the external contributors in this release:
 ### Added
 - **Landlock Sandbox for Linux**: Filesystem and network sandboxing for enhanced security
   - Restricts filesystem access to `/proc` only after initialization
-  - Network sandbox blocks TCP bind/connect on kernel 6.4+
+  - Network sandbox blocks TCP bind/connect on kernel 6.7+
   - Drops `CAP_NET_RAW` capability after pcap handle is opened
   - New CLI options: `--no-sandbox` and `--sandbox-strict`
   - Comprehensive security documentation in SECURITY.md
@@ -574,7 +1382,10 @@ Special thanks to the external contributors in this release:
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/domcyrus/rustnet/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/domcyrus/rustnet/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/domcyrus/rustnet/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/domcyrus/rustnet/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/domcyrus/rustnet/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/domcyrus/rustnet/compare/v1.1.0...v1.2.0

@@ -1,120 +1,623 @@
-// network/platform/linux/process.rs - Linux procfs-based process lookup
+//! Linux procfs-based process lookup.
 
-use crate::{ConnectionKey, ProcessLookup};
+use crate::procfs::{extract_socket_inode, parse_proc_net_line, read_comm, read_comm_in};
+use crate::{
+    ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
+    ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketSnapshot,
+    collect_process_lineage, memoized, relaxed_candidates, relaxed_lookup, remote_if_present,
+};
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::RwLock;
-use std::time::Instant;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 
-/// Map of socket inode to (PID, process name)
-type InodeProcessMap = HashMap<u64, (u32, String)>;
-/// Map of PID to process name
-type PidNameMap = HashMap<u32, String>;
+/// Resolve the executable path of a TGID from `/proc/<tgid>/exe`.
+///
+/// Resolved in user space immediately after a successful attribution, while the
+/// process is most likely still alive. `None` is a normal outcome and never
+/// fails the attribution: the process may have exited already, be a kernel
+/// thread (no `exe` link), or belong to another user, whose `exe` link needs
+/// `CAP_SYS_PTRACE` to read.
+pub(crate) fn resolve_executable(tgid: u32) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{tgid}/exe")).ok()
+}
+
+/// Read the effective UID/GID of a TGID from the ownership of `/proc/<tgid>`,
+/// which the kernel stamps with the task's effective credentials.
+///
+/// `None` when the process is gone or hidden (`hidepid`).
+pub(crate) fn resolve_credentials(tgid: u32) -> Option<(u32, u32)> {
+    let metadata = fs::metadata(format!("/proc/{tgid}")).ok()?;
+    Some((metadata.uid(), metadata.gid()))
+}
+
+/// Recover a comm-truncated process name from the executable's file name.
+///
+/// The kernel `comm` field holds at most 15 bytes, so both eBPF and the procfs
+/// scan see "chromium-browse" for chromium-browser. When a name sits exactly at
+/// that limit and the resolved executable's file name strictly extends it, the
+/// executable name is the untruncated original. Shorter names and interpreter
+/// cases (comm "myscript", exe "python3") never match and pass through
+/// unchanged.
+pub(crate) fn refine_truncated_name(name: String, executable: Option<&Path>) -> String {
+    const COMM_MAX: usize = 15;
+    if name.len() != COMM_MAX {
+        return name;
+    }
+    match executable
+        .and_then(|path| path.file_name())
+        .and_then(|file_name| file_name.to_str())
+    {
+        Some(basename) if basename.len() > COMM_MAX && basename.starts_with(name.as_str()) => {
+            basename.to_string()
+        }
+        _ => name,
+    }
+}
+
+/// Read the parent process id from `/proc/<tgid>/status`.
+///
+/// This is resolved in user space for both procfs and eBPF socket matches. It
+/// remains best effort because a short-lived process may exit before
+/// enrichment runs.
+pub(crate) fn resolve_parent_pid(tgid: u32) -> Option<u32> {
+    let status = fs::read_to_string(format!("/proc/{tgid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:"))
+        .and_then(|value| value.trim().parse().ok())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ProcStat {
+    name: String,
+    ppid: u32,
+    start_ticks: u64,
+}
+
+fn parse_proc_stat(stat: &str) -> Option<ProcStat> {
+    let name_start = stat.find('(')?;
+    let name_end = stat.rfind(')')?;
+    if name_end <= name_start {
+        return None;
+    }
+
+    // Fields after the closing parenthesis start at field 3 (`state`). The
+    // parent PID is field 4 and process start ticks are field 22.
+    let fields: Vec<&str> = stat.get(name_end + 1..)?.split_whitespace().collect();
+    Some(ProcStat {
+        name: stat.get(name_start + 1..name_end)?.to_string(),
+        ppid: fields.get(1)?.parse().ok()?,
+        start_ticks: fields.get(19)?.parse().ok()?,
+    })
+}
+
+fn boot_time_unix_ms() -> Option<u64> {
+    static BOOT_TIME: OnceLock<Option<u64>> = OnceLock::new();
+    *BOOT_TIME.get_or_init(|| {
+        fs::read_to_string("/proc/stat")
+            .ok()?
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))?
+            .parse::<u64>()
+            .ok()?
+            .checked_mul(1_000)
+    })
+}
+
+pub(super) fn clock_ticks_per_second() -> Option<u64> {
+    static CLOCK_TICKS: OnceLock<Option<u64>> = OnceLock::new();
+    *CLOCK_TICKS.get_or_init(|| {
+        // SAFETY: `sysconf` reads a process-wide constant and has no pointer
+        // arguments or side effects.
+        u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+            .ok()
+            .filter(|ticks| *ticks > 0)
+    })
+}
+
+fn process_start_unix_ms(start_ticks: u64) -> Option<u64> {
+    let ticks_per_second = clock_ticks_per_second()?;
+    let since_boot_ms = start_ticks.checked_mul(1_000)? / ticks_per_second;
+    boot_time_unix_ms()?.checked_add(since_boot_ms)
+}
+
+#[cfg(feature = "ebpf")]
+pub(super) fn boottime_start_unix_ms(start_ns: u64) -> Option<u64> {
+    (start_ns != 0).then_some(())?;
+    boot_time_unix_ms()?.checked_add(start_ns / 1_000_000)
+}
+
+/// Retain the observed parent even after it exits. Only extend its ancestry
+/// through procfs while both task generations still match the snapshot.
+#[cfg(feature = "ebpf")]
+pub(super) fn retained_lineage(info: &super::ebpf::ProcessInfo) -> Option<ProcessLineage> {
+    let parent = info.parent.clone()?;
+    let same_generation = || {
+        process_generation_matches(info.pid, info.start_boottime)
+            && process_generation_matches(parent.pid, info.parent_start_boottime)
+    };
+    if same_generation()
+        && let Some(mut lineage) = resolve_process_lineage(info.pid, parent.pid)
+        && same_generation()
+    {
+        // Keep the parent's identity as observed, even if it subsequently execs.
+        if let Some(last) = lineage.ancestors.last_mut() {
+            *last = parent;
+        }
+        return Some(lineage);
+    }
+    Some(ProcessLineage {
+        truncated: parent.pid != 1,
+        ancestors: vec![parent],
+    })
+}
+
+#[cfg(feature = "ebpf")]
+pub(super) fn boottime_to_start_ticks(start_ns: u64) -> Option<u64> {
+    (start_ns != 0).then_some(())?;
+    u64::try_from(u128::from(start_ns) * u128::from(clock_ticks_per_second()?) / 1_000_000_000).ok()
+}
+
+#[cfg(feature = "ebpf")]
+fn process_generation_matches(pid: u32, start_ns: u64) -> bool {
+    boottime_to_start_ticks(start_ns)
+        .is_some_and(|expected| process_start_ticks(pid) == Some(expected))
+}
+
+fn resolve_process_ancestor(pid: u32) -> Option<(ProcessAncestor, u32)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat = parse_proc_stat(&stat)?;
+    let executable = resolve_executable(pid);
+    let name = refine_truncated_name(stat.name, executable.as_deref());
+    Some((
+        ProcessAncestor {
+            pid,
+            name,
+            executable,
+            started_at_unix_ms: process_start_unix_ms(stat.start_ticks),
+        },
+        stat.ppid,
+    ))
+}
+
+fn resolve_process_lineage(tgid: u32, ppid: u32) -> Option<ProcessLineage> {
+    collect_process_lineage(tgid, ppid, resolve_process_ancestor)
+}
+
+/// Map of socket inode to its best-effort process owner.
+type InodeProcessMap = HashMap<u64, SocketOwner>;
+
+/// Socket owners discovered before the procfs connection tables are parsed.
+///
+/// The BPF task-file iterator and procfs may both report an inode. Repeated
+/// reports from the same TGID are harmless, but fork and fd passing let
+/// several processes hold one socket: a pre-forking server's workers all
+/// carry the listening inode their master opened. Those inodes keep a
+/// best-effort owner for the live table, chosen by lowest PID so that
+/// /proc iteration order cannot change the answer between refreshes, and are
+/// reported separately as shared so the startup snapshot can skip them.
+#[derive(Debug, Default)]
+pub(super) struct StartupSocketOwners {
+    owners: InodeProcessMap,
+    shared: HashSet<u64>,
+}
+
+impl StartupSocketOwners {
+    pub(super) fn insert(&mut self, inode: u64, owner: SocketOwner) {
+        if inode == 0 {
+            return;
+        }
+
+        match self.owners.entry(inode) {
+            Entry::Vacant(entry) => {
+                entry.insert(owner);
+            }
+            // The same process seen twice: prefer the later report, which is
+            // the procfs scan refreshing what BPF recorded first.
+            Entry::Occupied(mut entry) if entry.get().pid == owner.pid => {
+                entry.insert(owner);
+            }
+            Entry::Occupied(mut entry) => {
+                self.shared.insert(inode);
+                if owner.pid < entry.get().pid {
+                    entry.insert(owner);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "ebpf")]
+    pub(super) fn len(&self) -> usize {
+        self.owners.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn get(&self, inode: u64) -> Option<&SocketOwner> {
+        self.owners.get(&inode)
+    }
+
+    /// The owner map for the live socket table, plus the inodes held by more
+    /// than one process.
+    fn into_parts(self) -> (InodeProcessMap, HashSet<u64>) {
+        (self.owners, self.shared)
+    }
+}
+
 /// Map of connection key to (PID, process name)
 type ConnectionProcessMap = HashMap<ConnectionKey, (u32, String)>;
 
-pub struct LinuxProcessLookup {
-    // Cache: ConnectionKey -> (pid, process_name)
-    cache: RwLock<ProcessCache>,
-    // Cache: PID -> process_name (for resolving eBPF thread names to main process names)
-    pid_names: RwLock<HashMap<u32, String>>,
+/// The procfs socket tables, in scan order: a later table wins when two
+/// report the same tuple.
+const PROC_NET_TABLES: [(&str, Protocol); 4] = [
+    ("/proc/net/tcp", Protocol::Tcp),
+    ("/proc/net/tcp6", Protocol::Tcp),
+    ("/proc/net/udp", Protocol::Udp),
+    ("/proc/net/udp6", Protocol::Udp),
+];
+
+/// Owner recorded by the BPF or privileged procfs startup scan for one
+/// pre-existing socket, keyed by its exact 4-tuple. The inode pins the
+/// attribution to the socket object itself, not merely the tuple.
+#[derive(Debug, Clone)]
+struct SnapshotOwner {
+    pid: u32,
+    name: String,
+    inode: u64,
+    /// Process start time in clock ticks, when it was readable at startup.
+    /// `comm` alone cannot survive PID reuse because any process may rename
+    /// itself with `prctl(PR_SET_NAME)`; the start time cannot be forged.
+    start_ticks: Option<u64>,
 }
 
-struct ProcessCache {
-    lookup: HashMap<ConnectionKey, (u32, String)>,
-    last_refresh: Instant,
+/// Process start time in clock ticks, stable for the life of the process.
+pub(super) fn process_start_ticks(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    Some(parse_proc_stat(&stat)?.start_ticks)
+}
+
+/// Build the startup fallback table from the startup socket inventory,
+/// pairing each owner with the inode of its own row so the two can never
+/// come from different sockets. A tuple occupied by more than one socket
+/// (SO_REUSEPORT plus connected UDP makes exact duplicates legal) is
+/// dropped entirely, even when only one of its rows resolved an owner:
+/// observed traffic cannot be assigned to either socket. So is a socket held
+/// by several processes, whose single owner is a best-effort pick the live
+/// table can live with but a long-lived fallback should not freeze. Rows
+/// without an inode or a resolved owner contribute no entry of their own.
+fn build_startup_snapshot(
+    sockets: &SocketSnapshot,
+    shared_inodes: &HashSet<u64>,
+) -> HashMap<ConnectionKey, SnapshotOwner> {
+    let key_of = |socket: &HostSocket| {
+        socket.remote_addr.map(|remote_addr| ConnectionKey {
+            protocol: socket.protocol,
+            local_addr: socket.local_addr,
+            remote_addr,
+        })
+    };
+
+    let mut occupancy: HashMap<ConnectionKey, u32> = HashMap::new();
+    for socket in sockets.sockets.iter() {
+        if let Some(key) = key_of(socket) {
+            *occupancy.entry(key).or_insert(0) += 1;
+        }
+    }
+
+    let mut snapshot = HashMap::new();
+    for socket in sockets.sockets.iter() {
+        let (Some(key), Some(inode), Some(owner)) =
+            (key_of(socket), socket.native_id, socket.owner.as_ref())
+        else {
+            continue;
+        };
+        if occupancy.get(&key) != Some(&1) || shared_inodes.contains(&inode) {
+            continue;
+        }
+        snapshot.insert(
+            key,
+            SnapshotOwner {
+                pid: owner.pid,
+                name: owner.name.clone(),
+                inode,
+                start_ticks: process_start_ticks(owner.pid),
+            },
+        );
+    }
+    snapshot
+}
+
+/// Whether a startup-snapshot entry's recorded owner is still the same
+/// process. `/proc/<pid>` stays world-readable after the uid drop, so both
+/// the name captured at startup and, when it was readable, the process start
+/// time must still match. This rejects owners that have exited and PIDs
+/// since reused by a different program, including one that renamed itself to
+/// impersonate the original.
+fn snapshot_owner_still_matches(owner: &SnapshotOwner) -> bool {
+    let name_matches = read_comm(owner.pid).as_deref() == Some(owner.name.as_str());
+
+    name_matches
+        && match owner.start_ticks {
+            Some(start_ticks) => process_start_ticks(owner.pid) == Some(start_ticks),
+            None => true,
+        }
+}
+
+/// Retained ownership evidence. Never use it to select a traffic owner:
+/// lifecycle checks may only validate a socket already matched by attribution.
+struct RetainedSocketOwner {
+    socket: HostSocket,
+    start_ticks: u64,
+}
+
+impl RetainedSocketOwner {
+    fn matches(&self, socket: &HostSocket) -> bool {
+        let Some(owner) = self.socket.owner.as_ref() else {
+            return false;
+        };
+        socket.native_id == self.socket.native_id
+            && socket.protocol == self.socket.protocol
+            && socket.local_addr == self.socket.local_addr
+            && socket.remote_addr == self.socket.remote_addr
+            && socket.owner.as_ref().is_none_or(|live| live == owner)
+            && process_start_ticks(owner.pid) == Some(self.start_ticks)
+            && read_comm(owner.pid).as_deref() == Some(owner.name.as_str())
+    }
+}
+
+fn retain_socket_owners(
+    snapshot: &SocketSnapshot,
+    shared_inodes: &HashSet<u64>,
+) -> HashMap<u64, RetainedSocketOwner> {
+    snapshot
+        .sockets
+        .iter()
+        .filter_map(|socket| {
+            let inode = socket.native_id.filter(|inode| *inode != 0)?;
+            let owner = socket.owner.as_ref()?;
+            if shared_inodes.contains(&inode) {
+                return None;
+            }
+            Some((
+                inode,
+                RetainedSocketOwner {
+                    socket: socket.clone(),
+                    start_ticks: process_start_ticks(owner.pid)?,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn restore_socket_owners(
+    retained: &mut HashMap<u64, RetainedSocketOwner>,
+    snapshot: &mut SocketSnapshot,
+    shared_inodes: &HashSet<u64>,
+) {
+    let mut present = HashSet::new();
+    for socket in std::sync::Arc::make_mut(&mut snapshot.sockets) {
+        let Some(inode) = socket.native_id else {
+            continue;
+        };
+        let Some(previous) = retained.get(&inode) else {
+            continue;
+        };
+        let Some(owner) = previous.socket.owner.as_ref() else {
+            continue;
+        };
+        if shared_inodes.contains(&inode) || !previous.matches(socket) {
+            continue;
+        }
+        present.insert(inode);
+        if socket.owner.is_none() {
+            socket.owner = Some(owner.clone());
+        }
+    }
+    // Once a socket disappears or changes identity, never resurrect its owner.
+    retained.retain(|inode, _| present.contains(inode));
+}
+
+fn parse_proc_tcp_state(value: &str) -> HostTcpState {
+    match value {
+        "01" => HostTcpState::Established,
+        "02" => HostTcpState::SynSent,
+        "03" | "0C" => HostTcpState::SynReceived,
+        "04" => HostTcpState::FinWait1,
+        "05" => HostTcpState::FinWait2,
+        "06" => HostTcpState::TimeWait,
+        "07" => HostTcpState::Closed,
+        "08" => HostTcpState::CloseWait,
+        "09" => HostTcpState::LastAck,
+        "0A" => HostTcpState::Listen,
+        "0B" => HostTcpState::Closing,
+        _ => HostTcpState::Unknown,
+    }
+}
+
+pub(super) struct LinuxProcessLookup {
+    // Cache: ConnectionKey -> (pid, process_name)
+    cache: RwLock<ConnectionProcessMap>,
+    // The socket table as scanned at startup, while the process still had
+    // its full privileges. After the uid drop, rescans only see the drop
+    // target's own /proc/<pid>/fd entries, so connections that already
+    // existed at launch (other users' daemons, root services) would lose
+    // their owner on the first refresh. This immutable snapshot keeps them
+    // attributable. The live cache always wins; the snapshot only fills
+    // holes, so a reused 4-tuple visible to the rescan is never shadowed.
+    startup_snapshot: HashMap<ConnectionKey, SnapshotOwner>,
+    retained_socket_owners: RwLock<HashMap<u64, RetainedSocketOwner>>,
+    // Memo: TGID -> lineage, so many connections of one process walk /proc
+    // once per refresh instead of once each. Failures are memoized too.
+    lineages: RwLock<HashMap<u32, Option<ProcessLineage>>>,
+    socket_snapshot: RwLock<SocketSnapshot>,
 }
 
 impl LinuxProcessLookup {
-    pub fn new() -> Result<Self> {
-        // Populate the cache immediately so early connections have process names available.
-        // This ensures the PID→name cache is ready before packet capture starts.
-        let (process_map, pid_names) = Self::build_process_map()?;
+    pub(super) fn new() -> Result<Self> {
+        Self::new_with_startup_socket_owners(StartupSocketOwners::default())
+    }
+
+    #[cfg(feature = "ebpf")]
+    pub(super) fn new_with_bpf_startup_owners(owners: StartupSocketOwners) -> Result<Self> {
+        Self::new_with_startup_socket_owners(owners)
+    }
+
+    fn new_with_startup_socket_owners(owners: StartupSocketOwners) -> Result<Self> {
+        // Populate the cache immediately so it is ready before packet capture starts.
+        let (process_map, socket_snapshot, shared_inodes) = Self::build_process_map(owners)?;
 
         Ok(Self {
-            cache: RwLock::new(ProcessCache {
-                lookup: process_map,
-                last_refresh: Instant::now(),
-            }),
-            pid_names: RwLock::new(pid_names),
+            startup_snapshot: build_startup_snapshot(&socket_snapshot, &shared_inodes),
+            retained_socket_owners: RwLock::new(retain_socket_owners(
+                &socket_snapshot,
+                &shared_inodes,
+            )),
+            cache: RwLock::new(process_map),
+            lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(socket_snapshot),
         })
     }
 
-    /// Get process name by PID. Tries the cached procfs scan first, then
-    /// falls back to reading `/proc/<pid>/comm` directly: the cache only
-    /// refreshes every few seconds, so a freshly started process — exactly
-    /// the case for short-lived tools like curl/dig — is often missing
-    /// from it while still being perfectly readable from /proc. One tiny
-    /// file read; the result is cached so repeated lookups stay cheap.
-    /// Returns None if the process has already exited and was never scanned.
-    pub fn get_process_name_by_pid(&self, pid: u32) -> Option<String> {
-        if let Some(name) = self
-            .pid_names
-            .read()
-            .expect("pid_names lock poisoned")
-            .get(&pid)
-            .cloned()
+    /// Build a lookup over a caller-supplied socket table instead of scanning
+    /// `/proc/net/*`, so match-quality behaviour can be tested deterministically.
+    #[cfg(test)]
+    fn with_socket_table(lookup: ConnectionProcessMap) -> Self {
+        Self {
+            startup_snapshot: HashMap::new(),
+            retained_socket_owners: RwLock::new(HashMap::new()),
+            cache: RwLock::new(lookup),
+            lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::default()),
+        }
+    }
+
+    /// Match a connection against the cached procfs socket table.
+    ///
+    /// Returns the owner together with how it was matched, so callers can tell
+    /// a proven 4-tuple hit from a relaxed guess. Ambiguous relaxed matches
+    /// (two candidates, two different owners) yield `None`.
+    ///
+    /// Never refreshes on a miss: the enrichment thread refreshes every few
+    /// seconds, and refreshing here runs once per unattributed connection,
+    /// which is a CPU hotspot.
+    fn lookup_match(&self, conn: &Connection) -> Option<(u32, String, MatchQuality)> {
+        let key = ConnectionKey::from_connection(conn);
+        let cache = self.cache.read().expect("process cache lock poisoned");
+
+        // Fast path: exact 4-tuple match (always works for TCP).
+        if let Some((pid, name)) = cache.get(&key) {
+            return Some((*pid, name.clone(), MatchQuality::ProcfsExact));
+        }
+
+        // Fallback: /proc/net may store sockets with wildcard addresses.
+        // Progressively relax the key until we find a match. The relaxation
+        // shape is deliberately collapsed into a single `ProcfsRelaxed`: what
+        // matters downstream is that procfs needed to guess, not which of the
+        // three wildcard shapes it guessed with.
+        if let Some(((pid, name), _shape)) = relaxed_lookup(&cache, &key) {
+            return Some((*pid, name.clone(), MatchQuality::ProcfsRelaxed));
+        }
+        drop(cache);
+
+        // Last resort: the BPF or privileged procfs startup snapshot, for
+        // connections that already existed at launch but whose owner the
+        // post-uid-drop rescan can no longer see. Exact 4-tuple hits only:
+        // relaxed matching against the snapshot would let a stale listener
+        // entry claim new inbound connections indefinitely. The hit is only
+        // trusted while (a) the very same socket, by inode, still occupies
+        // the tuple in the periodically refreshed socket inventory (which
+        // stays readable after the uid drop even when owners do not), so a
+        // closed-and-reused tuple is rejected; and (b) the recorded owner is
+        // verifiably still the same process. The refresh cadence bounds the
+        // reuse-detection window to one refresh interval.
+        let owner = self.startup_snapshot.get(&key)?;
+        if self.snapshot_socket_unchanged(&key, owner.inode) && snapshot_owner_still_matches(owner)
         {
-            return Some(name);
+            return Some((owner.pid, owner.name.clone(), MatchQuality::StartupSnapshot));
         }
-
-        let comm = fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-        let comm = comm.trim();
-        if comm.is_empty() {
-            return None;
-        }
-        let name = comm.to_string();
-        self.pid_names
-            .write()
-            .expect("pid_names lock poisoned")
-            .insert(pid, name.clone());
-        Some(name)
+        None
     }
 
-    /// Build connection -> process mapping and PID -> name mapping
-    fn build_process_map() -> Result<(ConnectionProcessMap, PidNameMap)> {
+    /// Whether the current socket inventory still shows the startup socket
+    /// (same inode) on this exact tuple.
+    fn snapshot_socket_unchanged(&self, key: &ConnectionKey, inode: u64) -> bool {
+        let snapshot = self
+            .socket_snapshot
+            .read()
+            .expect("socket snapshot lock poisoned");
+        snapshot.sockets.iter().any(|socket| {
+            socket.native_id == Some(inode)
+                && socket.protocol == key.protocol
+                && socket.local_addr == key.local_addr
+                && socket.remote_addr == Some(key.remote_addr)
+        })
+    }
+
+    /// Resolve a process's parent chain, memoized per TGID until the next
+    /// socket-table refresh bounds PID-reuse staleness.
+    pub(crate) fn lineage_for(&self, tgid: u32, ppid: u32) -> Option<ProcessLineage> {
+        memoized(&self.lineages, tgid, "lineages lock poisoned", || {
+            resolve_process_lineage(tgid, ppid)
+        })
+    }
+
+    /// Turn a procfs socket-table match into a rich attribution by reading the
+    /// live `/proc/<tgid>` entries for the owner.
+    ///
+    /// The socket table sources the name from `/proc/<tgid>/comm` during the
+    /// scan, so a comm-truncated name is recovered from the executable here.
+    fn build_attribution(
+        &self,
+        tgid: u32,
+        name: String,
+        quality: MatchQuality,
+    ) -> ProcessAttribution {
+        let executable = resolve_executable(tgid);
+        let name = refine_truncated_name(name, executable.as_deref());
+        let mut attribution =
+            ProcessAttribution::new(tgid, name, quality).with_executable(executable);
+        if let Some(ppid) = resolve_parent_pid(tgid) {
+            attribution = attribution
+                .with_parent_pid(ppid)
+                .with_lineage(self.lineage_for(tgid, ppid));
+        }
+
+        match resolve_credentials(tgid) {
+            Some((uid, gid)) => attribution.with_credentials(uid, gid),
+            None => attribution,
+        }
+    }
+
+    /// Build the connection map and socket inventory.
+    fn build_process_map(
+        startup_owners: StartupSocketOwners,
+    ) -> Result<(ConnectionProcessMap, SocketSnapshot, HashSet<u64>)> {
         let mut process_map = HashMap::new();
+        let mut sockets = Vec::new();
 
-        // First, build inode -> process mapping and PID -> name mapping
-        let (inode_to_process, pid_names) = Self::build_inode_map()?;
+        let (inode_to_process, shared_inodes) = Self::build_inode_map(startup_owners)?;
 
-        // Then, parse network files to map connections -> inodes -> processes
-        Self::parse_and_map(
-            "/proc/net/tcp",
-            Protocol::Tcp,
-            &inode_to_process,
-            &mut process_map,
-        )?;
-        Self::parse_and_map(
-            "/proc/net/tcp6",
-            Protocol::Tcp,
-            &inode_to_process,
-            &mut process_map,
-        )?;
-        Self::parse_and_map(
-            "/proc/net/udp",
-            Protocol::Udp,
-            &inode_to_process,
-            &mut process_map,
-        )?;
-        Self::parse_and_map(
-            "/proc/net/udp6",
-            Protocol::Udp,
-            &inode_to_process,
-            &mut process_map,
-        )?;
-
-        Ok((process_map, pid_names))
+        let mut complete = true;
+        for (path, protocol) in PROC_NET_TABLES {
+            complete &= Self::parse_and_map(
+                path,
+                protocol,
+                &inode_to_process,
+                &mut process_map,
+                &mut sockets,
+            );
+        }
+        let snapshot = SocketSnapshot::from_inventory(sockets, complete);
+        Ok((process_map, snapshot, shared_inodes))
     }
 
-    /// Build inode -> (pid, process_name) mapping and PID -> process_name mapping
-    fn build_inode_map() -> Result<(InodeProcessMap, PidNameMap)> {
-        let mut inode_map = HashMap::new();
-        let mut pid_names = HashMap::new();
-
+    /// Build inode -> (pid, process_name) mapping.
+    fn build_inode_map(
+        mut startup_owners: StartupSocketOwners,
+    ) -> Result<(InodeProcessMap, HashSet<u64>)> {
         for entry in fs::read_dir("/proc")? {
             let entry = entry?;
             let path = entry.path();
@@ -126,32 +629,37 @@ impl LinuxProcessLookup {
                     continue;
                 }
 
-                // Get process name
-                let comm_path = path.join("comm");
-                let process_name = fs::read_to_string(&comm_path)
-                    .unwrap_or_else(|_| "unknown".to_string())
-                    .trim()
-                    .to_string();
+                // Get process name, skipping the process when comm is
+                // unreadable (see `procfs::read_comm_in`).
+                let Some(process_name) = read_comm_in(&path) else {
+                    continue;
+                };
 
-                // Store PID -> name mapping for all processes
-                pid_names.insert(pid, process_name.clone());
+                let uid = fs::metadata(&path).ok().map(|metadata| metadata.uid());
 
-                // Check file descriptors for socket inodes
                 let fd_dir = path.join("fd");
                 if let Ok(fd_entries) = fs::read_dir(&fd_dir) {
                     for fd_entry in fd_entries.flatten() {
                         if let Ok(link) = fs::read_link(fd_entry.path())
                             && let Some(link_str) = link.to_str()
-                            && let Some(inode) = Self::extract_socket_inode(link_str)
+                            && let Some(inode) = extract_socket_inode(link_str)
                         {
-                            inode_map.insert(inode, (pid, process_name.clone()));
+                            startup_owners.insert(
+                                inode,
+                                SocketOwner {
+                                    pid,
+                                    name: process_name.clone(),
+                                    uid,
+                                },
+                            );
                         }
                     }
                 }
             }
         }
 
-        Ok((inode_map, pid_names))
+        let (inode_map, shared_inodes) = startup_owners.into_parts();
+        Ok((inode_map, shared_inodes))
     }
 
     /// Parse /proc/net file and map connections to processes
@@ -160,121 +668,1002 @@ impl LinuxProcessLookup {
         protocol: Protocol,
         inode_map: &InodeProcessMap,
         result: &mut ConnectionProcessMap,
-    ) -> Result<()> {
+        sockets: &mut Vec<HostSocket>,
+    ) -> bool {
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
-            Err(_) => return Ok(()), // File might not exist
+            // IPv6 tables may be absent when IPv6 is disabled.
+            Err(e) => return e.kind() == std::io::ErrorKind::NotFound && path.ends_with('6'),
         };
 
-        for (i, line) in content.lines().enumerate() {
-            if i == 0 {
-                continue; // Skip header
-            }
+        Self::parse_and_map_content(&content, protocol, inode_map, result, sockets);
+        true
+    }
 
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 10 {
+    fn parse_and_map_content(
+        content: &str,
+        protocol: Protocol,
+        inode_map: &InodeProcessMap,
+        result: &mut ConnectionProcessMap,
+        sockets: &mut Vec<HostSocket>,
+    ) {
+        for line in content.lines().skip(1) {
+            let Some(row) = parse_proc_net_line(line) else {
+                continue;
+            };
+            let (Some(state), Some(inode)) = (row.state, row.inode) else {
+                continue;
+            };
+            let local_addr = row.local_addr;
+            let remote_addr = row.remote_addr;
+            if protocol == Protocol::Udp && local_addr.port() == 0 {
                 continue;
             }
 
-            // Parse addresses
-            let local_addr = match Self::parse_hex_address(parts[1]) {
-                Some(addr) => addr,
-                None => continue,
+            let inode = inode.parse::<u64>().ok();
+            let owner = inode.and_then(|inode| inode_map.get(&inode)).cloned();
+            let state = match protocol {
+                Protocol::Tcp => HostSocketState::Tcp(parse_proc_tcp_state(state)),
+                Protocol::Udp => HostSocketState::UdpBound,
+                _ => continue,
             };
 
-            let remote_addr = match Self::parse_hex_address(parts[2]) {
-                Some(addr) => addr,
-                None => continue,
+            let key = ConnectionKey {
+                protocol,
+                local_addr,
+                remote_addr,
             };
-
-            // Get inode
-            if let Ok(inode) = parts[9].parse::<u64>()
-                && let Some((pid, name)) = inode_map.get(&inode)
-            {
-                let key = ConnectionKey {
-                    protocol,
-                    local_addr,
-                    remote_addr,
-                };
-                result.insert(key, (*pid, name.clone()));
+            if let Some(owner) = &owner {
+                result.insert(key, (owner.pid, owner.name.clone()));
             }
-        }
 
-        Ok(())
-    }
-
-    fn parse_hex_address(hex_addr: &str) -> Option<SocketAddr> {
-        let parts: Vec<&str> = hex_addr.split(':').collect();
-        if parts.len() != 2 {
-            return None;
-        }
-
-        let ip_hex = parts[0];
-        let port = u16::from_str_radix(parts[1], 16).ok()?;
-
-        if ip_hex.len() == 8 {
-            // IPv4
-            let ip_bytes = u32::from_str_radix(ip_hex, 16).ok()?;
-            let ip = Ipv4Addr::from(ip_bytes.to_le_bytes());
-            Some(SocketAddr::new(IpAddr::V4(ip), port))
-        } else if ip_hex.len() == 32 {
-            // IPv6
-            let mut bytes = [0u8; 16];
-            for i in 0..4 {
-                let chunk = &ip_hex[i * 8..(i + 1) * 8];
-                let value = u32::from_str_radix(chunk, 16).ok()?;
-                bytes[i * 4..(i + 1) * 4].copy_from_slice(&value.to_le_bytes());
-            }
-            let ip = Ipv6Addr::from(bytes);
-            Some(SocketAddr::new(IpAddr::V6(ip), port))
-        } else {
-            None
-        }
-    }
-
-    fn extract_socket_inode(link: &str) -> Option<u64> {
-        if link.starts_with("socket:[") && link.ends_with(']') {
-            let inode_str = &link[8..link.len() - 1];
-            inode_str.parse().ok()
-        } else {
-            None
+            sockets.push(HostSocket {
+                protocol,
+                local_addr,
+                remote_addr: remote_if_present(remote_addr),
+                state,
+                owner,
+                native_id: inode,
+            });
         }
     }
 }
 
-impl ProcessLookup for LinuxProcessLookup {
-    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
-        let key = ConnectionKey::from_connection(conn);
-
-        // Simple cache lookup with no refresh on cache miss.
-        // The enrichment thread (app.rs:495-500) handles periodic refresh every 5 seconds.
-        // IMPORTANT: Do NOT refresh here as it caused high CPU usage when called for every
-        // connection without process info (flamegraph showed this was the main bottleneck).
-        let cache = self.cache.read().expect("process cache lock poisoned");
-
-        // Fast path: exact 4-tuple match (always works for TCP).
-        if let Some(entry) = cache.lookup.get(&key) {
-            Some(entry.clone())
+/// Recover the same socket-table shape used by attribution. Multiple
+/// candidate inodes are ambiguous, even when their cached owner agrees.
+fn matching_socket_inode(
+    snapshot: &SocketSnapshot,
+    key: ConnectionKey,
+    quality: MatchQuality,
+) -> Option<u64> {
+    let relaxed = relaxed_candidates(&key);
+    let mut found = None;
+    for socket in snapshot.sockets.iter() {
+        let matches = |candidate: &ConnectionKey| {
+            socket.protocol == candidate.protocol
+                && socket.local_addr == candidate.local_addr
+                && socket.remote_addr == remote_if_present(candidate.remote_addr)
+        };
+        let matched = if quality == MatchQuality::ProcfsRelaxed {
+            relaxed.iter().any(|(candidate, _)| matches(candidate))
         } else {
-            // Fallback: /proc/net may store sockets with wildcard addresses.
-            // Progressively relax the key until we find a match.
-            Self::fallback_lookup(&cache.lookup, &key)
+            matches(&key)
+        };
+        if matched {
+            let inode = socket.native_id.filter(|inode| *inode != 0)?;
+            if found.is_some_and(|previous| previous != inode) {
+                return None;
+            }
+            found = Some(inode);
         }
+    }
+    found
+}
+
+impl ProcessLookup for LinuxProcessLookup {
+    fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
+        let (tgid, name, quality) = self.lookup_match(conn)?;
+        let mut attribution = self.build_attribution(tgid, name, quality);
+        // A cached tuple/PID alone cannot establish a process generation.
+        // Verify that this incarnation still owns the observed socket.
+        let before = process_start_ticks(tgid);
+        if let Some(start) = before {
+            let snapshot = self.socket_snapshot();
+            let inode =
+                matching_socket_inode(&snapshot, ConnectionKey::from_connection(conn), quality);
+            if let Some(inode) = inode {
+                // Startup ownership survives the privilege drop. Reuse it
+                // only while the same socket and process generation remain.
+                let retained_owner = self
+                    .retained_socket_owners
+                    .read()
+                    .expect("retained socket owners lock poisoned")
+                    .get(&inode)
+                    .is_some_and(|retained| {
+                        retained.start_ticks == start
+                            && retained
+                                .socket
+                                .owner
+                                .as_ref()
+                                .is_some_and(|owner| owner.pid == tgid)
+                            && snapshot
+                                .sockets
+                                .iter()
+                                .any(|socket| retained.matches(socket))
+                    });
+                let expected = format!("socket:[{inode}]");
+                let owns_socket = retained_owner
+                    || fs::read_dir(format!("/proc/{tgid}/fd"))
+                        .ok()
+                        .is_some_and(|entries| {
+                            entries.flatten().any(|entry| {
+                                fs::read_link(entry.path())
+                                    .ok()
+                                    .is_some_and(|link| link == Path::new(&expected))
+                            })
+                        });
+                if owns_socket && process_start_ticks(tgid) == Some(start) {
+                    attribution.process_start_id = Some(start);
+                    // This inode was found in our own network socket table.
+                    attribution.socket_netns_id = super::lifecycle::local_netns_id();
+                }
+            }
+        }
+        Some(attribution)
     }
 
     fn refresh(&self) -> Result<()> {
-        let (process_map, pid_names) = Self::build_process_map()?;
+        let (process_map, mut socket_snapshot, shared_inodes) =
+            Self::build_process_map(StartupSocketOwners::default())?;
 
-        let mut cache = self.cache.write().expect("process cache lock poisoned");
-        cache.lookup = process_map;
-        cache.last_refresh = Instant::now();
+        restore_socket_owners(
+            &mut self
+                .retained_socket_owners
+                .write()
+                .expect("retained socket owners lock poisoned"),
+            &mut socket_snapshot,
+            &shared_inodes,
+        );
 
-        *self.pid_names.write().expect("pid_names lock poisoned") = pid_names;
+        *self.cache.write().expect("process cache lock poisoned") = process_map;
+        *self
+            .socket_snapshot
+            .write()
+            .expect("socket snapshot lock poisoned") = socket_snapshot;
+
+        self.lineages
+            .write()
+            .expect("lineages lock poisoned")
+            .clear();
 
         Ok(())
     }
 
     fn get_detection_method(&self) -> &str {
         "procfs"
+    }
+
+    fn socket_snapshot(&self) -> SocketSnapshot {
+        self.socket_snapshot
+            .read()
+            .expect("socket snapshot lock poisoned")
+            .clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{tcp_connection, tcp_key as key};
+    use rustnet_core::network::types::{ProtocolState, TcpState};
+
+    #[test]
+    fn lifecycle_inode_lookup_preserves_matching_shape_and_rejects_ambiguity() {
+        let key = ConnectionKey {
+            protocol: Protocol::Udp,
+            local_addr: "192.0.2.1:45000".parse().unwrap(),
+            remote_addr: "198.51.100.1:443".parse().unwrap(),
+        };
+        let socket = HostSocket {
+            protocol: Protocol::Udp,
+            local_addr: "0.0.0.0:45000".parse().unwrap(),
+            remote_addr: None,
+            state: HostSocketState::UdpBound,
+            owner: None,
+            native_id: Some(42),
+        };
+        let snapshot = SocketSnapshot::new(vec![socket.clone()]);
+        assert_eq!(
+            matching_socket_inode(&snapshot, key, MatchQuality::ProcfsRelaxed),
+            Some(42)
+        );
+        assert_eq!(
+            matching_socket_inode(&snapshot, key, MatchQuality::ProcfsExact),
+            None
+        );
+        let snapshot = SocketSnapshot::new(vec![
+            socket.clone(),
+            HostSocket {
+                native_id: Some(43),
+                ..socket.clone()
+            },
+        ]);
+        assert_eq!(
+            matching_socket_inode(&snapshot, key, MatchQuality::ProcfsRelaxed),
+            None
+        );
+        let snapshot = SocketSnapshot::new(vec![HostSocket {
+            native_id: None,
+            ..socket
+        }]);
+        assert_eq!(
+            matching_socket_inode(&snapshot, key, MatchQuality::ProcfsRelaxed),
+            None
+        );
+    }
+
+    #[test]
+    fn startup_socket_owners_report_a_shared_inode_without_losing_its_owner() {
+        // A pre-forking server: the master opened the listening socket and
+        // every worker inherited it. Dropping the inode would leave the
+        // listener ownerless in the live table, so the lowest PID (the
+        // master) wins and the inode is reported as shared instead.
+        let mut owners = StartupSocketOwners::default();
+        owners.insert(42, SocketOwner::new(1001, "nginx", Some(33)));
+        owners.insert(42, SocketOwner::new(1000, "nginx", Some(0)));
+        owners.insert(42, SocketOwner::new(1002, "nginx", Some(33)));
+
+        assert_eq!(
+            owners.get(42),
+            Some(&SocketOwner::new(1000, "nginx", Some(0)))
+        );
+
+        let (inode_map, shared) = owners.into_parts();
+        assert_eq!(
+            inode_map.get(&42),
+            Some(&SocketOwner::new(1000, "nginx", Some(0)))
+        );
+        assert!(shared.contains(&42));
+    }
+
+    #[test]
+    fn startup_socket_owners_pick_a_shared_inode_owner_independent_of_scan_order() {
+        // /proc iteration order must not change the answer between refreshes.
+        let mut forward = StartupSocketOwners::default();
+        for pid in [1000, 1001, 1002] {
+            forward.insert(42, SocketOwner::new(pid, "nginx", Some(0)));
+        }
+        let mut reverse = StartupSocketOwners::default();
+        for pid in [1002, 1001, 1000] {
+            reverse.insert(42, SocketOwner::new(pid, "nginx", Some(0)));
+        }
+
+        assert_eq!(forward.get(42).map(|owner| owner.pid), Some(1000));
+        assert_eq!(reverse.get(42).map(|owner| owner.pid), Some(1000));
+    }
+
+    #[test]
+    fn startup_socket_owners_collapse_same_process_duplicates() {
+        let mut owners = StartupSocketOwners::default();
+        owners.insert(42, SocketOwner::new(10, "old-name", None));
+        owners.insert(42, SocketOwner::new(10, "current-name", Some(1000)));
+
+        assert_eq!(
+            owners.get(42),
+            Some(&SocketOwner::new(10, "current-name", Some(1000)))
+        );
+    }
+
+    #[test]
+    fn bpf_startup_owner_joins_the_procfs_socket_inode() {
+        let mut owners = StartupSocketOwners::default();
+        owners.insert(123, SocketOwner::new(10, "nordvpnd", Some(0)));
+        let (inode_map, _shared) = owners.into_parts();
+        let mut process_map = ConnectionProcessMap::new();
+        let mut sockets = Vec::new();
+        let table = concat!(
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n",
+            "   0: 0100007F:1F90 08080808:01BB 01 00000000:00000000 00:00000000 00000000 0 0 123\n",
+        );
+
+        LinuxProcessLookup::parse_and_map_content(
+            table,
+            Protocol::Tcp,
+            &inode_map,
+            &mut process_map,
+            &mut sockets,
+        );
+
+        let socket = sockets.first().expect("socket row must parse");
+        assert_eq!(socket.native_id, Some(123));
+        assert_eq!(
+            socket.owner,
+            Some(SocketOwner::new(10, "nordvpnd", Some(0)))
+        );
+        assert_eq!(
+            process_map.get(&key("127.0.0.1:8080", "8.8.8.8:443")),
+            Some(&(10, "nordvpnd".to_string()))
+        );
+    }
+
+    /// Attribute to this very test process so the /proc reads have a live
+    /// target with known credentials and a known executable.
+    fn own_pid() -> u32 {
+        std::process::id()
+    }
+
+    #[test]
+    fn proc_tcp_states_include_listen_and_established() {
+        assert_eq!(parse_proc_tcp_state("0A"), HostTcpState::Listen);
+        assert_eq!(parse_proc_tcp_state("01"), HostTcpState::Established);
+        assert_eq!(parse_proc_tcp_state("06"), HostTcpState::TimeWait);
+        assert_eq!(parse_proc_tcp_state("FF"), HostTcpState::Unknown);
+    }
+
+    fn own_comm() -> String {
+        fs::read_to_string(format!("/proc/{}/comm", own_pid()))
+            .expect("own comm readable")
+            .trim()
+            .to_string()
+    }
+
+    /// An established TCP socket row as the refreshed inventory would list
+    /// it after the uid drop: tuple and inode visible, owner or not.
+    fn host_socket(local: &str, remote: &str, inode: u64) -> HostSocket {
+        HostSocket {
+            protocol: Protocol::Tcp,
+            local_addr: local.parse().unwrap(),
+            remote_addr: Some(remote.parse().unwrap()),
+            state: HostSocketState::Tcp(HostTcpState::Established),
+            owner: None,
+            native_id: Some(inode),
+        }
+    }
+
+    fn snapshot_lookup(
+        owner: (&str, &str, u32, String, u64),
+        inventory: Vec<HostSocket>,
+    ) -> LinuxProcessLookup {
+        let (local, remote, pid, name, inode) = owner;
+        let mut startup = HashMap::new();
+        startup.insert(
+            key(local, remote),
+            SnapshotOwner {
+                pid,
+                name,
+                inode,
+                start_ticks: process_start_ticks(pid),
+            },
+        );
+        LinuxProcessLookup {
+            startup_snapshot: startup,
+            retained_socket_owners: RwLock::new(HashMap::new()),
+            cache: RwLock::new(ConnectionProcessMap::new()),
+            lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::new(inventory)),
+        }
+    }
+
+    fn owned_socket(local: &str, remote: &str, inode: u64, pid: u32, name: &str) -> HostSocket {
+        let mut socket = host_socket(local, remote, inode);
+        socket.owner = Some(SocketOwner::new(pid, name, None));
+        socket
+    }
+
+    fn owned_listener() -> HostSocket {
+        let mut socket = owned_socket("0.0.0.0:8080", "0.0.0.0:0", 123, own_pid(), &own_comm());
+        socket.remote_addr = None;
+        socket.state = HostSocketState::Tcp(HostTcpState::Listen);
+        socket.owner.as_mut().unwrap().uid = Some(1000);
+        socket
+    }
+
+    #[test]
+    fn startup_lifecycle_evidence_rejects_reuse_shared_and_ambiguous_sockets() {
+        let conn = tcp_connection("127.0.0.1:45000", "127.0.0.1:443");
+        let inode = u64::MAX;
+        let original = owned_socket(
+            "127.0.0.1:45000",
+            "127.0.0.1:443",
+            inode,
+            own_pid(),
+            &own_comm(),
+        );
+        for change in 0..6 {
+            let lookup = LinuxProcessLookup::with_socket_table(HashMap::from([(
+                ConnectionKey::from_connection(&conn),
+                (own_pid(), own_comm()),
+            )]));
+            let shared = if change == 4 {
+                HashSet::from([inode])
+            } else {
+                HashSet::new()
+            };
+            let mut retained =
+                retain_socket_owners(&SocketSnapshot::new(vec![original.clone()]), &shared);
+            let mut current = original.clone();
+            current.owner = None;
+            match change {
+                1 => retained.get_mut(&inode).unwrap().start_ticks += 1,
+                2 => current.native_id = Some(inode - 1),
+                3 => current.owner = Some(SocketOwner::new(1, "other", None)),
+                _ => {}
+            }
+            let mut sockets = vec![current];
+            if change == 5 {
+                let mut duplicate = original.clone();
+                duplicate.native_id = Some(inode - 1);
+                sockets.push(duplicate);
+            }
+            *lookup.retained_socket_owners.write().unwrap() = retained;
+            *lookup.socket_snapshot.write().unwrap() = SocketSnapshot::new(sockets);
+            let attribution = lookup.get_process_attribution(&conn).unwrap();
+            assert_eq!(
+                attribution.process_start_id.is_some(),
+                change == 0,
+                "case {change}"
+            );
+            assert_eq!(
+                attribution.socket_netns_id.is_some(),
+                change == 0,
+                "case {change}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_inventory_retains_listener_and_udp_owners_after_restricted_refresh() {
+        for protocol in [Protocol::Tcp, Protocol::Udp] {
+            let mut socket = owned_listener();
+            socket.protocol = protocol;
+            if protocol == Protocol::Udp {
+                socket.state = HostSocketState::UdpBound;
+            }
+            let startup = SocketSnapshot::new(vec![socket.clone()]);
+            let mut retained = retain_socket_owners(&startup, &HashSet::new());
+            // Unconnected sockets must remain excluded from traffic fallback.
+            assert!(build_startup_snapshot(&startup, &HashSet::new()).is_empty());
+            for _ in 0..2 {
+                let mut hidden = socket.clone();
+                hidden.owner = None;
+                let mut refreshed = SocketSnapshot::new(vec![hidden]);
+                restore_socket_owners(&mut retained, &mut refreshed, &HashSet::new());
+                assert_eq!(refreshed.sockets[0].owner, socket.owner);
+            }
+        }
+    }
+
+    #[test]
+    fn host_inventory_rejects_changed_sockets_and_preserves_live_owners() {
+        let original = owned_listener();
+        for change in 0..6 {
+            let mut retained = retain_socket_owners(
+                &SocketSnapshot::new(vec![original.clone()]),
+                &HashSet::new(),
+            );
+            let mut changed = original.clone();
+            changed.owner = None;
+            match change {
+                0 => changed.native_id = Some(456),
+                1 => changed.local_addr = "0.0.0.0:9090".parse().unwrap(),
+                2 => changed.remote_addr = Some("127.0.0.1:9000".parse().unwrap()),
+                3 => changed.protocol = Protocol::Udp,
+                4 => changed.owner = Some(SocketOwner::new(1, "new-owner", Some(0))),
+                5 => retained.get_mut(&123).unwrap().start_ticks += 1,
+                _ => unreachable!(),
+            }
+            let expected = changed.owner.clone();
+            let mut refreshed = SocketSnapshot::new(vec![changed]);
+            restore_socket_owners(&mut retained, &mut refreshed, &HashSet::new());
+            assert_eq!(refreshed.sockets[0].owner, expected);
+            assert!(retained.is_empty());
+        }
+    }
+
+    #[test]
+    fn host_inventory_forgets_closed_and_shared_sockets() {
+        let startup = SocketSnapshot::new(vec![owned_listener()]);
+        let shared = HashSet::from([123]);
+        assert!(retain_socket_owners(&startup, &shared).is_empty());
+        for closed in [false, true] {
+            let mut retained = retain_socket_owners(&startup, &HashSet::new());
+            let mut hidden = owned_listener();
+            hidden.owner = None;
+            let mut refreshed = if closed {
+                SocketSnapshot::default()
+            } else {
+                SocketSnapshot::new(vec![hidden.clone()])
+            };
+            restore_socket_owners(&mut retained, &mut refreshed, &shared);
+            assert!(retained.is_empty());
+            let mut reappeared = SocketSnapshot::new(vec![hidden]);
+            restore_socket_owners(&mut retained, &mut reappeared, &HashSet::new());
+            assert!(reappeared.sockets[0].owner.is_none());
+        }
+    }
+
+    #[test]
+    fn startup_snapshot_pairs_owner_and_inode_from_the_same_row() {
+        // Two owned sockets: each snapshot entry must carry its own row's
+        // inode and owner, never a mix.
+        let sockets = SocketSnapshot::new(vec![
+            owned_socket("192.168.1.10:44444", "203.0.113.5:22", 777, 41, "sshd"),
+            owned_socket("192.168.1.10:55555", "203.0.113.6:443", 888, 42, "nginx"),
+        ]);
+        let snapshot = build_startup_snapshot(&sockets, &HashSet::new());
+
+        let a = &snapshot[&key("192.168.1.10:44444", "203.0.113.5:22")];
+        assert_eq!((a.pid, a.name.as_str(), a.inode), (41, "sshd", 777));
+        let b = &snapshot[&key("192.168.1.10:55555", "203.0.113.6:443")];
+        assert_eq!((b.pid, b.name.as_str(), b.inode), (42, "nginx", 888));
+    }
+
+    #[test]
+    fn startup_snapshot_drops_a_tuple_occupied_by_two_sockets() {
+        // SO_REUSEPORT plus connected UDP permits exact duplicate tuples.
+        // Even when only one row resolved an owner (the other hidden by
+        // permissions or a scan race), the tuple is ambiguous: the owner
+        // must not be paired with either inode.
+        let owned = owned_socket("192.168.1.10:5353", "203.0.113.5:5353", 777, 41, "resolver");
+        let ownerless = host_socket("192.168.1.10:5353", "203.0.113.5:5353", 778);
+        let sockets = SocketSnapshot::new(vec![owned, ownerless]);
+        let snapshot = build_startup_snapshot(&sockets, &HashSet::new());
+
+        assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn startup_snapshot_skips_a_socket_held_by_several_processes() {
+        // The live table keeps the master as a best-effort owner, but the
+        // long-lived fallback must not freeze that pick: the master can exit
+        // while a worker keeps the socket open.
+        let sockets = SocketSnapshot::new(vec![owned_socket(
+            "192.168.1.10:44444",
+            "203.0.113.5:22",
+            777,
+            1000,
+            "nginx",
+        )]);
+        let shared = HashSet::from([777]);
+
+        assert!(build_startup_snapshot(&sockets, &shared).is_empty());
+    }
+
+    #[test]
+    fn startup_snapshot_skips_ownerless_and_inodeless_rows() {
+        let ownerless = host_socket("192.168.1.10:44444", "203.0.113.5:22", 777);
+        let mut inodeless = owned_socket("192.168.1.10:55555", "203.0.113.6:443", 0, 41, "sshd");
+        inodeless.native_id = None;
+        let sockets = SocketSnapshot::new(vec![ownerless, inodeless]);
+
+        assert!(build_startup_snapshot(&sockets, &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn startup_snapshot_attributes_when_the_rescanned_table_cannot() {
+        // A connection whose owner is present in the startup owner scan but
+        // invisible to every post-uid-drop rescan: same socket
+        // (same inode) still on the tuple, owner still alive. The snapshot
+        // records this very test process so /proc validation has a real
+        // target.
+        let lookup = snapshot_lookup(
+            (
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                own_pid(),
+                own_comm(),
+                777,
+            ),
+            vec![host_socket("192.168.1.10:44444", "203.0.113.5:22", 777)],
+        );
+
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
+        let (got_pid, got_name, quality) =
+            lookup.lookup_match(&conn).expect("snapshot should match");
+        assert_eq!(got_pid, own_pid());
+        assert_eq!(got_name, own_comm());
+        assert_eq!(quality, MatchQuality::StartupSnapshot);
+    }
+
+    #[test]
+    fn startup_snapshot_rejects_a_reused_tuple() {
+        // The startup socket closed and another (owner-invisible) socket
+        // reuses the exact tuple: the inventory shows a different inode,
+        // so the stale owner must not attribute, even though it still runs.
+        let lookup = snapshot_lookup(
+            (
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                own_pid(),
+                own_comm(),
+                777,
+            ),
+            vec![host_socket("192.168.1.10:44444", "203.0.113.5:22", 778)],
+        );
+
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
+    fn startup_snapshot_rejects_a_closed_socket() {
+        // The tuple is gone from the current inventory entirely.
+        let lookup = snapshot_lookup(
+            (
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                own_pid(),
+                own_comm(),
+                777,
+            ),
+            Vec::new(),
+        );
+
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
+    fn startup_snapshot_rejects_an_owner_that_no_longer_matches() {
+        // Socket unchanged, but the recorded owner has exited (or its PID
+        // was reused): a PID above the kernel's pid_max cannot exist.
+        let lookup = snapshot_lookup(
+            (
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                u32::MAX,
+                "sshd".to_string(),
+                777,
+            ),
+            vec![host_socket("192.168.1.10:44444", "203.0.113.5:22", 777)],
+        );
+
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
+    fn startup_snapshot_rejects_a_reused_pid_that_took_the_owner_name() {
+        // Socket unchanged and a live process answers to the recorded name,
+        // but it started later: any process can rename itself with
+        // prctl(PR_SET_NAME), so only the start time settles PID reuse.
+        let mut startup = HashMap::new();
+        startup.insert(
+            key("192.168.1.10:44444", "203.0.113.5:22"),
+            SnapshotOwner {
+                pid: own_pid(),
+                name: own_comm(),
+                inode: 777,
+                start_ticks: process_start_ticks(own_pid()).map(|ticks| ticks + 1),
+            },
+        );
+        let lookup = LinuxProcessLookup {
+            startup_snapshot: startup,
+            retained_socket_owners: RwLock::new(HashMap::new()),
+            cache: RwLock::new(ConnectionProcessMap::new()),
+            lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::new(vec![host_socket(
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                777,
+            )])),
+        };
+
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
+    fn startup_snapshot_never_matches_relaxed_shapes() {
+        // A stale wildcard listener entry in the snapshot must not claim
+        // new inbound connections; only exact 4-tuple hits are trusted.
+        let lookup = snapshot_lookup(
+            ("0.0.0.0:80", "0.0.0.0:0", own_pid(), own_comm(), 777),
+            vec![host_socket("192.168.1.10:80", "203.0.113.5:50000", 900)],
+        );
+
+        let conn = tcp_connection("192.168.1.10:80", "203.0.113.5:50000");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
+    fn live_table_wins_over_the_startup_snapshot() {
+        // A 4-tuple reused after startup: the rescan sees the new owner and
+        // must shadow the stale snapshot entry.
+        let k = key("192.168.1.10:44444", "203.0.113.5:443");
+        let mut snapshot = HashMap::new();
+        snapshot.insert(
+            k,
+            SnapshotOwner {
+                pid: 4242,
+                name: "old-owner".to_string(),
+                inode: 777,
+                start_ticks: None,
+            },
+        );
+        let mut live = ConnectionProcessMap::new();
+        live.insert(k, (5555, "curl".to_string()));
+
+        let lookup = LinuxProcessLookup {
+            startup_snapshot: snapshot,
+            retained_socket_owners: RwLock::new(HashMap::new()),
+            cache: RwLock::new(live),
+            lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::default()),
+        };
+
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:443");
+        let (pid, name, quality) = lookup.lookup_match(&conn).expect("live table should match");
+        assert_eq!(pid, 5555);
+        assert_eq!(name, "curl");
+        assert_eq!(quality, MatchQuality::ProcfsExact);
+    }
+
+    #[test]
+    fn truncated_comm_is_recovered_from_the_executable_name() {
+        assert_eq!(
+            refine_truncated_name(
+                "chromium-browse".to_string(),
+                Some(Path::new("/usr/lib/chromium/chromium-browser")),
+            ),
+            "chromium-browser"
+        );
+    }
+
+    #[test]
+    fn short_names_are_never_touched() {
+        // Below the 15-byte comm limit nothing was truncated, even when the
+        // executable name would extend it (a comm may be legitimately renamed).
+        assert_eq!(
+            refine_truncated_name(
+                "firefox".to_string(),
+                Some(Path::new("/usr/lib/firefox/firefox-esr")),
+            ),
+            "firefox"
+        );
+    }
+
+    #[test]
+    fn interpreter_executables_do_not_replace_the_comm() {
+        // comm at the limit but the executable is the interpreter, not an
+        // extension of the name: keep the comm.
+        assert_eq!(
+            refine_truncated_name(
+                "very-long-scrip".to_string(),
+                Some(Path::new("/usr/bin/python3")),
+            ),
+            "very-long-scrip"
+        );
+    }
+
+    #[test]
+    fn missing_executable_keeps_the_truncated_comm() {
+        assert_eq!(
+            refine_truncated_name("chromium-browse".to_string(), None),
+            "chromium-browse"
+        );
+    }
+
+    #[test]
+    fn executable_name_at_the_limit_is_not_an_extension() {
+        assert_eq!(
+            refine_truncated_name(
+                "chromium-browse".to_string(),
+                Some(Path::new("/opt/chromium-browse")),
+            ),
+            "chromium-browse"
+        );
+    }
+
+    #[test]
+    fn resolves_the_executable_of_a_live_process() {
+        assert_eq!(
+            resolve_executable(own_pid()),
+            std::env::current_exe().ok(),
+            "/proc/<tgid>/exe must resolve to the test binary"
+        );
+    }
+
+    #[test]
+    fn unreadable_executable_is_reported_as_none_rather_than_an_error() {
+        // u32::MAX is above every reachable pid_max, so /proc/<tgid>/exe cannot
+        // exist. Attribution must survive this, with executable = None.
+        assert_eq!(resolve_executable(u32::MAX), None);
+    }
+
+    #[test]
+    fn reads_the_credentials_of_a_live_process() {
+        let (uid, gid) = resolve_credentials(own_pid()).expect("own /proc entry must be readable");
+        assert_eq!(uid, unsafe { libc::geteuid() });
+        assert_eq!(gid, unsafe { libc::getegid() });
+    }
+
+    #[test]
+    fn missing_process_has_no_credentials() {
+        assert_eq!(resolve_credentials(u32::MAX), None);
+    }
+
+    #[test]
+    fn reads_the_parent_of_a_live_process() {
+        let expected = u32::try_from(unsafe { libc::getppid() }).unwrap();
+        assert_eq!(resolve_parent_pid(own_pid()), Some(expected));
+    }
+
+    #[test]
+    fn missing_process_has_no_parent() {
+        assert_eq!(resolve_parent_pid(u32::MAX), None);
+    }
+
+    #[test]
+    fn proc_stat_parser_handles_spaces_and_parentheses_in_names() {
+        let mut fields = vec!["S", "7"];
+        fields.resize(19, "0");
+        fields.push("12345");
+        let stat = format!("42 (worker ) pool) {}", fields.join(" "));
+
+        assert_eq!(
+            parse_proc_stat(&stat),
+            Some(ProcStat {
+                name: "worker ) pool".to_string(),
+                ppid: 7,
+                start_ticks: 12345,
+            })
+        );
+    }
+
+    /// Many connections share one owner, so the lineage memo must answer
+    /// repeat lookups (including failed walks) without re-walking `/proc`.
+    #[test]
+    fn lineage_memo_serves_repeat_lookups_without_rewalking() {
+        let lookup = LinuxProcessLookup::with_socket_table(HashMap::new());
+        let sentinel = ProcessLineage {
+            ancestors: vec![ProcessAncestor {
+                pid: 7,
+                name: "sentinel".to_string(),
+                executable: None,
+                started_at_unix_ms: None,
+            }],
+            truncated: false,
+        };
+        lookup
+            .lineages
+            .write()
+            .unwrap()
+            .insert(own_pid(), Some(sentinel.clone()));
+
+        // A live walk would resolve the real parent chain; getting the
+        // sentinel back proves the memo was consulted instead.
+        let parent_pid = u32::try_from(unsafe { libc::getppid() }).unwrap();
+        assert_eq!(lookup.lineage_for(own_pid(), parent_pid), Some(sentinel));
+
+        // Failed walks are memoized too, so a gone process is walked once.
+        assert_eq!(lookup.lineage_for(u32::MAX, u32::MAX - 1), None);
+        assert_eq!(lookup.lineages.read().unwrap().get(&u32::MAX), Some(&None));
+    }
+
+    #[test]
+    fn resolves_the_live_parent_chain() {
+        let parent_pid = u32::try_from(unsafe { libc::getppid() }).unwrap();
+        let lineage = resolve_process_lineage(own_pid(), parent_pid)
+            .expect("the test process parent must be readable");
+
+        assert!(lineage.ancestors.len() <= crate::MAX_PROCESS_ANCESTORS);
+        assert_eq!(lineage.ancestors.last().unwrap().pid, parent_pid);
+        assert!(!lineage.ancestors.last().unwrap().name.is_empty());
+        assert!(
+            lineage
+                .ancestors
+                .last()
+                .unwrap()
+                .started_at_unix_ms
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn exact_socket_table_hit_is_reported_as_an_exact_procfs_match() {
+        let mut table = HashMap::new();
+        table.insert(
+            key("192.168.1.10:5000", "1.1.1.1:443"),
+            (own_pid(), "scanned-name".to_string()),
+        );
+        let lookup = LinuxProcessLookup::with_socket_table(table);
+
+        let attribution = lookup
+            .get_process_attribution(&tcp_connection("192.168.1.10:5000", "1.1.1.1:443"))
+            .expect("exact tuple must match");
+
+        assert_eq!(attribution.tgid, own_pid());
+        assert_eq!(attribution.name, "scanned-name");
+        assert_eq!(attribution.quality, MatchQuality::ProcfsExact);
+        assert_eq!(attribution.executable, std::env::current_exe().ok());
+        assert_eq!(
+            attribution.ppid,
+            Some(u32::try_from(unsafe { libc::getppid() }).unwrap())
+        );
+        assert_eq!(attribution.uid, Some(unsafe { libc::geteuid() }));
+        assert_eq!(attribution.gid, Some(unsafe { libc::getegid() }));
+        assert_eq!(
+            attribution
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.ancestors.last())
+                .map(|ancestor| ancestor.pid),
+            attribution.ppid
+        );
+    }
+
+    #[test]
+    fn wildcard_listener_hit_is_never_reported_as_exact() {
+        let mut table = HashMap::new();
+        table.insert(
+            key("0.0.0.0:8080", "0.0.0.0:0"),
+            (own_pid(), "listener".to_string()),
+        );
+        let lookup = LinuxProcessLookup::with_socket_table(table);
+
+        let attribution = lookup
+            .get_process_attribution(&tcp_connection("192.168.1.10:8080", "203.0.113.5:44321"))
+            .expect("wildcard listener must match");
+
+        assert_eq!(attribution.tgid, own_pid());
+        assert_eq!(attribution.quality, MatchQuality::ProcfsRelaxed);
+        assert!(!attribution.quality.is_exact());
+    }
+
+    #[test]
+    fn conflicting_relaxed_candidates_produce_no_attribution() {
+        let mut table = HashMap::new();
+        table.insert(
+            key("0.0.0.0:8080", "203.0.113.5:44321"),
+            (own_pid(), "envoy".to_string()),
+        );
+        table.insert(
+            key("0.0.0.0:8080", "0.0.0.0:0"),
+            (own_pid() + 1, "nginx".to_string()),
+        );
+        let lookup = LinuxProcessLookup::with_socket_table(table);
+
+        let conn = tcp_connection("192.168.1.10:8080", "203.0.113.5:44321");
+        assert!(lookup.get_process_attribution(&conn).is_none());
+    }
+
+    /// End-to-end against the real `/proc/net/tcp` table rather than an
+    /// injected one: open a listener, rescan, and confirm the attribution that
+    /// comes back is fully populated. Needs no privileges, because the socket
+    /// belongs to this process.
+    #[test]
+    fn attributes_a_real_listening_socket_from_procfs() {
+        use std::net::{Ipv4Addr, TcpListener};
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let local = listener.local_addr().unwrap();
+
+        let lookup = LinuxProcessLookup::new().expect("procfs scan must succeed");
+        // The listener was opened after the constructor's scan.
+        lookup.refresh().expect("refresh must succeed");
+
+        // /proc/net/tcp records a listener with a zeroed peer.
+        let conn = Connection::new(
+            Protocol::Tcp,
+            local,
+            "0.0.0.0:0".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Unknown),
+        );
+
+        let attribution = lookup
+            .get_process_attribution(&conn)
+            .expect("our own listening socket must be attributable");
+
+        assert_eq!(attribution.tgid, own_pid());
+        assert_eq!(attribution.quality, MatchQuality::ProcfsExact);
+        assert_eq!(attribution.executable, std::env::current_exe().ok());
+        assert_eq!(
+            attribution.ppid,
+            Some(u32::try_from(unsafe { libc::getppid() }).unwrap())
+        );
+        assert_eq!(attribution.uid, Some(unsafe { libc::geteuid() }));
+        assert_eq!(attribution.gid, Some(unsafe { libc::getegid() }));
+        assert!(!attribution.name.is_empty());
     }
 }

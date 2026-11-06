@@ -1,7 +1,4 @@
-//! Network privilege detection for packet capture
-//!
-//! This module checks if the application has sufficient privileges to capture
-//! network packets on different platforms (Linux, macOS, Windows).
+//! Network privilege detection for packet capture.
 
 use anyhow::Result;
 #[cfg(target_os = "linux")]
@@ -111,7 +108,6 @@ pub fn check_packet_capture_privileges() -> Result<PrivilegeStatus> {
         target_os = "freebsd"
     )))]
     {
-        // Unknown platform - return optimistic result
         warn!("Privilege check not implemented for this platform");
         Ok(PrivilegeStatus::sufficient())
     }
@@ -121,7 +117,6 @@ pub fn check_packet_capture_privileges() -> Result<PrivilegeStatus> {
 fn check_linux_privileges() -> Result<PrivilegeStatus> {
     use std::fs;
 
-    // Check if running as root by reading /proc/self/status
     let is_root = is_root_user();
 
     if is_root {
@@ -131,7 +126,6 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
 
     debug!("Not running as root, checking capabilities");
 
-    // Check for required capabilities via /proc/self/status
     let status = fs::read_to_string("/proc/self/status")
         .map_err(|e| anyhow!("Failed to read /proc/self/status: {}", e))?;
 
@@ -150,7 +144,6 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
 
     let mut missing = Vec::new();
 
-    // Check CAP_NET_RAW
     if (cap_value & (1u64 << CAP_NET_RAW)) != 0 {
         debug!("CAP_NET_RAW: present");
         return Ok(PrivilegeStatus::sufficient());
@@ -159,11 +152,9 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
         missing.push("CAP_NET_RAW capability (required for packet capture)".to_string());
     }
 
-    // Build instructions for gaining privileges
     let mut instructions = vec![
         "Run with sudo: sudo rustnet".to_string(),
         "Set capabilities (modern Linux 5.8+, with eBPF): sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)".to_string(),
-        "Set capabilities (legacy/older kernels, with eBPF): sudo setcap 'cap_net_raw,cap_sys_admin+eip' $(which rustnet)".to_string(),
         "Set capabilities (packet capture only, no eBPF): sudo setcap 'cap_net_raw+eip' $(which rustnet)".to_string(),
     ];
 
@@ -180,17 +171,14 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
     Ok(PrivilegeStatus::insufficient(missing, instructions))
 }
 
-/// Detect if running inside a container
 #[cfg(target_os = "linux")]
 fn is_running_in_container() -> bool {
     use std::fs;
 
-    // Check for .dockerenv file
     if fs::metadata("/.dockerenv").is_ok() {
         return true;
     }
 
-    // Check cgroup
     if let Ok(cgroup) = fs::read_to_string("/proc/self/cgroup")
         && (cgroup.contains("docker") || cgroup.contains("kubepods") || cgroup.contains("lxc"))
     {
@@ -200,22 +188,20 @@ fn is_running_in_container() -> bool {
     false
 }
 
-#[cfg(target_os = "macos")]
-fn check_macos_privileges() -> Result<PrivilegeStatus> {
+/// Shared macOS/FreeBSD check: root always suffices; otherwise packet capture
+/// requires access to BPF devices, so probe `/dev/bpf0..9` for open access.
+/// The platform-specific remediation instructions come from the caller.
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+fn check_bpf_privileges(instructions: Vec<String>) -> Result<PrivilegeStatus> {
     use std::fs;
 
-    // Check if running as root by reading effective UID from process
-    let is_root = is_root_user();
-
-    if is_root {
+    if is_root_user() {
         info!("Running as root - all privileges available");
         return Ok(PrivilegeStatus::sufficient());
     }
 
     debug!("Not running as root, checking BPF device permissions");
 
-    // On macOS, packet capture requires access to BPF devices
-    // Try to open a BPF device to check permissions
     let bpf_devices = (0..10)
         .map(|i| format!("/dev/bpf{}", i))
         .collect::<Vec<_>>();
@@ -243,9 +229,13 @@ fn check_macos_privileges() -> Result<PrivilegeStatus> {
         return Ok(PrivilegeStatus::sufficient());
     }
 
-    // No BPF access - build error message
     let missing = vec!["Access to BPF devices (/dev/bpf*)".to_string()];
 
+    Ok(PrivilegeStatus::insufficient(missing, instructions))
+}
+
+#[cfg(target_os = "macos")]
+fn check_macos_privileges() -> Result<PrivilegeStatus> {
     let instructions = vec![
         "Run with sudo: sudo rustnet".to_string(),
         "Change BPF device permissions (temporary):\n  \
@@ -256,7 +246,7 @@ fn check_macos_privileges() -> Result<PrivilegeStatus> {
             .to_string(),
     ];
 
-    Ok(PrivilegeStatus::insufficient(missing, instructions))
+    check_bpf_privileges(instructions)
 }
 
 #[cfg(target_os = "windows")]
@@ -265,7 +255,7 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
 
     debug!("Checking Windows privileges by attempting to list network interfaces");
 
-    // Try to list network devices - this will fail if we don't have sufficient privileges
+    // Device enumeration itself fails without sufficient privileges.
     match Device::list() {
         Ok(devices) => {
             info!(
@@ -277,7 +267,6 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
         Err(e) => {
             debug!("Failed to list network devices: {}", e);
 
-            // Check if the error indicates a permissions issue
             let error_str = e.to_string().to_lowercase();
             if error_str.contains("access")
                 || error_str.contains("denied")
@@ -287,7 +276,7 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
 
                 let instructions = vec![
                     "Run as Administrator: Right-click the terminal and select 'Run as Administrator'".to_string(),
-                    "If using Npcap: Ensure it was installed with 'WinPcap API-compatible Mode' enabled".to_string(),
+                    "If using Npcap: Ensure its packet-capture service is running".to_string(),
                 ];
 
                 Ok(PrivilegeStatus::insufficient(missing, instructions))
@@ -305,50 +294,6 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
 
 #[cfg(target_os = "freebsd")]
 fn check_freebsd_privileges() -> Result<PrivilegeStatus> {
-    use std::fs;
-
-    // Check if running as root by reading effective UID from process
-    let is_root = is_root_user();
-
-    if is_root {
-        info!("Running as root - all privileges available");
-        return Ok(PrivilegeStatus::sufficient());
-    }
-
-    debug!("Not running as root, checking BPF device permissions");
-
-    // On FreeBSD, packet capture requires access to BPF devices
-    // Try to open a BPF device to check permissions
-    let bpf_devices = (0..10)
-        .map(|i| format!("/dev/bpf{}", i))
-        .collect::<Vec<_>>();
-
-    let mut can_access_bpf = false;
-    for bpf_device in &bpf_devices {
-        if fs::metadata(bpf_device).is_ok() {
-            debug!("Checking BPF device: {}", bpf_device);
-
-            // Try to actually open it (this is the real test)
-            if std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(bpf_device)
-                .is_ok()
-            {
-                can_access_bpf = true;
-                debug!("Successfully opened BPF device: {}", bpf_device);
-                break;
-            }
-        }
-    }
-
-    if can_access_bpf {
-        return Ok(PrivilegeStatus::sufficient());
-    }
-
-    // No BPF access - build error message
-    let missing = vec!["Access to BPF devices (/dev/bpf*)".to_string()];
-
     let instructions = vec![
         "Run with sudo: sudo rustnet".to_string(),
         "Add your user to the bpf group:\n  \
@@ -360,10 +305,9 @@ fn check_freebsd_privileges() -> Result<PrivilegeStatus> {
             .to_string(),
     ];
 
-    Ok(PrivilegeStatus::insufficient(missing, instructions))
+    check_bpf_privileges(instructions)
 }
 
-/// Check if running as root user on Unix systems
 #[cfg(unix)]
 fn is_root_user() -> bool {
     effective_uid() == 0

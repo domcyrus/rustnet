@@ -1,0 +1,802 @@
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
+
+#[derive(Debug, Clone)]
+pub(super) struct RateSample {
+    timestamp: Instant,
+    // Delta values since last sample
+    delta_sent: u64,
+    delta_received: u64,
+}
+
+/// Drop the oldest sample while keeping the window totals equal to the sum of
+/// the deltas still held in `samples`.
+fn pop_oldest_sample(
+    samples: &mut VecDeque<RateSample>,
+    window_sent_total: &mut u64,
+    window_received_total: &mut u64,
+) {
+    if let Some(old) = samples.pop_front() {
+        *window_sent_total = window_sent_total.saturating_sub(old.delta_sent);
+        *window_received_total = window_received_total.saturating_sub(old.delta_received);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RateTracker {
+    pub(super) samples: Arc<VecDeque<RateSample>>,
+    window_duration: Duration,
+    last_update: Instant,
+    max_samples: usize,
+    // Keep track of last byte counts for delta calculation
+    last_bytes_sent: u64,
+    last_bytes_received: u64,
+    // Running sums of the deltas currently held in `samples`, maintained on
+    // every push/pop. Keeps rate calculation O(1) instead of summing the
+    // whole window (up to `max_samples` entries) per refresh.
+    window_sent_total: u64,
+    window_received_total: u64,
+}
+
+impl RateTracker {
+    pub fn new() -> Self {
+        Self::with_window_duration(Duration::from_secs(10))
+    }
+
+    fn with_window_duration(window_duration: Duration) -> Self {
+        Self {
+            samples: Arc::new(VecDeque::new()),
+            window_duration,
+            last_update: Instant::now(),
+            // 5000 pps × 10 sec = 50,000 samples, but we cap at 20,000 for memory
+            max_samples: 20_000,
+            last_bytes_sent: 0,
+            last_bytes_received: 0,
+            window_sent_total: 0,
+            window_received_total: 0,
+        }
+    }
+
+    /// Initialize the tracker with initial byte counts
+    /// This should be called when creating a connection with existing bytes
+    pub fn initialize_with_counts(&mut self, bytes_sent: u64, bytes_received: u64) {
+        self.last_bytes_sent = bytes_sent;
+        self.last_bytes_received = bytes_received;
+    }
+
+    /// Update the rate tracker with new byte counts
+    pub fn update(&mut self, bytes_sent: u64, bytes_received: u64) {
+        self.update_at(Instant::now(), bytes_sent, bytes_received);
+    }
+
+    /// Update the rate tracker with new byte counts at a specific timestamp.
+    /// Full pruning is deferred to `prune()`, but a lightweight cap is enforced
+    /// here to prevent unbounded growth between prune intervals.
+    fn update_at(&mut self, now: Instant, bytes_sent: u64, bytes_received: u64) {
+        let delta_sent = bytes_sent.saturating_sub(self.last_bytes_sent);
+        let delta_received = bytes_received.saturating_sub(self.last_bytes_received);
+
+        let samples = Arc::make_mut(&mut self.samples);
+        samples.push_back(RateSample {
+            timestamp: now,
+            delta_sent,
+            delta_received,
+        });
+        self.window_sent_total += delta_sent;
+        self.window_received_total += delta_received;
+
+        // Lightweight overflow guard: drop oldest samples if we exceed the cap.
+        // Full time-based pruning happens in prune() every ~1s.
+        while samples.len() > self.max_samples {
+            pop_oldest_sample(
+                samples,
+                &mut self.window_sent_total,
+                &mut self.window_received_total,
+            );
+        }
+
+        self.last_bytes_sent = bytes_sent;
+        self.last_bytes_received = bytes_received;
+        self.last_update = now;
+    }
+
+    /// Remove samples older than the window duration and enforce the sample cap.
+    /// Called periodically (via `refresh_rates`) rather than per-packet.
+    pub fn prune(&mut self) {
+        let cutoff_time = self.last_update - self.window_duration;
+
+        // Fast path: nothing to prune. Checked through `&self.samples` so a
+        // no-op refresh never touches `Arc::make_mut` (which would deep-copy
+        // a shared buffer) or the pop loop.
+        let needs_prune = self.samples.len() > self.max_samples
+            || self
+                .samples
+                .front()
+                .is_some_and(|oldest| oldest.timestamp < cutoff_time);
+        if !needs_prune {
+            return;
+        }
+
+        let samples = Arc::make_mut(&mut self.samples);
+
+        while samples
+            .front()
+            .is_some_and(|oldest| oldest.timestamp < cutoff_time)
+        {
+            pop_oldest_sample(
+                samples,
+                &mut self.window_sent_total,
+                &mut self.window_received_total,
+            );
+        }
+
+        while samples.len() > self.max_samples {
+            pop_oldest_sample(
+                samples,
+                &mut self.window_sent_total,
+                &mut self.window_received_total,
+            );
+        }
+    }
+
+    /// Get the current incoming rate in bytes per second
+    pub fn get_incoming_rate_bps(&self) -> f64 {
+        self.get_incoming_rate_bps_at(Instant::now())
+    }
+
+    /// Get the current outgoing rate in bytes per second
+    pub fn get_outgoing_rate_bps(&self) -> f64 {
+        self.get_outgoing_rate_bps_at(Instant::now())
+    }
+
+    /// Get the incoming rate in bytes per second at a specific timestamp
+    fn get_incoming_rate_bps_at(&self, now: Instant) -> f64 {
+        self.calculate_rate_from_deltas_at(now, self.window_received_total)
+    }
+
+    /// Get the outgoing rate in bytes per second at a specific timestamp
+    fn get_outgoing_rate_bps_at(&self, now: Instant) -> f64 {
+        self.calculate_rate_from_deltas_at(now, self.window_sent_total)
+    }
+
+    /// Calculate rate from the running window total: O(1), no walk over the
+    /// sample buffer. `total_bytes` is the maintained sum of all deltas
+    /// currently in `samples` (each represents bytes transferred).
+    fn calculate_rate_from_deltas_at(&self, now: Instant, total_bytes: u64) -> f64 {
+        if self.samples.is_empty() {
+            return 0.0;
+        }
+
+        if self.samples.len() == 1 {
+            return 0.0;
+        }
+
+        // Compare against the current time so idle connections, where update()
+        // is no longer called, still decay to zero.
+        let newest = self.samples.back().unwrap();
+        let oldest = self.samples.front().unwrap();
+        let age_of_newest = now.duration_since(newest.timestamp).as_secs_f64();
+
+        // Slightly larger than the window to avoid edge cases at the boundary.
+        if age_of_newest > self.window_duration.as_secs_f64() * 1.1 {
+            return 0.0;
+        }
+
+        let time_span = newest
+            .timestamp
+            .duration_since(oldest.timestamp)
+            .as_secs_f64();
+
+        // Need at least 1 second of data for meaningful average
+        // This matches iftop's approach of showing stable averages
+        if time_span < 1.0 {
+            return 0.0;
+        }
+
+        // Pure sliding-window average, no decay, like iftop's 10-second column.
+        total_bytes as f64 / time_span
+    }
+
+    /// Clone carrying the rate metadata but an empty sample buffer.
+    ///
+    /// A regular `clone()` shares the sample buffer via `Arc`, which forces
+    /// the next per-packet `update()` on the live tracker into an
+    /// `Arc::make_mut` deep copy of the whole window (up to `max_samples`
+    /// entries). Read-only consumers (UI snapshots, historic archives) never
+    /// look at raw samples (they read the cached `current_*_rate_bps`
+    /// fields on [`Connection`](crate::network::types::Connection)), so they
+    /// should use this instead and leave
+    /// the live tracker as the buffer's unique owner.
+    pub fn clone_without_samples(&self) -> Self {
+        Self {
+            samples: Arc::new(VecDeque::new()),
+            window_duration: self.window_duration,
+            last_update: self.last_update,
+            max_samples: self.max_samples,
+            last_bytes_sent: self.last_bytes_sent,
+            last_bytes_received: self.last_bytes_received,
+            // Zeroed alongside the empty buffer so the invariant
+            // `window totals == sum(samples)` holds for the copy.
+            window_sent_total: 0,
+            window_received_total: 0,
+        }
+    }
+}
+
+impl Default for RateTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One direction's most recently advertised receive window. The header
+/// field is 16 bits; the real window is that value shifted by the sender's
+/// window-scale option from its SYN (RFC 7323), so the shift is kept with
+/// the sample that it applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowSample {
+    /// Raw 16-bit header field, before window scaling.
+    pub raw: u16,
+    /// Shift applying to `raw`: 0 on a SYN, and whenever scaling is off or
+    /// was never observed.
+    pub shift: u8,
+    /// The shift is the negotiated one rather than an assumption. False when
+    /// the handshake was missed, where the true window is `raw` shifted by
+    /// an unknown amount and only `raw` can honestly be shown.
+    pub scale_known: bool,
+}
+
+impl WindowSample {
+    /// Advertised window in bytes. Only meaningful when `scale_known`;
+    /// otherwise it is the raw field with no shift applied.
+    pub fn bytes(&self) -> u64 {
+        (self.raw as u64) << self.shift
+    }
+}
+
+/// TCP analytics for tracking retransmissions and connection quality
+#[derive(Debug, Clone, Default)]
+pub struct TcpAnalytics {
+    // Highest sequence number seen in each direction, i.e. the next byte the
+    // stream is expected to reach. Tracking the high-water mark rather than a
+    // strict "next expected seq" keeps detection alive across gaps: a segment
+    // missed by the capture advances the mark instead of desynchronising it.
+    pub highest_seq_outbound: u32,
+    pub highest_seq_inbound: u32,
+    // 0 is a legal sequence/ack number, so it cannot double as "not yet seen".
+    pub seen_outbound: bool,
+    pub seen_inbound: bool,
+
+    // ACK tracking for duplicate detection
+    pub last_ack_received: u32,
+    pub seen_ack: bool,
+    /// Length of the duplicate-ACK run currently in progress. Live state,
+    /// cleared by every ACK that advances; not a lifetime statistic.
+    pub dup_ack_run: u32,
+
+    pub duplicate_ack_count: u64,
+    pub retransmit_count: u64,
+    pub out_of_order_count: u64,
+    pub fast_retransmit_count: u64,
+
+    // Window tracking. Each end advertises its own receive window, so the
+    // two are kept apart: a single last-segment slot flips between them on
+    // every packet and reads as a wildly jumping value.
+    /// Last window advertised by this host, which bounds what the remote
+    /// may send us.
+    pub last_window_out: Option<WindowSample>,
+    /// Last window advertised by the remote, which bounds what we may send.
+    pub last_window_in: Option<WindowSample>,
+    /// Window-scale shift advertised by the local side's SYN.
+    pub window_scale_out: Option<u8>,
+    /// Window-scale shift advertised by the remote side's SYN.
+    pub window_scale_in: Option<u8>,
+    /// A SYN was observed without the window-scale option, so scaling is
+    /// disabled for the whole connection.
+    pub window_scaling_disabled: bool,
+
+    // Continuous RTT estimation. One outbound segment is timed at a time:
+    // (sequence end of the timed bytes, capture time it left this host).
+    // Karn's algorithm: a retransmission invalidates the pending probe, so
+    // an ACK for a resent segment never produces an ambiguous sample.
+    pub rtt_probe: Option<(u32, SystemTime)>,
+    /// EWMA of data round trips (RFC 6298 style: 7/8 old + 1/8 sample).
+    pub smoothed_rtt: Option<Duration>,
+}
+
+impl TcpAnalytics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether the window scaling in effect is known: both SYNs were seen,
+    /// or one of them proved the option absent. Until then a non-SYN window
+    /// is a raw header field with an unknown multiplier, not a byte count.
+    pub fn window_scale_known(&self) -> bool {
+        self.window_scaling_disabled
+            || (self.window_scale_out.is_some() && self.window_scale_in.is_some())
+    }
+
+    /// Record one direction's advertised window. `is_syn` matters twice: a
+    /// SYN's window is never scaled (RFC 7323), which also makes it an exact
+    /// byte count even when the rest of the handshake was missed.
+    pub fn record_window(&mut self, window: u16, is_outgoing: bool, is_syn: bool) {
+        let sample = WindowSample {
+            raw: window,
+            shift: if is_syn {
+                0
+            } else {
+                self.window_shift_for(is_outgoing)
+            },
+            scale_known: is_syn || self.window_scale_known(),
+        };
+        if is_outgoing {
+            self.last_window_out = Some(sample);
+        } else {
+            self.last_window_in = Some(sample);
+        }
+    }
+
+    /// Shift applying to a non-SYN segment sent in the given direction:
+    /// the sender's own advertised shift, but only when both sides offered
+    /// the option (RFC 7323) and neither SYN explicitly lacked it.
+    pub(crate) fn window_shift_for(&self, is_outgoing: bool) -> u8 {
+        if self.window_scaling_disabled {
+            return 0;
+        }
+        match (self.window_scale_out, self.window_scale_in) {
+            (Some(out), Some(inn)) => {
+                if is_outgoing {
+                    out
+                } else {
+                    inn
+                }
+            }
+            _ => 0,
+        }
+    }
+}
+
+/// Observable health signals for protocols that do not expose TCP sequence
+/// and acknowledgement analysis.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProtocolHealth {
+    /// Explicit QUIC Retry packets seen on this connection.
+    pub quic_retry_count: u64,
+    /// Explicit QUIC Version Negotiation packets seen on this connection.
+    pub quic_version_negotiation_count: u64,
+    /// Repeated transaction IDs observed before a matching response.
+    pub request_retry_count: u64,
+    /// Tracked requests that expired without a matching response.
+    pub request_timeout_count: u64,
+    /// At least one outgoing request was observed for this connection.
+    pub request_observed: bool,
+}
+
+// Rate-smoothing constants: tune these to control how quickly displayed
+// rates react to traffic changes.
+/// Multiplier when traffic stops entirely: prev * DECAY_FAST each refresh.
+/// ~3 refreshes (3 s) to reach zero.
+const RATE_DECAY_STOPPED: f64 = 0.15;
+/// Weight of the new sample when rate drops but traffic is still flowing.
+const RATE_BLEND_NEW: f64 = 0.6;
+/// Weight of the previous value (complement of RATE_BLEND_NEW).
+const RATE_BLEND_PREV: f64 = 0.4;
+/// Rates below this snap to zero to avoid perpetual sub-byte trickle.
+const RATE_ZERO_THRESHOLD: f64 = 1.0;
+
+/// Minimum time a terminal connection remains in the live table before it is
+/// archived. This is long enough for the 10-second rate window and its display
+/// smoothing to settle, while still removing completed flows promptly.
+pub(super) const TERMINAL_ARCHIVE_GRACE: Duration = Duration::from_secs(15);
+
+/// Smooth a rate value for display/sort stability.
+/// - Rising: take the new value immediately (accurate throughput).
+/// - Falling to zero: aggressive decay (~3 refreshes / 3s to clear).
+/// - Falling but non-zero: gentle decay to absorb fluctuations.
+pub(super) fn smooth_rate(raw: f64, prev: f64) -> f64 {
+    let smoothed = if raw >= prev {
+        raw
+    } else if raw == 0.0 {
+        prev * RATE_DECAY_STOPPED
+    } else {
+        RATE_BLEND_NEW * raw + RATE_BLEND_PREV * prev
+    };
+    if smoothed < RATE_ZERO_THRESHOLD {
+        0.0
+    } else {
+        smoothed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate_tracker_initialization() {
+        let tracker = RateTracker::new();
+
+        assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
+        assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
+    }
+
+    #[test]
+    fn test_sliding_window_sustained_rates() {
+        for (name, count, interval_ms, sent, received, expected_out, expected_in) in [
+            ("steady", 1, 1000, 5000, 2500, 5000.0, 2500.0),
+            ("simple average", 20, 100, 1000, 500, 10_000.0, 5000.0),
+            ("multiple updates", 15, 100, 1000, 500, 10_000.0, 5000.0),
+            ("high packet rate", 200, 10, 1500, 750, 150_000.0, 75_000.0),
+        ] {
+            let mut tracker = RateTracker::new();
+            let start = Instant::now();
+            tracker.update_at(start, 0, 0);
+            for i in 1..=count {
+                tracker.update_at(
+                    start + Duration::from_millis(i * interval_ms),
+                    i * sent,
+                    i * received,
+                );
+            }
+            let now = start + Duration::from_millis(count * interval_ms);
+            assert_eq!(
+                tracker.get_outgoing_rate_bps_at(now),
+                expected_out,
+                "{name}"
+            );
+            assert_eq!(tracker.get_incoming_rate_bps_at(now), expected_in, "{name}");
+        }
+    }
+
+    #[test]
+    fn test_sliding_window_with_burst() {
+        let mut tracker = RateTracker::new();
+        let start = Instant::now();
+
+        tracker.update_at(start, 0, 0);
+
+        // Large burst: 1MB in one shot at 500ms
+        tracker.update_at(start + Duration::from_millis(500), 1_000_000, 500_000);
+
+        // Then slow traffic: 10KB every 100ms
+        for i in 1..=10_u64 {
+            let t = start + Duration::from_millis(500 + 100 + i * 100);
+            tracker.update_at(t, 1_000_000 + i * 10_000, 500_000 + i * 5_000);
+        }
+
+        let final_time = start + Duration::from_millis(1600);
+
+        // Average 1,100,000 bytes sent and 550,000 received over 1.6 seconds.
+        assert_eq!(tracker.get_outgoing_rate_bps_at(final_time), 687_500.0);
+        assert_eq!(tracker.get_incoming_rate_bps_at(final_time), 343_750.0);
+    }
+
+    #[test]
+    fn test_sliding_window_requires_minimum_timespan() {
+        for (elapsed_ms, expected_out, expected_in) in [
+            (0, 0.0, 0.0),
+            (100, 0.0, 0.0),
+            (999, 0.0, 0.0),
+            (1000, 10_000.0, 5000.0),
+        ] {
+            let mut tracker = RateTracker::new();
+            let start = Instant::now();
+            let now = start + Duration::from_millis(elapsed_ms);
+            tracker.update_at(start, 0, 0);
+            tracker.update_at(now, 10_000, 5000);
+            assert_eq!(
+                tracker.get_outgoing_rate_bps_at(now),
+                expected_out,
+                "{elapsed_ms}ms"
+            );
+            assert_eq!(
+                tracker.get_incoming_rate_bps_at(now),
+                expected_in,
+                "{elapsed_ms}ms"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sliding_window_no_skip_first_sample() {
+        let mut tracker = RateTracker::new();
+        let start = Instant::now();
+
+        tracker.update_at(start, 0, 0);
+
+        // Add exactly one more sample after 1 second
+        tracker.update_at(start + Duration::from_secs(1), 10_000, 5_000);
+
+        // Two samples spanning 1 second with 10,000 bytes transferred: the
+        // only data sample must be counted, not skipped.
+        let check_time = start + Duration::from_secs(1);
+        let outgoing_rate = tracker.get_outgoing_rate_bps_at(check_time);
+
+        assert!(
+            (outgoing_rate - 10_000.0).abs() < 1.0,
+            "Should include all samples (not skip first), got: {}",
+            outgoing_rate
+        );
+    }
+
+    #[test]
+    fn test_rate_tracker_single_update() {
+        let mut tracker = RateTracker::new();
+
+        // First update establishes baseline
+        tracker.update(1000, 500);
+        assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
+        assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
+        // Test single update - need at least 2 samples for rate
+    }
+
+    #[test]
+    fn test_rate_tracker_clone_without_samples_detaches_buffer() {
+        let mut tracker = RateTracker::new();
+        let start = Instant::now();
+        for i in 0..10_u64 {
+            tracker.update_at(start + Duration::from_millis(i * 100), i * 1000, i * 500);
+        }
+
+        let detached = tracker.clone_without_samples();
+
+        // The detached copy has no samples but keeps the rate metadata.
+        assert!(detached.samples.is_empty());
+        assert_eq!(detached.last_bytes_sent, tracker.last_bytes_sent);
+        assert_eq!(detached.last_bytes_received, tracker.last_bytes_received);
+        assert_eq!(detached.window_duration, tracker.window_duration);
+
+        // The live tracker stays unique owner of its buffer, so the next
+        // per-packet update takes the in-place fast path (no CoW deep copy).
+        assert_eq!(Arc::strong_count(&tracker.samples), 1);
+    }
+
+    #[test]
+    fn test_rate_tracker_window_totals_match_brute_force_across_prunes() {
+        let window = Duration::from_millis(500);
+        let mut tracker = RateTracker::with_window_duration(window);
+        let start = Instant::now();
+
+        let mut bytes_sent = 0u64;
+        let mut bytes_recv = 0u64;
+        for i in 0..50u64 {
+            bytes_sent += 100 + i;
+            bytes_recv += 50 + i;
+            tracker.update_at(
+                start + Duration::from_millis(i * 40),
+                bytes_sent,
+                bytes_recv,
+            );
+            if i % 10 == 9 {
+                tracker.prune();
+            }
+        }
+        tracker.prune();
+
+        let brute_sent: u64 = tracker.samples.iter().map(|s| s.delta_sent).sum();
+        let brute_recv: u64 = tracker.samples.iter().map(|s| s.delta_received).sum();
+        assert_eq!(tracker.window_sent_total, brute_sent);
+        assert_eq!(tracker.window_received_total, brute_recv);
+    }
+
+    #[test]
+    fn test_rate_tracker_cap_eviction_keeps_totals_in_sync() {
+        let mut tracker = RateTracker::new();
+        tracker.max_samples = 8;
+        let start = Instant::now();
+
+        let mut sent = 0u64;
+        let mut recv = 0u64;
+        for i in 0..20u64 {
+            sent += 10 * (i + 1);
+            recv += 5 * (i + 1);
+            tracker.update_at(start + Duration::from_millis(i * 100), sent, recv);
+        }
+
+        assert!(tracker.samples.len() <= 8, "cap must be enforced");
+        let brute_sent: u64 = tracker.samples.iter().map(|s| s.delta_sent).sum();
+        let brute_recv: u64 = tracker.samples.iter().map(|s| s.delta_received).sum();
+        assert_eq!(tracker.window_sent_total, brute_sent);
+        assert_eq!(tracker.window_received_total, brute_recv);
+    }
+
+    #[test]
+    fn test_rate_tracker_prune_noop_avoids_cow() {
+        let mut tracker = RateTracker::new();
+        let start = Instant::now();
+        tracker.update_at(start, 100, 50);
+        tracker.update_at(start + Duration::from_millis(100), 200, 100);
+
+        // Share the buffer (as a full clone would), then prune with nothing
+        // prunable: the fast path must not deep-copy via Arc::make_mut.
+        let shared = tracker.clone();
+        tracker.prune();
+        assert_eq!(
+            Arc::strong_count(&tracker.samples),
+            2,
+            "no-op prune must not detach the shared buffer"
+        );
+        drop(shared);
+    }
+
+    #[test]
+    fn test_rate_tracker_bursty_traffic() {
+        let mut tracker = RateTracker::new();
+        let start = Instant::now();
+
+        tracker.update_at(start, 0, 0);
+
+        // Burst of traffic at 500ms
+        tracker.update_at(start + Duration::from_millis(500), 10000, 5000);
+
+        // No more traffic (same byte counts) - keep updating to span > 1 second
+        tracker.update_at(start + Duration::from_millis(1000), 10000, 5000);
+        tracker.update_at(start + Duration::from_millis(1500), 10000, 5000);
+
+        // Rate should be averaged over the entire window (1.5 seconds)
+        // 10,000 bytes over 1.5 seconds ≈ 6,666 bytes/sec
+        let check_time = start + Duration::from_millis(1500);
+        let outgoing_rate = tracker.get_outgoing_rate_bps_at(check_time);
+        let incoming_rate = tracker.get_incoming_rate_bps_at(check_time);
+
+        // Should be smoothed average: 10000 / 1.5 = 6666.67 bytes/sec
+        assert!(
+            (outgoing_rate - 6666.67).abs() < 1.0,
+            "Rate should be ~6666.67 bytes/sec, got: {}",
+            outgoing_rate
+        );
+        assert!(
+            (incoming_rate - 3333.33).abs() < 1.0,
+            "Rate should be ~3333.33 bytes/sec, got: {}",
+            incoming_rate
+        );
+    }
+
+    #[test]
+    fn test_new_connection_rate_tracker_initialization() {
+        use crate::network::merge::{create_connection_from_packet, merge_packet_into_connection};
+        use crate::network::parser::ParsedPacket;
+        use crate::network::types::{Protocol, ProtocolState};
+
+        for is_outgoing in [false, true] {
+            let mut packet = ParsedPacket::test_base(
+                Protocol::Udp,
+                "192.168.1.100:12345".parse().unwrap(),
+                "10.0.0.1:8000".parse().unwrap(),
+                ProtocolState::Udp,
+            );
+            packet.is_outgoing = is_outgoing;
+            packet.packet_len = 100;
+            let mut conn = create_connection_from_packet(&packet, SystemTime::now());
+            let (sent, received) = if is_outgoing { (100, 0) } else { (0, 100) };
+            assert_eq!(conn.rate_tracker.last_bytes_sent, sent);
+            assert_eq!(conn.rate_tracker.last_bytes_received, received);
+
+            merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+            assert_eq!(
+                (conn.bytes_sent, conn.bytes_received),
+                (sent * 2, received * 2)
+            );
+            let sample = conn.rate_tracker.samples.back().unwrap();
+            assert_eq!((sample.delta_sent, sample.delta_received), (sent, received));
+        }
+    }
+
+    #[test]
+    fn test_rate_tracker_cumulative_fix() {
+        let mut tracker = RateTracker::new();
+        let start = Instant::now();
+
+        // A connection that has been running for a while with cumulative byte counts.
+        tracker.initialize_with_counts(1_000_000, 500_000);
+        tracker.update_at(start, 1_000_000, 500_000); // No change yet (establishing baseline)
+
+        tracker.update_at(start + Duration::from_millis(500), 1_500_000, 750_000); // 500KB more sent, 250KB more received
+        tracker.update_at(start + Duration::from_millis(1000), 2_000_000, 1_000_000); // 500KB more sent, 250KB more received
+
+        // The rate should be based on the deltas, not the cumulative values
+        // We sent 1MB in deltas over 1 second = 1MB/s
+        let check_time = start + Duration::from_millis(1000);
+        let outgoing_rate = tracker.get_outgoing_rate_bps_at(check_time);
+        let incoming_rate = tracker.get_incoming_rate_bps_at(check_time);
+
+        // Should be exactly 1MB/s outgoing (1_000_000 bytes/sec)
+        assert!(
+            (outgoing_rate - 1_000_000.0).abs() < 1.0,
+            "Outgoing rate should be 1MB/s, got: {}",
+            outgoing_rate
+        );
+
+        // Should be exactly 500KB/s incoming (500_000 bytes/sec)
+        assert!(
+            (incoming_rate - 500_000.0).abs() < 1.0,
+            "Incoming rate should be 500KB/s, got: {}",
+            incoming_rate
+        );
+    }
+
+    #[test]
+    fn test_rate_tracker_window_sliding() {
+        let window_duration = Duration::from_secs(2); // 2-second window
+        let mut tracker = RateTracker::with_window_duration(window_duration);
+        let start = Instant::now();
+
+        // Add initial samples - 1MB/s for first second (100KB every 100ms = 11 samples total)
+        tracker.update_at(start, 0, 0);
+        for i in 1..=10_u64 {
+            let t = start + Duration::from_millis(i * 100);
+            tracker.update_at(t, i * 100_000, i * 50_000);
+        }
+
+        // After window slides past first samples (at 3 seconds), add new samples
+        // Start from cumulative position of 10*100KB = 1MB, add 11 more at 100KB each
+        // Need >= 1 second span, so 11 samples at 100ms intervals = 1.0s span
+        for i in 0..=10_u64 {
+            let t = start + Duration::from_millis(3000 + i * 100);
+            tracker.update_at(t, 1_000_000 + i * 100_000, 500_000 + i * 50_000);
+        }
+
+        // Rate should be consistent: 10 deltas of 100KB over 1 second = 1MB/s
+        let check_time = start + Duration::from_millis(4000);
+        tracker.prune();
+        let outgoing_rate = tracker.get_outgoing_rate_bps_at(check_time);
+        let incoming_rate = tracker.get_incoming_rate_bps_at(check_time);
+
+        // We're sending at 1MB/s and receiving at 500KB/s
+        assert!(
+            (outgoing_rate - 1_000_000.0).abs() < 1.0,
+            "Outgoing rate after window slide: {}",
+            outgoing_rate
+        );
+        assert!(
+            (incoming_rate - 500_000.0).abs() < 1.0,
+            "Incoming rate after window slide: {}",
+            incoming_rate
+        );
+    }
+
+    #[test]
+    fn test_rate_decay_for_idle_connections() {
+        let mut tracker = RateTracker::new();
+        let start = Instant::now();
+
+        // Simulate active traffic
+        tracker.update_at(start, 0, 0);
+        tracker.update_at(start + Duration::from_secs(1), 100_000, 50_000); // 100KB sent, 50KB received over 1 second
+
+        // Should have non-zero rate with >= 1 second of data
+        let check_time_active = start + Duration::from_secs(1);
+        let initial_out = tracker.get_outgoing_rate_bps_at(check_time_active);
+        let initial_in = tracker.get_incoming_rate_bps_at(check_time_active);
+        assert!(
+            (initial_out - 100_000.0).abs() < 1.0,
+            "Should have outgoing traffic: {}",
+            initial_out
+        );
+        assert!(
+            (initial_in - 50_000.0).abs() < 1.0,
+            "Should have incoming traffic: {}",
+            initial_in
+        );
+
+        // Check at a time after samples become stale
+        // Newest sample is at start+1s, window is 10s, threshold is 1.1x
+        // So need to check at > start + 1s + 11s = start + 12.1s
+        let check_time_idle = start + Duration::from_millis(12200);
+
+        let final_out = tracker.get_outgoing_rate_bps_at(check_time_idle);
+        let final_in = tracker.get_incoming_rate_bps_at(check_time_idle);
+
+        // After window slides past all samples, should be zero
+        assert_eq!(
+            final_out, 0.0,
+            "Outgoing rate should be zero after 10+ seconds idle"
+        );
+        assert_eq!(
+            final_in, 0.0,
+            "Incoming rate should be zero after 10+ seconds idle"
+        );
+    }
+}

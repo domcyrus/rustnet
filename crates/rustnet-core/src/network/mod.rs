@@ -9,14 +9,24 @@
 
 pub mod bogon;
 pub mod dns;
+pub mod dns_analytics;
+pub(crate) mod dns_attribution;
 pub mod dpi;
+pub mod filter;
+mod gateway;
 pub mod geoip;
 pub mod interface_stats;
 pub mod link_layer;
+mod local_addresses;
 pub mod merge;
+pub mod neighbors;
 pub mod oui;
 pub mod parser;
+mod pending;
+pub mod process_activity;
 pub mod protocol;
 pub mod services;
+pub mod time_window;
 pub mod tracker;
 pub mod types;
+pub mod util;

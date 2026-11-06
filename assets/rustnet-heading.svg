@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="48" viewBox="0 0 192 48" role="img" aria-labelledby="title">
+  <title id="title">RustNet</title>
+  <g transform="scale(0.09375)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 88 148 L 190 256 L 88 364" stroke="#0891b2" stroke-width="52"/>
+    <path d="M 238 316 H 298 V 228 H 372 V 316 H 460" stroke="#10b981" stroke-width="44"/>
+  </g>
+  <text x="60" y="35" fill="#1f2328" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="700">RustNet</text>
+</svg>

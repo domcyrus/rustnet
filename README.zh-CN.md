@@ -1,336 +1,113 @@
-<p align="center">
-  <h1 align="center">RustNet</h1>
-  <p align="center">
-    <strong>面向终端的进程级网络监控工具：实时呈现 TCP、UDP、QUIC 连接，自带深度包检测，默认沙箱隔离运行。</strong>
-  </p>
-  <p align="center">
-    <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Built With Ratatui"></a>
-    <a href="https://github.com/domcyrus/rustnet/actions"><img src="https://github.com/domcyrus/rustnet/workflows/Rust/badge.svg" alt="Build Status"></a>
-    <a href="https://crates.io/crates/rustnet-monitor"><img src="https://img.shields.io/crates/v/rustnet-monitor.svg" alt="Crates.io"></a>
-    <a href="https://github.com/domcyrus/rustnet/stargazers"><img src="https://img.shields.io/github/stars/domcyrus/rustnet?style=flat&logo=github" alt="GitHub Stars"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
-    <a href="https://github.com/domcyrus/rustnet/releases"><img src="https://img.shields.io/github/v/release/domcyrus/rustnet.svg" alt="GitHub release"></a>
-    <a href="https://github.com/domcyrus/rustnet/pkgs/container/rustnet"><img src="https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker" alt="Docker Image"></a>
-  </p>
-</p>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/rustnet-heading-dark.svg">
+    <img src="./assets/rustnet-heading.svg" alt="RustNet" width="192" height="48">
+  </picture>
+</h1>
 
 <p align="center">
-  <a href="README.md">English</a> | <strong>简体中文</strong>
+  <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="基于 Ratatui 构建"></a>
+  <a href="https://github.com/domcyrus/rustnet/actions"><img src="https://github.com/domcyrus/rustnet/workflows/Rust/badge.svg" alt="构建状态"></a>
+  <a href="https://crates.io/crates/rustnet-monitor"><img src="https://img.shields.io/crates/v/rustnet-monitor.svg" alt="Crates.io 版本"></a>
+  <a href="https://github.com/domcyrus/rustnet/releases"><img src="https://img.shields.io/github/v/release/domcyrus/rustnet.svg" alt="最新版本"></a>
+  <a href="https://repology.org/project/rustnet/versions"><img src="https://repology.org/badge/tiny-repos/rustnet.svg" alt="软件包收录状态"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 许可证"></a>
 </p>
 
-<p align="center">
-  <img src="./assets/rustnet.gif" alt="RustNet demo" width="800">
-</p>
+<p align="center"><a href="README.md">English</a> | <strong>简体中文</strong> | <a href="README.ja.md">日本語</a></p>
 
-<p align="center">
-  <em>实时洞察机器对外发起的每一条连接：谁在使用它、走的是什么协议。无需 tcpdump，无需 X11 转发，也不必把 root 权限传递下去。</em>
-</p>
+RustNet 是一款终端网络监控工具，可实时显示 TCP、UDP 和 QUIC 连接，并在可获取时显示其所属进程。支持 Linux、macOS、Windows 和 FreeBSD。
 
-## 功能特性
+## 安装
 
-- **进程级归属识别**：每一条 TCP、UDP、QUIC 连接都能追溯到所属进程。Linux 使用 eBPF，macOS 使用 PKTAP，Windows 与 FreeBSD 则走原生 API。Wireshark 与 tcpdump 做不到这一点；`netstat` / `ss` 也无法展示实时状态。
-- **深度包检测**：无需外部解析器即可识别 HTTP、带 SNI 的 HTTPS/TLS、DNS、SSH、FTP、QUIC、MQTT、BitTorrent、STUN、NTP、mDNS、LLMNR、DHCP、SNMP、SSDP 及 NetBIOS。
-- **安全沙箱**：Linux 5.13+ 使用 Landlock，macOS 使用 Seatbelt，Windows 通过 token 降权 + job-object 阻止子进程创建。libpcap 初始化完成后立即丢弃特权。详见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
-- **TCP 网络分析**：实时统计重传、乱序包、快重传，既有逐连接视图也有汇总视图。
-- **智能连接生命周期**：按协议设置超时，以白 → 黄 → 红的颜色指示过期程度。按 `t` 可保留历史（已关闭）连接以便事后追溯。
-- **Vim / fzf 风格过滤**：支持 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:`、`proto:`，以及 `/(?i)pattern/` 形式的正则。
-- **GeoIP 增强**：基于本地 MaxMind GeoLite2 数据库查询国家信息，不发起任何网络请求。
-- **跨平台**：Linux、macOS、Windows、FreeBSD。
+在 macOS 或 Linux 上使用 Homebrew：
 
-## 为什么选 RustNet？
-
-RustNet 填补了简单连接工具(`netstat`、`ss`)与数据包分析器(`Wireshark`、`tcpdump`)之间的空白：
-
-- **进程归属**：看清每条连接归哪个应用所有。Wireshark 看不到这一层，因为它只看包，不看 socket。
-- **以连接为中心的视图**：逐连接实时追踪状态、带宽与协议。
-- **SSH 友好**：TUI 可直接在 SSH 会话中运行，远端服务器上发生了什么一眼可见，不必转发 X11 或抓包再回传。
-
-RustNet 与抓包工具是互补关系。用 RustNet 看清*谁在发起连接*；若要深入取证，可用 `--pcap-export` 抓取附带进程信息的数据包，再借 `scripts/pcap_enrich.py` 富化后，在 Wireshark 中结合完整的 PID 与进程上下文分析。参见 [USAGE.zh-CN.md 的 PCAP 导出章节](USAGE.zh-CN.md#pcap-export) 与 [ARCHITECTURE.zh-CN.md 的同类工具对比章节](ARCHITECTURE.zh-CN.md#comparison-with-similar-tools)。
-
-基于 ratatui、libpcap、eBPF(libbpf-rs)、DashMap、crossbeam、ring、MaxMind GeoLite2 与 Landlock 构建。完整依赖清单见 [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md#dependencies)。
-
-<details>
-<summary><b>基于 eBPF 的增强型进程识别(Linux 默认)</b></summary>
-
-RustNet 在 Linux 上默认使用内核 eBPF 程序进行进程识别，从而获得更高的性能与更低的开销。但这种方式也有一些重要的限制需要了解：
-
-**进程名长度限制：**
-- eBPF 使用内核的 `comm` 字段，该字段最多只有 16 个字符
-- 显示的是任务 / 线程的命令名，而非完整的可执行路径
-- 多线程应用往往展示线程名而非主进程名
-
-**真实场景示例：**
-- **Firefox**：可能显示为 "Socket Thread"、"Web Content"、"Isolated Web Co" 或 "MainThread"
-- **Chrome**：可能显示为 "ThreadPoolForeg"、"Chrome_IOThread"、"BrokerProcess" 或 "SandboxHelper"
-- **Electron 应用**：经常显示为 "electron"、"node" 或内部线程名
-- **系统进程**：展示截断后的名字，如 "systemd-resolve" → "systemd-resolve"
-
-**回退行为：**
-- 当 eBPF 加载失败或权限不足时，RustNet 会自动回退到基于 procfs 的标准进程识别方式
-- 标准模式可以拿到完整进程名，但 CPU 开销更高
-- eBPF 默认启用，无需任何特殊编译参数
-
-如需关闭 eBPF、仅使用 procfs 模式，请这样构建：
 ```bash
-cargo build --release --no-default-features
+brew install rustnet
 ```
 
-技术细节见 [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)。
+抓包需要按平台配置权限。Linux capabilities、macOS 的 PKTAP 和 BPF 访问权限、其他包管理器及故障排查见[安装指南](INSTALL.zh-CN.md)。
 
-</details>
+> **发布状态：** 下文的功能亮点、GIF 和截图均对应 v1.7.0。录制使用隔离 Linux 环境中生成的流量。`main` 分支链接的指南还可能介绍[尚未发布的变更](CHANGELOG.md#unreleased)。使用已发布版本时，请参阅 [v1.7.0 文档](https://github.com/domcyrus/rustnet/blob/v1.7.0/README.zh-CN.md)，并运行 `rustnet --version` 和 `rustnet --help` 确认版本及选项。
 
-<details>
-<summary><b>网络接口统计监控</b></summary>
+## 演示
 
-RustNet 在所有支持的平台上提供实时的网络接口统计：
+<p align="center">
+  <img src="./assets/rustnet.gif" alt="RustNet 演示" width="800">
+</p>
 
-- **概览标签页**：展示当前活跃的接口，包含速率、错误数与丢包数
-- **接口标签页**(按 `3`)：以详细表格呈现各接口的完整指标
-- **跨平台**：Linux(sysfs)、macOS / FreeBSD(getifaddrs)、Windows(GetIfTable2 API)
-- **智能过滤**：Windows 上自动剔除虚拟 / 过滤类适配器
+## 功能亮点
 
-如何解读接口统计以及各平台的差异，详见 [USAGE.zh-CN.md](USAGE.zh-CN.md#interface-statistics)。
+- 在可通过 SSH 使用的终端界面中，显示连接状态、流量、应用层协议及可获取的进程信息。
+- 通过数据包检测识别 HTTP、TLS/SNI、DNS、SSH、QUIC 等协议。
+- 按进程、地址、端口、协议等条件过滤连接。
+- 在无界面模式下流式输出带版本号的 JSON 快照，供脚本与监控使用。
+- 显示主机 socket、被动 DNS 分析与连接健康状况。
+- 导出 PCAP 或带尽力而为注释的 PCAPNG，供 Wireshark 分析。
+- 启动后降低权限，并在支持的平台上启用沙箱。
 
-**可用指标：**
-- 总字节数与包数(RX / TX)
-- 错误计数(收 / 发)
-- 丢包数(队列溢出)
-- 冲突数(传统指标，现代网络中很少出现)
+功能详情见[使用指南](USAGE.zh-CN.md)、[架构指南](ARCHITECTURE.zh-CN.md)和[安全指南](SECURITY.zh-CN.md)。
 
-数据由后台线程每 2 秒采集一次，对性能影响极小。
+自 v1.7.0 起，RustNet 在 Unix 上要求输出目录可信，并以独占方式创建诊断日志。
 
-</details>
+v1.7.0 修复了 ARM DEB 与旧版 glibc 及 Debian 13 time64 库的兼容性。支持的发行版请参阅[安装指南](INSTALL.zh-CN.md#debianubuntu-deb-packages)；v1.6.0 发布文件不包含这些修复。
 
 ## 截图
 
 <table>
   <tr>
-    <td align="center"><strong>概览</strong><br>连接列表与实时统计、迷你折线图<br><img src="./assets/screenshots/overview.png" width="400"></td>
-    <td align="center"><strong>详情</strong><br>逐连接展示 SNI、加密套件、GeoIP、DPI<br><img src="./assets/screenshots/details.png" width="400"></td>
+    <td align="center"><strong>概览</strong><br>实时连接与流量<br><img src="./assets/screenshots/overview.png" width="400" alt="RustNet 概览"></td>
+    <td align="center"><strong>详情</strong><br>进程、协议与远端信息<br><img src="./assets/screenshots/details.png" width="400" alt="RustNet 详情"></td>
   </tr>
   <tr>
-    <td align="center"><strong>图表</strong><br>流量曲线、应用分布、Top 进程<br><img src="./assets/screenshots/graph.png" width="400"></td>
-    <td align="center"><strong>接口</strong><br>各接口 RX / TX 历史曲线、错误与丢包<br><img src="./assets/screenshots/interfaces.png" width="400"></td>
+    <td align="center"><strong>图表</strong><br>流量与应用图表<br><img src="./assets/screenshots/graph.png" width="400" alt="RustNet 图表"></td>
+    <td align="center"><strong>活动</strong><br>按进程查看流量<br><img src="./assets/screenshots/activity.png" width="400" alt="RustNet 活动"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>主机 socket</strong><br>监听及已绑定的端点<br><img src="./assets/screenshots/host.png" width="400" alt="RustNet 主机 socket"></td>
+    <td align="center"><strong>DNS</strong><br>被动观测的 DNS 查询与响应<br><img src="./assets/screenshots/dns.png" width="400" alt="RustNet DNS"></td>
   </tr>
 </table>
 
-## 快速上手
+## 其他安装方式
 
-### 安装
+| 平台 | 命令 |
+| --- | --- |
+| Ubuntu 22.04+ / Linux Mint 21+ | `sudo add-apt-repository ppa:domcyrus/rustnet`<br>`sudo apt update && sudo apt install rustnet` |
+| Fedora 42+ | `sudo dnf copr enable domcyrus/rustnet`<br>`sudo dnf install rustnet` |
+| Arch Linux | `sudo pacman -S rustnet` |
+| Alpine Linux (edge/community) | `apk add rustnet` |
+| Windows | `choco install rustnet` 或 `scoop install rustnet` |
+| Cargo | `cargo install rustnet-monitor` |
+| Nix / NixOS | `nix-shell -p rustnet` |
 
-**Homebrew(macOS / Linux):**
-```bash
-brew install rustnet
-```
+Windows 还需要安装 [Npcap](https://npcap.com)。v1.7.0 支持默认设置；v1.6.0 需要启用“WinPcap API compatible mode”。openSUSE、Pop!_OS、FreeBSD、Docker 和源码构建的说明见[安装指南](INSTALL.zh-CN.md)。
 
-**Ubuntu(25.10+):**
-```bash
-sudo add-apt-repository ppa:domcyrus/rustnet
-sudo apt update && sudo apt install rustnet
-```
+## 运行
 
-**Fedora(42+):**
-```bash
-sudo dnf copr enable domcyrus/rustnet
-sudo dnf install rustnet
-```
-
-**openSUSE Tumbleweed:**
-```bash
-sudo zypper addrepo https://download.opensuse.org/repositories/home:/domcyrus:/rustnet/openSUSE_Tumbleweed/home:domcyrus:rustnet.repo
-sudo zypper refresh
-sudo zypper install rustnet
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S rustnet
-```
-
-**Nix / NixOS:**
-```bash
-nix-shell -p rustnet
-# 然后在 shell 中执行: sudo rustnet
-```
-
-**通过 crates.io:**
-```bash
-cargo install rustnet-monitor
-```
-
-**Windows(Chocolatey):**
-```powershell
-# 需在管理员权限的 PowerShell 中执行
-# 需要先安装 Npcap(https://npcap.com)，并启用 "WinPcap API-compatible Mode"
-choco install rustnet
-```
-
-**其他平台：**
-- **FreeBSD**：从 [rustnet-bsd releases](https://github.com/domcyrus/rustnet-bsd/releases) 下载
-- **Docker、源码构建、其他 Linux 发行版**：详见 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)
-
-### 运行 RustNet
-
-抓包需要更高的权限：
+在 Linux 上配置好 capabilities 后：
 
 ```bash
-# 快速启动(所有平台)
-sudo rustnet
-
-# Linux：为可执行文件赋予 Linux capabilities，即可免 sudo 运行(推荐)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)
 rustnet
 ```
 
-**常用参数：**
-```bash
-rustnet -i eth0              # 指定网络接口
-rustnet --show-localhost     # 显示 localhost 上的连接
-rustnet --no-resolve-dns     # 关闭反向 DNS 解析(默认开启)
-rustnet -r 500               # 设置刷新间隔(毫秒)
-rustnet --theme classic      # 原始全彩调色板(默认：muted)
-```
+在 macOS 上，使用 PKTAP 需要 `sudo`。配置 BPF 访问权限后也可不使用 sudo 运行，但 RustNet 会通过 `lsof` 检测进程。
 
-权限配置详情见 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)，完整参数说明见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
-
-> 如果已经设置了 Linux capabilities，但 TUI 仍然提示 `eBPF unavailable`，请参阅 [INSTALL.zh-CN.md 的排障章节](INSTALL.zh-CN.md#ebpf-unavailable-despite-capabilities-being-set)。
-
-## 键盘控制
-
-| 按键 | 作用 |
-|-----|--------|
-| `q` | 退出(连按两次确认) |
-| `Ctrl+C` | 立即退出 |
-| `x` | 清空所有连接(连按两次确认) |
-| `Tab` 或 `]` | 下一个标签页 |
-| `Shift+Tab` 或 `[` | 上一个标签页 |
-| `1`–`5` | 直接跳转到 Overview / Details / Interfaces / Graph / Help |
-| `↑/k` `↓/j` | 上下移动 |
-| `g` `G` | 跳到第一条 / 最后一条连接 |
-| `Enter` | 查看连接详情 |
-| `Esc` | 返回或清除过滤器 |
-| `c` | 复制远端地址 |
-| `p` | 在服务名与端口之间切换 |
-| `d` | 在主机名与 IP 之间切换 |
-| `s` `S` | 切换排序列 / 切换排序方向 |
-| `a` | 切换按进程分组 |
-| `Space` | 展开 / 折叠进程分组 |
-| `←/→` 或 `h/l` | 折叠 / 展开当前分组 |
-| `PageUp/PageDown` 或 `Ctrl+B/F` | 翻页 |
-| `t` | 切换是否显示历史（已关闭）连接 |
-| `i` | 切换 System 信息侧边栏 |
-| `r` | 重置视图(分组、排序、过滤) |
-| `/` | 进入过滤模式 |
-| `h` | 切换帮助 |
-
-完整键位说明与导航技巧见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
-
-## 过滤与排序
-
-**快速过滤示例：**
-```
-/google                        # 全局搜索 "google"
-/port:443                      # 按端口过滤
-/process:firefox               # 按进程过滤
-/state:established             # 按连接状态过滤
-/dport:443 sni:github.com      # 组合多个过滤条件
-```
-
-**排序：**
-- 按 `s` 在可排序的列之间循环切换(进程、地址、服务、应用、状态、带宽)
-- 按 `S`(Shift+s)切换升序 / 降序
-- 想抓出带宽大户：连续按 `s` 直到显示 "Bandwidth Total ↓"(按上下行合计速度排序)
-
-完整的过滤语法与排序说明见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
-
-<details>
-<summary><b>高级过滤示例</b></summary>
-
-**关键字过滤：**
-- `port:44` —— 端口号包含 "44" 的连接(443、8080、4433)
-- `sport:80` —— 源端口包含 "80"
-- `dport:443` —— 目的端口包含 "443"
-- `src:192.168` —— 源 IP 包含 "192.168"
-- `dst:github.com` —— 目的地址包含 "github.com"
-- `process:ssh` —— 进程名包含 "ssh"
-- `sni:api` —— SNI 主机名包含 "api"
-- `app:openssh` —— 使用 OpenSSH 的 SSH 连接
-- `state:established` —— 按协议状态过滤
-- `proto:tcp` —— 按协议类型过滤
-
-**状态过滤：**
-- `state:syn_recv` —— 半开连接(可用于发现 SYN flood)
-- `state:established` —— 仅显示已建立的连接
-- `state:quic_connected` —— 活跃的 QUIC 连接
-- `state:dns_query` —— DNS 查询连接
-
-**组合示例：**
-- `sport:80 process:nginx` —— Nginx 从 80 端口发出的连接
-- `dport:443 sni:google.com` —— 到 Google 的 HTTPS
-- `process:firefox state:quic_connected` —— Firefox 的 QUIC 连接
-- `dport:22 app:openssh state:established` —— 已建立的 OpenSSH 连接
-
-</details>
-
-<details>
-<summary><b>连接生命周期与可视化指示</b></summary>
-
-RustNet 在移除连接前会先用智能超时机制与颜色给出预警：
-
-**过期程度的颜色指示：**
-- **白色**：活跃(< 75% 的超时时间)
-- **黄色**：开始过期(75% – 90% 的超时时间)
-- **红色**：即将过期(> 90% 的超时时间)
-
-**按协议设定的超时：**
-- **HTTP / HTTPS**：10 分钟(支持 keep-alive)
-- **SSH**：30 分钟(适配长会话)
-- **TCP 活跃**：10 分钟；**TCP 空闲**：5 分钟
-- **QUIC 已连接**：3 分钟(若对端通过 transport 参数声明了 idle timeout，则以对端为准);`Initial` / `Handshaking` 阶段：60 秒
-- **DNS**：30 秒
-- **TCP CLOSED**：5 秒
-
-举例：一条 HTTP 连接会在第 7.5 分钟变黄，第 9 分钟变红，第 10 分钟被移除。
-
-完整超时说明见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
-
-</details>
+按 `/` 过滤连接，按 `Enter` 查看详情，按 `q` 退出。接口选择、其他选项、键盘操作、过滤和导出方法见[使用指南](USAGE.zh-CN.md)。
 
 ## 文档
 
-- **[INSTALL.zh-CN.md](INSTALL.zh-CN.md)** —— 各平台的详细安装说明、权限配置与排障
-- **[USAGE.zh-CN.md](USAGE.zh-CN.md)** —— 完整使用手册，涵盖命令行参数、过滤、排序与日志
-- **[SECURITY.zh-CN.md](SECURITY.zh-CN.md)** —— 安全特性，包括 Landlock 沙箱与权限管理
-- **[ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)** —— 技术架构、各平台实现与性能细节
-- **[CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)** —— 贡献指南，包括工作流、质量要求与 AI 辅助贡献规范
-- **[PROFILING.zh-CN.md](PROFILING.zh-CN.md)** —— 性能分析指南，含 flamegraph 配置与优化建议
-- **[ROADMAP.md](ROADMAP.md)** —— 已规划的功能与后续改进
-- **[RELEASE.md](RELEASE.md)** —— 维护者发布流程
+- [QUIC 检查](QUIC.zh-CN.md)：握手存储及库兼容性（自 v1.7.0 起可用）。
+- [安装](INSTALL.zh-CN.md)：平台支持、权限配置与故障排查
+- [使用](USAGE.zh-CN.md)：操作、过滤、自动化与抓包导出
+- [安全](SECURITY.zh-CN.md)：沙箱与权限管理
+- [架构](ARCHITECTURE.zh-CN.md)：各平台后端与性能
+- [Kubernetes 与容器](KUBERNETES.zh-CN.md)：归属识别与抓包导出
+- [更新日志](CHANGELOG.md)：已发布和即将发布的变更
+- [参与贡献](CONTRIBUTING.zh-CN.md)：贡献指南
 
-## 参与贡献
+受支持的产品是 `rustnet` 可执行程序。工作区 crate 的 API 属于内部接口，变更时不保证兼容，也不保留兼容层。
 
-欢迎贡献！请阅读 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md) 了解贡献流程。
+RustNet 使用 [ratatui](https://github.com/ratatui-org/ratatui) 构建终端界面，使用 [libpcap](https://www.tcpdump.org/)/[Npcap](https://npcap.com/) 抓包。项目贡献者见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
-历来的贡献者名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
-
-## 许可证
-
-本项目采用 Apache License 2.0 许可证，详见 [LICENSE](LICENSE) 文件。
-
-## 致谢
-
-- 终端 UI 基于 [ratatui](https://github.com/ratatui-org/ratatui) 构建
-- 抓包能力由 [libpcap](https://www.tcpdump.org/) 提供
-- 灵感来自 `tshark/wireshark/tcpdump`、`sniffnet`、`netstat`、`ss`、`iftop`，以及 [bandwhich](https://github.com/imsnif/bandwhich)
-- 部分代码靠手感写出(OMG)/ 愿 LLM 之神与你同在
-
----
-
-## 已迁移的文档
-
-部分章节已迁移到独立文件，以便更好地组织内容：
-
-- **权限配置**：迁移至 [INSTALL.zh-CN.md 的权限配置章节](INSTALL.zh-CN.md#permissions-setup)
-- **安装说明**：迁移至 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)
-- **详细用法**：迁移至 [USAGE.zh-CN.md](USAGE.zh-CN.md)
-- **架构细节**：迁移至 [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)
+本项目采用 [Apache License 2.0](LICENSE) 许可证。

@@ -1,13 +1,18 @@
-// PKTAP (Packet Tap) support for macOS
-// Provides process identification for network packets
+//! PKTAP (Packet Tap) support for macOS: process identification for
+//! captured packets.
+
 use log::{debug, warn};
 use std::mem;
+
+/// Largest valid Darwin PID. macOS wraps PIDs at 100000, so a live PID is
+/// always in `1..=99999`.
+const DARWIN_PID_MAX: u32 = 99_999;
 
 /// PKTAP header structure as defined by Apple
 /// Based on the LINKTYPE_PKTAP specification and Apple's pktap.h
 #[repr(C)]
 #[derive(Debug, Clone)]
-pub struct PktapHeader {
+pub(crate) struct PktapHeader {
     pub pth_length: u32,            // Total header length (minimum 108 bytes)
     pub pth_type_next: u32,         // Type of next header
     pub pth_dlt: u32,               // DLT type of actual packet (e.g., DLT_EN10MB)
@@ -30,8 +35,7 @@ pub struct PktapHeader {
 
 impl PktapHeader {
     /// Parse PKTAP header from raw packet data
-    pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        // Check minimum size
+    pub(crate) fn from_bytes(data: &[u8]) -> Option<Self> {
         if data.len() < mem::size_of::<PktapHeader>() {
             debug!("Packet too small for PKTAP header: {} bytes", data.len());
             return None;
@@ -41,7 +45,6 @@ impl PktapHeader {
         // and all macOS platforms (x86_64 and ARM64) are little-endian.
         let length = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
 
-        // Sanity check the length field
         if length < 108 || length as usize > data.len() {
             debug!(
                 "Invalid PKTAP header length: {} (packet size: {})",
@@ -55,30 +58,29 @@ impl PktapHeader {
         // Using read_unaligned because data (&[u8]) may not satisfy PktapHeader's
         // alignment requirement from its u32 fields. PKTAP is macOS-only and the
         // wire format is little-endian, so reading the struct natively on a
-        // little-endian host already yields the correct field values — no
+        // little-endian host already yields the correct field values; no
         // explicit byte-swap is required.
         let header = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const PktapHeader) };
 
         Some(header)
     }
 
-    /// Extract process information from the header using the correct offsets
-    /// Based on our successful test: process name at offset 56, PID at offset 52
-    pub fn get_process_info(&self) -> (Option<String>, Option<u32>) {
+    /// Extract process information from the header.
+    /// Per the pktap.h layout, `pth_epid` sits at offset 52 and `pth_comm` at offset 56.
+    pub(crate) fn get_process_info(&self) -> (Option<String>, Option<u32>) {
         // Extract process name from pth_comm (offset 56, length 20)
         let process_name = extract_process_name_from_bytes(&self.pth_comm);
 
-        // Extract PID - use pth_epid which is at the right offset (52)
-        // Based on our test, the PID was consistently at offset 52
-        let pid = if self.pth_epid != 0 && self.pth_epid < 65535 {
+        // Prefer pth_epid (effective PID) over pth_pid.
+        // Darwin wraps PIDs at 100000, so a valid PID is 1..=99999.
+        let pid = if self.pth_epid != 0 && self.pth_epid <= DARWIN_PID_MAX {
             Some(self.pth_epid)
-        } else if self.pth_pid != 0 && self.pth_pid < 65535 {
+        } else if self.pth_pid != 0 && self.pth_pid <= DARWIN_PID_MAX {
             Some(self.pth_pid)
         } else {
             None
         };
 
-        // Also try effective command name if regular one is empty
         let final_process_name = if process_name.is_none() {
             extract_process_name_from_bytes(&self.pth_e_comm)
         } else {
@@ -93,7 +95,7 @@ impl PktapHeader {
     }
 
     /// Get the interface name
-    pub fn get_interface(&self) -> String {
+    pub(crate) fn get_interface(&self) -> String {
         std::str::from_utf8(&self.pth_ifname)
             .unwrap_or("")
             .trim_end_matches('\0')
@@ -102,18 +104,17 @@ impl PktapHeader {
     }
 
     /// Get the offset where the actual packet data starts
-    pub fn payload_offset(&self) -> usize {
+    pub(crate) fn payload_offset(&self) -> usize {
         self.pth_length as usize
     }
 
     /// Get the DLT type of the inner packet
-    pub fn inner_dlt(&self) -> u32 {
+    pub(crate) fn inner_dlt(&self) -> u32 {
         self.pth_dlt
     }
 
     /// Check if this PKTAP header looks valid
-    pub fn is_valid(&self) -> bool {
-        // Basic sanity checks
+    pub(crate) fn is_valid(&self) -> bool {
         self.pth_length >= 108 &&
         self.pth_length <= 4096 && // Reasonable upper bound
         self.pth_dlt > 0 &&
@@ -121,10 +122,11 @@ impl PktapHeader {
     }
 }
 
+pub use crate::network::util::normalize_process_name;
+
 /// Extract and normalize process name from raw PKTAP bytes
 /// Handles all types of padding: null bytes, spaces, tabs, and other whitespace
 fn extract_process_name_from_bytes(bytes: &[u8; 20]) -> Option<String> {
-    // First, find the actual string content
     let mut end_pos = bytes.len();
     for (i, &byte) in bytes.iter().enumerate() {
         if byte == 0 {
@@ -133,23 +135,9 @@ fn extract_process_name_from_bytes(bytes: &[u8; 20]) -> Option<String> {
         }
     }
 
-    // Convert bytes to string, handling invalid UTF-8
     let raw_str = std::str::from_utf8(&bytes[..end_pos]).ok()?;
 
-    // Apply aggressive normalization
-    let normalized = raw_str
-        .chars()
-        .map(|c| {
-            if c.is_whitespace() || c.is_control() {
-                ' ' // Convert whitespace and control characters to space
-            } else {
-                c
-            }
-        })
-        .collect::<String>()
-        .split_whitespace() // Split on any whitespace
-        .collect::<Vec<&str>>()
-        .join(" "); // Join with single spaces
+    let normalized = normalize_process_name(raw_str);
 
     if normalized.is_empty() || !normalized.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
         debug!(
@@ -176,7 +164,7 @@ pub fn is_pktap_linktype(linktype: i32) -> bool {
 }
 
 /// Try to extract PKTAP metadata and payload from a packet
-pub fn parse_pktap_packet(data: &[u8]) -> Option<(PktapHeader, &[u8])> {
+pub(crate) fn parse_pktap_packet(data: &[u8]) -> Option<(PktapHeader, &[u8])> {
     let header = PktapHeader::from_bytes(data)?;
 
     if !header.is_valid() {
@@ -219,7 +207,6 @@ mod tests {
 
     #[test]
     fn test_pktap_header_size() {
-        // Ensure our struct size matches expectations
         assert!(mem::size_of::<PktapHeader>() >= 108);
     }
 
@@ -233,5 +220,47 @@ mod tests {
         let mut bad_data = [0u8; 200];
         bad_data[0] = 50; // Length too small
         assert!(PktapHeader::from_bytes(&bad_data).is_none());
+    }
+
+    fn header_with_pids(epid: u32, pid: u32) -> PktapHeader {
+        PktapHeader {
+            pth_length: 108,
+            pth_type_next: 0,
+            pth_dlt: 0,
+            pth_ifname: [0u8; 24],
+            pth_flags: 0,
+            pth_protocol_family: 0,
+            pth_frame_pre_length: 0,
+            pth_frame_post_length: 0,
+            pth_iftype: 0,
+            pth_unit: 0,
+            pth_epid: epid,
+            pth_comm: [0u8; 20],
+            pth_svc_class: 0,
+            pth_flowid: 0,
+            pth_ipproto: 0,
+            pth_pid: pid,
+            pth_e_comm: [0u8; 20],
+        }
+    }
+
+    #[test]
+    fn test_get_process_info_accepts_high_pid() {
+        // Darwin wraps PIDs at 100000, so PIDs above 65535 are valid and must
+        // still be attributed, not dropped.
+        assert_eq!(
+            header_with_pids(70_000, 0).get_process_info().1,
+            Some(70_000)
+        );
+
+        // The pth_pid fallback path also honours a high PID when pth_epid is unset.
+        assert_eq!(
+            header_with_pids(0, 99_999).get_process_info().1,
+            Some(99_999)
+        );
+
+        // The zero sentinel and out-of-range garbage still yield no PID.
+        assert_eq!(header_with_pids(0, 0).get_process_info().1, None);
+        assert_eq!(header_with_pids(100_000, 0).get_process_info().1, None);
     }
 }

@@ -1,0 +1,273 @@
+use crate::network::gateway;
+use std::collections::HashSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+/// Snapshot of the host's assigned addresses plus the IPv4 subnet-directed
+/// broadcast address of every assigned network (e.g. 192.168.0.255 for a /24).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LocalAddresses {
+    pub(crate) ips: HashSet<IpAddr>,
+    /// Subnet-directed broadcasts only; the limited broadcast
+    /// (255.255.255.255) needs no prefix knowledge and is handled statelessly.
+    pub(crate) v4_broadcasts: HashSet<Ipv4Addr>,
+    /// Next-hop addresses of the host's default routes, refreshed together
+    /// with the interface addresses.
+    pub(crate) gateways: HashSet<IpAddr>,
+}
+
+impl LocalAddresses {
+    fn add_unicast(&mut self, ip: IpAddr, prefix: u8) {
+        self.ips.insert(ip);
+        if let IpAddr::V4(v4) = ip
+            && let Some(broadcast) = v4_subnet_broadcast(v4, prefix)
+        {
+            self.v4_broadcasts.insert(broadcast);
+        }
+    }
+}
+
+/// Directed-broadcast address of `ip`'s subnet, or `None` when the prefix has
+/// no broadcast (/31 point-to-point per RFC 3021, /32 host routes).
+fn v4_subnet_broadcast(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
+    if prefix >= 31 {
+        return None;
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    Some(Ipv4Addr::from(u32::from(ip) | !mask))
+}
+
+/// Collect every address currently assigned to the host, together with the
+/// broadcast addresses of its IPv4 subnets.
+///
+/// Unix uses `pnet_datalink`; Windows uses `GetAdaptersAddresses` for IPv4,
+/// IPv6, and subnet prefixes without requiring the packet-capture driver.
+pub(crate) fn collect_local_addresses() -> LocalAddresses {
+    let mut local = LocalAddresses::default();
+    #[cfg(not(windows))]
+    for interface in pnet_datalink::interfaces() {
+        for network in interface.ips {
+            local.add_unicast(network.ip(), network.prefix());
+        }
+    }
+
+    #[cfg(windows)]
+    match windows_unicast_addresses() {
+        Ok(addresses) => local = addresses,
+        Err(code) => {
+            // Warn once so a persistent failure is visible at default log
+            // levels without repeating every refresh interval.
+            static FAILURE_LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            let message = format!(
+                "GetAdaptersAddresses failed while refreshing local addresses: {code}; \
+                 endpoint orientation may be degraded"
+            );
+            if FAILURE_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::debug!("{message}");
+            } else {
+                log::warn!("{message}");
+            }
+        }
+    }
+
+    local.ips.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    local.ips.insert(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    local.gateways = gateway::default_gateways();
+    local
+}
+
+#[cfg(windows)]
+fn windows_unicast_addresses() -> Result<LocalAddresses, u32> {
+    use std::mem::{size_of, size_of_val};
+    use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_FRIENDLY_NAME,
+        GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows::Win32::Networking::WinSock::AF_UNSPEC;
+
+    const INITIAL_BUFFER_SIZE: usize = 15 * 1024;
+    const MAX_ATTEMPTS: usize = 3;
+
+    let flags = GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_DNS_SERVER
+        | GAA_FLAG_SKIP_FRIENDLY_NAME;
+    let mut requested_size = INITIAL_BUFFER_SIZE;
+
+    for _ in 0..MAX_ATTEMPTS {
+        // `IP_ADAPTER_ADDRESSES_LH` contains 8-byte-aligned fields, so the
+        // buffer must be 8-byte aligned even on 32-bit targets.
+        let word_count = requested_size.div_ceil(size_of::<u64>());
+        let mut buffer = vec![0u64; word_count];
+        let mut buffer_size = size_of_val(buffer.as_slice()) as u32;
+        let adapters = buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+
+        let result = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_UNSPEC.0),
+                flags,
+                None,
+                Some(adapters),
+                &mut buffer_size,
+            )
+        };
+        if result == ERROR_BUFFER_OVERFLOW.0 {
+            requested_size = buffer_size as usize;
+            continue;
+        }
+        if result != NO_ERROR.0 {
+            return Err(result);
+        }
+
+        let mut addresses = LocalAddresses::default();
+        let mut adapter = adapters;
+        while let Some(current_adapter) = unsafe { adapter.as_ref() } {
+            let mut unicast = current_adapter.FirstUnicastAddress;
+            while let Some(current_unicast) = unsafe { unicast.as_ref() } {
+                if let Some(ip) = unsafe { socket_address_to_ip(&current_unicast.Address) } {
+                    addresses.add_unicast(ip, current_unicast.OnLinkPrefixLength);
+                }
+                unicast = current_unicast.Next;
+            }
+            adapter = current_adapter.Next;
+        }
+        return Ok(addresses);
+    }
+
+    Err(ERROR_BUFFER_OVERFLOW.0)
+}
+
+#[cfg(windows)]
+unsafe fn socket_address_to_ip(
+    address: &windows::Win32::Networking::WinSock::SOCKET_ADDRESS,
+) -> Option<IpAddr> {
+    use std::mem::size_of;
+    use windows::Win32::Networking::WinSock::{
+        AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6,
+    };
+
+    if address.lpSockaddr.is_null() {
+        return None;
+    }
+
+    let family = unsafe { (*address.lpSockaddr.cast::<SOCKADDR>()).sa_family };
+    if family == AF_INET && address.iSockaddrLength as usize >= size_of::<SOCKADDR_IN>() {
+        let socket = unsafe { &*address.lpSockaddr.cast::<SOCKADDR_IN>() };
+        let bytes = unsafe { socket.sin_addr.S_un.S_un_b };
+        return Some(IpAddr::V4(Ipv4Addr::new(
+            bytes.s_b1, bytes.s_b2, bytes.s_b3, bytes.s_b4,
+        )));
+    }
+    if family == AF_INET6 && address.iSockaddrLength as usize >= size_of::<SOCKADDR_IN6>() {
+        let socket = unsafe { &*address.lpSockaddr.cast::<SOCKADDR_IN6>() };
+        let bytes = unsafe { socket.sin6_addr.u.Byte };
+        return Some(IpAddr::V6(Ipv6Addr::from(bytes)));
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collector_always_includes_loopback_addresses() {
+        let addresses = collect_local_addresses();
+        assert!(addresses.ips.contains(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(addresses.ips.contains(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn subnet_broadcast_is_derived_from_prefix() {
+        assert_eq!(
+            v4_subnet_broadcast(Ipv4Addr::new(192, 168, 0, 52), 24),
+            Some(Ipv4Addr::new(192, 168, 0, 255))
+        );
+        assert_eq!(
+            v4_subnet_broadcast(Ipv4Addr::new(10, 1, 2, 3), 8),
+            Some(Ipv4Addr::new(10, 255, 255, 255))
+        );
+        assert_eq!(
+            v4_subnet_broadcast(Ipv4Addr::new(0, 0, 0, 0), 0),
+            Some(Ipv4Addr::BROADCAST)
+        );
+    }
+
+    #[test]
+    fn point_to_point_prefixes_have_no_broadcast() {
+        assert_eq!(v4_subnet_broadcast(Ipv4Addr::new(10, 0, 0, 1), 31), None);
+        assert_eq!(v4_subnet_broadcast(Ipv4Addr::new(10, 0, 0, 1), 32), None);
+    }
+
+    #[test]
+    fn unicast_collection_keeps_addresses_without_inventing_broadcasts() {
+        let mut addresses = LocalAddresses::default();
+        let subnet = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+        let point_to_point = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2));
+        let host = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 3));
+        let invalid_prefix = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 4));
+        let v6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+
+        for (ip, prefix) in [
+            (subnet, 24),
+            (point_to_point, 31),
+            (host, 32),
+            (invalid_prefix, u8::MAX),
+            (v6, 64),
+        ] {
+            addresses.add_unicast(ip, prefix);
+        }
+
+        assert_eq!(
+            addresses.ips,
+            HashSet::from([subnet, point_to_point, host, invalid_prefix, v6])
+        );
+        assert_eq!(
+            addresses.v4_broadcasts,
+            HashSet::from([Ipv4Addr::new(192, 0, 2, 255)])
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn combined_snapshot_contains_windows_native_addresses() {
+        let native = windows_unicast_addresses().expect("GetAdaptersAddresses should succeed");
+        let combined = collect_local_addresses().ips;
+
+        for address in native.ips {
+            assert!(
+                combined.contains(&address),
+                "native Windows address {address} missing from combined snapshot"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn converts_windows_ipv6_socket_addresses_without_losing_bytes() {
+        use std::mem::size_of;
+        use windows::Win32::Networking::WinSock::{AF_INET6, SOCKADDR_IN6, SOCKET_ADDRESS};
+
+        let expected = Ipv6Addr::new(0x2001, 0x0db8, 1, 2, 3, 4, 5, 6);
+        let mut socket = SOCKADDR_IN6 {
+            sin6_family: AF_INET6,
+            ..Default::default()
+        };
+        socket.sin6_addr.u.Byte = expected.octets();
+        let address = SOCKET_ADDRESS {
+            lpSockaddr: (&mut socket as *mut SOCKADDR_IN6).cast(),
+            iSockaddrLength: size_of::<SOCKADDR_IN6>() as i32,
+        };
+
+        assert_eq!(
+            unsafe { socket_address_to_ip(&address) },
+            Some(IpAddr::V6(expected))
+        );
+    }
+}

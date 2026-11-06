@@ -1,5 +1,5 @@
 //! Terminal user interface built on `ratatui` + `crossterm`: tabbed
-//! layout (overview, connections, interfaces, details), sortable tables
+//! layout (overview, details, process activity, graphs, host data), sortable tables
 //! with adjustable columns, sparkline/chart bandwidth widgets, and
 //! keyboard-driven filter and navigation.
 
@@ -23,13 +23,15 @@ pub use terminal::{Terminal, restore_terminal, setup_terminal};
 
 mod widgets;
 use widgets::{
-    filter_input::draw_filter_input, loading::draw_loading_screen, status_bar::draw_status_bar,
-    tabs_bar::draw_tabs,
+    filter_input::draw_filter_input,
+    loading::draw_loading_screen,
+    status_bar::draw_status_bar,
+    tabs_bar::{CaptureCluster, draw_tabs},
 };
 
 mod tabs;
 use tabs::{
-    details::DetailsTab, graph::GraphTab, help::HelpTab, interfaces::InterfacesTab,
+    activity::ActivityTab, details::DetailsTab, graph::GraphTab, help::HelpOverlay, host::HostTab,
     overview::OverviewTab,
 };
 
@@ -42,40 +44,49 @@ use tabs::{
 /// filter input widget), so when `filter_mode` is on the dispatch
 /// routes to `OverviewTab` regardless of the visible tab. This
 /// keeps filter typing working when the user has switched to
-/// Details / Interfaces / Graph / Help while a filter is being
+/// Details / Activity / Graph / Host while a filter is being
 /// edited.
 pub fn dispatch_key(
     tab: usize,
     key: crossterm::event::KeyEvent,
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
+    if ctx.ui_state.show_help {
+        return HelpOverlay.handle_key(key, ctx);
+    }
     if ctx.ui_state.filter_mode {
         return OverviewTab.handle_key(key, ctx);
+    }
+    if let Some(effects) = sections::handle_key(key, ctx.ui_state) {
+        return Some(effects);
     }
     match tab {
         0 => OverviewTab.handle_key(key, ctx),
         1 => DetailsTab.handle_key(key, ctx),
-        2 => InterfacesTab.handle_key(key, ctx),
+        2 => ActivityTab.handle_key(key, ctx),
         3 => GraphTab.handle_key(key, ctx),
-        4 => HelpTab.handle_key(key, ctx),
+        4 => HostTab.handle_key(key, ctx),
         _ => None,
     }
 }
 
 /// Same as `dispatch_key` but for mouse events (currently the
-/// scroll wheel — clicks go through the global `ClickableRegions`
+/// scroll wheel; clicks go through the global `ClickableRegions`
 /// hit-test in main.rs).
 pub fn dispatch_mouse(
     tab: usize,
     mouse: crossterm::event::MouseEvent,
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
+    if ctx.ui_state.show_help {
+        return HelpOverlay.handle_mouse(mouse, ctx);
+    }
     match tab {
         0 => OverviewTab.handle_mouse(mouse, ctx),
         1 => DetailsTab.handle_mouse(mouse, ctx),
-        2 => InterfacesTab.handle_mouse(mouse, ctx),
+        2 => ActivityTab.handle_mouse(mouse, ctx),
         3 => GraphTab.handle_mouse(mouse, ctx),
-        4 => HelpTab.handle_mouse(mouse, ctx),
+        4 => HostTab.handle_mouse(mouse, ctx),
         _ => None,
     }
 }
@@ -86,17 +97,26 @@ const NONE_PLACEHOLDER: &str = "-";
 /// Global flag for NO_COLOR support (<https://no-color.org>)
 static NO_COLOR: AtomicBool = AtomicBool::new(false);
 
+static POPUP_SHADOW: AtomicBool = AtomicBool::new(false);
+
+/// Enable the optional static Help shadow. NO_COLOR always suppresses it.
+pub fn set_popup_shadow(enabled: bool) {
+    POPUP_SHADOW.store(enabled, Ordering::Relaxed);
+}
+
 /// Enable NO_COLOR mode (strips all colors from the UI)
 pub fn set_no_color(enabled: bool) {
     NO_COLOR.store(enabled, Ordering::Relaxed);
 }
 
 mod state;
+pub(crate) use crate::network::process_activity::process_group_label;
 pub use state::{
-    ClickAction, ClickableRegions, GroupedRow, SortColumn, UIState, compute_grouped_rows,
-    compute_scroll_offset,
+    ActivityDirection, ActivitySection, ActivitySort, ActivityView, ClickAction, ClickableRegions,
+    DetailsSection, DnsSort, GraphSection, GroupedRow, HostView, OverviewSection, PaneScroll,
+    SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,
 };
-pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
+pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
 mod connection_table;
 
@@ -104,23 +124,32 @@ mod sorting;
 pub use sorting::sort_connections;
 
 mod clipboard;
-pub use clipboard::copy_to_clipboard;
+pub use clipboard::{clipboard_available, copy_to_clipboard};
+
+mod sections;
 
 mod actions;
-pub use actions::{clear_all_with_confirmation, try_handle_connection_nav};
+pub use actions::clear_all_with_confirmation;
+pub(crate) use actions::{
+    try_handle_connection_nav, try_handle_pane_scroll, try_handle_pane_wheel,
+};
 
 mod component;
-pub use component::{Component, DrawContext as ComponentContext, Effect, HandlerContext};
+pub use component::{
+    Component, DrawContext as ComponentContext, Effect, HandlerContext, SelectionMove,
+};
 
 mod effects;
 pub use effects::apply_effects;
 
 mod theme;
-pub use theme::{ThemePreset, set_preset as set_theme_preset};
+pub use theme::{
+    Theme, ThemePreset, ThemeSpec, TokenColor, detect_light_background, detect_truecolor, set_theme,
+};
 
-/// Standard panel chrome: rounded border + title. Kept for the few
-/// views that still frame themselves (Help reference card, loading
-/// splash); everything else uses [`section_header`].
+/// Standard panel chrome: rounded border + title. Used by the few
+/// views that frame themselves (Help overlay, loading splash);
+/// everything else uses [`section_header`].
 pub(crate) fn panel_block<'a, T: Into<Line<'a>>>(title: T) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
@@ -130,9 +159,9 @@ pub(crate) fn panel_block<'a, T: Into<Line<'a>>>(title: T) -> Block<'a> {
 }
 
 /// Borderless section chrome: renders an accent `▎` tick plus the given
-/// title on the top row of `area` and returns the remaining rows. This
-/// is rustnet's replacement for the old box-around-everything look; the
-/// ▎ glyph itself still marks the section start under NO_COLOR.
+/// title on the top row of `area` and returns the remaining rows.
+/// Sections are borderless by design; the ▎ glyph still marks the
+/// section start under NO_COLOR.
 /// Callers style their own title spans (bold base + muted metadata).
 pub(crate) fn section_header<'a, T: Into<Line<'a>>>(
     f: &mut Frame,
@@ -147,18 +176,113 @@ pub(crate) fn section_header<'a, T: Into<Line<'a>>>(
         return area;
     }
     let mut line: Line = title.into();
+    // Callers may supply a leading space; normalize it once for every section.
+    for span in &mut line.spans {
+        let content = span.content.trim_start();
+        let empty = content.is_empty();
+        span.content = content.to_string().into();
+        if !empty {
+            break;
+        }
+    }
+    let budget = usize::from(area.width.saturating_sub(2));
+    if line.width() > budget {
+        let mut used = 0;
+        line.spans.retain_mut(|span| {
+            if used >= budget {
+                return false;
+            }
+            let room = budget - used;
+            if span.width() >= room {
+                span.content =
+                    format::truncate_with_ellipsis(&format!("{}…", span.content), room).into();
+                used = budget;
+            } else {
+                used += span.width();
+            }
+            true
+        });
+    }
     line.spans
-        .insert(0, Span::styled("▎", theme::fg(theme::accent())));
+        .insert(0, Span::styled("▎ ", theme::fg(theme::accent())));
+    // A quiet rule links each title to its panel without boxing in the data.
+    let remaining = usize::from(area.width).saturating_sub(line.width() + 1);
+    if remaining > 0 {
+        line.spans.push(Span::styled(
+            format!(" {}", "─".repeat(remaining)),
+            theme::fg(theme::faint()),
+        ));
+    }
     f.render_widget(
         Paragraph::new(line),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    Rect::new(
+    section_body(area)
+}
+
+fn section_body(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(
         area.x,
-        area.y + 1,
+        area.y + area.height.min(1),
         area.width,
         area.height.saturating_sub(1),
     )
+}
+
+/// Theme-aware bold heading span for [`section_header`].
+pub(crate) fn section_title(text: impl Into<String>) -> ratatui::text::Span<'static> {
+    ratatui::text::Span::styled(text.into(), theme::bold_fg(theme::heading()))
+}
+
+/// Muted empty-state text filling a section that has nothing to show yet.
+pub(crate) fn draw_placeholder(f: &mut Frame, area: ratatui::layout::Rect, text: &str) {
+    f.render_widget(
+        ratatui::widgets::Paragraph::new(text).style(theme::fg(theme::muted())),
+        area,
+    );
+}
+
+/// Fade one line toward the faint tier: the scroll-boundary cue shared
+/// by every scrolling pane. Spans carry their own styles, so the fade is
+/// applied span by span, with the line style following for the cells a
+/// short line leaves empty. A no-op under NO_COLOR, where
+/// [`theme::edge_fade`] returns the style untouched.
+pub(crate) fn fade_line(line: &mut Line<'_>) {
+    line.style = theme::edge_fade(line.style);
+    for span in &mut line.spans {
+        span.style = theme::edge_fade(span.style);
+    }
+}
+
+/// Dim the boundary rows of a scrolled pane: the first visible row when
+/// content continues above it, the last when content continues below.
+/// Nothing is inserted or removed, so the panes' fixed row positions and
+/// the click-to-copy registry stay in step with the rendered lines.
+pub(crate) fn fade_scroll_edges(lines: &mut [Line<'_>], scroll: u16, height: u16) {
+    if height == 0 {
+        return;
+    }
+    let (top, height) = (scroll as usize, height as usize);
+    let bottom = top + height - 1;
+    if top > 0 {
+        fade_at(lines, top);
+    }
+    if bottom + 1 < lines.len() {
+        fade_at(lines, bottom);
+    }
+}
+
+/// Apply the shared edge fade to the line at `index`, if it exists.
+fn fade_at(lines: &mut [Line<'_>], index: usize) {
+    if let Some(line) = lines.get_mut(index) {
+        fade_line(line);
+    }
+}
+
+/// Foreground style for a counter that is fine at zero and alarming
+/// otherwise: `ok` while nothing is wrong, `alert` once `alerting`.
+pub(crate) fn alert_style(alerting: bool, alert: Color) -> ratatui::style::Style {
+    theme::fg(if alerting { alert } else { theme::ok() })
 }
 
 /// Resolve the cell color for a connection's State column.
@@ -178,12 +302,12 @@ pub(crate) fn state_color(conn: &Connection) -> Color {
 }
 
 /// Resolve the cell color for a DPI Application protocol.
-/// Classic preset mirrors the palette used in `draw_app_distribution`;
+/// Vivid preset mirrors the palette used in `draw_app_distribution`;
 /// the muted preset renders detected applications as plain content so
 /// the `proto_*` palette stays a chart-only encoding.
 pub(crate) fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Color {
     use crate::network::types::ApplicationProtocol as AP;
-    if !theme::is_classic() {
+    if !theme::is_vivid() {
         return Color::Reset;
     }
     match app {
@@ -196,34 +320,67 @@ pub(crate) fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Col
     }
 }
 
-/// Draw the UI
+/// Color for the Details Application heading of the non-DPI protocol classes
+/// (ARP, ICMP, IGMP), which have no `ApplicationProtocol` value to feed
+/// [`dpi_color`]. Mirrors its theme fallback: the vivid preset colors the
+/// heading like any other detected application, the muted preset renders it
+/// as plain content.
+pub(crate) fn non_dpi_app_color() -> Color {
+    if theme::is_vivid() {
+        theme::field_application()
+    } else {
+        Color::Reset
+    }
+}
+
 pub fn draw(
     f: &mut Frame,
     app: &App,
-    ui_state: &UIState,
+    ui_state: &mut UiState,
     connections: &[Connection],
     grouped_rows: Option<&[GroupedRow]>,
     stats: &AppStats,
     click_regions: &mut ClickableRegions,
 ) -> Result<()> {
     click_regions.clear();
+    ui_state.graph_animation_visible.set(false);
+    ui_state
+        .bar_animations
+        .begin_frame(std::time::Instant::now());
 
-    // If still loading, show loading screen
+    // If still loading, show loading screen. The splash clock starts on
+    // the first frame and is quantized to whole animation frames, so
+    // draws within one frame are byte-identical (cheap for the
+    // terminal) and the first frame is deterministic for tests.
     if app.is_loading() {
-        draw_loading_screen(f);
+        use std::sync::OnceLock;
+        use widgets::loading::FRAME_MS;
+        static SPLASH_START: OnceLock<std::time::Instant> = OnceLock::new();
+        let elapsed = SPLASH_START.get_or_init(std::time::Instant::now).elapsed();
+        let frame =
+            std::time::Duration::from_millis(elapsed.as_millis() as u64 / FRAME_MS * FRAME_MS);
+        ui_state.bar_animations.finish_frame();
+        draw_loading_screen(f, frame);
         return Ok(());
     }
 
     use widgets::filter_input::FILTER_INPUT_HEIGHT;
+    use widgets::status_bar::status_bar_height;
     use widgets::tabs_bar::TABS_BAR_HEIGHT;
-    let chunks = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
+
+    // A capture failure can need a second row, so the status bar is measured
+    // before the layout is split.
+    let capture_error = app.capture_error();
+    let status_height = status_bar_height(capture_error.as_deref(), f.area().width);
+
+    let chunks = if ui_state.filter_row_visible() {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(TABS_BAR_HEIGHT),     // Tabs
                 Constraint::Min(0),                      // Content
                 Constraint::Length(FILTER_INPUT_HEIGHT), // Filter input area
-                Constraint::Length(1),                   // Status bar
+                Constraint::Length(status_height),       // Status bar
             ])
             .split(f.area())
     } else {
@@ -232,19 +389,62 @@ pub fn draw(
             .constraints([
                 Constraint::Length(TABS_BAR_HEIGHT), // Tabs
                 Constraint::Min(0),                  // Content
-                Constraint::Length(1),               // Status bar
+                Constraint::Length(status_height),   // Status bar
             ])
             .split(f.area())
     };
 
-    draw_tabs(f, ui_state, chunks[0], click_regions);
+    // Capture cluster: same sources the status bar and the Overview
+    // sidebar read. `get_link_layer_info` reports "Unknown" until the
+    // capture thread has a linktype, which is not worth a suffix.
+    let capture_interface = app.get_current_interface();
+    let (link_type, _is_tunnel) = app.get_link_layer_info();
+    let capture = CaptureCluster {
+        interface: capture_interface.as_deref(),
+        link_type: Some(link_type.as_str()).filter(|link| *link != "Unknown"),
+        failed: capture_error.is_some(),
+    };
 
-    let content_area = chunks[1];
-    let (filter_area, status_area) = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
+    draw_tabs(f, ui_state, &capture, chunks[0], click_regions);
+
+    if ui_state.selected_tab == 1 {
+        // Repair selection before measuring optional identity cards.
+        ui_state.prepare_connection_viewport(
+            tabs::overview::visible_connection_rows(chunks[1]),
+            connections,
+            grouped_rows,
+        );
+        let conn = ui_state
+            .get_selected_index(connections)
+            .and_then(|index| connections.get(index));
+        let sectioned = tabs::details::sectioned_layout(chunks[1], conn);
+        if ui_state.details_compact.replace(sectioned) != sectioned {
+            ui_state.details_page.set(0);
+            ui_state.details_page_count.set(1);
+        }
+    }
+    ui_state.section_navigation = match ui_state.selected_tab {
+        0 => tabs::overview::compact_layout(chunks[1]),
+        1 => ui_state.details_compact.get(),
+        2 => tabs::activity::compact_layout(chunks[1]),
+        3 => tabs::graph::compact_layout(chunks[1]),
+        4 => true,
+        _ => false,
+    };
+    let content_area = sections::draw_selector(f, chunks[1], ui_state, click_regions);
+    let (filter_area, status_area) = if ui_state.filter_row_visible() {
         (Some(chunks[2]), chunks[3])
     } else {
         (None, chunks[2])
     };
+
+    // Use this frame's actual content bounds, including an expanded error
+    // banner, before repairing selection and building the virtual row window.
+    ui_state.prepare_connection_viewport(
+        tabs::overview::visible_connection_rows(content_area),
+        connections,
+        grouped_rows,
+    );
 
     let comp_ctx = ComponentContext {
         app,
@@ -256,17 +456,29 @@ pub fn draw(
     match ui_state.selected_tab {
         0 => OverviewTab.draw(f, content_area, &comp_ctx, click_regions)?,
         1 => DetailsTab.draw(f, content_area, &comp_ctx, click_regions)?,
-        2 => InterfacesTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        2 => ActivityTab.draw(f, content_area, &comp_ctx, click_regions)?,
         3 => GraphTab.draw(f, content_area, &comp_ctx, click_regions)?,
-        4 => HelpTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        4 => HostTab.draw(f, content_area, &comp_ctx, click_regions)?,
         _ => {}
     }
+
+    ui_state.bar_animations.finish_frame();
 
     if let Some(filter_area) = filter_area {
         draw_filter_input(f, ui_state, filter_area);
     }
 
-    draw_status_bar(f, ui_state, connections.len(), status_area);
+    if ui_state.show_help {
+        tabs::help::draw_help_overlay(f, ui_state, content_area)?;
+    }
+
+    draw_status_bar(
+        f,
+        ui_state,
+        clipboard_available(app),
+        capture_error.as_deref(),
+        status_area,
+    );
 
     Ok(())
 }
@@ -274,35 +486,18 @@ pub fn draw(
 mod format;
 
 #[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_port_toggle_default_state() {
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
         assert!(
             !ui_state.show_port_numbers,
             "Port numbers should be hidden by default"
-        );
-    }
-
-    #[test]
-    fn test_port_toggle_state_change() {
-        let mut ui_state = UIState::default();
-        assert!(!ui_state.show_port_numbers);
-
-        // Toggle to show port numbers
-        ui_state.show_port_numbers = !ui_state.show_port_numbers;
-        assert!(
-            ui_state.show_port_numbers,
-            "Port numbers should be visible after toggle"
-        );
-
-        // Toggle back to show service names
-        ui_state.show_port_numbers = !ui_state.show_port_numbers;
-        assert!(
-            !ui_state.show_port_numbers,
-            "Service names should be visible after second toggle"
         );
     }
 
@@ -317,7 +512,9 @@ mod tests {
         assert_eq!(LocalAddress.next(false), Service); // Skips Location
         assert_eq!(Service.next(false), Application);
         assert_eq!(Application.next(false), State);
-        assert_eq!(State.next(false), BandwidthTotal);
+        assert_eq!(State.next(false), Rtt);
+        assert_eq!(Rtt.next(false), Health);
+        assert_eq!(Health.next(false), BandwidthTotal);
         assert_eq!(BandwidthTotal.next(false), CreatedAt); // Cycles back
     }
 
@@ -337,8 +534,10 @@ mod tests {
     fn test_sort_column_default_directions() {
         use SortColumn::*;
 
-        // Bandwidth should default to descending (false)
+        // Bandwidth, RTT, and Health should default to descending (false)
         assert!(!BandwidthTotal.default_direction());
+        assert!(!Rtt.default_direction());
+        assert!(!Health.default_direction());
 
         // Everything else should default to ascending (true)
         assert!(Process.default_direction());
@@ -353,43 +552,34 @@ mod tests {
 
     #[test]
     fn test_ui_state_cycle_sort_column() {
-        let mut ui_state = UIState::default();
-
-        // Default state
-        assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
+        use SortColumn::*;
+        let mut ui_state = UiState::default();
+        assert_eq!(ui_state.sort_column, CreatedAt);
         assert!(ui_state.sort_ascending);
 
-        // Cycle to Process - should reset to ascending
-        ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::Process);
-        assert!(ui_state.sort_ascending); // Process defaults to ascending
-
-        // Cycle to RemoteAddress - should reset to ascending
-        ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::RemoteAddress);
-        assert!(ui_state.sort_ascending);
-
-        // Cycle to LocalAddress - should reset to ascending
-        ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::LocalAddress);
-        assert!(ui_state.sort_ascending);
-
-        // Skip ahead to Application
-        ui_state.cycle_sort_column(); // Service
-        ui_state.cycle_sort_column(); // Application
-        assert_eq!(ui_state.sort_column, SortColumn::Application);
-        assert!(ui_state.sort_ascending);
-
-        // Cycle to State, then BandwidthTotal - should reset to descending
-        ui_state.cycle_sort_column(); // State
-        ui_state.cycle_sort_column(); // BandwidthTotal
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(!ui_state.sort_ascending); // Bandwidth defaults to descending
+        for (column, ascending) in [
+            (Process, true),
+            (RemoteAddress, true),
+            (LocalAddress, true),
+            (Service, true),
+            (Application, true),
+            (State, true),
+            (Rtt, false),
+            (Health, false),
+            (BandwidthTotal, false),
+            (CreatedAt, true),
+        ] {
+            // A column change must restore its default direction.
+            ui_state.sort_ascending = !ascending;
+            ui_state.cycle_sort_column();
+            assert_eq!(ui_state.sort_column, column);
+            assert_eq!(ui_state.sort_ascending, ascending, "{column:?}");
+        }
     }
 
     #[test]
     fn test_ui_state_toggle_sort_direction() {
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             sort_column: SortColumn::BandwidthTotal,
             sort_ascending: false,
             ..Default::default()
@@ -397,10 +587,12 @@ mod tests {
 
         // Toggle direction
         ui_state.toggle_sort_direction();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
         assert!(ui_state.sort_ascending);
 
         // Toggle back
         ui_state.toggle_sort_direction();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
         assert!(!ui_state.sort_ascending);
     }
 
@@ -417,88 +609,59 @@ mod tests {
         assert_eq!(Application.display_name(), "Application");
         assert_eq!(Service.display_name(), "Service");
         assert_eq!(State.display_name(), "State");
+        assert_eq!(Rtt.display_name(), "RTT");
+        assert_eq!(Health.display_name(), "Health");
     }
 
     #[test]
-    fn test_bandwidth_sort_states() {
-        let mut ui_state = UIState::default();
+    fn only_the_cut_rows_of_a_scrolled_pane_fade() {
+        use ratatui::text::Span;
 
-        // Start from default
-        assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
-        assert!(ui_state.sort_ascending);
-
-        // Cycle through columns to reach BandwidthTotal
-        // CreatedAt -> Process -> RemoteAddress -> LocalAddress -> Service -> Application -> State -> BandwidthTotal
-        for _ in 0..7 {
-            ui_state.cycle_sort_column();
+        let plain = theme::fg(theme::text());
+        let mut lines: Vec<Line<'static>> = (0..6)
+            .map(|i| Line::from(Span::styled(format!("row {i}"), plain)))
+            .collect();
+        // Rows 1..=3 visible: content continues above and below.
+        fade_scroll_edges(&mut lines, 1, 3);
+        let faded = theme::edge_fade(plain);
+        assert_eq!(lines[1].spans[0].style, faded, "top boundary must fade");
+        assert_eq!(lines[3].spans[0].style, faded, "bottom boundary must fade");
+        for index in [0, 2, 4, 5] {
+            assert_eq!(
+                lines[index].spans[0].style, plain,
+                "row {index} is not a boundary and must keep its style"
+            );
         }
+    }
 
-        // Should be at BandwidthTotal with default descending (false)
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(
-            !ui_state.sort_ascending,
-            "BandwidthTotal should default to descending"
-        );
+    #[test]
+    fn a_pane_that_does_not_scroll_keeps_every_row() {
+        use ratatui::text::Span;
 
-        // Toggle direction with Shift+S
-        ui_state.toggle_sort_direction();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(
-            ui_state.sort_ascending,
-            "After toggle, BandwidthTotal should be ascending"
-        );
-
-        // Toggle back
-        ui_state.toggle_sort_direction();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(
-            !ui_state.sort_ascending,
-            "After second toggle, BandwidthTotal should be descending again"
-        );
-
-        // Cycle past BandwidthTotal wraps back to the CreatedAt default
-        ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
-        assert!(
-            ui_state.sort_ascending,
-            "CreatedAt should default to ascending"
-        );
+        let plain = theme::fg(theme::text());
+        let mut lines: Vec<Line<'static>> = (0..3)
+            .map(|i| Line::from(Span::styled(format!("row {i}"), plain)))
+            .collect();
+        fade_scroll_edges(&mut lines, 0, 3);
+        assert!(lines.iter().all(|line| line.spans[0].style == plain));
+        // A zero-height pane has no boundary rows to fade.
+        fade_scroll_edges(&mut lines, 0, 0);
+        assert!(lines.iter().all(|line| line.spans[0].style == plain));
     }
 
     #[test]
     fn test_navigation_consistency_with_sorted_list() {
-        use crate::network::types::{Protocol, ProtocolState};
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        use crate::test_support::local_tcp;
 
         // Create test connections with different process names for sorting
+        // (alphabetically: alpha, beta, charlie)
         let mut connections = vec![
-            Connection::new(
-                Protocol::Tcp,
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443),
-                ProtocolState::Tcp(crate::network::types::TcpState::Established),
-            ),
-            Connection::new(
-                Protocol::Tcp,
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8081),
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 443),
-                ProtocolState::Tcp(crate::network::types::TcpState::Established),
-            ),
-            Connection::new(
-                Protocol::Tcp,
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8082),
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3)), 443),
-                ProtocolState::Tcp(crate::network::types::TcpState::Established),
-            ),
+            local_tcp(8080, "charlie"),
+            local_tcp(8081, "alpha"),
+            local_tcp(8082, "beta"),
         ];
 
-        // Set different process names for sorting (alphabetically: alpha, beta, charlie)
-        connections[0].process_name = Some("charlie".to_string());
-        connections[1].process_name = Some("alpha".to_string());
-        connections[2].process_name = Some("beta".to_string());
-
-        // Create UI state
-        let mut ui_state = UIState::default();
+        let mut ui_state = UiState::default();
 
         // Initial state: select first connection (charlie)
         ui_state.set_selected_by_index(&connections, 0);
@@ -551,477 +714,4 @@ mod tests {
 }
 
 #[cfg(test)]
-mod snapshot_tests {
-    //! Snapshot tests covering chrome (tabs, filter, status bar, loading,
-    //! help) and full-page renders that need no live `App` plumbing.
-    //!
-    //! Rendering is captured as plain-text (cell symbols only) — colors
-    //! and modifiers are dropped because they're hard to diff usefully and
-    //! the theme is exercised separately. Layout regressions are what
-    //! these tests catch.
-    //!
-    //! Snapshots live in `src/snapshots/` (insta's default for unit
-    //! tests). Run `cargo insta review` after intentional UI changes.
-    use super::*;
-    use ratatui::backend::TestBackend;
-    use ratatui::buffer::Buffer;
-
-    /// Render a closure into a `width × height` test buffer and return a
-    /// plain-text dump (one line per row, no trailing whitespace trim).
-    fn render<F>(width: u16, height: u16, draw: F) -> String
-    where
-        F: FnOnce(&mut Frame),
-    {
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("create test terminal");
-        terminal.draw(draw).expect("draw frame");
-        buffer_to_string(terminal.backend().buffer())
-    }
-
-    fn buffer_to_string(buffer: &Buffer) -> String {
-        let area = buffer.area;
-        let mut out = String::with_capacity((area.width as usize + 1) * area.height as usize);
-        for y in 0..area.height {
-            for x in 0..area.width {
-                out.push_str(buffer[(x, y)].symbol());
-            }
-            out.push('\n');
-        }
-        out
-    }
-
-    // --- Chrome: loading, help, tabs, filter input, status bar ---
-
-    #[test]
-    fn loading_screen() {
-        let output = render(80, 20, draw_loading_screen);
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn help_tab() {
-        use crate::ui::tabs::help::draw_help;
-        let output = render(100, 50, |f| {
-            draw_help(f, f.area()).expect("draw_help");
-        });
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn tabs_bar_overview_active() {
-        let ui_state = UIState {
-            selected_tab: 0,
-            ..Default::default()
-        };
-        let mut regions = ClickableRegions::default();
-        let output = render(80, 2, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn tabs_bar_details_active() {
-        let ui_state = UIState {
-            selected_tab: 1,
-            ..Default::default()
-        };
-        let mut regions = ClickableRegions::default();
-        let output = render(80, 2, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn tabs_bar_help_active() {
-        let ui_state = UIState {
-            selected_tab: 4,
-            ..Default::default()
-        };
-        let mut regions = ClickableRegions::default();
-        let output = render(80, 2, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn filter_input_mode_active_empty() {
-        let ui_state = UIState {
-            filter_mode: true,
-            filter_query: String::new(),
-            filter_cursor_position: 0,
-            ..Default::default()
-        };
-        let output = render(80, 1, |f| draw_filter_input(f, &ui_state, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn filter_input_mode_active_with_text() {
-        let ui_state = UIState {
-            filter_mode: true,
-            filter_query: "port:443".to_string(),
-            filter_cursor_position: 8,
-            ..Default::default()
-        };
-        let output = render(80, 1, |f| draw_filter_input(f, &ui_state, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn filter_input_persisted() {
-        let ui_state = UIState {
-            filter_mode: false,
-            filter_query: "tcp port:443".to_string(),
-            filter_cursor_position: 0,
-            ..Default::default()
-        };
-        let output = render(80, 1, |f| draw_filter_input(f, &ui_state, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn status_bar_overview_default() {
-        let ui_state = UIState::default();
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn status_bar_details_tab() {
-        let ui_state = UIState {
-            selected_tab: 1,
-            ..Default::default()
-        };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn status_bar_help_tab() {
-        let ui_state = UIState {
-            selected_tab: 4,
-            ..Default::default()
-        };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 0, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn status_bar_filtered() {
-        let ui_state = UIState {
-            filter_query: "port:443".to_string(),
-            ..Default::default()
-        };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 7, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn status_bar_quit_confirmation() {
-        let ui_state = UIState {
-            quit_confirmation: true,
-            ..Default::default()
-        };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn status_bar_clear_confirmation() {
-        let ui_state = UIState {
-            clear_confirmation: true,
-            ..Default::default()
-        };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    // --- Full-page renders backed by a seeded App ---
-    //
-    // A real `App` is built with `App::new(test_config())` (no threads, no
-    // DNS, no GeoIP). Connection lists, interface stats, and the loading
-    // flag are injected through `#[cfg(test)]` setters on `App`. Time-
-    // sensitive strings (Status "Active (last seen Xs ago)", "Started Xs
-    // ago", etc.) are scrubbed with `insta::with_settings!` filters so
-    // snapshots stay stable across runs.
-
-    use crate::app::{App, Config};
-    use crate::network::interface_stats::{InterfaceRates, InterfaceStats};
-    use crate::network::types::{Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::time::{Duration, SystemTime};
-
-    fn test_config() -> Config {
-        Config {
-            interface: Some("eth0".to_string()),
-            filter_localhost: false,
-            refresh_interval: 1000,
-            enable_dpi: false,
-            bpf_filter: None,
-            json_log_file: None,
-            pcap_export_file: None,
-            resolve_dns: false,
-            show_ptr_lookups: false,
-            geoip_country_path: None,
-            geoip_asn_path: None,
-            geoip_city_path: None,
-            disable_geoip: true,
-        }
-    }
-
-    fn test_app() -> App {
-        let app = App::new(test_config()).expect("App::new in test_config");
-        app.set_loading_for_test(false);
-        app.set_current_interface_for_test(Some("eth0".to_string()));
-        app
-    }
-
-    /// Test-fixture spec for one connection. Folded into a struct so
-    /// `sample_connections()` can build a vec literally instead of
-    /// passing nine positional args per entry.
-    struct ConnSpec {
-        protocol: Protocol,
-        local: (Ipv4Addr, u16),
-        remote: (Ipv4Addr, u16),
-        state: ProtocolState,
-        service: &'static str,
-        process: &'static str,
-        pid: u32,
-        bytes_sent: u64,
-        bytes_received: u64,
-    }
-
-    fn build_conn(spec: ConnSpec) -> Connection {
-        let local_sa = SocketAddr::new(IpAddr::V4(spec.local.0), spec.local.1);
-        let remote_sa = SocketAddr::new(IpAddr::V4(spec.remote.0), spec.remote.1);
-        let now = SystemTime::now();
-        let mut conn = Connection::new(spec.protocol, local_sa, remote_sa, spec.state);
-        conn.service_name = Some(spec.service.to_string());
-        conn.process_name = Some(spec.process.to_string());
-        conn.pid = Some(spec.pid);
-        conn.bytes_sent = spec.bytes_sent;
-        conn.bytes_received = spec.bytes_received;
-        conn.packets_sent = spec.bytes_sent / 1024;
-        conn.packets_received = spec.bytes_received / 1024;
-        conn.created_at = now;
-        conn.last_activity = now;
-        conn
-    }
-
-    fn sample_connections() -> Vec<Connection> {
-        [
-            ConnSpec {
-                protocol: Protocol::Tcp,
-                local: (Ipv4Addr::new(192, 168, 1, 10), 51234),
-                remote: (Ipv4Addr::new(140, 82, 121, 4), 443),
-                state: ProtocolState::Tcp(TcpState::Established),
-                service: "https",
-                process: "firefox",
-                pid: 2001,
-                bytes_sent: 12_500,
-                bytes_received: 240_000,
-            },
-            ConnSpec {
-                protocol: Protocol::Udp,
-                local: (Ipv4Addr::new(192, 168, 1, 10), 53),
-                remote: (Ipv4Addr::new(1, 1, 1, 1), 53),
-                state: ProtocolState::Udp,
-                service: "dns",
-                process: "systemd-resolved",
-                pid: 820,
-                bytes_sent: 1_200,
-                bytes_received: 3_400,
-            },
-            ConnSpec {
-                protocol: Protocol::Tcp,
-                local: (Ipv4Addr::new(192, 168, 1, 10), 22),
-                remote: (Ipv4Addr::new(10, 0, 0, 5), 51022),
-                state: ProtocolState::Tcp(TcpState::Established),
-                service: "ssh",
-                process: "sshd",
-                pid: 1500,
-                bytes_sent: 88_000,
-                bytes_received: 42_000,
-            },
-            ConnSpec {
-                protocol: Protocol::Tcp,
-                local: (Ipv4Addr::new(192, 168, 1, 10), 60123),
-                remote: (Ipv4Addr::new(151, 101, 1, 195), 443),
-                state: ProtocolState::Tcp(TcpState::TimeWait),
-                service: "https",
-                process: "curl",
-                pid: 9876,
-                bytes_sent: 0,
-                bytes_received: 1_536,
-            },
-        ]
-        .into_iter()
-        .map(build_conn)
-        .collect()
-    }
-
-    /// Insta filters that scrub volatile values from the rendered output.
-    /// The order matters — more specific patterns first.
-    fn time_filters() -> Vec<(&'static str, &'static str)> {
-        vec![
-            (r"last seen \d+[smhd] ago", "last seen <T> ago"),
-            (r"Started \d+[smhd] ago", "Started <T> ago"),
-            (r"Closed \(\d+[smhd] ago\)", "Closed (<T> ago)"),
-            (r"\(idle \d+[smhd]\)", "(idle <T>)"),
-        ]
-    }
-
-    // Overview snapshots are intentionally omitted: the stats sidebar
-    // renders a Security panel whose text comes from platform-specific
-    // code paths (Seatbelt on macOS, Landlock on Linux, Restricted Token
-    // on Windows) plus the running user's UID, making byte-stable
-    // snapshots non-portable. Splitting the Security panel into its own
-    // function would let us snapshot it with a stub `SandboxInfo`, then
-    // add overview snapshots back.
-
-    #[test]
-    fn details_tab_tcp_https() {
-        let app = test_app();
-        let connections = sample_connections();
-        app.set_connections_snapshot_for_test(connections.clone());
-
-        let ui_state = UIState {
-            selected_tab: 1, // Details
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
-
-        insta::with_settings!({
-            filters => time_filters(),
-        }, {
-            insta::assert_snapshot!(output);
-        });
-    }
-
-    #[test]
-    fn interfaces_tab() {
-        let app = test_app();
-        app.set_connections_snapshot_for_test(sample_connections());
-        app.set_interface_stats_for_test(
-            "eth0",
-            InterfaceStats {
-                interface_name: "eth0".to_string(),
-                rx_bytes: 1_500_000_000,
-                tx_bytes: 250_000_000,
-                rx_packets: 1_200_000,
-                tx_packets: 800_000,
-                rx_errors: 0,
-                tx_errors: 0,
-                rx_dropped: 12,
-                tx_dropped: 0,
-                collisions: 0,
-                timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
-            },
-        );
-        app.set_interface_rates_for_test(
-            "eth0",
-            InterfaceRates {
-                rx_bytes_per_sec: 524_288,
-                tx_bytes_per_sec: 131_072,
-            },
-        );
-
-        let ui_state = UIState {
-            selected_tab: 2, // Interfaces
-            ..Default::default()
-        };
-        let connections = app.get_connections();
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(140, 30, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw interfaces");
-        });
-
-        insta::with_settings!({
-            filters => time_filters(),
-        }, {
-            insta::assert_snapshot!(output);
-        });
-    }
-
-    #[test]
-    fn graph_tab_empty_history() {
-        let app = test_app();
-        app.set_connections_snapshot_for_test(sample_connections());
-        app.set_traffic_history_for_test(TrafficHistory::new(60));
-
-        let ui_state = UIState {
-            selected_tab: 3, // Graph
-            ..Default::default()
-        };
-        let connections = app.get_connections();
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw graph");
-        });
-
-        insta::with_settings!({
-            filters => time_filters(),
-        }, {
-            insta::assert_snapshot!(output);
-        });
-    }
-
-    #[test]
-    fn loading_screen_via_app() {
-        let app = App::new(test_config()).expect("App::new");
-        // Leave is_loading=true so draw() takes the loading branch.
-        let connections: Vec<Connection> = Vec::new();
-        let ui_state = UIState::default();
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(80, 20, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw loading");
-        });
-
-        insta::assert_snapshot!(output);
-    }
-}
+mod snapshot_tests;

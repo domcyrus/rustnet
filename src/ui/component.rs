@@ -2,11 +2,11 @@
 //! crossbeam-threaded UI loop.
 //!
 //! Differences from ratatui's official component template:
-//! - No `tokio::sync::mpsc::UnboundedSender<Action>` — the loop is
+//! - No `tokio::sync::mpsc::UnboundedSender<Action>`: the loop is
 //!   synchronous; components return `Vec<Effect>` from event
 //!   handlers instead of pushing through a channel.
 //! - No `register_action_handler` / `register_config_handler` /
-//!   `init` — shared state (`App`, `UIState`) is passed through
+//!   `init`: shared state (`App`, `UiState`) is passed through
 //!   context structs on each call.
 
 use anyhow::Result;
@@ -15,7 +15,7 @@ use ratatui::{Frame, layout::Rect};
 
 use crate::app::{App, AppStats};
 use crate::network::types::Connection;
-use crate::ui::{ClickableRegions, GroupedRow, UIState};
+use crate::ui::{ClickableRegions, GroupedRow, UiState, state::Motion};
 
 /// Read-only bundle passed to every component's `draw`. Lifetime
 /// matches the borrow scope inside the main loop's `terminal.draw`
@@ -23,7 +23,7 @@ use crate::ui::{ClickableRegions, GroupedRow, UIState};
 pub struct DrawContext<'a> {
     pub app: &'a App,
     pub connections: &'a [Connection],
-    pub ui_state: &'a UIState,
+    pub ui_state: &'a UiState,
     pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
     pub stats: &'a AppStats,
 }
@@ -35,10 +35,46 @@ pub struct DrawContext<'a> {
 /// hit-test table (e.g. scroll-area bounds).
 pub struct HandlerContext<'a> {
     pub app: &'a App,
-    pub ui_state: &'a mut UIState,
+    pub ui_state: &'a mut UiState,
     pub connections: &'a [Connection],
     pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
     pub click_regions: &'a ClickableRegions,
+}
+
+/// A selection movement requested by a key or scroll event. Pages are
+/// sized from the rows currently visible when the move is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionMove {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+}
+
+impl HandlerContext<'_> {
+    /// Move the selection in whichever list is on screen: the grouped
+    /// rows while grouping is enabled and rows exist, the flat connection
+    /// list otherwise.
+    pub fn move_selection(&mut self, mv: SelectionMove) {
+        let page_size = self.ui_state.visible_rows.max(1);
+        let motion = match mv {
+            SelectionMove::Up => Motion::Up,
+            SelectionMove::Down => Motion::Down,
+            SelectionMove::PageUp => Motion::PageUp(page_size),
+            SelectionMove::PageDown => Motion::PageDown(page_size),
+            SelectionMove::First => Motion::First,
+            SelectionMove::Last => Motion::Last,
+        };
+        if self.ui_state.grouping_enabled
+            && let Some(rows) = self.grouped_rows
+        {
+            self.ui_state.move_selection_grouped(rows, motion);
+        } else {
+            self.ui_state.move_selection(self.connections, motion);
+        }
+    }
 }
 
 /// Cross-cutting effects a component can request from the main
@@ -61,13 +97,13 @@ pub enum Effect {
 
 /// Implemented by every tab. `draw` must be cheap (called every
 /// render tick). `handle_key` translates raw keystrokes into
-/// `Effect`s; UIState mutations happen in-place through the
+/// `Effect`s; UiState mutations happen in-place through the
 /// handler context.
 ///
 /// `handle_key` returns:
-/// - `None` — the component did not claim this key; the loop falls
+/// - `None`: the component did not claim this key; the loop falls
 ///   through to its global / fallback handling.
-/// - `Some(vec)` — the component handled the key (vec may be empty
+/// - `Some(vec)`: the component handled the key (vec may be empty
 ///   if no cross-cutting effect was needed). The loop skips its
 ///   fallback match.
 pub trait Component {

@@ -1,6 +1,0 @@
----
-source: src/ui/mod.rs
-assertion_line: 693
-expression: output
----
- 'h' help | 1-5 jump | Tab/[/] cycle | Esc back to Overview

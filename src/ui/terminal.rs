@@ -11,7 +11,7 @@ pub type Terminal<B> = RatatuiTerminal<B>;
 /// Also installs a panic hook (chained ahead of the previous one) that
 /// restores the terminal before the panic message is printed. Without
 /// it, a panic anywhere in the app leaves the terminal in raw mode on
-/// the alternate screen with mouse capture on — a garbled shell that
+/// the alternate screen with mouse capture on: a garbled shell that
 /// needs `tput reset`. `ratatui::init()` installs an equivalent hook,
 /// but it does not enable mouse capture, which rustnet relies on for
 /// its clickable hit-test regions, so we keep the manual setup and add
@@ -20,9 +20,6 @@ pub fn setup_terminal<B: ratatui::backend::Backend>(backend: B) -> Result<Termin
 where
     <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
 {
-    let mut terminal = RatatuiTerminal::new(backend)?;
-    terminal.clear()?;
-    terminal.hide_cursor()?;
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(
         std::io::stdout(),
@@ -30,6 +27,15 @@ where
         crossterm::event::EnableMouseCapture
     )?;
     install_panic_hook();
+    let mut terminal = RatatuiTerminal::new(backend)?;
+    // Clear via the backend, not `Terminal::clear()`: since ratatui 0.30 the
+    // latter queries the cursor position (ESC[6n) and errors out after a 2s
+    // timeout on terminals that never reply (e.g. the FreeBSD vt console),
+    // aborting startup. The backend clear is a plain clear-screen write. It
+    // also runs after entering the alternate screen, so the user's primary
+    // screen is left untouched.
+    terminal.backend_mut().clear()?;
+    terminal.hide_cursor()?;
     Ok(terminal)
 }
 
@@ -46,7 +52,7 @@ where
 /// Crossterm-level teardown that needs no `Terminal` handle: disable raw
 /// mode, leave the alternate screen, disable mouse capture, and show the
 /// cursor. Shared by the normal teardown path and the panic hook (which
-/// cannot borrow the `Terminal`). Best-effort — errors are ignored when
+/// cannot borrow the `Terminal`). Best-effort: errors are ignored when
 /// called from the panic hook since we are already unwinding.
 fn restore_terminal_raw() -> Result<()> {
     crossterm::terminal::disable_raw_mode()?;

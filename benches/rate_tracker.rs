@@ -1,34 +1,17 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use rustnet_monitor::network::types::*;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use rustnet_monitor::network::types::Connection;
 
-/// Create a Connection with a RateTracker filled to `n_samples` entries.
+mod common;
+
+/// Create a Connection with `n` rate samples, pruning periodically to keep
+/// the tracker realistic.
 fn make_connection_with_samples(n_samples: usize) -> Connection {
-    let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321);
-    let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
-    let mut conn = Connection::new(
-        Protocol::Tcp,
-        local,
-        remote,
-        ProtocolState::Tcp(TcpState::Established),
-    );
-
-    for i in 0..n_samples {
-        conn.bytes_sent += 100;
-        conn.bytes_received += 200;
-        conn.rate_tracker
-            .update(conn.bytes_sent, conn.bytes_received);
-        // Sprinkle in some pruning to keep the tracker realistic
-        if i % 500 == 0 {
-            conn.rate_tracker.prune();
-        }
-    }
-    conn
+    common::make_connection_with_samples(n_samples, Some(500))
 }
 
-/// Benchmark the per-packet `update()` call on RateTracker.
-/// This is the hot path — called for every packet received.
-/// The Arc<VecDeque> change adds an `Arc::make_mut` atomic check here.
+/// Benchmark the per-packet `update()` call on RateTracker: the hot path,
+/// called for every packet received. The Arc<VecDeque> sample buffer adds an
+/// `Arc::make_mut` uniqueness check here.
 fn bench_rate_update(c: &mut Criterion) {
     let mut group = c.benchmark_group("rate_tracker_update");
 
@@ -50,13 +33,10 @@ fn bench_rate_update(c: &mut Criterion) {
             },
         );
 
-        // Shared owner: simulates the case right after a full clone, where
-        // two Arcs point to the same VecDeque while the snapshot is alive
-        // (in the app the UI holds it for a full refresh interval). The
-        // first `update()` then triggers a full VecDeque copy via
-        // Arc::make_mut. The snapshot is threaded through the routine and
-        // returned so it stays alive during the update and its drop isn't
-        // measured.
+        // Shared owner: two Arcs share the VecDeque (as right after a UI
+        // snapshot clone), so the first `update()` pays a full copy via
+        // Arc::make_mut. The snapshot is returned from the routine so it
+        // stays alive during the update and its drop isn't measured.
         group.bench_with_input(
             BenchmarkId::new("after_snapshot_clone", n_samples),
             &n_samples,
@@ -79,10 +59,10 @@ fn bench_rate_update(c: &mut Criterion) {
             },
         );
 
-        // Detached snapshot: what the snapshot thread actually does now —
-        // snapshot_clone() drops the sample buffer, so the live tracker
-        // stays unique owner and the next update takes the fast path even
-        // while the snapshot is alive.
+        // Detached snapshot (what the snapshot thread does): snapshot_clone()
+        // drops the sample buffer, so the live tracker stays unique owner and
+        // the next update takes the fast path even while the snapshot is
+        // alive.
         group.bench_with_input(
             BenchmarkId::new("after_snapshot_clone_detached", n_samples),
             &n_samples,
@@ -149,11 +129,7 @@ fn bench_connection_clone(c: &mut Criterion) {
 }
 
 /// Benchmark the snapshot-then-mutate cycle that happens in practice:
-/// 1. Clone N connections for a UI snapshot
-/// 2. Then update each original connection with a new packet
-///
-/// This measures the real-world cost: cheap clone (Arc refcount) followed
-/// by a CoW deep-copy on first mutation.
+/// cheap Arc clone followed by the CoW deep copy on first mutation.
 fn bench_snapshot_then_update(c: &mut Criterion) {
     let mut group = c.benchmark_group("snapshot_then_update");
 
@@ -169,9 +145,9 @@ fn bench_snapshot_then_update(c: &mut Criterion) {
                 b.iter_batched(
                     || connections.clone(),
                     |mut conns| {
-                        // Step 1: snapshot clone (simulates UI snapshot)
+                        // Snapshot clone, then mutate the originals (UI snapshot vs
+                        // incoming packets).
                         let _snapshot: Vec<Connection> = conns.to_vec();
-                        // Step 2: mutate originals (simulates incoming packets)
                         for conn in &mut conns {
                             conn.bytes_sent += 100;
                             conn.bytes_received += 200;
@@ -185,7 +161,7 @@ fn bench_snapshot_then_update(c: &mut Criterion) {
         );
 
         // Same cycle but with snapshot_clone(): the snapshot detaches from
-        // the sample buffers, so step 2 never pays the CoW deep copy.
+        // the sample buffers, so the mutation never pays the CoW deep copy.
         group.bench_with_input(
             BenchmarkId::new("snapshot_clone_all_then_update_all", n_conns),
             &connections,

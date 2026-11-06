@@ -5,128 +5,156 @@ This document is for maintainers releasing new versions of RustNet.
 ## Changelog Maintenance (ongoing, not at release time)
 
 Notable changes are added to the `## [Unreleased]` section of `CHANGELOG.md` in
-the same PR that makes them — don't wait until release time and reconstruct the
+the same PR that makes them; don't wait until release time and reconstruct the
 list from git history. Cutting a release then just renames that section (see
 step 3 below). `pre-release-check.sh` warns if `[Unreleased]` still has content
 after the rename, and the release workflow's notes extraction ignores it.
 
 ## Creating a New Release
 
-### 1. Run Pre-Release Checks
-
-After updating versions and changelog, run the pre-release validation script:
-
-```bash
-./scripts/pre-release-check.sh 1.2.0
-```
-
-This validates version consistency, changelog entries, code quality (fmt/clippy/test),
-Dockerfile correctness, and git status. Fix any errors before proceeding.
-
-### 2. Test Platform Builds
+### 1. Test Platform Builds
 
 Before tagging, verify all platform builds succeed on the current main branch:
 
 ```bash
 # Ensure you're on the main branch with latest changes
 git checkout main
-git pull origin main
+git pull --ff-only origin main
 ```
 
-1. Go to [Actions > Test Platform Builds](../../actions/workflows/test-platform-builds.yml)
-2. Click "Run workflow"
-3. Select `all` to test all platforms (including static Linux builds)
-4. Wait for the workflow to complete successfully
+1. Go to [Actions > Test Platform Builds](https://github.com/domcyrus/rustnet/actions/workflows/test-platform-builds.yml)
+2. Click "Run workflow" (it builds all platforms, including static Linux builds,
+   and also triggers a FreeBSD test build in the rustnet-bsd repo)
+3. Wait for the workflow to complete successfully
 
 This catches cross-platform and static linking issues before you invest time in release prep.
 
-### 3. Prepare the Release
+### 2. Prepare the Release
 
 > **Two version tracks since the workspace split.** `Cargo.toml` carries two
-> versions: the binary's `[package] version` (line ~30, the user-facing `1.x`
-> line that tags and packages follow) and `[workspace.package] version` (line
-> ~9, the `0.x` library crates `rustnet-core`/`-capture`/`-host`, single source
-> of truth also referenced from `[workspace.dependencies]`). A normal feature
+> versions: the binary's `[package] version` (the user-facing `1.x` line that
+> tags and packages follow) and `[workspace.package] version` (the `0.x`
+> library crates `rustnet-core`/`-capture`/`-host`/`-sandbox`,
+> single source of truth also referenced from
+> `[workspace.dependencies]`). A normal feature
 > release bumps **only the binary `[package] version`** and `rpm/rustnet.spec`.
 > Bump the library version separately, and only when the libraries actually
-> change in a release-worthy way.
+> change in a release-worthy way. Update `[workspace.package] version` and
+> all four internal `[workspace.dependencies]` versions together. For v1.7.0,
+> the changed library APIs require 0.6.0; leaving them at the published 0.5.0
+> would make crates.io skip the new library code.
 
 Update the binary version in `Cargo.toml` and `rpm/rustnet.spec`, and turn the
 accumulated `[Unreleased]` changelog section into the release entry:
 
+The examples in this procedure use v1.7.0 as a release after v1.6.0. Replace
+both versions with the version being prepared and its preceding tag.
+
 ```bash
-# Update Cargo.toml [package] version (e.g., version = "1.4.0") — NOT the
+# Update Cargo.toml [package] version (e.g., version = "1.7.0"), NOT the
 #   [workspace.package] version unless you intend to bump the library crates.
-# Update rpm/rustnet.spec Version field (e.g., Version: 1.4.0)
+# Update rpm/rustnet.spec Version field (e.g., Version: 1.7.0)
 
 # In CHANGELOG.md:
-#   1. Rename "## [Unreleased]" to "## [0.3.0] - YYYY-MM-DD" (review/polish the entries)
+#   1. Rename "## [Unreleased]" to "## [1.7.0] - YYYY-MM-DD" (review/polish the entries)
 #   2. Add a fresh, empty "## [Unreleased]" section above it
 #   3. Update the comparison links at the bottom:
-#        [Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.3.0...HEAD
-#        [0.3.0]: https://github.com/domcyrus/rustnet/compare/v0.2.0...v0.3.0
+#        [Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.7.0...HEAD
+#        [1.7.0]: https://github.com/domcyrus/rustnet/compare/v1.6.0...v1.7.0
 
 # Update Cargo.lock and test the build
 cargo build --release
-cargo test
 ```
 
-### 4. Commit Release Changes
+Before committing, update documentation availability notes in every existing translation:
+
+- Update the version labels and `/blob/vX.Y.Z/` links in the documentation-version
+  notices in `README*.md`, `USAGE*.md`, `INSTALL*.md`, `SECURITY*.md`, and
+  `ARCHITECTURE*.md` to the release being prepared. Preserve each link's
+  language and target file. Update the README release-status text and confirm
+  its highlights, GIF, and screenshots describe the release being tagged.
+- Replace "unreleased" labels for features included in this release with
+  "available since vX.Y.Z" (and the Chinese/Japanese equivalents). Review the
+  feature summaries, examples, keyboard controls, and Windows/Npcap instructions.
+  Keep historical notes about older versions accurate; do not globally replace
+  every old version number. Leave features outside this release marked unreleased.
+- Keep the notice that `main` may include unreleased changes for future development.
+
+Locate these notes before each release:
 
 ```bash
-# Stage and commit the version and changelog changes
-git add Cargo.toml Cargo.lock CHANGELOG.md rpm/rustnet.spec
-git commit -m "Release v0.3.0
-
-- Feature or fix summary here
-- Another change here
-- And more changes"
+rg -n 'Release status|发布状态|リリース状況|Documentation version|文档版本|[Uu]nreleased|尚未发布|未リリース|/blob/v[0-9]' README*.md USAGE*.md INSTALL*.md SECURITY*.md ARCHITECTURE*.md
 ```
+
+### 3. Commit Release Changes
+
+```bash
+# Stage the version, changelog, and documentation changes
+git add Cargo.toml Cargo.lock CHANGELOG.md rpm/rustnet.spec
+git add README*.md USAGE*.md INSTALL*.md SECURITY*.md ARCHITECTURE*.md
+git commit -m "Release v1.7.0"
+```
+
+### 4. Run Pre-Release Checks
+
+On the clean release commit, run the pre-release validation script with the
+version being prepared:
+
+```bash
+./scripts/pre-release-check.sh 1.7.0
+```
+
+It checks version consistency, changelog entries, formatting, workspace Clippy
+and tests, Dockerfile assets, and git status. It also tests the Docker build
+when Docker is available. Fix any errors, amend the release commit, and rerun
+the checks before tagging. The script warns if the new `[Unreleased]` section
+contains content or Docker is unavailable.
 
 ### 5. Create and Push Git Tag
 
 ```bash
 # Create an annotated tag matching the version in Cargo.toml
-git tag -a v0.3.0 -m "Release v0.3.0
-
-- Feature or fix summary here
-- Another change here
-- And more changes"
+git tag -a v1.7.0 -m "Release v1.7.0"
 
 # Push both the commit and the tag
 git push origin main
-git push origin v0.3.0
+git push origin v1.7.0
 ```
 
-**That's it!** The GitHub Actions workflow will automatically:
-- Build binaries for all platforms (Linux, macOS, Windows - multiple architectures)
+The GitHub Actions workflow will automatically:
+- Build binaries for Linux, macOS, and Windows, plus static Linux and Android archives
 - Create installer packages (DEB, RPM, DMG, MSI)
-- Extract release notes from CHANGELOG.md
-- Create a draft GitHub release with all artifacts attached
-- Upload all binaries and installers to the release
-- **Publish the release** (un-draft) once all assets are uploaded
-- Trigger downstream package updates (Homebrew, Chocolatey, FreeBSD, PPA, COPR, AUR, Docker, crates.io)
+- Extract release notes from `CHANGELOG.md`, falling back to generated notes if needed
+- Create a draft GitHub release, upload artifacts, and publish it
+- Start crates.io, Docker, COPR, PPA, and OBS publishing after the release is published
+- Trigger Homebrew, Chocolatey, FreeBSD, and AUR updates after those publishing jobs succeed
+
+The `publish-release` job requires release creation and all Linux, macOS,
+and Windows installer jobs to succeed. If an installer job fails, the release
+stays in draft. Inspect job results and assets before treating the release
+as complete.
 
 ### 6. Verify the Release
 
-Once the GitHub Actions workflow completes (~15-20 minutes):
+Once the GitHub Actions workflow completes:
 
 1. Go to the [GitHub repository releases page](https://github.com/domcyrus/rustnet/releases)
-2. Verify the release is published (no longer a draft) with all assets
+2. Verify all build and installer jobs succeeded and the published release has all expected assets
 3. Review the automatically extracted release notes
-4. Check downstream package updates completed (Homebrew, Chocolatey, etc.)
+4. Check downstream package updates completed (Homebrew, Chocolatey, FreeBSD, AUR, crates.io, Docker, COPR, PPA, and OBS)
 
 ## Automated Release Workflow
 
 The release process is fully automated via [`.github/workflows/release.yml`](.github/workflows/release.yml):
 
 **Triggers:**
-- Pushing a tag matching `v[0-9]+.[0-9]+.[0-9]+` (e.g., `v0.3.0`, `v1.2.3`)
+- Pushing a tag matching `v[0-9]+.[0-9]+.[0-9]+` (for example, `v1.7.0`)
 - Manual workflow dispatch
 
 **What it does:**
 1. **Builds cross-platform binaries:**
-   - Linux: x64, ARM64, ARMv7 (with eBPF support)
+   - Linux: x64, ARM64, ARMv7, plus static x64 and ARM64 archives
+   - Android: static archives for supported architectures
    - macOS: Intel (x64) and Apple Silicon (ARM64)
    - Windows: 64-bit and 32-bit
 
@@ -146,13 +174,13 @@ The release process is fully automated via [`.github/workflows/release.yml`](.gi
 
 5. **Publishes the workspace to crates.io** (via
    [`.github/workflows/publish.yml`](.github/workflows/publish.yml), after the
-   GitHub release is published): the four crates are published in dependency
-   order — `rustnet-core` → `rustnet-capture` → `rustnet-host` →
-   `rustnet-monitor` — waiting for each to appear in the index before publishing
-   a dependent. The step is idempotent (it skips any `crate@version` already on
-   crates.io), so a re-run after a partial failure is safe. The library crates
-   use the `[workspace.package]` version; the binary uses its `[package]`
-   version.
+   GitHub release is published): the five crates are published in dependency
+   order (`rustnet-core` → `rustnet-capture` → `rustnet-host` →
+   `rustnet-sandbox` → `rustnet-monitor`), waiting for each to appear in the
+   index before publishing a dependent. The step is idempotent (it skips any
+   `crate@version` already on crates.io), so a re-run after a partial failure
+   is safe. The library crates use the `[workspace.package]` version; the
+   binary uses its `[package]` version.
 
 ## Important: Never Move a Tag After Release
 
@@ -166,6 +194,26 @@ every downstream package manager that already cached the original checksums:
 
 If a fix is needed after tagging, **create a patch release** (e.g., `v1.1.1`) instead.
 
+## Backfilling Assets on an Existing Release
+
+If a release is missing an asset (for example a static build failed to upload),
+dispatch the release workflow on that tag:
+
+```bash
+release_tag=v1.7.0 # example: replace with an existing tag that has the backfill guards
+gh workflow run release.yml --ref "$release_tag" -f skip_downstream=true
+```
+
+GitHub runs the `release.yml` stored at the selected tag, so this applies to
+tags containing the backfill guards. The v1.6.0 tag and earlier tags do not
+have them; for those, build the missing asset locally and upload it with
+`gh release upload`.
+
+Only missing assets are uploaded. Assets already on the release are kept, because
+Chocolatey, Scoop, and the AUR binary package pin checksums of the published
+files. Set `overwrite_assets=true` only when the existing files are known to be
+broken and the downstream packages will be updated afterwards.
+
 ## Release Checklist
 
 Before pushing the tag, ensure:
@@ -176,18 +224,22 @@ Before pushing the tag, ensure:
 - [ ] Version number updated in `rpm/rustnet.spec` (line 5: `Version: x.y.z`)
 - [ ] `Cargo.lock` updated (via `cargo build`)
 - [ ] `CHANGELOG.md`: `[Unreleased]` renamed to `## [x.y.z] - YYYY-MM-DD`, a fresh empty `[Unreleased]` added, comparison links updated
-- [ ] All tests pass (`cargo test`)
+- [ ] Documentation-version labels and release links updated in `README*.md`, `USAGE*.md`, `INSTALL*.md`, `SECURITY*.md`, and `ARCHITECTURE*.md`, preserving language and target file
+- [ ] README highlights, GIF, and screenshots verified against the release being tagged
+- [ ] Shipped features' unreleased labels replaced with their first release version in each existing translation; Windows/Npcap instructions and older-version notes reviewed
+- [ ] Workspace tests pass (`cargo test --workspace`, included in the pre-release checks)
 - [ ] Changes committed to main branch
 - [ ] Git tag created and pushed
 
 After GitHub Actions completes:
 
-- [ ] Verify release is published (automatically un-drafted after all assets uploaded)
+- [ ] Verify build and installer jobs succeeded, then confirm the release is published with all expected assets
 - [ ] Verify all platform binaries built successfully
 - [ ] Verify all installer packages created (DEB, RPM, DMG, MSI)
 - [ ] Verify Docker image pushed to ghcr.io
-- [ ] Verify all four crates published to crates.io (`rustnet-monitor`, `rustnet-core`, `rustnet-capture`, `rustnet-host`) and docs.rs built
+- [ ] Verify all five crates published to crates.io (`rustnet-monitor`, `rustnet-core`, `rustnet-capture`, `rustnet-host`, `rustnet-sandbox`) and docs.rs built
 - [ ] Review automatically extracted release notes
+- [ ] Open the documentation-version links and confirm they resolve to the new tag and the correct language
 - [ ] Verify Homebrew formula updated at https://github.com/domcyrus/homebrew-rustnet
 - [ ] Verify Chocolatey package updated at https://github.com/domcyrus/rustnet-chocolatey
 - [ ] Verify FreeBSD build at https://github.com/domcyrus/rustnet-bsd
@@ -197,11 +249,11 @@ After GitHub Actions completes:
 
 This is an occasional task, not part of every release. When a new Ubuntu interim or LTS, or a new Fedora release, is published and we want RustNet packages to ship for it:
 
-1. **Ubuntu PPA**: add the new codename to the matrix in [`.github/workflows/ppa-release.yml`](.github/workflows/ppa-release.yml) (the `set-matrix` job's `releases=[...]` list and the `workflow_dispatch` choice options). Confirm the new series ships `rustc-1.88` (or whatever the current `rust-version` floor in `Cargo.toml` is). Reference: issue [#254](https://github.com/domcyrus/rustnet/issues/254) added Ubuntu 26.04 (Resolute) support.
+1. **Ubuntu PPA**: add the new codename to the matrix in [`.github/workflows/ppa-release.yml`](.github/workflows/ppa-release.yml) (the `set-matrix` job's `releases=[...]` list and the `workflow_dispatch` choice options). Pin `rustc` and `cargo` packages that meet the `rust-version` floor in `Cargo.toml`; the workflow currently uses versioned 1.89 packages for Jammy and Noble and 1.91 for Resolute. Reference: issue [#254](https://github.com/domcyrus/rustnet/issues/254) added Ubuntu 26.04 (Resolute) support.
 2. **Fedora COPR**: add the new chroot in the COPR project settings at [https://copr.fedorainfracloud.org/coprs/domcyrus/rustnet/edit/](https://copr.fedorainfracloud.org/coprs/domcyrus/rustnet/edit/). The chroot list is managed in the COPR UI, not in this repo.
 3. Trigger a `workflow_dispatch` of `Release to Ubuntu PPA` for the new codename to verify the build before relying on it from the next tagged release.
 
-Conversely, when an older Ubuntu series is no longer worth supporting (no `rustc-1.88` in archive, or end of life), remove it from the same two locations and update [INSTALL.md](INSTALL.md) and [debian/README.md](debian/README.md) to match.
+Conversely, when an older Ubuntu series is no longer worth supporting (no usable versioned toolchain, or end of life), remove it from the same two locations and update [INSTALL.md](INSTALL.md) and [debian/README.md](debian/README.md) to match.
 
 ## Versioning
 

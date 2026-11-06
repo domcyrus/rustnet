@@ -65,6 +65,30 @@ impl OuiLookup {
     }
 }
 
+/// Format a 6-byte MAC address in the canonical colon-separated lowercase
+/// form every producer in this crate uses (and the string-keyed MAC checks
+/// in `neighbors` rely on).
+///
+/// # Panics
+///
+/// Panics if `bytes` is shorter than 6 bytes.
+pub(crate) fn format_mac(bytes: &[u8]) -> String {
+    crate::network::util::hex_encode(&bytes[..6], ":")
+}
+
+/// Parse the first octet of a MAC address string.
+/// Supports the same formats as [`parse_mac_prefix`].
+pub(crate) fn mac_first_octet(mac: &str) -> Option<u8> {
+    parse_mac_prefix(mac).map(|prefix| prefix[0])
+}
+
+/// Whether the MAC has the locally-administered bit set (and is unicast).
+/// Such addresses are software-assigned (typically the randomized MACs
+/// modern phones use for privacy) and never appear in the OUI registry.
+pub fn is_locally_administered(mac: &str) -> bool {
+    mac_first_octet(mac).is_some_and(|first| first & 0x02 != 0 && first & 0x01 == 0)
+}
+
 /// Parse the first 3 octets of a MAC address string into a byte array.
 /// Supports formats: "aa:bb:cc:...", "aa-bb-cc-...", "aabbcc..."
 fn parse_mac_prefix(mac: &str) -> Option<[u8; 3]> {
@@ -132,37 +156,35 @@ mod tests {
     }
 
     #[test]
+    fn test_is_locally_administered() {
+        // 0x5a has the locally-administered bit (0x02) set.
+        assert!(is_locally_administered("5a:33:44:55:66:77"));
+        // Universally administered vendor OUI.
+        assert!(!is_locally_administered("68:5e:dd:09:15:5e"));
+        // Group addresses (I/G bit) are excluded even with 0x02 set.
+        assert!(!is_locally_administered("33:33:00:00:00:01"));
+        assert!(!is_locally_administered("not a mac"));
+    }
+
+    #[test]
     fn test_from_embedded() {
         let lookup = OuiLookup::from_embedded().expect("should load embedded OUI data");
         assert!(lookup.vendors.len() > 1000, "should have many OUI entries");
     }
 
     #[test]
-    fn test_lookup_miss() {
-        let lookup = OuiLookup::from_embedded().unwrap();
-        // All-zeros OUI is unlikely to match a real vendor
-        assert!(
-            lookup.lookup("00:00:00:00:00:00").is_none()
-                || lookup.lookup("00:00:00:00:00:00").is_some()
-        );
-        // Truly random prefix
-        assert!(
-            lookup.lookup("ff:ff:ff:dd:ee:00").is_none()
-                || lookup.lookup("ff:ff:ff:dd:ee:00").is_some()
-        );
-    }
-
-    #[test]
-    fn test_lookup_known_vendor() {
-        let lookup = OuiLookup::from_embedded().unwrap();
-        // Apple has many OUIs - test a well-known one
-        // 00:1B:63 is Apple
-        // If the database changes this test may need updating
-        // Just verify the lookup function works with a real MAC
-        let result = lookup.lookup("00:1b:63:00:00:00");
-        // We just verify it returns Some (exact vendor name may vary)
-        if let Some(vendor) = result {
-            assert!(!vendor.is_empty());
+    fn test_lookup_vendor_prefix() {
+        let lookup = OuiLookup {
+            vendors: HashMap::from([([0x00, 0x1b, 0x63], "Test vendor".to_string())]),
+        };
+        for (mac, expected) in [
+            ("00:1b:63:00:00:00", Some("Test vendor")),
+            ("00:1B:63:ff:ff:ff", Some("Test vendor")),
+            ("00:00:00:00:00:00", None),
+            ("ff:ff:ff:dd:ee:00", None),
+            ("not a mac", None),
+        ] {
+            assert_eq!(lookup.lookup(mac), expected, "{mac}");
         }
     }
 }

@@ -1,0 +1,54 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
+                                                                                                                                            
+▌ ping                  8.8.8.8:0               192.168.1.10:0     -          ICMP                     ECHO_REQ(4…   8.7ms -             -/-
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+▎ ping → 8.8.8.8:0 [ECHO_REQ(4660)] [RTT 8.7ms] · click a field to copy ────────────────────────────────────────────────────────────────────
+Connection                                                            Application: ICMP                                                     
+Protocol              ICMP                                            Message               Echo Request                                    
+Status                Active (last seen <T> ago)                       Echo ID               4660                                            
+Local Address         192.168.1.10:0                                  Sequence              42                                              
+Remote Address        8.8.8.8:0                                       NDP Neighbor          -                                               
+Scope                 PUBLIC                                                                                                                
+State                 ECHO_REQ(4660)                                                                                                        
+Process               ping                                                                                                                  
+PID                   -                                                                                                                     
+Service               -                                               Attributed Name       -                                               
+Observed VLANs        -                                               Attributed Via        -                                               
+                                                                                                                                            
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               Ping RTT              8.7ms                                           
+Local MAC             -                                               Last Sequence         42                                              
+Remote Hostname       -                                                                                                                     
+Remote MAC            -                                               Paired by echo ID and sequence                                        
+Country               -                                                                                                                     
+City                  -                                                                                                                     
+ASN                   -                                                                                                                     
+                                                                                                                                            
+Attribution                                                                                                                                 
+PID                   -                                                                                                                     
+PPID                  -                                                                                                                     
+Process Tree          -                                                                                                                     
+Executable            -                                                                                                                     
+User                  -                                                                                                                     
+Match                 -                                                                                                                     
+                                                                                                                                            
+▎ Traffic Statistics · smoothed avg · 60s · B/s ────────────────────────────────────────────────────────────────────────────────────────────
+↓ RX Now 0 B/s       →                             peak       0 B/s   ↑ TX Now 0 B/s       →                             peak       0 B/s   
+Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
+Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ j/k connection  c copy remote addr  esc back                                                                                h help  q quit

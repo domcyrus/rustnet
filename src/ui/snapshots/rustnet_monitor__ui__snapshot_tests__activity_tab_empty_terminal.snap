@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
+─────────────────────────────────────━━━━━━━━━━─────────────────────────────────
+Applications   Capture                                                          
+━━━━━━━━━━━━────────────────────────────────────────────────────────────────────
+TX       0 B/s     RX       0 B/s                                               
+Coverage 60s: TX n/a  RX n/a                                                    
+▎ Applications · TX · Retained TX ↓ ─────────────────────────────────────── 0/0 
+Waiting for application traffic...                                              
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ v/V section  d tx/rx  s sort  S order  esc back                 h help  q quit

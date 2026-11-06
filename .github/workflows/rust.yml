@@ -10,11 +10,13 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'benches/**'
+      - 'tests/**'
       - 'Dockerfile'
-      - 'deny.toml'
+      - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
+      - '.github/actions/install-cargo-tool/**'
+      - '.github/actions/cache-cargo/**'
   pull_request:
-    branches: [ "main" ]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -22,57 +24,116 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'benches/**'
+      - 'tests/**'
       - 'Dockerfile'
-      - 'deny.toml'
+      - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
+      - '.github/actions/install-cargo-tool/**'
+      - '.github/actions/cache-cargo/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  parser-32bit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Set up 32-bit parser tests
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-multilib
+        rustup target add i686-unknown-linux-gnu
+    - name: Cache Cargo builds
+      uses: ./.github/actions/cache-cargo
+      with:
+        key: parser-i686-${{ hashFiles('.github/workflows/rust.yml', '.github/actions/cache-cargo/**') }}
+    - name: Test 32-bit parsers with debug overflow checks
+      run: cargo test --locked -p rustnet-core --all-features --target i686-unknown-linux-gnu
+    - name: Test 32-bit parsers with release arithmetic
+      run: cargo test --locked -p rustnet-core --all-features --target i686-unknown-linux-gnu --release
+
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-    - name: Install dependencies
-      run: sudo apt-get update && sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Setup Linux dependencies
+      uses: ./.github/actions/setup-linux-deps
+    - name: Cache Cargo builds
+      uses: ./.github/actions/cache-cargo
+      with:
+        key: linux-checks-${{ hashFiles('.github/workflows/rust.yml', '.github/actions/cache-cargo/**') }}
     - name: Check formatting
       run: cargo fmt --check
+    - name: Validate dependency lockfile
+      run: cargo check --locked --workspace --all-targets --all-features
+    - name: Check without default features
+      run: cargo check --locked --workspace --all-targets --no-default-features
     # --workspace --all-targets so the library crates (rustnet-core/-capture/
     # -host) are linted, built, and tested too. The workspace root is a real
     # package (rustnet-monitor), so a bare `cargo {clippy,build,test}` only
     # selects the binary and silently skips the library crates' lints, tests,
     # and doctests.
     - name: Run clippy
-      run: cargo clippy --workspace --all-targets -- -D warnings
+      run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     - name: Build
-      run: cargo build --workspace --all-targets --verbose
+      run: cargo build --locked --workspace --all-targets --verbose
     - name: Run tests
-      run: cargo test --workspace --verbose
-    - name: Run cargo-deny
-      # Checks RustSec advisories and yanked crates (yanked = "deny" in
-      # deny.toml, so a withdrawn dependency pinned in Cargo.lock is caught),
-      # plus license policy, wildcard bans, and registry sources.
-      uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
+      run: cargo test --locked --workspace --all-features --verbose
+    - name: Test capture shutdown and readiness with loopback traffic
+      run: |
+        test_executable=$(cargo test --locked -p rustnet-capture --test live_capture --no-run --message-format=json |
+          jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_capture") | .executable // empty')
+        test -n "$test_executable"
+        # Only these BPF-filtered loopback regressions need capture privileges.
+        # The process watchdog also bounds failures inside the native backend.
+        sudo timeout 10s "$test_executable" --ignored --exact idle_capture_returns_after_traffic_stops_without_busy_spinning
+        sudo timeout 10s "$test_executable" --ignored --exact packet_arriving_after_an_idle_read_is_not_consumed_by_the_readiness_wait
+    - name: Test capture capability cleanup before UID drop
+      run: |
+        test_executable=$(cargo test --locked -p rustnet-sandbox --lib --features landlock --no-run --message-format=json |
+          jq -r 'select(.reason == "compiler-artifact" and .target.name == "rustnet_sandbox") | .executable // empty')
+        test -n "$test_executable"
+        # Identity changes are isolated to this exact test process.
+        sudo timeout 10s "$test_executable" --ignored --exact linux::capabilities::tests::capture_capability_drops_preserve_uid_and_gid_changes
+    - name: Install cargo-audit
+      uses: ./.github/actions/install-cargo-tool
       with:
-        command: check
+        tool: cargo-audit
+        version: '0.22.2'
+    - name: Run security audit
+      # Fail the build on advisories and on yanked crates so a withdrawn
+      # dependency (e.g. a yanked release pinned in Cargo.lock) is caught in CI.
+      run: cargo audit
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+      uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4
     - name: Build Docker image
-      uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
       with:
         context: .
         push: false
         load: true
         tags: rustnet:ci-test
+        # Keep CI's default-feature image separate from release image caches.
+        cache-from: type=gha,scope=ci-docker-amd64
+        cache-to: type=gha,scope=ci-docker-amd64,mode=max
+      env:
+        DOCKER_BUILD_RECORD_UPLOAD: 'false'
     - name: Verify Docker image
       run: docker run --rm rustnet:ci-test --version

@@ -1,0 +1,467 @@
+//! Interactive event loop and rendering orchestration.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use anyhow::Result;
+use log::{error, info};
+
+use crate::{app, network, ui};
+use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
+
+// Keep sampling independent from animation. Only visible scrolling graphs need
+// a 20 fps heartbeat; settled bars retain the lower terminal repaint cost.
+fn redraw_interval(loading: bool, state: &ui::UiState) -> Duration {
+    if loading {
+        Duration::from_millis(100)
+    } else if (state.graph_animation_visible.get() || state.bar_animations.is_active())
+        && !state.show_help
+    {
+        Duration::from_millis(50)
+    } else {
+        Duration::from_millis(500)
+    }
+}
+
+pub(crate) fn run<B: ratatui::prelude::Backend>(
+    terminal: &mut ui::Terminal<B>,
+    app: &app::App,
+    shutdown_requested: &AtomicBool,
+    user_config: &crate::config::UserConfig,
+) -> Result<()>
+where
+    <B as ratatui::prelude::Backend>::Error: Send + Sync + 'static,
+{
+    let tick_rate = Duration::from_millis(200);
+    let mut last_tick = std::time::Instant::now();
+    let mut last_draw = std::time::Instant::now();
+    let mut needs_redraw = true; // first frame
+    let mut ui_state = ui::UiState::from_config(user_config);
+    let (has_country_db, _, _) = app.get_geoip_status();
+    ui_state.has_geoip = has_country_db;
+    let mut click_regions = ui::ClickableRegions::default();
+
+    // Data state persists across loop iterations; only refreshed on timer tick
+    // or when an event changes the underlying data (filter, sort, historic toggle, etc.)
+    let mut connections: Vec<network::types::Connection> = Vec::new();
+    let mut grouped_rows: Vec<ui::GroupedRow<'_>> = Vec::new();
+    let mut stats = app.get_stats();
+    let mut needs_data_refresh = true;
+    let mut needs_regroup = false;
+    let mut last_seen_generation = u64::MAX; // force the first refresh
+
+    'main: loop {
+        if shutdown_requested.load(Ordering::Relaxed) {
+            info!("Termination signal received, shutting down");
+            break 'main;
+        }
+
+        // Refresh connection data only when needed:
+        // - On timer tick (every 200ms), but only if the snapshot actually
+        //   changed since we last consumed it (it rebuilds every
+        //   refresh-interval ms, so most ticks would re-clone and re-sort
+        //   identical data)
+        // - When an event changes filter, sort, or data source
+        let tick_elapsed = last_tick.elapsed() >= tick_rate;
+        let snapshot_generation = app.snapshot_generation();
+        if tick_elapsed {
+            // Keep counters (packets processed/dropped, etc.) live on every
+            // tick even when the connection list is unchanged.
+            stats = app.get_stats();
+            last_tick = std::time::Instant::now();
+        }
+        if needs_data_refresh || (tick_elapsed && snapshot_generation != last_seen_generation) {
+            connections = if !ui_state.has_active_filter() && !ui_state.filter_mode {
+                app.get_connections()
+            } else {
+                app.get_filtered_connections(&ui_state.filter_query)
+            };
+            sort_connections(
+                &mut connections,
+                ui_state.sort_column,
+                ui_state.sort_ascending,
+            );
+            grouped_rows = if ui_state.grouping_enabled {
+                ui::compute_grouped_rows(&connections, &ui_state.expanded_groups)
+            } else {
+                Vec::new()
+            };
+            last_seen_generation = snapshot_generation;
+            needs_data_refresh = false;
+            needs_regroup = false;
+            needs_redraw = true;
+        } else if needs_regroup {
+            // Only rebuild grouped rows from existing connections
+            // (e.g., after expand/collapse or grouping toggle)
+            grouped_rows = if ui_state.grouping_enabled {
+                ui::compute_grouped_rows(&connections, &ui_state.expanded_groups)
+            } else {
+                Vec::new()
+            };
+            needs_regroup = false;
+            needs_redraw = true;
+        }
+
+        // Draw the UI, but only when something warrants it: immediately
+        // after input or a data change, otherwise at the idle heartbeat.
+        // The sidebar counters are live atomics read at render time, so
+        // an unconditional draw here would emit fresh cells (and force a
+        // terminal repaint) on every 200ms tick even with nothing going on.
+        // The startup splash animates faster than the idle heartbeat, so
+        // it gets a shorter redraw interval for its ~1s lifetime.
+        let idle_redraw = redraw_interval(app.is_loading(), &ui_state);
+        if needs_redraw || last_draw.elapsed() >= idle_redraw {
+            terminal.draw(|f| {
+                let grouped = if ui_state.grouping_enabled {
+                    Some(grouped_rows.as_slice())
+                } else {
+                    None
+                };
+                if let Err(err) = ui::draw(
+                    f,
+                    app,
+                    &mut ui_state,
+                    &connections,
+                    grouped,
+                    &stats,
+                    &mut click_regions,
+                ) {
+                    error!("UI draw error: {}", err);
+                }
+            })?;
+            last_draw = std::time::Instant::now();
+            needs_redraw = false;
+        }
+
+        // Sleep until the next data tick or redraw heartbeat, whichever
+        // comes first, unless an event arrives earlier.
+        let timeout = tick_rate
+            .checked_sub(last_tick.elapsed())
+            .unwrap_or(Duration::from_secs(0))
+            .min(redraw_interval(app.is_loading(), &ui_state).saturating_sub(last_draw.elapsed()));
+
+        if let Some((_, time)) = &ui_state.clipboard_message
+            && time.elapsed().as_secs() >= 3
+        {
+            ui_state.clipboard_message = None;
+            needs_redraw = true;
+        }
+
+        // Handle input events, draining any queued burst (mouse motion,
+        // key auto-repeat) before the next iteration so a flood of
+        // events costs one redraw instead of one redraw per event.
+        let mut poll_timeout = timeout;
+        'events: while crossterm::event::poll(poll_timeout)? {
+            poll_timeout = Duration::ZERO;
+            let event = crossterm::event::read()?;
+            match event {
+                crossterm::event::Event::Mouse(mouse) => {
+                    use crossterm::event::{MouseButton, MouseEventKind};
+
+                    // The active component handles wheel events.
+                    // Unclaimed click events fall through to the
+                    // global ClickableRegions dispatch below.
+                    let grouped_opt = if ui_state.grouping_enabled {
+                        Some(grouped_rows.as_slice())
+                    } else {
+                        None
+                    };
+                    let mut hctx = ui::HandlerContext {
+                        app,
+                        ui_state: &mut ui_state,
+                        connections: &connections,
+                        grouped_rows: grouped_opt,
+                        click_regions: &click_regions,
+                    };
+                    if let Some(effects) =
+                        ui::dispatch_mouse(hctx.ui_state.selected_tab, mouse, &mut hctx)
+                    {
+                        let outcome = ui::apply_effects(effects, &mut ui_state, app);
+                        if outcome.needs_data_refresh {
+                            needs_data_refresh = true;
+                        }
+                        if outcome.needs_regroup {
+                            needs_regroup = true;
+                        }
+                        needs_redraw = true;
+                        continue 'events;
+                    }
+
+                    if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                        {
+                            needs_redraw = true;
+                            ui_state.quit_confirmation = false;
+                            ui_state.clear_confirmation = false;
+
+                            // Detect double-click (two clicks within 400ms at the same row)
+                            let is_double_click =
+                                if let Some((_, prev_row, prev_time)) = ui_state.last_click {
+                                    prev_row == mouse.row && prev_time.elapsed().as_millis() < 400
+                                } else {
+                                    false
+                                };
+                            ui_state.last_click =
+                                Some((mouse.column, mouse.row, std::time::Instant::now()));
+
+                            if let Some(action) = click_regions.hit_test(mouse.column, mouse.row) {
+                                match action.clone() {
+                                    ui::ClickAction::SelectSection(index) => {
+                                        ui_state.select_section(index);
+                                    }
+                                    ui::ClickAction::SelectActivityProcess(identity) => {
+                                        ui_state.activity_list().borrow_mut().selected =
+                                            Some(identity);
+                                        if is_double_click {
+                                            ui_state.open_activity_details();
+                                        }
+                                    }
+                                    ui::ClickAction::SwitchTab(tab_idx) => {
+                                        ui_state.selected_tab = tab_idx;
+                                    }
+                                    ui::ClickAction::SelectConnection(conn_idx) => {
+                                        if ui_state.grouping_enabled {
+                                            ui_state.set_selected_grouped_by_index(
+                                                &grouped_rows,
+                                                conn_idx,
+                                            );
+                                            if is_double_click
+                                                && let Some(row) = grouped_rows.get(conn_idx)
+                                            {
+                                                match row {
+                                                    ui::GroupedRow::Group { .. } => {
+                                                        // Double-click group header: toggle expand/collapse
+                                                        ui_state.toggle_group_expansion();
+                                                        needs_regroup = true;
+                                                    }
+                                                    ui::GroupedRow::Connection { .. } => {
+                                                        // Double-click connection: open Details tab
+                                                        ui_state.selected_tab = 1;
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            ui_state.set_selected_by_index(&connections, conn_idx);
+                                            if is_double_click {
+                                                // Double-click connection in flat view: open Details tab
+                                                ui_state.selected_tab = 1;
+                                            }
+                                        }
+                                    }
+                                    ui::ClickAction::SelectConnectionKey(key) => {
+                                        // Keep the grouped selection coherent: adopt the
+                                        // clicked connection's group when grouping is on.
+                                        if ui_state.grouping_enabled {
+                                            for row in &grouped_rows {
+                                                if let ui::GroupedRow::Connection {
+                                                    process_name,
+                                                    connection,
+                                                    ..
+                                                } = row
+                                                    && connection.key() == key
+                                                {
+                                                    ui_state.selected_group =
+                                                        Some(process_name.clone());
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        ui_state.set_connection_key(Some(key));
+                                    }
+                                    ui::ClickAction::CopyField { label, value } => {
+                                        copy_to_clipboard(
+                                            &value,
+                                            &format!("{}: {}", label, value),
+                                            &mut ui_state,
+                                            app,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Scroll events are handled by the active component above.
+                }
+                crossterm::event::Event::Key(key) => {
+                    use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+
+                    // Windows crossterm reports Release events too; only
+                    // Press is handled so all platforms behave the same.
+                    if key.kind != KeyEventKind::Press {
+                        continue 'events;
+                    }
+                    needs_redraw = true;
+
+                    // Give the active tab's Component first crack
+                    // at the key (including filter-mode input; OverviewTab
+                    // owns that). If it claims (returns Some), the loop
+                    // skips its fallback match. The per-key confirmation
+                    // reset happens here for both branches so q / x can
+                    // still set their own confirmations without the
+                    // catch-all clobbering them.
+                    match key.code {
+                        KeyCode::Char('q') => ui_state.clear_confirmation = false,
+                        KeyCode::Char('x') => ui_state.quit_confirmation = false,
+                        _ => {
+                            ui_state.quit_confirmation = false;
+                            ui_state.clear_confirmation = false;
+                        }
+                    }
+
+                    let grouped_opt = if ui_state.grouping_enabled {
+                        Some(grouped_rows.as_slice())
+                    } else {
+                        None
+                    };
+                    let mut hctx = ui::HandlerContext {
+                        app,
+                        ui_state: &mut ui_state,
+                        connections: &connections,
+                        grouped_rows: grouped_opt,
+                        click_regions: &click_regions,
+                    };
+                    let claimed = if let Some(effects) =
+                        ui::dispatch_key(hctx.ui_state.selected_tab, key, &mut hctx)
+                    {
+                        let outcome = ui::apply_effects(effects, &mut ui_state, app);
+                        if outcome.needs_data_refresh {
+                            needs_data_refresh = true;
+                        }
+                        if outcome.needs_regroup {
+                            needs_regroup = true;
+                        }
+                        true
+                    } else {
+                        false
+                    };
+
+                    if claimed {
+                        // Component handled the key end-to-end.
+                    } else {
+                        // Normal-mode fallback: keys that weren't claimed
+                        // by the active tab's Component. Global navigation
+                        // and quit/help/interface-toggle live here, plus
+                        // cross-tab fallbacks for x (clear) and Esc which
+                        // would otherwise stop working on non-Overview
+                        // tabs.
+                        match (key.code, key.modifiers) {
+                            (KeyCode::Char('q'), _) => {
+                                if ui_state.quit_confirmation {
+                                    info!("User confirmed application exit");
+                                    break 'main;
+                                } else {
+                                    info!("User requested quit - showing confirmation");
+                                    ui_state.quit_confirmation = true;
+                                }
+                            }
+
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                info!("User requested immediate exit with Ctrl+C");
+                                break 'main;
+                            }
+
+                            (KeyCode::Tab, KeyModifiers::NONE)
+                            | (KeyCode::Char(']'), KeyModifiers::NONE) => {
+                                ui_state.next_tab();
+                            }
+
+                            (KeyCode::BackTab, _)
+                            | (KeyCode::Tab, KeyModifiers::SHIFT)
+                            | (KeyCode::Char('['), KeyModifiers::NONE) => {
+                                ui_state.prev_tab();
+                            }
+
+                            // Direct-jump shortcuts to each tab (mirrors the
+                            // numeric-jump convention used by htop, tmux, etc.).
+                            // Tab indices match `TAB_TITLES` in
+                            // `ui::widgets::tabs_bar`: Overview, Details,
+                            // Activity, Graph, Host.
+                            (KeyCode::Char('1'), KeyModifiers::NONE) => ui_state.jump_to_tab(0),
+                            (KeyCode::Char('2'), KeyModifiers::NONE) => ui_state.jump_to_tab(1),
+                            (KeyCode::Char('3'), KeyModifiers::NONE) => ui_state.jump_to_tab(2),
+                            (KeyCode::Char('4'), KeyModifiers::NONE) => ui_state.jump_to_tab(3),
+                            (KeyCode::Char('5'), KeyModifiers::NONE) => ui_state.jump_to_tab(4),
+
+                            // Help overlay, kept because `h` is the universal
+                            // mnemonic for help across less / man / vim / tmux.
+                            (KeyCode::Char('h'), _) => {
+                                ui_state.show_help = true;
+                                ui_state.help_scroll.reset();
+                            }
+
+                            // x and Esc keep cross-tab fallbacks here so
+                            // clear / filter-clear / tab-back still work
+                            // from Details / Activity / Graph / Host
+                            // (OverviewTab only claims them on Overview).
+                            (KeyCode::Char('x'), _)
+                                if clear_all_with_confirmation(&mut ui_state, app) =>
+                            {
+                                needs_data_refresh = true;
+                            }
+
+                            (KeyCode::Esc, _) => {
+                                if !ui_state.filter_query.is_empty() {
+                                    ui_state.clear_filter();
+                                    needs_data_refresh = true;
+                                } else if ui_state.selected_tab != 0 {
+                                    ui_state.selected_tab = 0;
+                                }
+                            }
+
+                            _ => {}
+                        }
+                    }
+                } // end Event::Key
+                crossterm::event::Event::Resize(..) => {
+                    needs_redraw = true;
+                    // Rebuild the viewport and hit regions before consuming more input.
+                    break 'events;
+                }
+                _ => {} // ignore focus, paste, etc.
+            } // end match event
+        } // end event drain
+    } // end loop
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changing_bars_use_fast_redraws_only_until_they_settle() {
+        let state = ui::UiState::default();
+        let start = std::time::Instant::now();
+        state.bar_animations.begin_frame(start);
+        state
+            .bar_animations
+            .spans("bar", 0.2, 20, ratatui::style::Color::Reset);
+        state.bar_animations.finish_frame();
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(500));
+        state.bar_animations.begin_frame(start);
+        state
+            .bar_animations
+            .spans("bar", 0.8, 20, ratatui::style::Color::Reset);
+        state.bar_animations.finish_frame();
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(50));
+        state
+            .bar_animations
+            .begin_frame(start + Duration::from_millis(300));
+        state
+            .bar_animations
+            .spans("bar", 0.8, 20, ratatui::style::Color::Reset);
+        state.bar_animations.finish_frame();
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn help_and_loading_override_the_graph_animation_heartbeat() {
+        let mut state = ui::UiState::default();
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(500));
+        state.graph_animation_visible.set(true);
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(50));
+        state.show_help = true;
+        assert_eq!(redraw_interval(false, &state), Duration::from_millis(500));
+        assert_eq!(redraw_interval(true, &state), Duration::from_millis(100));
+    }
+}

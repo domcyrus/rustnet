@@ -2,36 +2,42 @@
 //!
 //! Parses NetBIOS Name Service (UDP 137) and Datagram Service (UDP 138) packets.
 
-use crate::network::types::{NetBiosInfo, NetBiosOpcode, NetBiosService};
+use crate::network::types::{NetBiosInfo, NetBiosOpcode, NetBiosResponseStatus, NetBiosService};
 
 /// Minimum NetBIOS Name Service packet size
 const MIN_NBNS_SIZE: usize = 12;
 
-/// Minimum NetBIOS Datagram Service packet size
-const MIN_NBDGM_SIZE: usize = 14;
+/// Datagram Service header sizes per RFC 1002 §4.4: DIRECT_UNIQUE /
+/// DIRECT_GROUP / BROADCAST messages have a 14-byte header (through
+/// PACKET_OFFSET), QUERY REQUEST/RESPONSE messages a 10-byte header
+/// (through SOURCE_PORT), and a DATAGRAM ERROR is 11 bytes (10-byte
+/// header plus the error code).
+const NBDGM_DIRECT_HEADER: usize = 14;
+const NBDGM_QUERY_HEADER: usize = 10;
+const NBDGM_ERROR_SIZE: usize = 11;
 
 /// Analyze a NetBIOS Name Service packet (UDP port 137).
 ///
 /// Returns `None` if the packet is too small or invalid.
-pub fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
+pub(super) fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
     if payload.len() < MIN_NBNS_SIZE {
         return None;
     }
 
-    // Parse header flags at bytes 2-3
     let flags = u16::from_be_bytes([payload[2], payload[3]]);
 
     // Extract opcode from flags (bits 11-14)
     let opcode_value = ((flags >> 11) & 0x0F) as u8;
-    let is_response = (flags & 0x8000) != 0;
+    let has_response_flag = (flags & 0x8000) != 0;
 
-    let opcode = if is_response {
-        NetBiosOpcode::Response
-    } else {
-        parse_opcode(opcode_value)
+    let opcode = match (has_response_flag, opcode_value) {
+        // A WACK is an interim response asking the client to keep waiting.
+        (true, 7) => NetBiosOpcode::Wack,
+        (true, _) => NetBiosOpcode::Response,
+        (false, _) => parse_opcode(opcode_value),
     };
+    let is_response = has_response_flag && opcode != NetBiosOpcode::Wack;
 
-    // Try to decode NetBIOS name if present
     let name = if payload.len() > 12 {
         decode_netbios_name(&payload[12..])
     } else {
@@ -42,43 +48,77 @@ pub fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
         service: NetBiosService::NameService,
         opcode,
         name,
+        transaction_id: u16::from_be_bytes([payload[0], payload[1]]),
+        is_response,
+        response_status: is_response
+            .then_some(NetBiosResponseStatus::NameService((flags & 0x000F) as u8)),
     })
 }
 
 /// Analyze a NetBIOS Datagram Service packet (UDP port 138).
 ///
 /// Returns `None` if the packet is too small or invalid.
-pub fn analyze_netbios_dgm(payload: &[u8]) -> Option<NetBiosInfo> {
-    if payload.len() < MIN_NBDGM_SIZE {
+pub(super) fn analyze_netbios_dgm(payload: &[u8]) -> Option<NetBiosInfo> {
+    // Message type at byte 0
+    let msg_type = *payload.first()?;
+
+    // RFC 1002 §4.4: header size (and therefore where the encoded name
+    // starts) depends on the message type.
+    let (opcode, min_size, name_offset, response_status) = match msg_type {
+        // §4.4.1 DIRECT_UNIQUE / DIRECT_GROUP / BROADCAST: message
+        // delivery, SOURCE_NAME follows the 14-byte header
+        0x10..=0x12 => (
+            NetBiosOpcode::Datagram,
+            NBDGM_DIRECT_HEADER,
+            Some(NBDGM_DIRECT_HEADER),
+            None,
+        ),
+        // §4.4.2 DATAGRAM ERROR: header + error code, no name
+        0x13 => (NetBiosOpcode::Error, NBDGM_ERROR_SIZE, None, None),
+        // §4.4.3 DATAGRAM QUERY REQUEST: DESTINATION_NAME follows the
+        // 10-byte header
+        0x14 => (
+            NetBiosOpcode::Query,
+            NBDGM_QUERY_HEADER,
+            Some(NBDGM_QUERY_HEADER),
+            None,
+        ),
+        // §4.4.3 POSITIVE / NEGATIVE QUERY RESPONSE
+        0x15 => (
+            NetBiosOpcode::Response,
+            NBDGM_QUERY_HEADER,
+            Some(NBDGM_QUERY_HEADER),
+            Some(NetBiosResponseStatus::DatagramPositive),
+        ),
+        0x16 => (
+            NetBiosOpcode::Response,
+            NBDGM_QUERY_HEADER,
+            Some(NBDGM_QUERY_HEADER),
+            Some(NetBiosResponseStatus::DatagramNegative),
+        ),
+        other => (
+            NetBiosOpcode::Unknown(other),
+            NBDGM_QUERY_HEADER,
+            None,
+            None,
+        ),
+    };
+
+    if payload.len() < min_size {
         return None;
     }
 
-    // Message type at byte 0
-    let msg_type = payload[0];
-
-    // Map message type to opcode
-    let opcode = match msg_type {
-        0x10 => NetBiosOpcode::Query,        // Direct unique datagram
-        0x11 => NetBiosOpcode::Query,        // Direct group datagram
-        0x12 => NetBiosOpcode::Registration, // Broadcast datagram
-        0x13 => NetBiosOpcode::Query,        // Datagram error
-        0x14 => NetBiosOpcode::Query,        // Datagram query request
-        0x15 => NetBiosOpcode::Response,     // Datagram positive query response
-        0x16 => NetBiosOpcode::Response,     // Datagram negative query response
-        _ => NetBiosOpcode::Unknown(msg_type),
-    };
-
-    // Try to extract source name from offset 14 if available
-    let name = if payload.len() > 14 {
-        decode_netbios_name(&payload[14..])
-    } else {
-        None
-    };
+    let name = name_offset
+        .and_then(|off| payload.get(off..))
+        .and_then(decode_netbios_name);
 
     Some(NetBiosInfo {
         service: NetBiosService::DatagramService,
         opcode,
         name,
+        transaction_id: u16::from_be_bytes([payload[2], payload[3]]),
+        is_response: response_status.is_some(),
+        response_status,
     })
 }
 
@@ -211,6 +251,9 @@ mod tests {
         assert_eq!(info.service, NetBiosService::NameService);
         assert_eq!(info.opcode, NetBiosOpcode::Query);
         assert_eq!(info.name, Some("WORKSTATION".to_string()));
+        assert_eq!(info.transaction_id, 1);
+        assert!(!info.is_response);
+        assert_eq!(info.response_status, None);
     }
 
     #[test]
@@ -220,6 +263,36 @@ mod tests {
         assert_eq!(info.service, NetBiosService::NameService);
         assert_eq!(info.opcode, NetBiosOpcode::Response);
         assert_eq!(info.name, Some("FILESERVER".to_string()));
+        assert_eq!(info.transaction_id, 1);
+        assert!(info.is_response);
+        assert_eq!(
+            info.response_status,
+            Some(NetBiosResponseStatus::NameService(0))
+        );
+    }
+
+    #[test]
+    fn test_nbns_negative_response_status() {
+        let mut packet = build_nbns_response("MISSING");
+        packet[3] = 0x03; // NAM_ERR
+        let info = analyze_netbios_ns(&packet).expect("should parse");
+        assert_eq!(
+            info.response_status,
+            Some(NetBiosResponseStatus::NameService(3))
+        );
+        assert_eq!(info.response_status.unwrap().to_string(), "NAM_ERR");
+        assert!(!info.response_status.unwrap().is_success());
+    }
+
+    #[test]
+    fn test_nbns_wack_is_not_final_response() {
+        let mut packet = [0u8; MIN_NBNS_SIZE];
+        packet[0..2].copy_from_slice(&0x1234u16.to_be_bytes());
+        packet[2..4].copy_from_slice(&0xB800u16.to_be_bytes());
+        let info = analyze_netbios_ns(&packet).expect("should parse");
+        assert_eq!(info.opcode, NetBiosOpcode::Wack);
+        assert!(!info.is_response);
+        assert_eq!(info.response_status, None);
     }
 
     #[test]
@@ -230,11 +303,66 @@ mod tests {
 
     #[test]
     fn test_nbdgm_direct() {
-        let mut packet = vec![0u8; 20];
+        let mut packet = vec![0u8; 14];
         packet[0] = 0x10; // Direct unique datagram
+        packet.extend_from_slice(&encode_netbios_name("SENDERPC")); // SOURCE_NAME
         let info = analyze_netbios_dgm(&packet).expect("should parse");
         assert_eq!(info.service, NetBiosService::DatagramService);
+        assert_eq!(info.opcode, NetBiosOpcode::Datagram);
+        assert_eq!(info.name, Some("SENDERPC".to_string()));
+    }
+
+    #[test]
+    fn test_nbdgm_broadcast_is_datagram_not_registration() {
+        // 0x12 is a broadcast datagram (RFC 1002 §4.4.1); it has nothing
+        // to do with NBNS name registration.
+        let mut packet = vec![0u8; 14];
+        packet[0] = 0x12;
+        let info = analyze_netbios_dgm(&packet).expect("should parse");
+        assert_eq!(info.opcode, NetBiosOpcode::Datagram);
+    }
+
+    #[test]
+    fn test_nbdgm_query_request_name_at_offset_10() {
+        // §4.4.3 messages have a 10-byte header; DESTINATION_NAME starts at
+        // offset 10, not 14.
+        let mut packet = vec![0u8; 10];
+        packet[0] = 0x14; // DATAGRAM QUERY REQUEST
+        packet.extend_from_slice(&encode_netbios_name("FILESERVER"));
+        let info = analyze_netbios_dgm(&packet).expect("should parse");
         assert_eq!(info.opcode, NetBiosOpcode::Query);
+        assert_eq!(info.name, Some("FILESERVER".to_string()));
+        assert_eq!(info.transaction_id, 0);
+        assert!(!info.is_response);
+    }
+
+    #[test]
+    fn test_nbdgm_negative_query_response() {
+        let mut packet = vec![0u8; 10];
+        packet[0] = 0x16;
+        packet[2..4].copy_from_slice(&0x4567u16.to_be_bytes());
+        packet.extend_from_slice(&encode_netbios_name("FILESERVER"));
+        let info = analyze_netbios_dgm(&packet).expect("should parse");
+        assert_eq!(info.opcode, NetBiosOpcode::Response);
+        assert_eq!(info.transaction_id, 0x4567);
+        assert!(info.is_response);
+        assert_eq!(
+            info.response_status,
+            Some(NetBiosResponseStatus::DatagramNegative)
+        );
+        assert!(!info.response_status.unwrap().is_success());
+    }
+
+    #[test]
+    fn test_nbdgm_error_datagram() {
+        // A spec-conformant DATAGRAM ERROR is exactly 11 bytes
+        // (§4.4.2: 10-byte header + 1-byte error code).
+        let mut packet = vec![0u8; 11];
+        packet[0] = 0x13;
+        packet[10] = 0x82; // ERR_SOURCE_NAME_BAD_FORMAT
+        let info = analyze_netbios_dgm(&packet).expect("should parse");
+        assert_eq!(info.opcode, NetBiosOpcode::Error);
+        assert_eq!(info.name, None);
     }
 
     #[test]
@@ -263,7 +391,7 @@ mod tests {
     fn test_decode_netbios_name_strips_service_type_suffix() {
         // Real NetBIOS names embed a service-type byte at the 16th position
         // (workstation=0x00, file_server=0x20, master_browser=0x1D, etc.).
-        // The non-printable suffix must NOT appear in the decoded name —
+        // The non-printable suffix must NOT appear in the decoded name;
         // decoding only keeps `is_ascii_graphic` characters (0x21..=0x7E).
         let mut encoded = Vec::with_capacity(33);
         encoded.push(32);

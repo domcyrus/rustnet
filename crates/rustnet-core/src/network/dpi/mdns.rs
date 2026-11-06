@@ -15,68 +15,25 @@ use super::dns;
 /// ADDITIONAL records, where mDNS frequently carries A / AAAA rdata.
 ///
 /// Returns `None` if the packet cannot be parsed as DNS.
-pub fn analyze_mdns(payload: &[u8]) -> Option<MdnsInfo> {
-    let dns_info = dns::analyze_dns_for_mdns(payload)?;
-
-    Some(MdnsInfo {
-        query_name: dns_info.query_name,
-        query_type: dns_info.query_type,
-        is_response: dns_info.is_response,
-        response_ips: dns_info.response_ips,
-    })
+pub(super) fn analyze_mdns(payload: &[u8]) -> Option<MdnsInfo> {
+    dns::analyze_dns_for_mdns(payload).map(MdnsInfo::from)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::dns::test_fixtures::{
+        RrName, build_dns_header, build_dns_packet, push_a, push_rr,
+    };
     use super::*;
     use crate::network::types::DnsQueryType;
 
     fn build_mdns_query(name: &str, qtype: u16) -> Vec<u8> {
-        let mut packet = Vec::new();
-
-        // DNS header (12 bytes)
-        packet.extend_from_slice(&[0x00, 0x00]); // Transaction ID
-        packet.extend_from_slice(&[0x00, 0x00]); // Flags (query)
-        packet.extend_from_slice(&[0x00, 0x01]); // Questions: 1
-        packet.extend_from_slice(&[0x00, 0x00]); // Answer RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Authority RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Additional RRs: 0
-
-        // Question section - encode domain name
-        for label in name.split('.') {
-            packet.push(label.len() as u8);
-            packet.extend_from_slice(label.as_bytes());
-        }
-        packet.push(0x00); // Null terminator
-
-        // Query type and class
-        packet.extend_from_slice(&qtype.to_be_bytes());
-        packet.extend_from_slice(&[0x00, 0x01]); // Class: IN
-
-        packet
+        build_dns_packet(0x0000, 0x0000, name, qtype)
     }
 
     fn build_mdns_response(name: &str, qtype: u16) -> Vec<u8> {
-        let mut packet = Vec::new();
-
-        // DNS header (12 bytes)
-        packet.extend_from_slice(&[0x00, 0x00]); // Transaction ID
-        packet.extend_from_slice(&[0x84, 0x00]); // Flags (response, authoritative)
-        packet.extend_from_slice(&[0x00, 0x01]); // Questions: 1
-        packet.extend_from_slice(&[0x00, 0x00]); // Answer RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Authority RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Additional RRs: 0
-
-        // Question section
-        for label in name.split('.') {
-            packet.push(label.len() as u8);
-            packet.extend_from_slice(label.as_bytes());
-        }
-        packet.push(0x00);
-        packet.extend_from_slice(&qtype.to_be_bytes());
-        packet.extend_from_slice(&[0x00, 0x01]);
-
-        packet
+        // Flags: response, authoritative
+        build_dns_packet(0x0000, 0x8400, name, qtype)
     }
 
     #[test]
@@ -114,27 +71,17 @@ mod tests {
     /// Build an mDNS announcement (RFC 6762 §6: qdcount=0, ancount>=1).
     /// `name` is encoded uncompressed inside each answer record.
     fn build_mdns_announcement_a(name: &str, ip: [u8; 4]) -> Vec<u8> {
-        let mut packet = Vec::new();
-        // Header: txid 0, flags response, qdcount=0, ancount=1, nscount=0, arcount=0.
-        packet.extend_from_slice(&[0x00, 0x00, 0x84, 0x00, 0x00, 0x00, 0x00, 0x01]);
-        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-        // Answer: NAME uncompressed.
-        for label in name.split('.') {
-            packet.push(label.len() as u8);
-            packet.extend_from_slice(label.as_bytes());
-        }
-        packet.push(0x00);
-        // TYPE A, CLASS IN (cache-flush bit cleared), TTL 120, RDLENGTH 4, RDATA.
-        packet.extend_from_slice(&[0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x04]);
-        packet.extend_from_slice(&ip);
+        // Header: txid 0, flags response + authoritative, qdcount=0, ancount=1.
+        let mut packet = build_dns_header(0x0000, 0x8400, 0, 1, 0, 0);
+        // Answer: NAME uncompressed, TYPE A, CLASS IN (cache-flush bit
+        // cleared), TTL 120.
+        push_a(&mut packet, RrName::Labels(name), 120, ip);
         packet
     }
 
     #[test]
     fn test_mdns_announcement_with_qdcount_zero_collects_a_record() {
         // RFC 6762 §6: typical mDNS announcement has qdcount=0 and ancount>=1.
-        // Pre-#333 the answer walk lived inside `qdcount > 0`, so this
-        // packet returned an empty `response_ips`.
         let packet = build_mdns_announcement_a("printer.local", [192, 168, 1, 50]);
         let info = analyze_mdns(&packet).expect("should parse");
         assert!(info.is_response);
@@ -150,31 +97,26 @@ mod tests {
     #[test]
     fn test_mdns_collects_a_record_from_additional_section() {
         // mDNS often carries A / AAAA in the ADDITIONAL section (arcount)
-        // rather than answers — e.g. when responding to a PTR with the
+        // rather than answers, e.g. when responding to a PTR with the
         // SRV target's address records. Build: qdcount=0, ancount=1
         // (PTR), nscount=0, arcount=1 (A).
-        let mut packet = Vec::new();
-        packet.extend_from_slice(&[0x00, 0x00, 0x84, 0x00, 0x00, 0x00, 0x00, 0x01]);
-        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        let mut packet = build_dns_header(0x0000, 0x8400, 0, 1, 0, 1);
         // ANSWER: PTR "_http._tcp.local" → "mybox._http._tcp.local"
-        let ptr_name = "_http._tcp.local";
-        for label in ptr_name.split('.') {
-            packet.push(label.len() as u8);
-            packet.extend_from_slice(label.as_bytes());
-        }
-        packet.push(0x00);
-        // TYPE PTR (12), CLASS IN, TTL, RDLENGTH 2 (compressed pointer back).
-        packet.extend_from_slice(&[0x00, 0x0C, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x02]);
-        packet.extend_from_slice(&[0xC0, 0x0C]);
+        // (TYPE PTR (12), CLASS IN, TTL 120, RDATA: compressed pointer back).
+        push_rr(
+            &mut packet,
+            RrName::Labels("_http._tcp.local"),
+            12,
+            120,
+            &[0xC0, 0x0C],
+        );
         // ADDITIONAL: A record for "host.local" → 10.0.0.5.
-        let a_name = "host.local";
-        for label in a_name.split('.') {
-            packet.push(label.len() as u8);
-            packet.extend_from_slice(label.as_bytes());
-        }
-        packet.push(0x00);
-        packet.extend_from_slice(&[0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x04]);
-        packet.extend_from_slice(&[10, 0, 0, 5]);
+        push_a(
+            &mut packet,
+            RrName::Labels("host.local"),
+            120,
+            [10, 0, 0, 5],
+        );
 
         let info = analyze_mdns(&packet).expect("should parse");
         assert_eq!(

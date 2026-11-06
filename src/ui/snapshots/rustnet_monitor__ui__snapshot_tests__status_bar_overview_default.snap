@@ -1,6 +1,5 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 648
 expression: output
 ---
- 'h' help | 1-5 jump | Tab/[/] cycle | '/' filter | 'a' group | 't' history | 'i' info | 'c' copy
+ ↑↓ select  / filter  a group  t history  i info  c copy                                                 h help  q quit

@@ -1,0 +1,918 @@
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+/// Chart data points as (time_offset, value) pairs
+pub type ChartData = Vec<(f64, f64)>;
+
+/// Connection counts and lifecycle rates captured with one traffic sample.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConnectionLifecycleSample {
+    pub active: usize,
+    pub retained: usize,
+    pub opened_per_sec_tenths: u64,
+    pub closed_per_sec_tenths: u64,
+}
+
+/// A single sample of aggregate traffic data for graphing.
+#[derive(Debug, Clone)]
+pub struct TrafficSample {
+    pub timestamp: Instant,
+    traffic_available: bool,
+    pub rx_bytes_per_sec: u64,
+    pub tx_bytes_per_sec: u64,
+    smoothed_rx_bytes_per_sec: u64,
+    smoothed_tx_bytes_per_sec: u64,
+    pub connection_count: usize,
+    pub retained_connection_count: usize,
+    opened_connections_per_sec_tenths: u64,
+    closed_connections_per_sec_tenths: u64,
+    smoothed_opened_connections_per_sec_tenths: u64,
+    smoothed_closed_connections_per_sec_tenths: u64,
+    // Network health metrics
+    pub packets_per_sec: u64,
+    pub packet_loss_pct: f32,
+    pub avg_rtt_ms: Option<f64>,
+}
+
+/// Average sampled rates over a trailing time window. Each sample describes
+/// the interval ending at its timestamp. Startup uses only observed intervals.
+pub fn recent_rate_average(
+    samples: impl DoubleEndedIterator<Item = (Instant, u64, u64)>,
+    window: Duration,
+) -> Option<(f64, f64)> {
+    let mut samples = samples.rev();
+    let mut newer = samples.next()?;
+    let mut remaining = window.as_secs_f64();
+    let (mut rx, mut tx, mut duration) = (0.0, 0.0, 0.0);
+    for older in samples {
+        let elapsed = newer
+            .0
+            .saturating_duration_since(older.0)
+            .as_secs_f64()
+            .min(remaining);
+        rx += newer.1 as f64 * elapsed;
+        tx += newer.2 as f64 * elapsed;
+        duration += elapsed;
+        remaining -= elapsed;
+        if remaining <= 0.0 {
+            break;
+        }
+        newer = older;
+    }
+    (duration > 0.0).then(|| (rx / duration, tx / duration))
+}
+
+const GRAPH_SCALE_UP_TRANSITION: Duration = Duration::from_millis(1200);
+const GRAPH_SCALE_DOWN_HOLD: Duration = Duration::from_secs(5);
+const GRAPH_SCALE_DOWN_TRANSITION: Duration = Duration::from_secs(6);
+
+/// Stable graph ceiling derived from the visible history peak. Power-of-two
+/// steps provide headroom, upward changes are eased, and downward changes are
+/// deliberately slower so old spikes do not make the graph snap taller as
+/// they leave the window.
+#[derive(Debug, Clone)]
+pub struct GraphScale {
+    minimum: u64,
+    transition_from: f64,
+    target: u64,
+    transition_started: Instant,
+    transition_duration: Duration,
+    lower_since: Option<Instant>,
+}
+
+impl GraphScale {
+    pub fn new(minimum: u64) -> Self {
+        let minimum = minimum.max(1);
+        Self {
+            minimum,
+            transition_from: minimum as f64,
+            target: minimum,
+            transition_started: Instant::now(),
+            transition_duration: GRAPH_SCALE_UP_TRANSITION,
+            lower_since: None,
+        }
+    }
+
+    fn target_for_peak(&self, peak: u64) -> u64 {
+        peak.max(self.minimum)
+            .checked_next_power_of_two()
+            .unwrap_or(u64::MAX)
+    }
+
+    fn ceiling_at(&self, now: Instant) -> f64 {
+        let progress = now
+            .saturating_duration_since(self.transition_started)
+            .as_secs_f64()
+            / self.transition_duration.as_secs_f64();
+        let progress = progress.clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - progress).powi(3);
+        self.transition_from + (self.target as f64 - self.transition_from) * eased
+    }
+
+    fn update_peak_at(&mut self, peak: u64, now: Instant) {
+        let target = self.target_for_peak(peak);
+        if target >= self.target {
+            self.lower_since = None;
+            if target == self.target {
+                return;
+            }
+        } else {
+            let since = *self.lower_since.get_or_insert(now);
+            if now.saturating_duration_since(since) < GRAPH_SCALE_DOWN_HOLD {
+                return;
+            }
+            self.lower_since = None;
+        }
+        let current = self.ceiling_at(now);
+        self.transition_from = current;
+        self.target = target;
+        self.transition_started = now;
+        self.transition_duration = if target as f64 >= current {
+            GRAPH_SCALE_UP_TRANSITION
+        } else {
+            GRAPH_SCALE_DOWN_TRANSITION
+        };
+    }
+
+    pub fn update_peak(&mut self, peak: u64) {
+        self.update_peak_at(peak, Instant::now());
+    }
+
+    pub fn ceiling(&self) -> f64 {
+        self.ceiling_at(Instant::now())
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::new(self.minimum);
+    }
+}
+
+impl Default for GraphScale {
+    fn default() -> Self {
+        Self::new(1024)
+    }
+}
+
+/// Animation clock owned by each sampled history. Carry the position across
+/// early arrivals, and stop one interval ahead if sampling stalls.
+#[derive(Debug, Clone, Default)]
+pub struct GraphScroll {
+    newest: Option<Instant>,
+    interval: Duration,
+    phase: f64,
+}
+
+impl GraphScroll {
+    pub fn record_at(&mut self, now: Instant) {
+        self.phase = if self.interval.is_zero() {
+            0.0
+        } else {
+            self.fraction_at(now) - 1.0
+        };
+        self.interval = self.newest.map_or(Duration::ZERO, |previous| {
+            now.saturating_duration_since(previous)
+        });
+        self.newest = Some(now);
+    }
+
+    pub fn fraction(&self) -> f64 {
+        self.fraction_at(Instant::now())
+    }
+
+    pub fn fraction_at(&self, now: Instant) -> f64 {
+        let Some(newest) = self.newest.filter(|_| !self.interval.is_zero()) else {
+            return 0.0;
+        };
+        let elapsed = now.saturating_duration_since(newest).as_secs_f64();
+        (self.phase + elapsed / self.interval.as_secs_f64()).min(1.0)
+    }
+}
+
+/// Ring buffer for aggregate traffic history (used for graphs)
+#[derive(Debug, Clone)]
+pub struct TrafficHistory {
+    samples: VecDeque<TrafficSample>,
+    max_samples: usize,
+    scroll: GraphScroll,
+    rx_scale: GraphScale,
+    tx_scale: GraphScale,
+    opened_scale: GraphScale,
+    closed_scale: GraphScale,
+}
+
+const OPENED_RATE_SMOOTHING_SAMPLES: usize = 3;
+const CLOSED_RATE_SMOOTHING_SAMPLES: usize = 10;
+
+impl TrafficHistory {
+    pub fn new(max_samples: usize) -> Self {
+        Self {
+            samples: VecDeque::with_capacity(max_samples),
+            max_samples,
+            scroll: GraphScroll::default(),
+            rx_scale: GraphScale::default(),
+            tx_scale: GraphScale::default(),
+            opened_scale: GraphScale::new(10),
+            closed_scale: GraphScale::new(10),
+        }
+    }
+
+    /// Add a traffic sample with connection lifecycle activity.
+    pub fn add_sample_with_lifecycle(
+        &mut self,
+        rx_bytes_per_sec: u64,
+        tx_bytes_per_sec: u64,
+        lifecycle: ConnectionLifecycleSample,
+        packets_per_sec: u64,
+        retransmits_per_sec: u64,
+        avg_rtt_ms: Option<f64>,
+    ) {
+        self.add_sample(
+            Some((rx_bytes_per_sec, tx_bytes_per_sec)),
+            lifecycle,
+            packets_per_sec,
+            retransmits_per_sec,
+            avg_rtt_ms,
+        );
+    }
+
+    /// Record capture metrics even when interface byte counters are unavailable.
+    pub fn add_sample(
+        &mut self,
+        traffic: Option<(u64, u64)>,
+        lifecycle: ConnectionLifecycleSample,
+        packets_per_sec: u64,
+        retransmits_per_sec: u64,
+        avg_rtt_ms: Option<f64>,
+    ) {
+        let (rx_bytes_per_sec, tx_bytes_per_sec) = traffic.unwrap_or_default();
+        let packet_loss_pct = if packets_per_sec > 0 {
+            (retransmits_per_sec as f32 / packets_per_sec as f32) * 100.0
+        } else {
+            0.0
+        };
+
+        // Trailing average over the newest samples; byte rates truncate while
+        // lifecycle rates (stored in tenths) round to nearest.
+        let smoothed =
+            |current: u64, previous_count: usize, rate: fn(&TrafficSample) -> u64, round: bool| {
+                let (sum, count) = self
+                    .samples
+                    .iter()
+                    .rev()
+                    .take(previous_count)
+                    .fold((u128::from(current), 1u128), |(sum, count), sample| {
+                        (sum + u128::from(rate(sample)), count + 1)
+                    });
+                let sum = if round { sum + count / 2 } else { sum };
+                (sum / count) as u64
+            };
+        let traffic_average = |current, pick: fn(&TrafficSample) -> u64| {
+            let (sum, count) = self
+                .traffic_samples()
+                .rev()
+                .take(2)
+                .fold((u128::from(current), 1), |(sum, count), sample| {
+                    (sum + u128::from(pick(sample)), count + 1)
+                });
+            (sum / count) as u64
+        };
+        let smoothed_rx_bytes_per_sec =
+            traffic_average(rx_bytes_per_sec, |sample| sample.rx_bytes_per_sec);
+        let smoothed_tx_bytes_per_sec =
+            traffic_average(tx_bytes_per_sec, |sample| sample.tx_bytes_per_sec);
+        let smoothed_opened_connections_per_sec_tenths = smoothed(
+            lifecycle.opened_per_sec_tenths,
+            OPENED_RATE_SMOOTHING_SAMPLES - 1,
+            |sample| sample.opened_connections_per_sec_tenths,
+            true,
+        );
+        let smoothed_closed_connections_per_sec_tenths = smoothed(
+            lifecycle.closed_per_sec_tenths,
+            CLOSED_RATE_SMOOTHING_SAMPLES - 1,
+            |sample| sample.closed_connections_per_sec_tenths,
+            true,
+        );
+
+        let timestamp = Instant::now();
+        self.scroll.record_at(timestamp);
+        let sample = TrafficSample {
+            timestamp,
+            traffic_available: traffic.is_some(),
+            rx_bytes_per_sec,
+            tx_bytes_per_sec,
+            smoothed_rx_bytes_per_sec,
+            smoothed_tx_bytes_per_sec,
+            connection_count: lifecycle.active,
+            retained_connection_count: lifecycle.retained,
+            opened_connections_per_sec_tenths: lifecycle.opened_per_sec_tenths,
+            closed_connections_per_sec_tenths: lifecycle.closed_per_sec_tenths,
+            smoothed_opened_connections_per_sec_tenths,
+            smoothed_closed_connections_per_sec_tenths,
+            packets_per_sec,
+            packet_loss_pct,
+            avg_rtt_ms,
+        };
+
+        if self.samples.len() >= self.max_samples {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+        let picks: [fn(&TrafficSample) -> u64; 2] = [
+            |sample| sample.smoothed_opened_connections_per_sec_tenths,
+            |sample| sample.smoothed_closed_connections_per_sec_tenths,
+        ];
+        let mut peaks = [0u64; 2];
+        for sample in &self.samples {
+            for (peak, pick) in peaks.iter_mut().zip(picks) {
+                *peak = (*peak).max(pick(sample));
+            }
+        }
+        let (rx_peak, tx_peak) = self.traffic_samples().fold((0, 0), |(rx, tx), sample| {
+            (
+                rx.max(sample.rx_bytes_per_sec),
+                tx.max(sample.tx_bytes_per_sec),
+            )
+        });
+        let [opened_peak, closed_peak] = peaks;
+        self.rx_scale.update_peak(rx_peak);
+        self.tx_scale.update_peak(tx_peak);
+        self.opened_scale.update_peak(opened_peak);
+        self.closed_scale.update_peak(closed_peak);
+    }
+
+    /// Get the latest packets/sec value, or 0 if no samples
+    pub fn get_latest_packets_per_sec(&self) -> u64 {
+        self.samples.back().map(|s| s.packets_per_sec).unwrap_or(0)
+    }
+
+    /// Configured ring-buffer capacity (the graph's sample window).
+    pub fn capacity(&self) -> usize {
+        self.max_samples
+    }
+
+    pub fn rx_graph_ceiling(&self) -> f64 {
+        self.rx_scale.ceiling()
+    }
+
+    pub fn tx_graph_ceiling(&self) -> f64 {
+        self.tx_scale.ceiling()
+    }
+
+    pub fn opened_graph_ceiling(&self) -> f64 {
+        self.opened_scale.ceiling()
+    }
+
+    pub fn closed_graph_ceiling(&self) -> f64 {
+        self.closed_scale.ceiling()
+    }
+
+    /// Continuous progress relative to the newest sample.
+    pub fn scroll_fraction(&self) -> f64 {
+        self.scroll.fraction()
+    }
+
+    /// Last `count` values of `pick`, oldest first (newest last).
+    ///
+    /// `samples` is filled push_back/pop_front, so `iter()` is already
+    /// oldest→newest. Skip past everything but the last `count`.
+    fn sparkline(&self, count: usize, pick: fn(&TrafficSample) -> u64) -> Vec<u64> {
+        let skip = self.samples.len().saturating_sub(count);
+        self.samples.iter().skip(skip).map(pick).collect()
+    }
+
+    // Restart byte-rate plots after a gap instead of drawing missing counters
+    // as idle traffic or connecting observations across an unobserved interval.
+    fn traffic_samples(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &TrafficSample> + ExactSizeIterator {
+        let start = self
+            .samples
+            .iter()
+            .rposition(|s| !s.traffic_available)
+            .map_or(0, |index| index + 1);
+        self.samples.iter().skip(start)
+    }
+
+    pub fn has_enough_traffic_data(&self) -> bool {
+        self.traffic_samples().len() >= 2
+    }
+
+    /// Unsmoothed RX/TX samples, oldest first, for exact rate and peak readouts.
+    pub fn get_raw_traffic_data(&self) -> (Vec<u64>, Vec<u64>) {
+        self.traffic_samples()
+            .map(|s| (s.rx_bytes_per_sec, s.tx_bytes_per_sec))
+            .unzip()
+    }
+
+    /// Time-weighted average over up to two seconds of observed sample intervals.
+    pub fn recent_average(&self) -> Option<(f64, f64)> {
+        recent_rate_average(
+            self.traffic_samples()
+                .map(|s| (s.timestamp, s.rx_bytes_per_sec, s.tx_bytes_per_sec)),
+            Duration::from_secs(2),
+        )
+    }
+
+    /// Get RX bytes/sec values for sparkline (newest last). Each value is
+    /// smoothed when sampled so trimming the ring cannot rewrite its left edge.
+    pub fn get_rx_sparkline_data(&self, count: usize) -> Vec<u64> {
+        let samples = self.traffic_samples();
+        let skip = samples.len().saturating_sub(count);
+        samples
+            .skip(skip)
+            .map(|s| s.smoothed_rx_bytes_per_sec)
+            .collect()
+    }
+
+    /// Get TX bytes/sec values for sparkline (newest last). Each value is
+    /// smoothed when sampled so trimming the ring cannot rewrite its left edge.
+    pub fn get_tx_sparkline_data(&self, count: usize) -> Vec<u64> {
+        let samples = self.traffic_samples();
+        let skip = samples.len().saturating_sub(count);
+        samples
+            .skip(skip)
+            .map(|s| s.smoothed_tx_bytes_per_sec)
+            .collect()
+    }
+
+    pub fn get_opened_sparkline_data(&self, count: usize) -> Vec<u64> {
+        self.sparkline(count, |s| s.smoothed_opened_connections_per_sec_tenths)
+    }
+
+    pub fn get_closed_sparkline_data(&self, count: usize) -> Vec<u64> {
+        self.sparkline(count, |s| s.smoothed_closed_connections_per_sec_tenths)
+    }
+
+    pub fn latest_connection_counts(&self) -> (usize, usize) {
+        self.samples
+            .back()
+            .map(|sample| (sample.connection_count, sample.retained_connection_count))
+            .unwrap_or((0, 0))
+    }
+
+    /// Average age in seconds of the samples in a smoothing window.
+    fn avg_age(now: Instant, window: &[&TrafficSample]) -> f64 {
+        window
+            .iter()
+            .map(|s| now.duration_since(s.timestamp).as_secs_f64())
+            .sum::<f64>()
+            / window.len() as f64
+    }
+
+    /// Moving-average series of `value` as (negative age, value) pairs,
+    /// falling back to raw points when there are fewer than `window` samples.
+    ///
+    /// `value` may be absent for an interval (RTT needs a handshake to
+    /// measure), so the moving average runs over the values present in each
+    /// window rather than a fixed divisor; a window with none yields no point.
+    fn windowed_series(
+        &self,
+        now: Instant,
+        window: usize,
+        value: fn(&TrafficSample) -> Option<f64>,
+    ) -> ChartData {
+        if self.samples.len() < window {
+            // Not enough data for smoothing, return raw
+            return self
+                .samples
+                .iter()
+                .filter_map(|s| {
+                    let value = value(s)?;
+                    let age = now.duration_since(s.timestamp).as_secs_f64();
+                    Some((-age, value))
+                })
+                .collect();
+        }
+
+        let samples: Vec<_> = self.samples.iter().collect();
+        samples
+            .windows(window)
+            .filter_map(|w| {
+                let count = w.iter().filter_map(|s| value(s)).count();
+                if count == 0 {
+                    return None;
+                }
+                let sum: f64 = w.iter().filter_map(|s| value(s)).sum();
+                Some((-Self::avg_age(now, w), sum / count as f64))
+            })
+            .collect()
+    }
+
+    /// Get network health chart data: (packet_loss_pct, rtt_ms) as ChartData pairs
+    /// Time offset is negative seconds from now
+    pub fn get_health_chart_data(&self) -> (ChartData, ChartData) {
+        self.health_chart_data_at(Instant::now())
+    }
+
+    fn health_chart_data_at(&self, now: Instant) -> (ChartData, ChartData) {
+        let window = 3;
+        let loss = self.windowed_series(now, window, |s| Some(s.packet_loss_pct as f64));
+        let rtt = self.windowed_series(now, window, |s| s.avg_rtt_ms);
+        (loss, rtt)
+    }
+
+    /// Check if we have enough data to display
+    pub fn has_enough_data(&self) -> bool {
+        self.samples.len() >= 2
+    }
+
+    /// Clear all traffic history samples
+    pub fn clear(&mut self) {
+        self.samples.clear();
+        self.scroll = GraphScroll::default();
+        self.rx_scale.reset();
+        self.tx_scale.reset();
+        self.opened_scale.reset();
+        self.closed_scale.reset();
+    }
+}
+
+impl Default for TrafficHistory {
+    fn default() -> Self {
+        Self::new(120) // 60 seconds of history at two samples per second
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_counters_preserve_capture_metrics_without_inventing_traffic() {
+        let mut history = TrafficHistory::new(120);
+        let lifecycle = ConnectionLifecycleSample {
+            active: 5,
+            retained: 2,
+            opened_per_sec_tenths: 30,
+            closed_per_sec_tenths: 10,
+        };
+        for traffic in [Some((9000, 8000)), None, None] {
+            history.add_sample(traffic, lifecycle, 100, 2, Some(12.0));
+        }
+        assert!(history.has_enough_data());
+        assert!(!history.has_enough_traffic_data());
+        assert_eq!(history.get_latest_packets_per_sec(), 100);
+        assert_eq!(history.latest_connection_counts(), (5, 2));
+        assert_eq!(history.get_opened_sparkline_data(3), [30, 30, 30]);
+        assert_eq!(history.get_closed_sparkline_data(3), [10, 10, 10]);
+        let (loss, rtt) = history.get_health_chart_data();
+        assert_eq!(loss.last().unwrap().1, 2.0);
+        assert_eq!(rtt.last().unwrap().1, 12.0);
+        assert_eq!(history.get_raw_traffic_data(), (vec![], vec![]));
+        assert!(history.get_rx_sparkline_data(120).is_empty());
+        assert!(history.get_tx_sparkline_data(120).is_empty());
+        assert_eq!(history.recent_average(), None);
+
+        history.add_sample(Some((100, 200)), lifecycle, 100, 2, Some(12.0));
+        assert!(!history.has_enough_traffic_data());
+        assert_eq!(history.get_raw_traffic_data(), (vec![100], vec![200]));
+        assert_eq!(history.get_rx_sparkline_data(120), [100]);
+        assert_eq!(history.get_tx_sparkline_data(120), [200]);
+        assert_eq!(history.recent_average(), None);
+        history.add_sample(Some((100, 200)), lifecycle, 100, 2, Some(12.0));
+        // Use fixed intervals so the average does not depend on execution timing.
+        let start = Instant::now();
+        for (index, sample) in history.samples.iter_mut().enumerate() {
+            sample.timestamp = start + Duration::from_millis(index as u64 * 500);
+        }
+        assert!(history.has_enough_traffic_data());
+        assert_eq!(history.recent_average(), Some((100.0, 200.0)));
+    }
+
+    fn add_sample(
+        history: &mut TrafficHistory,
+        rx_bytes_per_sec: u64,
+        tx_bytes_per_sec: u64,
+        connection_count: usize,
+        packets_per_sec: u64,
+        retransmits_per_sec: u64,
+        avg_rtt_ms: Option<f64>,
+    ) {
+        history.add_sample_with_lifecycle(
+            rx_bytes_per_sec,
+            tx_bytes_per_sec,
+            ConnectionLifecycleSample {
+                active: connection_count,
+                ..ConnectionLifecycleSample::default()
+            },
+            packets_per_sec,
+            retransmits_per_sec,
+            avg_rtt_ms,
+        );
+    }
+
+    #[test]
+    fn recent_average_weights_intervals_and_trims_boundary() {
+        let start = Instant::now();
+        let samples = [
+            (start, 999_999, 999_999),
+            (start + Duration::from_millis(500), 100, 200),
+            (start + Duration::from_secs(3), 1000, 2000),
+        ];
+        assert_eq!(
+            recent_rate_average(samples.into_iter(), Duration::from_secs(2)),
+            Some((1000.0, 2000.0))
+        );
+        assert_eq!(
+            recent_rate_average(samples.into_iter(), Duration::from_secs(4)),
+            Some((850.0, 1700.0))
+        );
+        assert_eq!(
+            recent_rate_average(samples[..1].iter().copied(), Duration::from_secs(2)),
+            None
+        );
+        assert_eq!(
+            recent_rate_average(samples.into_iter(), Duration::ZERO),
+            None
+        );
+    }
+
+    #[test]
+    fn scale_hold_restarts_when_traffic_returns() {
+        let start = Instant::now();
+        let mut scale = GraphScale::new(1024);
+        scale.update_peak_at(8000, start);
+        scale.update_peak_at(100, start + Duration::from_secs(2));
+        scale.update_peak_at(8000, start + Duration::from_secs(6));
+        scale.update_peak_at(100, start + Duration::from_secs(7));
+        scale.update_peak_at(100, start + Duration::from_secs(11));
+        assert_eq!(scale.target, 8192);
+        scale.update_peak_at(100, start + Duration::from_secs(12));
+        assert_eq!(scale.target, 1024);
+    }
+
+    #[test]
+    fn raw_traffic_keeps_spikes_and_directions_intact() {
+        let mut history = TrafficHistory::new(3);
+        for (rx, tx) in [(0, 1), (9000, 2), (0, 3), (42, 4)] {
+            history.add_sample_with_lifecycle(
+                rx,
+                tx,
+                ConnectionLifecycleSample::default(),
+                0,
+                0,
+                None,
+            );
+        }
+        assert_eq!(
+            history.get_raw_traffic_data(),
+            (vec![9000, 0, 42], vec![2, 3, 4])
+        );
+        assert_ne!(history.get_rx_sparkline_data(3), vec![9000, 0, 42]);
+    }
+
+    #[test]
+    fn rate_sparklines_return_last_count_oldest_first() {
+        // Distinct rx/tx/conn values per sample so ordering bugs are visible.
+        let mut hist = TrafficHistory::new(100);
+        for i in 1u64..=5 {
+            add_sample(&mut hist, i * 10, i * 100, i as usize, 0, 0, None);
+        }
+
+        // Fewer than available: keep the N newest stored samples in order.
+        assert_eq!(hist.get_rx_sparkline_data(2), vec![30, 40]);
+        assert_eq!(hist.get_tx_sparkline_data(2), vec![300, 400]);
+        // count exceeds sample count: return everything, oldest to newest.
+        assert_eq!(hist.get_rx_sparkline_data(99), vec![10, 15, 20, 30, 40]);
+
+        // count == 0: empty.
+        assert!(hist.get_rx_sparkline_data(0).is_empty());
+
+        // Empty history: empty out, no panic.
+        let empty = TrafficHistory::new(10);
+        assert!(empty.get_rx_sparkline_data(5).is_empty());
+    }
+
+    #[test]
+    fn sparkline_smoothing_preserves_the_full_history_window() {
+        let mut history = TrafficHistory::new(5);
+        for i in 1u64..=5 {
+            add_sample(&mut history, i * 10, i * 100, 1, 0, 0, None);
+        }
+
+        let rx = history.get_rx_sparkline_data(usize::MAX);
+        let tx = history.get_tx_sparkline_data(usize::MAX);
+        assert_eq!(rx, vec![10, 15, 20, 30, 40]);
+        assert_eq!(tx, vec![100, 150, 200, 300, 400]);
+        assert_eq!(rx.len(), history.capacity());
+        assert_eq!(tx.len(), history.capacity());
+    }
+
+    #[test]
+    fn lifecycle_history_tracks_counts_and_spreads_cleanup_bursts() {
+        let mut history = TrafficHistory::new(12);
+        for retained in 0..9 {
+            history.add_sample_with_lifecycle(
+                0,
+                0,
+                ConnectionLifecycleSample {
+                    active: 4,
+                    retained,
+                    ..ConnectionLifecycleSample::default()
+                },
+                0,
+                0,
+                None,
+            );
+        }
+
+        history.add_sample_with_lifecycle(
+            0,
+            0,
+            ConnectionLifecycleSample {
+                active: 3,
+                retained: 10,
+                opened_per_sec_tenths: 20,
+                closed_per_sec_tenths: 20,
+            },
+            0,
+            0,
+            None,
+        );
+
+        assert_eq!(history.latest_connection_counts(), (3, 10));
+        assert_eq!(history.get_opened_sparkline_data(1), [7]);
+        assert_eq!(history.get_closed_sparkline_data(1), [2]);
+        assert_eq!(history.opened_scale.target, 16);
+        assert_eq!(history.closed_scale.target, 16);
+    }
+
+    #[test]
+    fn trimming_history_does_not_resmooth_the_left_edge() {
+        let mut history = TrafficHistory::new(3);
+        for value in [100, 200, 300] {
+            add_sample(&mut history, value, value, 1, 0, 0, None);
+        }
+        assert_eq!(history.get_rx_sparkline_data(usize::MAX), [100, 150, 200]);
+
+        add_sample(&mut history, 400, 400, 1, 0, 0, None);
+
+        assert_eq!(history.get_rx_sparkline_data(usize::MAX), [150, 200, 300]);
+    }
+
+    #[test]
+    fn default_traffic_history_retains_sixty_seconds_at_two_hertz() {
+        assert_eq!(TrafficHistory::default().capacity(), 120);
+    }
+
+    #[test]
+    fn early_samples_do_not_jump_the_scrolling_history() {
+        let mut scroll = GraphScroll::default();
+        let start = Instant::now();
+        scroll.record_at(start);
+        scroll.record_at(start + Duration::from_millis(550));
+        let mut now = start + Duration::from_millis(550);
+        for millis in [500, 510, 505, 570, 500, 900, 500]
+            .into_iter()
+            .cycle()
+            .take(1000)
+        {
+            now += Duration::from_millis(millis);
+            let before = scroll.fraction_at(now);
+            scroll.record_at(now);
+            assert!((before - (1.0 + scroll.fraction_at(now))).abs() < 1e-9);
+            assert!(scroll.fraction_at(now + Duration::from_millis(25)) >= scroll.fraction_at(now));
+        }
+        assert_eq!(scroll.fraction_at(now + Duration::from_secs(30)), 1.0);
+    }
+
+    #[test]
+    fn graph_scroll_tracks_elapsed_time_and_stops_when_sampling_stalls() {
+        let mut scroll = GraphScroll::default();
+        let start = Instant::now();
+        assert_eq!(scroll.fraction_at(start), 0.0);
+        scroll.record_at(start);
+        assert_eq!(scroll.fraction_at(start), 0.0);
+        let newest = start + Duration::from_millis(500);
+        scroll.record_at(newest);
+        for millis in [0, 25, 50, 95, 100, 375, 495, 500, 750] {
+            let expected = (millis as f64 / 500.0).min(1.0);
+            assert!(
+                (scroll.fraction_at(newest + Duration::from_millis(millis)) - expected).abs()
+                    < 1e-9
+            );
+        }
+        assert_eq!(scroll.fraction_at(start), 0.0);
+        let next = newest + Duration::from_millis(550);
+        scroll.record_at(next);
+        assert_eq!(scroll.fraction_at(next), 0.0);
+        assert!((scroll.fraction_at(next + Duration::from_millis(55)) - 0.1).abs() < 1e-9);
+        scroll.record_at(next);
+        assert_eq!(scroll.fraction_at(next), 0.0);
+    }
+
+    #[test]
+    fn graph_scale_uses_nice_steps_and_recovers_slowly() {
+        let start = Instant::now();
+        let mut scale = GraphScale::new(1024);
+
+        scale.update_peak_at(1500, start);
+        assert_eq!(scale.target, 2048);
+        assert_eq!(scale.ceiling_at(start), 1024.0);
+        assert_eq!(scale.ceiling_at(start + GRAPH_SCALE_UP_TRANSITION), 2048.0);
+
+        let hold_started = start + GRAPH_SCALE_UP_TRANSITION;
+        scale.update_peak_at(500, hold_started);
+        assert_eq!(scale.target, 2048);
+        let down_started = hold_started + GRAPH_SCALE_DOWN_HOLD;
+        scale.update_peak_at(500, down_started);
+        assert_eq!(scale.target, 1024);
+        assert_eq!(scale.ceiling_at(down_started), 2048.0);
+        assert_eq!(
+            scale.ceiling_at(down_started + GRAPH_SCALE_DOWN_TRANSITION),
+            1024.0
+        );
+    }
+
+    #[test]
+    fn traffic_scale_preserves_raw_peaks_while_mini_waves_stay_smoothed() {
+        let mut history = TrafficHistory::new(6);
+        for rate in [0, 0, 9_000, 0, 0, 0] {
+            add_sample(&mut history, rate, 0, 1, 0, 0, None);
+        }
+        assert_eq!(history.get_raw_traffic_data().0, [0, 0, 9_000, 0, 0, 0]);
+        assert_eq!(
+            history.get_rx_sparkline_data(6),
+            [0, 0, 3_000, 3_000, 3_000, 0]
+        );
+        assert_eq!(history.rx_scale.target, 16_384);
+    }
+
+    #[test]
+    fn traffic_scale_forgets_peaks_after_they_leave_the_window() {
+        let mut history = TrafficHistory::new(3);
+        add_sample(&mut history, 10_000, 10_000, 1, 0, 0, None);
+        assert_eq!(history.rx_scale.target, 16_384);
+
+        for _ in 0..5 {
+            add_sample(&mut history, 1_000, 1_000, 1, 0, 0, None);
+        }
+
+        assert_eq!(history.get_rx_sparkline_data(usize::MAX), [1_000; 3]);
+        // The lower history peak must persist through the hold before decay.
+        let after_hold = Instant::now() + GRAPH_SCALE_DOWN_HOLD;
+        history.rx_scale.update_peak_at(1_000, after_hold);
+        history.tx_scale.update_peak_at(1_000, after_hold);
+        assert_eq!(history.rx_scale.target, 1_024);
+        assert_eq!(history.tx_scale.target, 1_024);
+    }
+
+    #[test]
+    fn test_traffic_sample_packet_loss_calculation() {
+        let mut history = TrafficHistory::new(60);
+
+        // Add sample with 100 packets and 5 retransmits (5% loss)
+        add_sample(&mut history, 1000, 500, 10, 100, 5, Some(25.0));
+
+        let (loss_data, rtt_data) = history.get_health_chart_data();
+
+        assert!(!loss_data.is_empty());
+        assert!((loss_data[0].1 - 5.0).abs() < 0.01);
+
+        assert!(!rtt_data.is_empty());
+        assert!((rtt_data[0].1 - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_traffic_sample_zero_packets() {
+        let mut history = TrafficHistory::new(60);
+
+        // Add sample with 0 packets (no loss calculation possible)
+        add_sample(&mut history, 1000, 500, 10, 0, 0, None);
+
+        let (loss_data, rtt_data) = history.get_health_chart_data();
+
+        assert!(!loss_data.is_empty());
+        assert!((loss_data[0].1).abs() < 0.01);
+
+        assert!(rtt_data.is_empty());
+    }
+
+    #[test]
+    fn test_traffic_history_health_smoothing() {
+        let mut history = TrafficHistory::new(60);
+        let now = Instant::now();
+
+        for i in 0..5 {
+            add_sample(
+                &mut history,
+                1000,
+                500,
+                10,
+                100,
+                i * 2,
+                Some((i * 10) as f64),
+            );
+            history.samples.back_mut().unwrap().timestamp = now - Duration::from_secs(4 - i);
+        }
+
+        let (loss_data, rtt_data) = history.health_chart_data_at(now);
+        assert_eq!(loss_data, vec![(-3.0, 2.0), (-2.0, 4.0), (-1.0, 6.0)]);
+        assert_eq!(rtt_data, vec![(-3.0, 10.0), (-2.0, 20.0), (-1.0, 30.0)]);
+
+        // Missing RTT samples must not be averaged as zeros.
+        history.samples[2].avg_rtt_ms = None;
+        let (_, rtt_data) = history.health_chart_data_at(now);
+        assert_eq!(rtt_data, vec![(-3.0, 5.0), (-2.0, 20.0), (-1.0, 35.0)]);
+    }
+}

@@ -3,6 +3,8 @@ use log::{debug, warn};
 
 mod bittorrent;
 mod cipher_suites;
+#[cfg(test)]
+mod database_tests;
 mod dhcp;
 mod dns;
 mod ftp;
@@ -11,19 +13,27 @@ mod https;
 mod llmnr;
 mod mdns;
 mod mqtt;
+mod mysql;
 mod netbios;
 mod ntp;
+mod openvpn;
+mod postgres;
 mod quic;
+mod redis;
 mod snmp;
 mod ssdp;
 mod ssh;
 mod stun;
+mod tls_common;
+mod wireguard;
 
-pub use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
-pub use quic::{is_partial_sni, try_extract_tls_from_reassembler};
+pub(crate) use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
+pub(crate) use quic::try_extract_tls_from_reassembler;
+pub(crate) use tls_common::is_partial_sni;
+#[cfg(test)]
+pub(crate) use tls_common::test_fixtures;
 
 // Well-known port numbers used for DPI protocol detection.
-const PORT_SSH: u16 = 22;
 const PORT_DNS: u16 = 53;
 const PORT_FTP: u16 = 21;
 const PORT_DHCP_SERVER: u16 = 67;
@@ -37,9 +47,8 @@ const PORT_HTTPS: u16 = 443;
 const PORT_MQTT: u16 = 1883;
 const PORT_SSDP: u16 = 1900;
 const PORT_MDNS: u16 = 5353;
-const PORT_STUN: u16 = 3478;
-const PORT_STUN_TLS: u16 = 5349;
 const PORT_LLMNR: u16 = 5355;
+const PORT_OPENVPN: u16 = 1194;
 
 /// Result of DPI analysis
 #[derive(Debug, Clone)]
@@ -48,7 +57,7 @@ pub struct DpiResult {
 }
 
 /// Analyze a TCP packet payload
-pub fn analyze_tcp_packet(
+pub(crate) fn analyze_tcp_packet(
     payload: &[u8],
     local_port: u16,
     remote_port: u16,
@@ -56,6 +65,44 @@ pub fn analyze_tcp_packet(
 ) -> Option<DpiResult> {
     if payload.is_empty() {
         return None;
+    }
+
+    let source_port = if _is_outgoing {
+        local_port
+    } else {
+        remote_port
+    };
+    let destination_port = if _is_outgoing {
+        remote_port
+    } else {
+        local_port
+    };
+    // Both binary decoders cap message lengths at 16 KiB. Check the zero
+    // high bytes here before calling them on unrelated TCP payloads.
+    if matches!(payload, [_, _, 0, ..])
+        && let Some(info) = mysql::analyze_mysql(payload, destination_port == 3306)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::MySql(info),
+        });
+    }
+    if payload.starts_with(&[0, 0])
+        && let Some(info) = postgres::analyze_postgres(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::PostgreSql(info),
+        });
+    }
+    // RESP replies can also be arrays of bulk strings. On the standard port,
+    // only inspect traffic toward the server so result values cannot become
+    // command metadata.
+    if payload[0] == b'*'
+        && source_port != 6379
+        && let Some(info) = redis::analyze_redis(payload, destination_port == 6379)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Redis(info),
+        });
     }
 
     // Try protocols in order of likelihood/speed
@@ -77,9 +124,7 @@ pub fn analyze_tcp_packet(
     }
 
     // 3. Check for BitTorrent (handshake signature \x13BitTorrent protocol)
-    if bittorrent::is_bittorrent_handshake(payload)
-        && let Some(bt_result) = bittorrent::analyze_bittorrent(payload)
-    {
+    if let Some(bt_result) = bittorrent::analyze_bittorrent(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::BitTorrent(bt_result),
         });
@@ -94,18 +139,17 @@ pub fn analyze_tcp_packet(
         });
     }
 
-    // 5. Check for SSH (port 22 or SSH banner)
-    if (local_port == PORT_SSH || remote_port == PORT_SSH || ssh::is_likely_ssh(payload))
-        && let Some(ssh_result) = ssh::analyze_ssh(payload, _is_outgoing)
-    {
+    // 5. Check for SSH signatures on any port
+    if let Some(ssh_result) = ssh::analyze_ssh(payload, _is_outgoing) {
         return Some(DpiResult {
             application: ApplicationProtocol::Ssh(ssh_result),
         });
     }
 
     // 6. Check for FTP control channel (port 21 plaintext / AUTH TLS upgrade,
-    //    or signature). Runs before more generic protocols since the start
-    //    line is unambiguous (3-digit reply code OR a small known command set).
+    //    or signature). Off port 21 only distinctively-FTP commands count as
+    //    a signature; 3-digit reply lines are shared with SMTP/POP3/NNTP and
+    //    are only classified on port 21.
     //
     //    Implicit FTPS on port 990 is intentionally NOT routed here: that
     //    flow is TLS from the very first byte and falls through to the
@@ -119,13 +163,25 @@ pub fn analyze_tcp_packet(
         });
     }
 
+    // 7. OpenVPN over TCP uses a two-byte length prefix. On its registered
+    // port we accept all current packet opcodes; elsewhere the analyzer only
+    // accepts a distinctive hard-reset exchange.
+    if let Some(openvpn_result) = openvpn::analyze_openvpn_tcp(
+        payload,
+        local_port == PORT_OPENVPN || remote_port == PORT_OPENVPN,
+    ) {
+        return Some(DpiResult {
+            application: ApplicationProtocol::OpenVpn(openvpn_result),
+        });
+    }
+
     // More protocols here...
 
     None
 }
 
 /// Analyze a UDP packet payload
-pub fn analyze_udp_packet(
+pub(crate) fn analyze_udp_packet(
     payload: &[u8],
     local_port: u16,
     remote_port: u16,
@@ -241,20 +297,32 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 11. STUN (port 3478/5349 or magic cookie detection for non-standard ports)
-    if (local_port == PORT_STUN
-        || remote_port == PORT_STUN
-        || local_port == PORT_STUN_TLS
-        || remote_port == PORT_STUN_TLS
-        || stun::is_likely_stun(payload))
-        && let Some(stun_result) = stun::analyze_stun(payload)
-    {
+    // 11. STUN (header and magic cookie detection on any port)
+    if let Some(stun_result) = stun::analyze_stun(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::Stun(stun_result),
         });
     }
 
-    // 12. BitTorrent DHT / uTP (no port gating — signature-based)
+    // 12. WireGuard (fixed message types, reserved bytes, and lengths)
+    if let Some(wireguard_result) = wireguard::analyze_wireguard(payload) {
+        return Some(DpiResult {
+            application: ApplicationProtocol::WireGuard(wireguard_result),
+        });
+    }
+
+    // 13. OpenVPN. The registered port permits all structurally plausible
+    // opcodes; alternate ports require a distinctive hard-reset exchange.
+    if let Some(openvpn_result) = openvpn::analyze_openvpn_udp(
+        payload,
+        local_port == PORT_OPENVPN || remote_port == PORT_OPENVPN,
+    ) {
+        return Some(DpiResult {
+            application: ApplicationProtocol::OpenVpn(openvpn_result),
+        });
+    }
+
+    // 14. BitTorrent DHT / uTP (no port gating, signature-based)
     if let Some(bt_result) = bittorrent::analyze_udp_bittorrent(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::BitTorrent(bt_result),
@@ -262,4 +330,109 @@ pub fn analyze_udp_packet(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::types::{OpenVpnPacketType, WireGuardPacketType};
+
+    #[test]
+    fn dispatches_ssh_signatures_on_standard_and_alternate_ports() {
+        for (local, remote) in [(50_000, 22), (22, 50_000), (50_000, 2222)] {
+            for outgoing in [false, true] {
+                let result =
+                    analyze_tcp_packet(b"SSH-2.0-OpenSSH_8.9\r\n", local, remote, outgoing)
+                        .expect("SSH banner should be classified");
+                let ApplicationProtocol::Ssh(info) = result.application else {
+                    panic!("expected SSH on {local}:{remote}");
+                };
+                assert_eq!(
+                    info.client_software.as_deref(),
+                    outgoing.then_some("OpenSSH_8.9")
+                );
+                assert_eq!(
+                    info.server_software.as_deref(),
+                    (!outgoing).then_some("OpenSSH_8.9")
+                );
+                assert!(analyze_tcp_packet(b"SSH", local, remote, outgoing).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn dispatches_bittorrent_handshake_on_any_port() {
+        for (local, remote) in [(50_000, 6881), (6881, 50_000), (50_000, 50_001)] {
+            let result = analyze_tcp_packet(b"\x13BitTorrent protocol", local, remote, true)
+                .expect("partial BitTorrent handshake should be classified");
+            assert!(matches!(
+                result.application,
+                ApplicationProtocol::BitTorrent(_)
+            ));
+            assert!(analyze_tcp_packet(b"\x12BitTorrent protocol", local, remote, true).is_none());
+        }
+    }
+
+    #[test]
+    fn dispatches_stun_only_with_a_valid_header_on_any_port() {
+        let mut payload = [0; 20];
+        payload[1] = 1; // Binding request
+        payload[4..8].copy_from_slice(&0x2112_A442u32.to_be_bytes());
+        for port in [3478, 5349, 50_001] {
+            for (local, remote) in [(50_000, port), (port, 50_000)] {
+                let result = analyze_udp_packet(&payload, local, remote, true)
+                    .expect("STUN header should be classified");
+                assert!(matches!(result.application, ApplicationProtocol::Stun(_)));
+                assert!(analyze_udp_packet(&payload[..19], local, remote, true).is_none());
+                let mut invalid = payload;
+                invalid[4] = 0;
+                assert!(analyze_udp_packet(&invalid, local, remote, true).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn dispatches_wireguard_before_bittorrent() {
+        let mut payload = vec![0x5a; 148];
+        payload[..4].copy_from_slice(&[1, 0, 0, 0]);
+
+        let result = analyze_udp_packet(&payload, 50_000, 51_820, true).unwrap();
+        let ApplicationProtocol::WireGuard(info) = result.application else {
+            panic!("expected WireGuard classification");
+        };
+        assert_eq!(info.packet_type, WireGuardPacketType::HandshakeInitiation);
+    }
+
+    #[test]
+    fn dispatches_openvpn_udp_on_registered_port() {
+        let mut payload = vec![0x5a; 20];
+        payload[0] = 9 << 3;
+
+        let result = analyze_udp_packet(&payload, 50_000, PORT_OPENVPN, true).unwrap();
+        let ApplicationProtocol::OpenVpn(info) = result.application else {
+            panic!("expected OpenVPN classification");
+        };
+        assert_eq!(info.packet_type, OpenVpnPacketType::DataV2);
+    }
+
+    #[test]
+    fn dispatches_openvpn_tcp_frame() {
+        let mut packet = vec![0x5a; 14];
+        packet[0] = 7 << 3;
+        packet[9..].fill(0);
+        let mut frame = Vec::with_capacity(16);
+        frame.extend_from_slice(&14u16.to_be_bytes());
+        frame.extend_from_slice(&packet);
+
+        let result = analyze_tcp_packet(&frame, 50_000, PORT_OPENVPN, true).unwrap();
+        assert!(matches!(
+            result.application,
+            ApplicationProtocol::OpenVpn(_)
+        ));
+    }
+
+    #[test]
+    fn registered_port_alone_does_not_classify_random_udp() {
+        assert!(analyze_udp_packet(b"not an OpenVPN packet", 50_000, PORT_OPENVPN, true).is_none());
+    }
 }

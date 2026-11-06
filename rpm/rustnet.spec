@@ -2,8 +2,8 @@
 
 Name:    rustnet
 # renovate: datasource=github-releases depName=domcyrus/rustnet extractVersion=true
-Version: 1.4.0
-Release: 1%{?dist}
+Version: 1.7.0
+Release: 2%{?dist}
 Summary: Per-process network monitoring TUI with deep packet inspection
 License: Apache-2.0
 URL:     https://github.com/domcyrus/%{name}
@@ -75,6 +75,19 @@ Features:
 %{cargo_build}
 %else
 export RUSTFLAGS="%{build_rustflags}"
+%if 0%{?fedora}
+%ifarch aarch64
+# libbpf 1.7.0 shadows linux/types.h without the types used by Linux 7.3.
+# Remove when libbpf-sys includes libbpf commit f90a9c487d75.
+cat > libbpf-u128-compat.h <<'EOF'
+#ifdef __SIZEOF_INT128__
+typedef __signed__ __int128 __s128 __attribute__((aligned(16)));
+typedef unsigned __int128 __u128 __attribute__((aligned(16)));
+#endif
+EOF
+export LIBBPF_SYS_EXTRA_CFLAGS="${LIBBPF_SYS_EXTRA_CFLAGS:-} -include $PWD/libbpf-u128-compat.h"
+%endif
+%endif
 # eBPF is now enabled by default, no need for explicit feature flag
 cargo build --release
 %endif
@@ -87,32 +100,32 @@ rm -f %{buildroot}%{_prefix}/.crates.toml %{buildroot}%{_prefix}/.crates2.json
 %else
 install -Dpm 0755 target/release/rustnet -t %{buildroot}%{_bindir}/
 %endif
-install -Dpm 0644 crates/rustnet-core/assets/services -t %{buildroot}%{_datadir}/%{name}/
 install -Dpm 0644 resources/packaging/linux/graphics/rustnet.png -t %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/
+install -Dpm 0644 resources/packaging/linux/graphics/rustnet.svg -t %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/
 install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_datadir}/applications/
 
 %files
 %license LICENSE
 %doc README.md
 %{_bindir}/rustnet
-%dir %{_datadir}/%{name}
-%{_datadir}/%{name}/services
 %dir %{_datadir}/icons/hicolor
 %dir %{_datadir}/icons/hicolor/256x256
 %dir %{_datadir}/icons/hicolor/256x256/apps
 %{_datadir}/icons/hicolor/256x256/apps/rustnet.png
+%dir %{_datadir}/icons/hicolor/scalable
+%dir %{_datadir}/icons/hicolor/scalable/apps
+%{_datadir}/icons/hicolor/scalable/apps/rustnet.svg
 %{_datadir}/applications/rustnet.desktop
 
 %post
-# Set capabilities for packet capture and eBPF support without requiring root/sudo
-# This allows rustnet to run as a normal user with enhanced eBPF process detection
+# Set narrow capabilities for packet capture and eBPF support without requiring root/sudo.
+# If eBPF capabilities are unavailable, fall back to packet capture only;
+# rustnet will degrade to procfs process detection rather than auto-grant CAP_SYS_ADMIN.
 if command -v setcap >/dev/null 2>&1; then
-    # Try modern capabilities first (Linux 5.8+)
     # CAP_NET_RAW: read-only packet capture (non-promiscuous mode)
     # CAP_BPF, CAP_PERFMON: eBPF support for enhanced process tracking
     setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' %{_bindir}/rustnet 2>/dev/null || \
-        # Fallback for older kernels without CAP_BPF/CAP_PERFMON
-        setcap 'cap_net_raw,cap_sys_admin+eip' %{_bindir}/rustnet || :
+        setcap 'cap_net_raw+eip' %{_bindir}/rustnet || :
 fi
 
 %posttrans
@@ -128,18 +141,18 @@ NETWORK PACKET CAPTURE PERMISSIONS:
   To verify permissions are set correctly:
     getcap %{_bindir}/rustnet
 
-  Expected output (modern Linux 5.8+):
+  Expected output (Linux 5.8+ with eBPF support):
     %{_bindir}/rustnet cap_net_raw,cap_bpf,cap_perfmon=eip
 
-  Or for legacy kernels (pre-5.8):
-    %{_bindir}/rustnet cap_net_raw,cap_sys_admin=eip
+  Or, if eBPF capabilities were unavailable during install:
+    %{_bindir}/rustnet cap_net_raw=eip
 
   If capabilities are not set, you can manually set them:
     # For modern Linux 5.8+ with eBPF support
     sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' %{_bindir}/rustnet
 
-    # Or for legacy kernels without CAP_BPF support
-    sudo setcap 'cap_net_raw,cap_sys_admin+eip' %{_bindir}/rustnet
+    # Packet capture only (eBPF falls back to procfs)
+    sudo setcap 'cap_net_raw+eip' %{_bindir}/rustnet
 
   Note: RustNet uses read-only packet capture (no promiscuous mode).
         CAP_NET_ADMIN is NOT required.

@@ -2,7 +2,17 @@
 
 # Security
 
+> **Documentation version:** On `main`, this guide describes development code and may include unreleased changes. For v1.7.0, use the [v1.7.0 security guide](https://github.com/domcyrus/rustnet/blob/v1.7.0/SECURITY.md). Check `rustnet --version` for your installed version.
+
 RustNet processes untrusted network data, making defense-in-depth security critical. This document describes the security measures implemented.
+
+> **Hardening available since v1.7.0:** RustNet aborts on a failed requested UID/GID drop, retains secure output descriptors without Seatbelt output-path exceptions, and checks for output-file collisions. The Linux startup socket inventory described below is also available since v1.7.0.
+
+On Linux, macOS, and FreeBSD, a requested root UID/GID drop must succeed before
+packet-processing workers start, even in best-effort mode. A failed transition
+aborts startup instead of continuing as root or with a partially changed identity.
+Unavailable optional sandbox layers may still degrade gracefully. Explicit
+`--no-uid-drop` or `--no-sandbox` opt-outs retain their existing behavior.
 
 ## Table of Contents
 
@@ -12,7 +22,7 @@ RustNet processes untrusted network data, making defense-in-depth security criti
 - [Privilege Drop and Job Object Sandboxing (Windows)](#privilege-drop-and-job-object-sandboxing-windows)
 - [Privilege Requirements](#privilege-requirements)
 - [Read-Only Operation](#read-only-operation)
-- [No External Communication](#no-external-communication)
+- [Network Communication](#no-external-communication)
 - [Log File Privacy](#log-file-privacy)
 - [eBPF Security](#ebpf-security)
 - [Threat Model](#threat-model)
@@ -28,10 +38,11 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 
 | Restriction | Kernel Version | Description |
 |-------------|----------------|-------------|
-| Filesystem | 5.13+ | Only `/proc` readable (for process identification) |
-| Network | 6.4+ | TCP bind/connect blocked (RustNet is passive) |
+| Filesystem | 5.13+ | Read access limited to `/proc`, interface-statistics sysfs paths, and account, resolver, GeoIP, and optional Kubernetes paths needed at runtime |
+| Network | 6.7+ | TCP bind blocked; TCP connect blocked except destination port 53 when reverse DNS is enabled. The current Landlock policy does not restrict UDP |
 | Capabilities | Any | `CAP_NET_RAW` dropped after pcap socket opened |
 | Capabilities | Any | `CAP_BPF`, `CAP_PERFMON` dropped after eBPF programs loaded |
+| Root uid | Any | When started as root (e.g. `sudo rustnet`), the process drops to the invoking user (`SUDO_UID`/`SUDO_GID`) or `nobody` after initialization |
 | Privileges | 3.5+ | `PR_SET_NO_NEW_PRIVS` set by RustNet itself — always, even with `--no-sandbox` — prevents privilege escalation via setuid binaries |
 
 ### How It Works
@@ -39,31 +50,45 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 1. **Initialization phase**: RustNet loads eBPF programs, opens packet capture handles, and creates log files
 2. **Privilege lock**: `PR_SET_NO_NEW_PRIVS` is set (applied even when the sandbox is disabled)
 3. **Capability drop**: `CAP_NET_RAW`, `CAP_BPF`, and `CAP_PERFMON` are removed from the process
-4. **Landlock**: Restricts filesystem and network access
+4. **Root uid drop**: when running as root, the process switches to the invoking sudo user (or `nobody`) via `setresuid`/`setresgid`. Already-open capture sockets, eBPF programs, and log/export files keep working. This matters most on kernels without Landlock, where the uid drop is the main containment
+5. **Landlock**: Restricts filesystem and network access
 
 ### Security Benefits
 
-If an attacker exploits a vulnerability in DPI/packet parsing:
+When Landlock is enforced, an attacker exploiting DPI/packet parsing is subject
+to these restrictions. The TCP restrictions require Linux 6.7+ and an active
+Landlock network policy:
 - Cannot read arbitrary files (credentials, configs, etc.)
-- Cannot write to filesystem (except configured log paths)
-- Cannot make outbound TCP connections (data exfiltration blocked)
+- Cannot open new writable paths; existing output descriptors remain writable
+- Cannot make outbound TCP connections other than DNS on destination port 53 when reverse DNS is enabled
 - Cannot bind TCP ports (reverse shell blocked)
 - Cannot create new raw sockets (capability dropped)
 - Cannot escalate privileges via setuid binaries (`PR_SET_NO_NEW_PRIVS`, set even with `--no-sandbox`)
+- Does not run as root: under `sudo rustnet` the process continues as the invoking user, so even on kernels without Landlock a compromise does not yield root
 
 ### CLI Options
 
 ```
---no-sandbox        Disable Landlock sandboxing and capability dropping
-                    (PR_SET_NO_NEW_PRIVS is still set)
+--no-sandbox        Disable Landlock sandboxing, capability dropping, and the
+                    root uid drop (PR_SET_NO_NEW_PRIVS is still set)
 --sandbox-strict    Require full sandbox enforcement or exit
+--no-uid-drop       Keep running as root instead of dropping to
+                    SUDO_UID/SUDO_GID (or nobody) after initialization
 ```
+
+Trade-off of the root uid drop: the procfs fallback for process attribution can
+then only inspect processes owned by the target user, and Kubernetes log
+directories under `/var/log/pods` may become unreadable. On Linux 5.11 and
+newer, the default eBPF path takes a one-shot task-file socket inventory before
+the drop, so pre-existing sockets owned by other users remain attributable. If
+you rely on procfs-only attribution, such as a build without eBPF or an older
+kernel, and need to attribute other users' processes, use `--no-uid-drop`.
 
 ### Graceful Degradation
 
 - **Kernel < 5.13**: Sandboxing skipped, warning logged
-- **Kernel 5.13-6.3**: Filesystem restrictions only
-- **Kernel 6.4+**: Full filesystem + network restrictions
+- **Kernel 5.13-6.6**: Filesystem restrictions only
+- **Kernel 6.7+**: Filesystem and TCP restrictions; UDP remains unrestricted by the current Landlock policy
 - **Docker**: Landlock may be restricted; app continues normally
 
 ## Seatbelt Sandboxing (macOS)
@@ -74,43 +99,60 @@ On macOS 10.5+, RustNet uses [Seatbelt](https://theapplewiki.com/wiki/Dev:Seatbe
 
 | Restriction | Description |
 |-------------|-------------|
-| Outbound network | TCP/UDP outbound blocked; Unix sockets (Mach IPC) allowed |
+| Outbound network | TCP/UDP outbound blocked except destination port 53 when reverse DNS is enabled; Unix sockets (Mach IPC) allowed |
 | Filesystem reads | User home directories blocked (`/Users`, `/var/root`); GeoIP paths explicitly allowed |
 | Filesystem writes | All user home directories blocked (`/Users`, `/var/root`) |
-| Filesystem writes | Only configured log and PCAP export paths writable |
+| Output files | Writes use retained descriptors; no output-path write exceptions are granted |
 | Process execution | All binaries blocked except `/usr/sbin/lsof` |
+| Root uid | When started as root (e.g. `sudo rustnet`), the process drops to the invoking user (`SUDO_UID`/`SUDO_GID`) or `nobody` after initialization |
 
 ### How It Works
 
 1. **Initialization phase**: RustNet opens packet capture handles (BPF/PKTAP) and creates log files
-2. **Pre-create**: PCAP sidecar file (`.connections.jsonl`) is created before the sandbox so its path is already a valid allow target
-3. **Sandbox application**: `sandbox_init_with_parameters` is called — already-open file descriptors survive unchanged, only future operations are restricted
+2. **Prepare outputs**: JSON logging, PCAP, PCAP sidecar (`.connections.jsonl`), and PCAPNG files are securely opened before the sandbox. Their opened file identities are checked for collisions before capture outputs are truncated, and the descriptors remain open across the uid drop
+3. **Root uid drop**: when running as root, the process switches to the invoking sudo user (or `nobody`) via `setgid`/`setuid`. Already-open capture and log/export descriptors keep working
+4. **Sandbox application**: `sandbox_init_with_parameters` is called; already-open file descriptors survive unchanged, only future operations are restricted
 
 ### Profile Strategy
 
-RustNet uses an **allow-default** SBPL profile with targeted denies. A deny-default profile would require explicitly whitelisting all system libraries, Mach ports, locale data, fonts, and other OS internals — fragile and error-prone. Allow-default with targeted denies covers the primary threats (credential theft, data exfiltration, shell escapes) without operational risk. Specific deny rules block file reads/writes under user home directories, outbound network connections, and execution of all binaries except `/usr/sbin/lsof`.
+RustNet uses an **allow-default** SBPL profile with targeted denies. A
+deny-default profile would require explicitly whitelisting all system libraries,
+Mach ports, locale data, fonts, and other OS internals, which is fragile across
+OS releases. The targeted rules block reads and writes under user home
+directories, outbound network connections except DNS on port 53 when enabled,
+and execution of all binaries except `/usr/sbin/lsof`.
 
 ### Output File Support
 
-`--json-log` and `--pcap-export` paths are passed to the SBPL profile as runtime parameters (`JSON_LOG_PATH`, `PCAP_PATH`, `PCAP_JSONL_PATH`). The profile grants an explicit `allow file-write*` rule on each path, which takes precedence over the broader `/Users` deny rule via SBPL specificity. Unused parameters default to `/dev/null`.
+`--json-log`, `--pcap-export`, and `--pcapng-export` write through securely pre-opened file descriptors, including the PCAP sidecar. RustNet does not reopen these paths after sandboxing and passes no output-path write exceptions to the Seatbelt profile. This also avoids granting write access to a different file if a pathname is replaced after preparation.
 
-Both flags work normally within the sandbox.
+All three flags work normally within the sandbox.
+
+**Available since v1.7.0:** On Unix, existing explicit output files must belong to the effective user or a valid sudo caller. Output paths are opened relative to validated directory descriptors. Directories with unsafe ownership or permissions are rejected. Automatic diagnostic logs are created only as new files in a validated `logs/` directory. Use trusted private launch and output directories; changing permissions on an existing file cannot revoke descriptors another process already holds.
 
 ### Security Benefits
 
 If an attacker exploits a vulnerability in DPI/packet parsing:
 - Cannot read SSH keys, AWS credentials, browser profiles, or other credential files under `/Users`
 - Cannot write to SSH keys, AWS credentials, browser profiles, or other credential files
-- Cannot make outbound TCP/UDP connections (data exfiltration blocked)
-- Cannot open new raw network sockets
-- Cannot execute binaries (no shell escapes via `/bin/sh`, `/usr/bin/curl`, etc.)
+- Cannot make outbound TCP/UDP connections other than DNS on destination port 53 when reverse DNS is enabled
+- Cannot execute binaries other than `/usr/sbin/lsof` (no shell escapes via `/bin/sh`, `/usr/bin/curl`, etc.)
+- Does not run as root: under `sudo rustnet` the process continues as the invoking user
 
 ### CLI Options
 
 ```
---no-sandbox        Disable Seatbelt sandboxing
+--no-sandbox        Disable Seatbelt sandboxing and the root uid drop
 --sandbox-strict    Require full sandbox enforcement or exit
+--no-uid-drop       Keep running as root instead of dropping to
+                    SUDO_UID/SUDO_GID (or nobody) after initialization
 ```
+
+Trade-off of the root uid drop: the default PKTAP attribution path is
+unaffected (process metadata arrives in-band on the already-open capture fd),
+but the lsof fallback (active when PKTAP is unavailable, e.g. with an explicit
+`--interface`) then only sees the target user's processes. Use `--no-uid-drop`
+if you rely on lsof attribution for other users' processes.
 
 ### Why BestEffort is Default
 
@@ -120,11 +162,22 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 
 Unlike Linux Landlock, clipboard copy (`c` key) works normally under Seatbelt. macOS clipboard uses NSPasteboard, which communicates via Mach IPC over Unix domain sockets — the SBPL profile explicitly allows `(network-outbound (remote unix-socket))`.
 
-On Linux, clipboard requires access to Wayland sockets (`/run/user/UID/wayland-0`) or X11 sockets (`/tmp/.X11-unix/`). Landlock's deny-default model blocks these because they are not in the write-path allowlist, so clipboard is unavailable when Landlock is active.
+On Linux, clipboard requires access to Wayland sockets (`/run/user/UID/wayland-0`) or X11 sockets (`/tmp/.X11-unix/`). Landlock grants no pathname write exceptions and blocks these sockets, so clipboard is unavailable when Landlock is active.
 
 ## FreeBSD Sandboxing
 
 FreeBSD does not currently have sandboxing enabled. A full Capsicum sandbox using `cap_enter()` with `libcasper` for privileged process lookup is planned — see [ROADMAP.md](ROADMAP.md) for details.
+
+### Root Uid Drop
+
+Until Capsicum lands, the primary containment on FreeBSD is a root privilege drop: when started as root (e.g. `sudo rustnet`), the process drops to the invoking user (`SUDO_UID`/`SUDO_GID`) or `nobody` after the BPF capture devices are open, via `setresuid`/`setresgid`. Already-open capture and log/export descriptors keep working, and pre-created export files are handed over to the target user. Note that `doas` does not set `SUDO_UID`, so doas users get the `nobody` fallback.
+
+Trade-off: process attribution uses `sockstat`, which as a non-root user only sees the target user's sockets. Use `--no-uid-drop` if you need attribution for other users' processes.
+
+```
+--no-uid-drop       Keep running as root instead of dropping to
+                    SUDO_UID/SUDO_GID (or nobody) after initialization
+```
 
 ## Privilege Drop and Job Object Sandboxing (Windows)
 
@@ -154,9 +207,10 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 
 ### Limitations
 
-Windows sandboxing is weaker than Linux/macOS/FreeBSD:
+Windows sandboxing provides fewer filesystem and network restrictions than
+Linux Landlock or macOS Seatbelt. FreeBSD currently has no comparable sandbox:
 - No filesystem restriction — Windows lacks a process-wide filesystem sandbox equivalent to Landlock or Seatbelt
-- No network restriction — blocking outbound would break Npcap packet capture
+- No network restriction; outbound connections remain possible
 - Privilege removal only affects privileges the elevated process held
 
 ### CLI Options
@@ -191,14 +245,16 @@ Instead of running as root, grant only the required capabilities:
 # Modern Linux (5.8+): packet capture + eBPF
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)
 
-# Legacy Linux (pre-5.8): packet capture + eBPF
-sudo setcap 'cap_net_raw,cap_sys_admin+eip' $(which rustnet)
-
 # Packet capture only (no eBPF process detection)
 sudo setcap cap_net_raw+eip $(which rustnet)
 ```
 
-After sandbox application, `CAP_NET_RAW` is dropped - the process retains only the minimum privileges needed.
+Legacy pre-5.8 kernels required `CAP_SYS_ADMIN` for eBPF operations. RustNet
+does not grant this broad capability automatically; use `CAP_NET_RAW` only and
+let eBPF fall back to procfs unless you explicitly accept the extra risk.
+
+After sandbox application, `CAP_NET_RAW` and eBPF-loading capabilities are
+dropped - the process retains only the minimum privileges needed.
 
 ## Read-Only Operation
 
@@ -211,13 +267,13 @@ RustNet only monitors traffic; it does not:
 
 The packet capture is opened in non-promiscuous, read-only mode.
 
-## No External Communication
+## Network Communication <a id="no-external-communication"></a>
 
-RustNet operates entirely locally:
-- No telemetry or analytics
-- No network requests (except monitored traffic)
-- No cloud services or remote APIs
-- All data stays on your system
+RustNet has no telemetry, cloud service, or remote API. Its GeoIP lookups use
+local database files. Reverse DNS is enabled by default and may send PTR
+queries for observed IP addresses to the system's configured DNS resolver.
+Use `--no-resolve-dns` to avoid those lookups. Captured traffic, logs, and
+exports are written locally unless you choose to share them.
 
 ## Log File Privacy
 
@@ -240,6 +296,7 @@ When using eBPF for enhanced process detection (default on Linux):
 - Requires additional kernel capabilities (`CAP_BPF`, `CAP_PERFMON`)
 - eBPF programs are verified by kernel before loading
 - Limited to read-only operations (no packet modification)
+- On Linux 5.11+, a one-shot task-file iterator inventories pre-existing socket owners
 - Automatically falls back to procfs if eBPF fails
 
 ## Threat Model
@@ -272,7 +329,7 @@ For this reason, running with fine-grained capabilities (`setcap cap_net_raw=eip
 RustNet takes the following measures to protect against supply chain attacks:
 
 - **Dependency lockfile**: `Cargo.lock` is committed to the repository, pinning all transitive dependency versions and recording source checksums. This prevents silent version upgrades.
-- **Security audit**: `cargo deny check` runs in CI on every push and pull request, checking dependencies against the RustSec Advisory Database and enforcing license, source, and wildcard-version policies (`deny.toml`). A scheduled daily workflow re-checks advisories against the committed `Cargo.lock`, so newly published advisories surface without requiring a push.
+- **Security audit**: `cargo audit` runs in CI on every push and pull request, checking dependencies against the RustSec Advisory Database and detecting yanked releases. A scheduled daily workflow re-checks the committed `Cargo.lock`, so newly published advisories and yanks surface without requiring a push.
 - **CI action pinning**: All GitHub Actions are pinned by commit SHA (not tags), preventing tag-rewriting attacks on upstream actions.
 - **Conservative dependency policy**: New dependencies require justification and are reviewed for maintenance status and security track record (see `CONTRIBUTING.md`).
 - **Build-time integrity**: The Windows Npcap SDK download in `build.rs` is verified against a hardcoded SHA256 checksum.

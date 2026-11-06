@@ -2,20 +2,43 @@ use anyhow::Result;
 use std::{env, fs::File, path::PathBuf};
 
 fn main() -> Result<()> {
-    // Generate shell completions and manpage
     generate_assets()?;
 
-    // Add library search paths for cross-compilation
     setup_cross_compilation_libs();
 
-    // eBPF program compilation now lives in the rustnet-host crate's build.rs.
+    // A stock Npcap install keeps its DLLs under System32\Npcap, outside the
+    // default loader search path. Delay-loading lets main() add that directory
+    // before Windows resolves the imports.
+    setup_windows_npcap_delay_load();
 
     #[cfg(target_os = "windows")]
     download_windows_npcap_sdk()?;
 
+    embed_windows_manifest();
+
     println!("cargo:rerun-if-changed=src/cli.rs");
 
     Ok(())
+}
+
+/// Embed the UTF-8 active-code-page application manifest on MSVC Windows
+/// targets, the only Windows toolchain releases ship. Two plain linker
+/// flags, no build dependency; see the manifest file for why it exists.
+/// The GNU toolchain would need a compiled resource object instead and is
+/// deliberately left as-is (no manifest, today's behavior).
+fn embed_windows_manifest() {
+    let target = env::var("TARGET").unwrap_or_default();
+    if !target.contains("windows-msvc") {
+        return;
+    }
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+        .join("resources/packaging/windows/rustnet.exe.manifest");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}",
+        manifest.display()
+    );
 }
 
 include!("src/cli.rs");
@@ -53,6 +76,17 @@ fn setup_cross_compilation_libs() {
     }
 }
 
+fn setup_windows_npcap_delay_load() {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+
+    if target_os == "windows" && target_env == "msvc" {
+        println!("cargo:rustc-link-arg=/DELAYLOAD:Packet.dll");
+        println!("cargo:rustc-link-arg=/DELAYLOAD:wpcap.dll");
+        println!("cargo:rustc-link-arg=/DEFAULTLIB:delayimp.lib");
+    }
+}
+
 fn generate_assets() -> Result<()> {
     use clap::ValueEnum;
     use clap_complete::Shell;
@@ -60,18 +94,15 @@ fn generate_assets() -> Result<()> {
 
     let mut cmd = build_cli();
 
-    // build into `RUSTNET_ASSET_DIR` with a fallback to `OUT_DIR`
     let asset_dir: PathBuf = env::var_os("RUSTNET_ASSET_DIR")
         .or_else(|| env::var_os("OUT_DIR"))
         .ok_or_else(|| anyhow::anyhow!("OUT_DIR is unset"))?
         .into();
 
-    // completion
     for &shell in Shell::value_variants() {
         clap_complete::generate_to(shell, &mut cmd, "rustnet", &asset_dir)?;
     }
 
-    // manpage
     let mut manpage_out = File::create(asset_dir.join("rustnet.1"))?;
     let manpage = Man::new(cmd);
     manpage.render(&mut manpage_out)?;
@@ -89,34 +120,40 @@ fn download_windows_npcap_sdk() -> Result<()> {
 
     println!("cargo:rerun-if-changed=build.rs");
 
-    // get npcap SDK
     const NPCAP_SDK: &str = "npcap-sdk-1.15.zip";
     const NPCAP_SDK_SHA256: &str =
         "52c7b9fb4abee3ad9fe739bb545c3efe77b731c8e127122bdf328eafdae3ed4f";
 
     let npcap_sdk_download_url = format!("https://npcap.com/dist/{NPCAP_SDK}");
+    // The tcpdump project's byte-identical SDK mirror avoids making Windows
+    // builds depend on npcap.com's TLS availability. Pin the mirror revision;
+    // both sources must still pass the same checksum below.
+    let npcap_sdk_mirror_url = format!(
+        "https://raw.githubusercontent.com/the-tcpdump-group/tcpdump-htdocs/\
+         f5712b53248430a38938b045b692a9611344d9c8/depends/{NPCAP_SDK}"
+    );
     let cache_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("target");
     let npcap_sdk_cache_path = cache_dir.join(NPCAP_SDK);
 
     let npcap_zip = match fs::read(&npcap_sdk_cache_path) {
-        // use cached (verify checksum)
         Ok(zip_data) => {
             eprintln!("Found cached npcap SDK");
             verify_npcap_checksum(&zip_data)?;
             zip_data
         }
-        // download SDK
         Err(_) => {
             eprintln!("Downloading npcap SDK");
 
-            // download
             let mut zip_data = vec![];
-            let _res = http_req::request::get(npcap_sdk_download_url, &mut zip_data)?;
+            if let Err(error) = http_req::request::get(npcap_sdk_download_url, &mut zip_data) {
+                eprintln!("Npcap SDK download failed ({error}); trying the pinned tcpdump mirror");
+                // A failed request may have written a partial response.
+                zip_data.clear();
+                http_req::request::get(npcap_sdk_mirror_url, &mut zip_data)?;
+            }
 
-            // verify checksum before caching
             verify_npcap_checksum(&zip_data)?;
 
-            // write cache
             fs::create_dir_all(cache_dir)?;
             let mut cache = fs::File::create(npcap_sdk_cache_path)?;
             cache.write_all(&zip_data)?;
@@ -140,7 +177,6 @@ fn download_windows_npcap_sdk() -> Result<()> {
         Ok(())
     }
 
-    // extract libraries based on target architecture
     let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
     let (packet_lib_path, wpcap_lib_path) = if target.contains("aarch64") {
         ("Lib/ARM64/Packet.lib", "Lib/ARM64/wpcap.lib")
@@ -154,7 +190,6 @@ fn download_windows_npcap_sdk() -> Result<()> {
 
     let mut archive = zip::ZipArchive::new(io::Cursor::new(npcap_zip))?;
 
-    // Extract Packet.lib
     let mut packet_lib = archive.by_name(packet_lib_path)?;
     let lib_dir = PathBuf::from(env::var("OUT_DIR")?).join("npcap_sdk");
     fs::create_dir_all(&lib_dir)?;
@@ -163,7 +198,6 @@ fn download_windows_npcap_sdk() -> Result<()> {
     io::copy(&mut packet_lib, &mut packet_file)?;
     drop(packet_lib);
 
-    // Extract wpcap.lib
     let mut wpcap_lib = archive.by_name(wpcap_lib_path)?;
     let wpcap_lib_dest = lib_dir.join("wpcap.lib");
     let mut wpcap_file = fs::File::create(wpcap_lib_dest)?;

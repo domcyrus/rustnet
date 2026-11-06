@@ -1,0 +1,54 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
+                                                                                                                                            
+▌ -                     [fe80::2]:0             [fe80::1]:0        -          ICMP                     ICMP_OTHER        - -             -/-
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+▎ ? → [fe80::2]:0 [ICMP_OTHER] · click a field to copy ─────────────────────────────────────────────────────────────────────────────────────
+Connection                                                            Application: ICMPv6                                                   
+Protocol              ICMP                                            Message               Neighbor Advertisement                          
+Status                Active (last seen <T> ago)                       Echo ID               -                                               
+Local Address         [fe80::1]:0                                     Sequence              -                                               
+Remote Address        [fe80::2]:0                                     NDP Neighbor          fe80::2 at b8:27:eb:12:34:56 (Raspberry Pi Fou  
+Scope                 LINK-LOCAL                                                                                                            
+State                 ICMP_OTHER                                                                                                            
+Process               -                                                                                                                     
+PID                   -                                                                                                                     
+Service               -                                               Attributed Name       -                                               
+Observed VLANs        -                                               Attributed Via        -                                               
+                                                                                                                                            
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               No transport metrics for this protocol                                
+Local MAC             -                                                                                                                     
+Remote Hostname       -                                                                                                                     
+Remote MAC            -                                                                                                                     
+Country               -                                                                                                                     
+City                  -                                                                                                                     
+ASN                   -                                                                                                                     
+                                                                                                                                            
+Attribution                                                                                                                                 
+PID                   -                                                                                                                     
+PPID                  -                                                                                                                     
+Process Tree          -                                                                                                                     
+Executable            -                                                                                                                     
+User                  -                                                                                                                     
+Match                 -                                                                                                                     
+                                                                                                                                            
+▎ Traffic Statistics · smoothed avg · 60s · B/s ────────────────────────────────────────────────────────────────────────────────────────────
+↓ RX Now 0 B/s       →                             peak       0 B/s   ↑ TX Now 0 B/s       →                             peak       0 B/s   
+Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
+Collecting traffic history...                                         Collecting traffic history...                                         
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ j/k connection  c copy remote addr  esc back                                                                                h help  q quit

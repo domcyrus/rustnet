@@ -1,0 +1,13 @@
+[advisories]
+ignore = [
+    # quick-xml < 0.41.0 can consume excessive resources when parsing
+    # untrusted XML. RustNet only receives it through wayland-scanner, a
+    # build-time tool that parses trusted protocol XML bundled with the crate.
+    # wayland-scanner 0.31.8 currently pins quick-xml ^0.38.3.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
+
+[output]
+deny = ["yanked"]
+quiet = false

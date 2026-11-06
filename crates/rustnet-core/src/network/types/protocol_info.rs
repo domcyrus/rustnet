@@ -1,0 +1,1557 @@
+use std::borrow::Cow;
+use std::collections::{BTreeMap, VecDeque};
+use std::time::Duration;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshConnectionState {
+    Banner,
+    KeyExchange,
+    Authentication,
+    Established,
+}
+
+static_names! {
+    SshConnectionState {
+        Banner => "Banner",
+        KeyExchange => "Key Exchange",
+        Authentication => "Authentication",
+        Established => "Established",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SshInfo {
+    pub version: Option<SshVersion>,
+    pub client_software: Option<String>,
+    pub server_software: Option<String>,
+    pub connection_state: SshConnectionState,
+    pub algorithms: Vec<String>,
+    pub auth_method: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshVersion {
+    V1,
+    V2,
+}
+
+static_names! {
+    SshVersion {
+        V1 => "SSH-1",
+        V2 => "SSH-2",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BitTorrentType {
+    Peer,
+    Dht,
+    Utp,
+}
+
+static_names! {
+    BitTorrentType {
+        Peer => "Peer",
+        Dht => "DHT",
+        Utp => "uTP",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BitTorrentInfo {
+    pub protocol_type: BitTorrentType,
+    pub info_hash: Option<String>,
+    pub client: Option<String>,
+    pub dht_method: Option<String>,
+    pub supports_dht: bool,
+    pub supports_extension: bool,
+    pub supports_fast: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MqttPacketType {
+    Connect,
+    Connack,
+    Publish,
+    Puback,
+    Pubrec,
+    Pubrel,
+    Pubcomp,
+    Subscribe,
+    Suback,
+    Unsubscribe,
+    Unsuback,
+    Pingreq,
+    Pingresp,
+    Disconnect,
+    Auth,
+}
+
+static_names! {
+    MqttPacketType {
+        Connect => "CONNECT",
+        Connack => "CONNACK",
+        Publish => "PUBLISH",
+        Puback => "PUBACK",
+        Pubrec => "PUBREC",
+        Pubrel => "PUBREL",
+        Pubcomp => "PUBCOMP",
+        Subscribe => "SUBSCRIBE",
+        Suback => "SUBACK",
+        Unsubscribe => "UNSUBSCRIBE",
+        Unsuback => "UNSUBACK",
+        Pingreq => "PINGREQ",
+        Pingresp => "PINGRESP",
+        Disconnect => "DISCONNECT",
+        Auth => "AUTH",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MqttVersion {
+    V31,
+    V311,
+    V50,
+}
+
+static_names! {
+    MqttVersion {
+        V31 => "3.1",
+        V311 => "3.1.1",
+        V50 => "5.0",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MqttInfo {
+    pub version: Option<MqttVersion>,
+    pub packet_type: MqttPacketType,
+    pub client_id: Option<String>,
+    pub topic: Option<String>,
+    pub qos: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireGuardPacketType {
+    HandshakeInitiation,
+    HandshakeResponse,
+    CookieReply,
+    TransportData,
+}
+
+static_names! {
+    WireGuardPacketType {
+        HandshakeInitiation => "Handshake Initiation",
+        HandshakeResponse => "Handshake Response",
+        CookieReply => "Cookie Reply",
+        TransportData => "Transport Data",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WireGuardInfo {
+    pub packet_type: WireGuardPacketType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenVpnPacketType {
+    ControlSoftReset,
+    Control,
+    Ack,
+    DataV1,
+    DataV2,
+    ControlHardResetClientV2,
+    ControlHardResetServerV2,
+    ControlHardResetClientV3,
+    ControlWithWrappedKey,
+}
+
+static_names! {
+    OpenVpnPacketType {
+        ControlSoftReset => "Control Soft Reset",
+        Control => "Control",
+        Ack => "ACK",
+        DataV1 => "Data v1",
+        DataV2 => "Data v2",
+        ControlHardResetClientV2 => "Client Hard Reset v2",
+        ControlHardResetServerV2 => "Server Hard Reset v2",
+        ControlHardResetClientV3 => "Client Hard Reset v3",
+        ControlWithWrappedKey => "Control with Wrapped Key",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenVpnInfo {
+    pub packet_type: OpenVpnPacketType,
+    pub key_id: u8,
+}
+
+#[derive(Debug, Clone)]
+pub enum ApplicationProtocol {
+    Http(HttpInfo),
+    Https(HttpsInfo),
+    Dns(DnsInfo),
+    Ssh(SshInfo),
+    Quic(Box<QuicInfo>),
+    Ntp(NtpInfo),
+    Mdns(MdnsInfo),
+    Llmnr(LlmnrInfo),
+    Dhcp(DhcpInfo),
+    Snmp(SnmpInfo),
+    Ssdp(SsdpInfo),
+    NetBios(NetBiosInfo),
+    BitTorrent(BitTorrentInfo),
+    Stun(StunInfo),
+    Mqtt(MqttInfo),
+    MySql(MySqlInfo),
+    Redis(RedisInfo),
+    PostgreSql(PostgreSqlInfo),
+    Ftp(FtpInfo),
+    WireGuard(WireGuardInfo),
+    OpenVpn(OpenVpnInfo),
+}
+
+impl ApplicationProtocol {
+    /// Return a short, allocation-free key for sorting by protocol name.
+    pub fn sort_key(&self) -> &'static str {
+        match self {
+            ApplicationProtocol::BitTorrent(_) => "BitTorrent",
+            ApplicationProtocol::Dhcp(_) => "DHCP",
+            ApplicationProtocol::Dns(_) => "DNS",
+            ApplicationProtocol::Ftp(_) => "FTP",
+            ApplicationProtocol::Http(_) => "HTTP",
+            ApplicationProtocol::Https(_) => "HTTPS",
+            ApplicationProtocol::Llmnr(_) => "LLMNR",
+            ApplicationProtocol::Mdns(_) => "mDNS",
+            ApplicationProtocol::Mqtt(_) => "MQTT",
+            ApplicationProtocol::MySql(_) => "MySQL",
+            ApplicationProtocol::Redis(_) => "Redis",
+            ApplicationProtocol::PostgreSql(_) => "PostgreSQL",
+            ApplicationProtocol::NetBios(_) => "NetBIOS",
+            ApplicationProtocol::Ntp(_) => "NTP",
+            ApplicationProtocol::OpenVpn(_) => "OpenVPN",
+            ApplicationProtocol::Quic(_) => "QUIC",
+            ApplicationProtocol::Snmp(_) => "SNMP",
+            ApplicationProtocol::Ssh(_) => "SSH",
+            ApplicationProtocol::Ssdp(_) => "SSDP",
+            ApplicationProtocol::Stun(_) => "STUN",
+            ApplicationProtocol::WireGuard(_) => "WireGuard",
+        }
+    }
+
+    /// TLS handshake metadata, including observed database TLS upgrades.
+    pub fn tls_info(&self) -> Option<&TlsInfo> {
+        match self {
+            ApplicationProtocol::Https(info) => info.tls_info.as_ref(),
+            ApplicationProtocol::MySql(info) => info.tls_info.as_ref(),
+            ApplicationProtocol::PostgreSql(info) => info.tls_info.as_ref(),
+            ApplicationProtocol::Quic(info) => info.tls_info.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Hostname carried in the protocol payload: TLS SNI (including observed
+    /// database upgrades), or the Host header for HTTP. DNS query names are deliberately
+    /// excluded; call sites that want them match `Dns` explicitly.
+    pub fn hostname(&self) -> Option<&str> {
+        match self {
+            ApplicationProtocol::Http(info) => info.host.as_deref(),
+            _ => self.tls_info().and_then(|tls| tls.sni.as_deref()),
+        }
+    }
+}
+
+/// Write `label (detail)`, or just `label` when there is no detail.
+fn labeled(
+    f: &mut std::fmt::Formatter<'_>,
+    label: impl std::fmt::Display,
+    detail: Option<impl std::fmt::Display>,
+) -> std::fmt::Result {
+    match detail {
+        Some(detail) => write!(f, "{label} ({detail})"),
+        None => write!(f, "{label}"),
+    }
+}
+
+impl std::fmt::Display for ApplicationProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApplicationProtocol::Http(_)
+            | ApplicationProtocol::Https(_)
+            | ApplicationProtocol::Quic(_) => labeled(f, self.sort_key(), self.hostname()),
+            ApplicationProtocol::Dns(info) => labeled(f, "DNS", info.query_name.as_deref()),
+            ApplicationProtocol::Ssh(info) => {
+                // Extract just the software name without version details
+                let software = info
+                    .server_software
+                    .as_deref()
+                    .or(info.client_software.as_deref())
+                    .map(|software| software.split('_').next().unwrap_or(software));
+                labeled(f, "SSH", software)
+            }
+            ApplicationProtocol::Ntp(info) => {
+                write!(f, "NTP (v{} {})", info.version, info.mode)
+            }
+            ApplicationProtocol::Mdns(info) => labeled(f, "mDNS", info.query_name.as_deref()),
+            ApplicationProtocol::Llmnr(info) => labeled(f, "LLMNR", info.query_name.as_deref()),
+            ApplicationProtocol::Dhcp(info) => labeled(
+                f,
+                format_args!("DHCP {}", info.message_type),
+                info.hostname.as_deref(),
+            ),
+            ApplicationProtocol::Snmp(info) => labeled(
+                f,
+                format_args!("SNMP {} {}", info.version, info.pdu_type),
+                info.community.as_deref(),
+            ),
+            ApplicationProtocol::Ssdp(info) => labeled(
+                f,
+                format_args!("SSDP {}", info.method),
+                info.service_type.as_deref(),
+            ),
+            ApplicationProtocol::NetBios(info) => labeled(
+                f,
+                format_args!("NetBIOS {}", info.service),
+                info.name.as_deref(),
+            ),
+            ApplicationProtocol::BitTorrent(info) => match info.protocol_type {
+                BitTorrentType::Peer => labeled(f, "BitTorrent", info.client.as_deref()),
+                BitTorrentType::Dht => labeled(f, "BT DHT", info.dht_method.as_deref()),
+                BitTorrentType::Utp => write!(f, "BT uTP"),
+            },
+            ApplicationProtocol::Stun(info) => labeled(
+                f,
+                format_args!("STUN {} {}", info.method, info.message_class),
+                info.software.as_deref(),
+            ),
+            ApplicationProtocol::Mqtt(info) => labeled(
+                f,
+                format_args!("MQTT {}", info.packet_type),
+                info.topic.as_deref().or(info.client_id.as_deref()),
+            ),
+            ApplicationProtocol::Ftp(info) => match info.message_type {
+                FtpMessageType::Request => {
+                    if let Some(cmd) = &info.command {
+                        if let Some(args) = &info.args {
+                            write!(f, "FTP {} {}", cmd, args)
+                        } else {
+                            write!(f, "FTP {}", cmd)
+                        }
+                    } else {
+                        write!(f, "FTP")
+                    }
+                }
+                FtpMessageType::Response => {
+                    if let (Some(code), Some(sw)) = (info.response_code, &info.server_software) {
+                        write!(f, "FTP {} ({})", code, sw)
+                    } else if let Some(code) = info.response_code {
+                        write!(f, "FTP {}", code)
+                    } else {
+                        write!(f, "FTP")
+                    }
+                }
+            },
+            ApplicationProtocol::MySql(info) => labeled(f, "MySQL", info.server_version.as_deref()),
+            ApplicationProtocol::Redis(info) => labeled(f, "Redis", Some(info.command.as_str())),
+            ApplicationProtocol::PostgreSql(info) => {
+                labeled(f, "PostgreSQL", info.database.as_deref())
+            }
+            ApplicationProtocol::WireGuard(_) => write!(f, "WireGuard"),
+            ApplicationProtocol::OpenVpn(_) => write!(f, "OpenVPN"),
+        }
+    }
+}
+
+/// Metadata from a complete MySQL classic-protocol greeting or SSLRequest.
+/// Authentication data and SQL are never retained by this decoder.
+#[derive(Debug, Clone, Default)]
+pub struct MySqlInfo {
+    pub server_version: Option<String>,
+    pub connection_id: Option<u32>,
+    pub tls_supported: Option<bool>,
+    /// An SSLRequest was observed, not proof that encryption succeeded.
+    pub tls_requested: bool,
+    pub tls_info: Option<TlsInfo>,
+}
+
+/// Metadata from a complete RESP command array (also used by RESP3 clients).
+#[derive(Debug, Clone)]
+pub struct RedisInfo {
+    pub command: String,
+    /// Version requested by HELLO, not a confirmed server negotiation.
+    pub requested_version: Option<u8>,
+    /// Database index requested by SELECT, not a confirmed server selection.
+    pub requested_database: Option<u32>,
+}
+
+/// Metadata from PostgreSQL startup messages or SSLRequest.
+#[derive(Debug, Clone, Default)]
+pub struct PostgreSqlInfo {
+    /// Minor version of protocol 3 requested by the client.
+    pub protocol_minor: Option<u16>,
+    pub database: Option<String>,
+    pub application_name: Option<String>,
+    /// An SSLRequest was observed, not proof that encryption succeeded.
+    pub tls_requested: bool,
+    pub tls_info: Option<TlsInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FtpMessageType {
+    Request,
+    Response,
+}
+
+// The protocol-name prefix is already in the surrounding column /
+// panel context, so the variant only needs to disambiguate
+// request-vs-response ("FTP_REQUEST" would render as
+// "FTP / Message Type: FTP_REQUEST" in the details panel).
+static_names! {
+    FtpMessageType {
+        Request => "Request",
+        Response => "Response",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FtpInfo {
+    pub message_type: FtpMessageType,
+    pub command: Option<String>,
+    pub args: Option<String>,
+    pub response_code: Option<u16>,
+    pub response_message: Option<String>,
+    pub username: Option<String>,
+    pub server_software: Option<String>,
+    /// OS / system type from a `215` SYST reply (RFC 959 §4.2): `UNIX`,
+    /// `Windows_NT`, etc. Kept separate from `server_software` so the TUI
+    /// can label them distinctly; they describe different things.
+    pub system_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpInfo {
+    pub version: HttpVersion,
+    pub method: Option<String>,
+    pub host: Option<String>,
+    pub path: Option<String>,
+    pub status_code: Option<u16>,
+    /// Original response status token, retained for display without normalization.
+    pub status_token: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpVersion {
+    Http10,
+    Http11,
+    Http2,
+}
+
+static_names! {
+    HttpVersion {
+        Http10 => "HTTP/1.0",
+        Http11 => "HTTP/1.1",
+        Http2 => "HTTP/2",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpsInfo {
+    pub tls_info: Option<TlsInfo>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TlsInfo {
+    pub version: Option<TlsVersion>,
+    pub sni: Option<String>,
+    pub alpn: Vec<String>,
+    pub cipher_suite: Option<u16>,
+}
+
+impl TlsInfo {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Format the cipher suite with name and hex code
+    pub fn format_cipher_suite(&self) -> Option<String> {
+        self.cipher_suite
+            .map(crate::network::dpi::format_cipher_suite)
+    }
+
+    /// Check if the cipher suite is considered secure
+    pub fn is_cipher_suite_secure(&self) -> Option<bool> {
+        self.cipher_suite
+            .map(crate::network::dpi::is_secure_cipher_suite)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsVersion {
+    Tls10,
+    Tls11,
+    Tls12,
+    Tls13,
+}
+
+static_names! {
+    TlsVersion {
+        Tls10 => "TLS 1.0",
+        Tls11 => "TLS 1.1",
+        Tls12 => "TLS 1.2",
+        Tls13 => "TLS 1.3",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DnsInfo {
+    pub query_name: Option<String>,
+    pub query_type: Option<DnsQueryType>,
+    pub response_ips: Vec<std::net::IpAddr>,
+    pub is_response: bool,
+    /// 16-bit transaction ID pairing a query with its response.
+    pub txid: u16,
+    /// Response code (RCODE); `Some` only on responses.
+    pub rcode: Option<u8>,
+    /// `Some(true)` when a NOERROR response carried no answer record of the
+    /// queried type (NODATA, e.g. a CNAME-only answer or an empty answer
+    /// section): the name exists but has no such record. Claimed per RFC 2308
+    /// §2.2 only when the whole answer section parsed, the response is not
+    /// truncated (TC), and the authority section is NODATA-shaped (SOA or
+    /// empty, not a referral's NS-without-SOA). `Some(false)` when a NOERROR
+    /// response did answer the queried type; `None` before a response is
+    /// seen, when the question section is missing, or when the response is
+    /// ambiguous.
+    pub nodata: Option<bool>,
+}
+
+/// Standard RCODE names (RFC 1035 / RFC 2136). Unknown codes render as "RCODE n".
+pub fn dns_rcode_name(rcode: u8) -> std::borrow::Cow<'static, str> {
+    match rcode {
+        0 => "NOERROR".into(),
+        1 => "FORMERR".into(),
+        2 => "SERVFAIL".into(),
+        3 => "NXDOMAIN".into(),
+        4 => "NOTIMP".into(),
+        5 => "REFUSED".into(),
+        n => format!("RCODE {}", n).into(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// DNS record type names are standardized uppercase abbreviations per RFC 1035 et al.
+// Renaming e.g. AAAA to Aaaa or CNAME to Cname would be semantically incorrect.
+#[allow(clippy::upper_case_acronyms)]
+pub enum DnsQueryType {
+    A,          // 1
+    NS,         // 2
+    CNAME,      // 5
+    SOA,        // 6
+    PTR,        // 12
+    HINFO,      // 13
+    MX,         // 15
+    TXT,        // 16
+    RP,         // 17
+    AFSDB,      // 18
+    SIG,        // 24
+    KEY,        // 25
+    AAAA,       // 28
+    LOC,        // 29
+    SRV,        // 33
+    NAPTR,      // 35
+    KX,         // 36
+    CERT,       // 37
+    DNAME,      // 39
+    APL,        // 42
+    DS,         // 43
+    SSHFP,      // 44
+    IPSECKEY,   // 45
+    RRSIG,      // 46
+    NSEC,       // 47
+    DNSKEY,     // 48
+    DHCID,      // 49
+    NSEC3,      // 50
+    NSEC3PARAM, // 51
+    TLSA,       // 52
+    SMIMEA,     // 53
+    HIP,        // 55
+    CDS,        // 59
+    CDNSKEY,    // 60
+    OPENPGPKEY, // 61
+    CSYNC,      // 62
+    ZONEMD,     // 63
+    SVCB,       // 64
+    HTTPS,      // 65
+    EUI48,      // 108
+    EUI64,      // 109
+    TKEY,       // 249
+    TSIG,       // 250
+    URI,        // 256
+    CAA,        // 257
+    TA,         // 32768
+    DLV,        // 32769
+    Other(u16), // For any other type
+}
+
+impl DnsQueryType {
+    /// Map a wire-format QTYPE / record TYPE value to its enum variant.
+    pub fn from_wire(qtype: u16) -> Self {
+        match qtype {
+            1 => DnsQueryType::A,
+            2 => DnsQueryType::NS,
+            5 => DnsQueryType::CNAME,
+            6 => DnsQueryType::SOA,
+            12 => DnsQueryType::PTR,
+            13 => DnsQueryType::HINFO,
+            15 => DnsQueryType::MX,
+            16 => DnsQueryType::TXT,
+            17 => DnsQueryType::RP,
+            18 => DnsQueryType::AFSDB,
+            24 => DnsQueryType::SIG,
+            25 => DnsQueryType::KEY,
+            28 => DnsQueryType::AAAA,
+            29 => DnsQueryType::LOC,
+            33 => DnsQueryType::SRV,
+            35 => DnsQueryType::NAPTR,
+            36 => DnsQueryType::KX,
+            37 => DnsQueryType::CERT,
+            39 => DnsQueryType::DNAME,
+            42 => DnsQueryType::APL,
+            43 => DnsQueryType::DS,
+            44 => DnsQueryType::SSHFP,
+            45 => DnsQueryType::IPSECKEY,
+            46 => DnsQueryType::RRSIG,
+            47 => DnsQueryType::NSEC,
+            48 => DnsQueryType::DNSKEY,
+            49 => DnsQueryType::DHCID,
+            50 => DnsQueryType::NSEC3,
+            51 => DnsQueryType::NSEC3PARAM,
+            52 => DnsQueryType::TLSA,
+            53 => DnsQueryType::SMIMEA,
+            55 => DnsQueryType::HIP,
+            59 => DnsQueryType::CDS,
+            60 => DnsQueryType::CDNSKEY,
+            61 => DnsQueryType::OPENPGPKEY,
+            62 => DnsQueryType::CSYNC,
+            63 => DnsQueryType::ZONEMD,
+            64 => DnsQueryType::SVCB,
+            65 => DnsQueryType::HTTPS,
+            108 => DnsQueryType::EUI48,
+            109 => DnsQueryType::EUI64,
+            249 => DnsQueryType::TKEY,
+            250 => DnsQueryType::TSIG,
+            256 => DnsQueryType::URI,
+            257 => DnsQueryType::CAA,
+            32768 => DnsQueryType::TA,
+            32769 => DnsQueryType::DLV,
+            other => DnsQueryType::Other(other),
+        }
+    }
+}
+
+impl std::fmt::Display for DnsQueryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DnsQueryType::Other(n) => write!(f, "TYPE{}", n),
+            _ => write!(f, "{:?}", self),
+        }
+    }
+}
+
+// NTP-specific types
+#[derive(Debug, Clone)]
+pub struct NtpInfo {
+    pub version: u8,
+    pub mode: NtpMode,
+    pub stratum: u8,
+    /// Originate timestamp (raw 64-bit NTP format): in a server response,
+    /// the echo of the client's transmit timestamp.
+    pub origin_timestamp: u64,
+    /// Transmit timestamp (raw 64-bit NTP format): when the sender put the
+    /// packet on the wire, by its own clock.
+    pub transmit_timestamp: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtpMode {
+    Reserved,
+    SymmetricActive,
+    SymmetricPassive,
+    Client,
+    Server,
+    Broadcast,
+    Control,
+    Private,
+}
+
+static_names! {
+    NtpMode {
+        Reserved => "Reserved",
+        SymmetricActive => "SymActive",
+        SymmetricPassive => "SymPassive",
+        Client => "Client",
+        Server => "Server",
+        Broadcast => "Broadcast",
+        Control => "Control",
+        Private => "Private",
+    }
+}
+
+impl From<u8> for NtpMode {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => NtpMode::Reserved,
+            1 => NtpMode::SymmetricActive,
+            2 => NtpMode::SymmetricPassive,
+            3 => NtpMode::Client,
+            4 => NtpMode::Server,
+            5 => NtpMode::Broadcast,
+            6 => NtpMode::Control,
+            7 => NtpMode::Private,
+            _ => NtpMode::Reserved,
+        }
+    }
+}
+
+// mDNS-specific types
+#[derive(Debug, Clone)]
+pub struct MdnsInfo {
+    pub query_name: Option<String>,
+    pub query_type: Option<DnsQueryType>,
+    pub is_response: bool,
+    pub response_ips: Vec<std::net::IpAddr>,
+}
+
+/// mDNS shares the DNS wire format; keep only the fields the mDNS view uses.
+impl From<DnsInfo> for MdnsInfo {
+    fn from(dns: DnsInfo) -> Self {
+        Self {
+            query_name: dns.query_name,
+            query_type: dns.query_type,
+            is_response: dns.is_response,
+            response_ips: dns.response_ips,
+        }
+    }
+}
+
+// LLMNR-specific types
+#[derive(Debug, Clone)]
+pub struct LlmnrInfo {
+    pub query_name: Option<String>,
+    pub query_type: Option<DnsQueryType>,
+    pub is_response: bool,
+    pub response_ips: Vec<std::net::IpAddr>,
+    /// 16-bit identifier copied from a query into each response.
+    pub txid: u16,
+}
+
+/// LLMNR shares the DNS wire format; retain its transaction ID for response
+/// timing in addition to the fields used by the protocol view.
+impl From<DnsInfo> for LlmnrInfo {
+    fn from(dns: DnsInfo) -> Self {
+        Self {
+            query_name: dns.query_name,
+            query_type: dns.query_type,
+            is_response: dns.is_response,
+            response_ips: dns.response_ips,
+            txid: dns.txid,
+        }
+    }
+}
+
+// DHCP-specific types
+#[derive(Debug, Clone)]
+pub struct DhcpInfo {
+    pub message_type: DhcpMessageType,
+    pub hostname: Option<String>,
+    pub client_mac: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DhcpMessageType {
+    Discover,
+    Offer,
+    Request,
+    Decline,
+    Ack,
+    Nak,
+    Release,
+    Inform,
+    Unknown(u8),
+}
+
+impl std::fmt::Display for DhcpMessageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DhcpMessageType::Discover => write!(f, "DISCOVER"),
+            DhcpMessageType::Offer => write!(f, "OFFER"),
+            DhcpMessageType::Request => write!(f, "REQUEST"),
+            DhcpMessageType::Decline => write!(f, "DECLINE"),
+            DhcpMessageType::Ack => write!(f, "ACK"),
+            DhcpMessageType::Nak => write!(f, "NAK"),
+            DhcpMessageType::Release => write!(f, "RELEASE"),
+            DhcpMessageType::Inform => write!(f, "INFORM"),
+            DhcpMessageType::Unknown(v) => write!(f, "UNKNOWN({})", v),
+        }
+    }
+}
+
+// SNMP-specific types
+#[derive(Debug, Clone)]
+pub struct SnmpInfo {
+    pub version: SnmpVersion,
+    pub community: Option<String>,
+    pub pdu_type: SnmpPduType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnmpVersion {
+    V1,
+    V2c,
+    V3,
+}
+
+static_names! {
+    SnmpVersion {
+        V1 => "v1",
+        V2c => "v2c",
+        V3 => "v3",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnmpPduType {
+    GetRequest,
+    GetNextRequest,
+    GetResponse,
+    SetRequest,
+    Trap,
+    GetBulkRequest,
+    InformRequest,
+    TrapV2,
+    Report,
+    /// SNMPv3 with an encrypted ScopedPDU; the PDU type is not visible.
+    Encrypted,
+}
+
+static_names! {
+    SnmpPduType {
+        GetRequest => "GET",
+        GetNextRequest => "GETNEXT",
+        GetResponse => "RESPONSE",
+        SetRequest => "SET",
+        Trap => "TRAP",
+        GetBulkRequest => "GETBULK",
+        InformRequest => "INFORM",
+        TrapV2 => "TRAPv2",
+        Report => "REPORT",
+        Encrypted => "ENCRYPTED",
+    }
+}
+
+// SSDP-specific types
+#[derive(Debug, Clone)]
+pub struct SsdpInfo {
+    pub method: SsdpMethod,
+    pub service_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SsdpMethod {
+    MSearch,
+    Notify,
+    Response,
+}
+
+static_names! {
+    SsdpMethod {
+        MSearch => "M-SEARCH",
+        Notify => "NOTIFY",
+        Response => "RESPONSE",
+    }
+}
+
+// NetBIOS-specific types
+#[derive(Debug, Clone)]
+pub struct NetBiosInfo {
+    pub service: NetBiosService,
+    pub opcode: NetBiosOpcode,
+    pub name: Option<String>,
+    /// Name Service transaction ID or Datagram Service datagram ID.
+    pub transaction_id: u16,
+    /// Whether this packet is a final response to a request.
+    ///
+    /// Name Service WACK packets are deliberately excluded because a later
+    /// response completes the transaction.
+    pub is_response: bool,
+    /// Result carried by a final Name or Datagram Service response.
+    pub response_status: Option<NetBiosResponseStatus>,
+}
+
+impl NetBiosInfo {
+    pub fn is_request(&self) -> bool {
+        !self.is_response
+            && matches!(
+                self.opcode,
+                NetBiosOpcode::Query
+                    | NetBiosOpcode::Registration
+                    | NetBiosOpcode::Release
+                    | NetBiosOpcode::Refresh
+            )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NetBiosService {
+    NameService,
+    DatagramService,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetBiosResponseStatus {
+    /// Four-bit RCODE from a NetBIOS Name Service response.
+    NameService(u8),
+    DatagramPositive,
+    DatagramNegative,
+}
+
+impl NetBiosResponseStatus {
+    pub fn is_success(self) -> bool {
+        matches!(
+            self,
+            NetBiosResponseStatus::NameService(0) | NetBiosResponseStatus::DatagramPositive
+        )
+    }
+}
+
+impl std::fmt::Display for NetBiosResponseStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetBiosResponseStatus::NameService(0) => write!(f, "SUCCESS"),
+            NetBiosResponseStatus::NameService(1) => write!(f, "FMT_ERR"),
+            NetBiosResponseStatus::NameService(2) => write!(f, "SRV_ERR"),
+            NetBiosResponseStatus::NameService(3) => write!(f, "NAM_ERR"),
+            NetBiosResponseStatus::NameService(4) => write!(f, "IMP_ERR"),
+            NetBiosResponseStatus::NameService(5) => write!(f, "RFS_ERR"),
+            NetBiosResponseStatus::NameService(6) => write!(f, "ACT_ERR"),
+            NetBiosResponseStatus::NameService(7) => write!(f, "CFT_ERR"),
+            NetBiosResponseStatus::NameService(code) => write!(f, "RCODE {}", code),
+            NetBiosResponseStatus::DatagramPositive => write!(f, "POSITIVE"),
+            NetBiosResponseStatus::DatagramNegative => write!(f, "NEGATIVE"),
+        }
+    }
+}
+
+static_names! {
+    NetBiosService {
+        NameService => "NS",
+        DatagramService => "DGM",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetBiosOpcode {
+    Query,
+    Registration,
+    Release,
+    Wack,
+    Refresh,
+    Response,
+    /// Datagram Service message delivery (direct unique/group or broadcast).
+    Datagram,
+    /// Datagram Service error report.
+    Error,
+    Unknown(u8),
+}
+
+impl std::fmt::Display for NetBiosOpcode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetBiosOpcode::Query => write!(f, "Query"),
+            NetBiosOpcode::Registration => write!(f, "Register"),
+            NetBiosOpcode::Release => write!(f, "Release"),
+            NetBiosOpcode::Wack => write!(f, "WACK"),
+            NetBiosOpcode::Refresh => write!(f, "Refresh"),
+            NetBiosOpcode::Response => write!(f, "Response"),
+            NetBiosOpcode::Datagram => write!(f, "Datagram"),
+            NetBiosOpcode::Error => write!(f, "Error"),
+            NetBiosOpcode::Unknown(v) => write!(f, "Unknown({})", v),
+        }
+    }
+}
+
+// STUN-specific types
+#[derive(Debug, Clone)]
+pub struct StunInfo {
+    pub message_class: StunMessageClass,
+    pub method: StunMethod,
+    pub transaction_id: [u8; 12],
+    pub software: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StunMessageClass {
+    Request,
+    Indication,
+    SuccessResponse,
+    ErrorResponse,
+}
+
+static_names! {
+    StunMessageClass {
+        Request => "Request",
+        Indication => "Indication",
+        SuccessResponse => "Success",
+        ErrorResponse => "Error",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StunMethod {
+    Binding,
+    Unknown(u16),
+}
+
+impl std::fmt::Display for StunMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StunMethod::Binding => write!(f, "Binding"),
+            StunMethod::Unknown(v) => write!(f, "Unknown(0x{:04x})", v),
+        }
+    }
+}
+
+// QUIC-specific types
+#[derive(Debug, Clone)]
+pub struct QuicCloseInfo {
+    pub frame_type: u8,  // 0x1c (transport) or 0x1d (application)
+    pub error_code: u64, // Error code from the CONNECTION_CLOSE frame
+}
+
+#[derive(Debug, Clone)]
+pub struct QuicInfo {
+    pub version_string: Option<Cow<'static, str>>,
+    pub packet_type: QuicPacketType,
+    pub connection_id: Vec<u8>,
+    pub connection_id_hex: Option<String>,
+    pub connection_state: QuicConnectionState,
+    pub tls_info: Option<TlsInfo>, // Extracted TLS handshake info
+    pub has_crypto_frame: bool,    // Whether packet contains CRYPTO frame
+    pub crypto_reassembler: Option<CryptoFrameReassembler>,
+    pub connection_close: Option<QuicCloseInfo>, // CONNECTION_CLOSE frame info
+    pub idle_timeout: Option<Duration>,          // Idle timeout from transport params if detected
+}
+
+impl QuicInfo {
+    pub fn new(version: u32) -> Self {
+        Self {
+            version_string: quic_version_to_string(version),
+            connection_id_hex: None,
+            packet_type: QuicPacketType::Unknown,
+            connection_id: Vec::new(),
+            connection_state: QuicConnectionState::Unknown,
+            tls_info: None,
+            has_crypto_frame: false,
+            crypto_reassembler: None,
+            connection_close: None,
+            idle_timeout: None,
+        }
+    }
+    /// Clone displayable metadata without retaining CRYPTO handshake bytes.
+    pub(crate) fn metadata_clone(&self) -> Self {
+        Self {
+            version_string: self.version_string.clone(),
+            packet_type: self.packet_type,
+            connection_id: self.connection_id.clone(),
+            connection_id_hex: self.connection_id_hex.clone(),
+            connection_state: self.connection_state,
+            tls_info: self.tls_info.clone(),
+            has_crypto_frame: self.has_crypto_frame,
+            crypto_reassembler: None,
+            connection_close: self.connection_close.clone(),
+            idle_timeout: self.idle_timeout,
+        }
+    }
+
+    /// Initialize reassembler if needed
+    pub fn ensure_reassembler(&mut self) {
+        if self.crypto_reassembler.is_none() {
+            self.crypto_reassembler = Some(CryptoFrameReassembler::new());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuicPacketType {
+    Initial,
+    ZeroRtt,
+    Handshake,
+    Retry,
+    VersionNegotiation,
+    OneRtt, // Short header
+    Unknown,
+}
+
+static_names! {
+    QuicPacketType {
+        Initial => "Initial",
+        ZeroRtt => "0-RTT",
+        Handshake => "Handshake",
+        Retry => "Retry",
+        VersionNegotiation => "Version Negotiation",
+        OneRtt => "1-RTT",
+        Unknown => "Unknown",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuicConnectionState {
+    Initial,
+    Handshaking,
+    Connected,
+    Draining,
+    Closed,
+    Unknown,
+}
+
+impl QuicConnectionState {
+    /// Ordering used when merging observations: a connection only ever moves
+    /// forward through Unknown -> Initial -> Handshaking -> Connected ->
+    /// Draining -> Closed.
+    pub fn priority(self) -> u8 {
+        match self {
+            QuicConnectionState::Unknown => 0,
+            QuicConnectionState::Initial => 1,
+            QuicConnectionState::Handshaking => 2,
+            QuicConnectionState::Connected => 3,
+            QuicConnectionState::Draining => 4,
+            QuicConnectionState::Closed => 5,
+        }
+    }
+}
+
+static_names! {
+    QuicConnectionState {
+        Initial => "Initial",
+        Handshaking => "Handshaking",
+        Connected => "Connected",
+        Draining => "Draining",
+        Closed => "Closed",
+        Unknown => "Unknown",
+    }
+}
+
+fn quic_version_to_string(version: u32) -> Option<Cow<'static, str>> {
+    match version {
+        0x00000001 => Some(Cow::Borrowed("v1")),
+        0x6b3343cf => Some(Cow::Borrowed("v2")),
+        0xff00001d => Some(Cow::Borrowed("draft-29")),
+        0xff00001c => Some(Cow::Borrowed("draft-28")),
+        0xff00001b => Some(Cow::Borrowed("draft-27")),
+        0x51303530 => Some(Cow::Borrowed("Q050")),
+        0x54303530 => Some(Cow::Borrowed("T050")),
+        0xfaceb001 => Some(Cow::Borrowed("mvfst-22")),
+        0xfaceb002 => Some(Cow::Borrowed("mvfst-27")),
+        v if (v >> 8) == 0xff0000 => Some(Cow::Owned(format!("draft-{}", v & 0xff))),
+        _ => None,
+    }
+}
+
+/// Retains only the Initial CRYPTO stream needed to inspect a ClientHello.
+/// Adjacent fragments share one range, so retransmission and packet boundaries
+/// do not consume additional metadata slots.
+#[derive(Debug, Clone)]
+pub struct CryptoFrameReassembler {
+    fragments: BTreeMap<u64, VecDeque<u8>>,
+    extraction_finished: bool,
+    cached_tls_info: Option<TlsInfo>,
+}
+
+impl Default for CryptoFrameReassembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CryptoFrameReassembler {
+    /// Inspection window, including the four-byte TLS handshake header.
+    pub const MAX_BUFFER_SIZE: usize = 64 * 1024;
+    // Bound metadata for sparse, attacker-controlled offsets. This limits
+    // disjoint ranges, not the number of frames making up a ClientHello.
+    const MAX_RANGES: usize = 256;
+
+    pub fn new() -> Self {
+        Self {
+            fragments: BTreeMap::new(),
+            extraction_finished: false,
+            cached_tls_info: None,
+        }
+    }
+
+    /// Add CRYPTO bytes, keeping the first observed value on overlap.
+    /// Offsets outside the inspection window are rejected; a crossing frame
+    /// contributes its in-window prefix so early metadata can still be read.
+    pub fn add_fragment(&mut self, offset: u64, mut data: Vec<u8>) -> Result<(), &'static str> {
+        if self.extraction_finished || data.is_empty() {
+            return Ok(());
+        }
+        offset
+            .checked_add(data.len() as u64)
+            .ok_or("Fragment offset overflow")?;
+        if offset >= Self::MAX_BUFFER_SIZE as u64 {
+            return Err("Fragment offset exceeds inspection window");
+        }
+        data.truncate(Self::MAX_BUFFER_SIZE - offset as usize);
+        let data_end = offset + data.len() as u64;
+
+        // Start at the preceding range only if it overlaps or touches us.
+        // All stored ranges are disjoint and non-adjacent.
+        let first_offset = self
+            .fragments
+            .range(..=offset)
+            .next_back()
+            .filter(|(start, bytes)| **start + bytes.len() as u64 >= offset)
+            .map_or(offset, |(&start, _)| start);
+        let affected: Vec<u64> = self
+            .fragments
+            .range(first_offset..=data_end)
+            .map(|(&start, _)| start)
+            .collect();
+        if self.fragments.len() - affected.len() >= Self::MAX_RANGES {
+            return Err("Fragment would exceed maximum disjoint ranges");
+        }
+
+        if let Some(&first) = affected.first()
+            && first <= offset
+            && first + self.fragments[&first].len() as u64 >= data_end
+        {
+            // Retransmission, including when the inspection window is full.
+            return Ok(());
+        }
+
+        let merged_start = first_offset;
+        let merged_end = affected.last().map_or(data_end, |last| {
+            data_end.max(*last + self.fragments[last].len() as u64)
+        });
+        // Reuse the largest existing range. VecDeque can prepend as well as
+        // append without copying the whole range for reverse-order fragments.
+        // When bridging ranges, moving only the smaller ranges also avoids
+        // repeatedly copying an already large assembled prefix.
+        let base = affected
+            .iter()
+            .max_by_key(|start| self.fragments[start].len());
+        let mut merged = if let Some(&base_start) = base {
+            let mut bytes = self.fragments.remove(&base_start).expect("range exists");
+            let base_end = base_start + bytes.len() as u64;
+            for position in (merged_start..base_start).rev() {
+                let value = position
+                    .checked_sub(offset)
+                    .and_then(|index| data.get(index as usize))
+                    .copied()
+                    .unwrap_or(0);
+                bytes.push_front(value);
+            }
+            for position in base_end..merged_end {
+                let value = position
+                    .checked_sub(offset)
+                    .and_then(|index| data.get(index as usize))
+                    .copied()
+                    .unwrap_or(0);
+                bytes.push_back(value);
+            }
+            bytes
+        } else {
+            // Copy only the retained prefix so an oversized input Vec cannot
+            // leave a large spare allocation in the persistent reassembler.
+            VecDeque::from(data.as_slice().to_vec())
+        };
+        for start in affected {
+            if let Some(existing) = self.fragments.remove(&start) {
+                let start_index = (start - merged_start) as usize;
+                for (index, byte) in existing.into_iter().enumerate() {
+                    merged[start_index + index] = byte;
+                }
+            }
+        }
+        self.fragments.insert(merged_start, merged);
+        Ok(())
+    }
+
+    /// Get all contiguous data from offset zero. Copy once when inspecting,
+    /// rather than shifting buffered bytes on every reverse-order fragment.
+    pub fn get_contiguous_data(&self) -> Option<Vec<u8>> {
+        self.fragments
+            .get(&0)
+            .map(|bytes| bytes.iter().copied().collect())
+    }
+
+    /// Finish inspection and release all retained handshake bytes. The marker
+    /// prevents later retransmissions from starting another buffer.
+    pub fn finish_extraction(&mut self, tls_info: Option<TlsInfo>) {
+        self.extraction_finished = true;
+        self.cached_tls_info = tls_info;
+        self.fragments.clear();
+    }
+
+    /// Cache metadata only after the complete ClientHello has been inspected.
+    pub fn set_complete_tls_info(&mut self, tls_info: TlsInfo) {
+        self.finish_extraction(Some(tls_info));
+    }
+
+    pub fn extraction_finished(&self) -> bool {
+        self.extraction_finished
+    }
+
+    pub fn get_cached_tls_info(&self) -> Option<&TlsInfo> {
+        self.cached_tls_info.as_ref()
+    }
+
+    /// Borrow received bytes in stream order. A deque can expose two slices;
+    /// each is returned with its actual stream offset, without copying data.
+    pub fn get_fragments(&self) -> impl Iterator<Item = (u64, &[u8])> {
+        self.fragments.iter().flat_map(|(&offset, bytes)| {
+            let (first, second) = bytes.as_slices();
+            [(offset, first), (offset + first.len() as u64, second)]
+                .into_iter()
+                .filter(|(_, bytes)| !bytes.is_empty())
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DpiInfo {
+    pub application: ApplicationProtocol,
+}
+
+impl TlsInfo {
+    /// A `TlsInfo` carrying only the given SNI, as produced by the salvage
+    /// paths that recover a hostname without a full handshake parse.
+    pub fn with_sni(sni: String) -> Self {
+        Self {
+            sni: Some(sni),
+            ..Self::new()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crypto_reassembly_bounds_fragment_metadata() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        for offset in 0..256 {
+            reassembler.add_fragment(offset * 2, vec![1]).unwrap();
+        }
+        assert!(reassembler.add_fragment(512, vec![1]).is_err());
+        assert_eq!(reassembler.fragments.len(), 256);
+    }
+
+    #[test]
+    fn crypto_reassembly_coalesces_more_than_256_frames_in_either_order() {
+        for reverse in [false, true] {
+            let mut reassembler = CryptoFrameReassembler::new();
+            for index in 0..65536u64 {
+                let offset = if reverse { 65535 - index } else { index };
+                reassembler
+                    .add_fragment(offset, vec![offset as u8])
+                    .unwrap();
+            }
+            assert_eq!(reassembler.fragments.len(), 1);
+            let expected: Vec<u8> = (0..65536).map(|offset| offset as u8).collect();
+            assert_eq!(reassembler.get_contiguous_data(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn crypto_reassembly_preserves_overlap_and_fills_gaps() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler.add_fragment(2, b"cd".to_vec()).unwrap();
+        reassembler.add_fragment(6, b"gh".to_vec()).unwrap();
+        reassembler.add_fragment(0, b"abXXefYYij".to_vec()).unwrap();
+        reassembler.add_fragment(8, b"ZZkl".to_vec()).unwrap();
+        assert_eq!(
+            reassembler.get_contiguous_data(),
+            Some(b"abcdefghijkl".to_vec())
+        );
+        assert_eq!(reassembler.fragments.len(), 1);
+    }
+
+    #[test]
+    fn crypto_reassembly_accepts_retransmissions_and_bridges_at_capacity() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        for offset in 0..256 {
+            reassembler.add_fragment(offset * 2, vec![1]).unwrap();
+        }
+        reassembler.add_fragment(0, vec![9]).unwrap();
+        reassembler.add_fragment(1, vec![2]).unwrap();
+        assert_eq!(reassembler.fragments.len(), 255);
+        reassembler.add_fragment(512, vec![3]).unwrap();
+        assert_eq!(reassembler.fragments.len(), 256);
+        assert_eq!(reassembler.get_contiguous_data(), Some(vec![1, 2, 1]));
+    }
+
+    #[test]
+    fn crypto_reassembly_bounds_sparse_offsets_and_crossing_frames() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        assert!(reassembler.add_fragment(65536, vec![1]).is_err());
+        assert!(reassembler.fragments.is_empty());
+        reassembler.add_fragment(65535, vec![1, 2, 3]).unwrap();
+        assert_eq!(reassembler.fragments[&65535], vec![1]);
+        reassembler.add_fragment(0, vec![2; 65536]).unwrap();
+        reassembler.add_fragment(0, vec![3; 65536]).unwrap();
+        assert_eq!(reassembler.get_contiguous_data().unwrap().len(), 65536);
+        assert_eq!(reassembler.get_contiguous_data().unwrap()[65535], 1);
+        assert_eq!(reassembler.get_contiguous_data().unwrap()[0], 2);
+    }
+
+    #[test]
+    fn crypto_reassembly_does_not_retain_oversized_input_capacity() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        let mut bytes = Vec::with_capacity(1024 * 1024);
+        bytes.push(1);
+        reassembler.add_fragment(65535, bytes).unwrap();
+        assert_eq!(reassembler.fragments[&65535].capacity(), 1);
+        reassembler.add_fragment(0, vec![2; 1024 * 1024]).unwrap();
+        assert!(
+            reassembler.fragments[&0].capacity() <= 2 * CryptoFrameReassembler::MAX_BUFFER_SIZE
+        );
+        assert_eq!(
+            reassembler.get_contiguous_data().unwrap().len(),
+            CryptoFrameReassembler::MAX_BUFFER_SIZE
+        );
+    }
+
+    #[test]
+    fn crypto_reassembly_fragment_iterator_preserves_wrapped_stream_offsets() {
+        let mut bytes = VecDeque::with_capacity(8);
+        bytes.extend(0..6);
+        for _ in 0..4 {
+            bytes.pop_front();
+        }
+        bytes.extend(6..10);
+        assert!(!bytes.as_slices().1.is_empty());
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler.fragments.insert(5, bytes);
+        let fragments: Vec<_> = reassembler.get_fragments().collect();
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(fragments[0].0, 5);
+        assert_eq!(fragments[1].0, 5 + fragments[0].1.len() as u64);
+        let flattened: Vec<_> = fragments
+            .into_iter()
+            .flat_map(|(_, bytes)| bytes.iter().copied())
+            .collect();
+        assert_eq!(flattened, (4..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn crypto_reassembly_matches_first_observed_bytes_across_mixed_overlaps() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        let mut expected = [None; 1024];
+        let mut state = 1u32;
+        for _ in 0..2000 {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            let start = state as usize % expected.len();
+            let len = (state as usize / 1024 % 100 + 1).min(expected.len() - start);
+            let value = (state >> 24) as u8;
+            reassembler
+                .add_fragment(start as u64, vec![value; len])
+                .unwrap();
+            for byte in &mut expected[start..start + len] {
+                byte.get_or_insert(value);
+            }
+        }
+        let mut actual = [None; 1024];
+        for (offset, bytes) in reassembler.get_fragments() {
+            for (index, &byte) in bytes.iter().enumerate() {
+                assert!(actual[offset as usize + index].replace(byte).is_none());
+            }
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn crypto_reassembly_releases_bytes_and_ignores_later_retransmissions() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        reassembler.add_fragment(0, vec![1; 4096]).unwrap();
+        reassembler.set_complete_tls_info(TlsInfo::with_sni("example.com".into()));
+        reassembler.add_fragment(0, vec![1; 4096]).unwrap();
+        assert!(reassembler.fragments.is_empty());
+        assert!(reassembler.get_contiguous_data().is_none());
+        assert_eq!(
+            reassembler.get_cached_tls_info().unwrap().sni.as_deref(),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn crypto_reassembly_ignores_empty_fragments() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        for offset in 0..1024 {
+            reassembler.add_fragment(offset, Vec::new()).unwrap();
+        }
+        assert!(reassembler.fragments.is_empty());
+    }
+
+    #[test]
+    fn crypto_reassembly_rejects_offset_overflow() {
+        let mut reassembler = CryptoFrameReassembler::new();
+        assert!(reassembler.add_fragment(u64::MAX, vec![1]).is_err());
+        assert!(reassembler.fragments.is_empty());
+    }
+
+    /// The Details tab renders these values directly; pinning them here keeps
+    /// the debug-formatting leaks (`V2`, `KeyExchange`, `Http11`) from coming
+    /// back.
+    #[test]
+    fn ssh_and_http_display_forms_are_human_readable() {
+        assert_eq!(SshVersion::V1.to_string(), "SSH-1");
+        assert_eq!(SshVersion::V2.to_string(), "SSH-2");
+
+        assert_eq!(SshConnectionState::Banner.to_string(), "Banner");
+        assert_eq!(SshConnectionState::KeyExchange.to_string(), "Key Exchange");
+        assert_eq!(
+            SshConnectionState::Authentication.to_string(),
+            "Authentication"
+        );
+        assert_eq!(SshConnectionState::Established.to_string(), "Established");
+
+        assert_eq!(HttpVersion::Http10.to_string(), "HTTP/1.0");
+        assert_eq!(HttpVersion::Http11.to_string(), "HTTP/1.1");
+        assert_eq!(HttpVersion::Http2.to_string(), "HTTP/2");
+    }
+
+    #[test]
+    fn quic_version_string_known_versions_are_borrowed() {
+        use std::borrow::Cow;
+        let cases: &[(u32, &str)] = &[
+            (0x00000001, "v1"),
+            (0x6b3343cf, "v2"),
+            (0xff00001d, "draft-29"),
+            (0xff00001c, "draft-28"),
+            (0xff00001b, "draft-27"),
+            (0x51303530, "Q050"),
+            (0x54303530, "T050"),
+        ];
+        for &(version, expected) in cases {
+            let q = QuicInfo::new(version);
+            assert_eq!(
+                q.version_string.as_deref(),
+                Some(expected),
+                "version 0x{version:08x}"
+            );
+            // Known versions must not heap-allocate.
+            assert!(
+                matches!(q.version_string, Some(Cow::Borrowed(_))),
+                "version 0x{version:08x} should be Cow::Borrowed"
+            );
+        }
+        // Unknown version produces None.
+        assert_eq!(QuicInfo::new(0xdeadbeef).version_string, None);
+        // Dynamic draft variant uses Cow::Owned.
+        let dynamic = QuicInfo::new(0xff000020);
+        assert_eq!(dynamic.version_string.as_deref(), Some("draft-32"));
+        assert!(matches!(dynamic.version_string, Some(Cow::Owned(_))));
+    }
+}

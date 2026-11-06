@@ -1,0 +1,382 @@
+#ifndef RUSTNET_SOCKET_TRACKER_HELPERS_H
+#define RUSTNET_SOCKET_TRACKER_HELPERS_H
+
+#include "socket_tracker_types.h"
+
+struct
+{
+    /* Keep closed sockets for delayed enrichment, evicting old records when full. */
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, MAX_ENTRIES);
+    __type(key, struct conn_key);
+    __type(value, struct conn_info);
+} socket_map SEC(".maps");
+
+/*
+ * Minimal CO-RE view of task_struct. Referencing the full generated type makes
+ * older clang versions emit BTF that skeleton generation cannot consume.
+ */
+struct cgroup___local
+{
+    struct kernfs_node *kn;
+} __attribute__((preserve_access_index));
+
+struct kernfs_node___new
+{
+    struct kernfs_node *__parent;
+} __attribute__((preserve_access_index));
+
+struct css_set___local
+{
+    struct cgroup___local *dfl_cgrp;
+} __attribute__((preserve_access_index));
+
+struct task_struct___local
+{
+    struct task_struct___local *group_leader;
+    char comm[TASK_COMM_LEN];
+    struct task_struct___local *real_parent;
+    struct mm_struct *mm;
+    __u64 start_boottime;
+    int tgid;
+    struct css_set___local *cgroups;
+} __attribute__((preserve_access_index));
+
+/* Bundled BTF can come from a kernel without CONFIG_NET_NS. Describe the
+ * optional socket namespace field locally and let CO-RE check its presence. */
+struct possible_net___local
+{
+    struct net *net;
+} __attribute__((preserve_access_index));
+
+struct sock_common___local
+{
+    struct possible_net___local skc_net;
+} __attribute__((preserve_access_index));
+
+struct sock___local
+{
+    struct sock_common___local __sk_common;
+} __attribute__((preserve_access_index));
+
+/* Metadata exceeds the BPF stack. A nested probe must leave the outer
+ * probe's per-CPU scratch untouched. Tracing programs cannot migrate. */
+struct identity_scratch
+{
+    __u32 busy;
+    struct conn_info info;
+    /* The verifier bounds offset and read length independently. Reserve
+     * their maximum combined span after the paths; runtime checks below
+     * still keep every read strictly inside its own path array. */
+    char path_read_padding[EXE_PATH_LEN];
+};
+
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct identity_scratch);
+} identity_buffer SEC(".maps");
+
+/* Resolve mm->exe_file while the task is alive. Walk across mount roots,
+ * preserving raw filename bytes. Incomplete or overlong paths stay unknown.
+ * Unlike exec filename arguments, this identifies the running interpreter
+ * for scripts. No process-lifecycle cache is needed. */
+static __noinline __u16 snapshot_executable(struct task_struct___local *task,
+                                           char *out)
+{
+    struct file *exe = BPF_CORE_READ(task, mm, exe_file);
+    if (!exe)
+        return 0;
+    struct dentry *dentry = BPF_CORE_READ(exe, f_path.dentry);
+    struct vfsmount *vfsmount = BPF_CORE_READ(exe, f_path.mnt);
+    __u32 offset = EXE_PATH_LEN - 1;
+    out[offset] = 0;
+
+    for (int depth = 0; depth < 32; depth++)
+    {
+        if (!dentry || !vfsmount)
+            return 0;
+        struct dentry *root = BPF_CORE_READ(vfsmount, mnt_root);
+        struct dentry *parent = BPF_CORE_READ(dentry, d_parent);
+        if (dentry == root)
+        {
+            struct mount *mount = (void *)vfsmount -
+                bpf_core_field_offset(struct mount, mnt);
+            struct mount *up = BPF_CORE_READ(mount, mnt_parent);
+            if (!up)
+                return 0;
+            if (up == mount)
+                return offset < EXE_PATH_LEN - 1 ? offset + 1 : 0;
+            dentry = BPF_CORE_READ(mount, mnt_mountpoint);
+            vfsmount = (void *)up + bpf_core_field_offset(struct mount, mnt);
+            continue;
+        }
+        if (!parent || parent == dentry)
+            return 0;
+        __u32 len = BPF_CORE_READ(dentry, d_name.len);
+        const unsigned char *name = BPF_CORE_READ(dentry, d_name.name);
+        if (!len || len >= EXE_PATH_LEN || len + 1 > offset)
+            return 0;
+        offset = (offset - len) & (EXE_PATH_LEN - 1);
+        if (offset >= EXE_PATH_LEN || offset + len >= EXE_PATH_LEN)
+            return 0;
+        if (bpf_probe_read_kernel(out + offset, len, name))
+            return 0;
+        offset--;
+        out[offset & (EXE_PATH_LEN - 1)] = '/';
+        dentry = parent;
+    }
+    return 0;
+}
+
+static __always_inline void get_process_info(struct conn_info *info)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u64 uid_gid = bpf_get_current_uid_gid();
+
+    info->tgid = pid_tgid >> 32;
+    info->tid = (__u32)pid_tgid;
+    info->uid = (__u32)uid_gid;
+    info->gid = uid_gid >> 32;
+    info->timestamp = bpf_ktime_get_ns();
+
+    struct task_struct___local *task =
+        (struct task_struct___local *)bpf_get_current_task();
+    struct task_struct___local *leader = BPF_CORE_READ(task, group_leader);
+    info->start_boottime = BPF_CORE_READ(leader, start_boottime);
+    info->executable_offset = snapshot_executable(leader, info->executable);
+    struct task_struct___local *parent_task = BPF_CORE_READ(leader, real_parent, group_leader);
+    info->parent_tgid = BPF_CORE_READ(parent_task, tgid);
+    info->parent_start_boottime = BPF_CORE_READ(parent_task, start_boottime);
+    BPF_CORE_READ_STR_INTO(&info->parent_comm, parent_task, comm);
+    info->parent_executable_offset = snapshot_executable(parent_task, info->parent_executable);
+    long err = BPF_CORE_READ_STR_INTO(&info->comm, task, group_leader, comm);
+    if (err <= 0 || info->comm[0] == '\0')
+    {
+        bpf_get_current_comm(&info->comm, sizeof(info->comm));
+    }
+
+    /* Retain cgroup v2 identity before /proc/<tgid> disappears. Standard
+     * Kubernetes layouts put the container immediately below its pod.
+     * Reading kernel names also works from a private cgroup namespace.
+     * Reject truncated names instead of producing a plausible wrong ID. */
+    if (!bpf_core_field_exists(task->cgroups))
+        return;
+    struct kernfs_node *kn = BPF_CORE_READ(task, cgroups, dfl_cgrp, kn);
+    const char *name = BPF_CORE_READ(kn, name);
+    err = bpf_probe_read_kernel_str(info->cgroup_name, CGROUP_NAME_LEN, name);
+    if (err <= 0 || err >= CGROUP_NAME_LEN)
+        info->cgroup_name[0] = '\0';
+    /* kernfs renamed parent to __parent on newer kernels. */
+    struct kernfs_node *parent;
+    if (bpf_core_field_exists(kn->parent))
+        parent = BPF_CORE_READ(kn, parent);
+    else
+        parent = BPF_CORE_READ((struct kernfs_node___new *)kn, __parent);
+    name = BPF_CORE_READ(parent, name);
+    err = bpf_probe_read_kernel_str(info->cgroup_parent, CGROUP_NAME_LEN, name);
+    if (err <= 0 || err >= CGROUP_NAME_LEN)
+        info->cgroup_parent[0] = '\0';
+}
+
+static __always_inline int store_connection(struct conn_key *key, struct sock *sk)
+{
+    __u32 zero = 0;
+    struct identity_scratch *scratch = bpf_map_lookup_elem(&identity_buffer, &zero);
+    if (!scratch || scratch->busy)
+        return 0;
+    scratch->busy = 1;
+    __builtin_memset(&scratch->info, 0, sizeof(scratch->info));
+    get_process_info(&scratch->info);
+    /* Socket namespace, even when the owner hides /proc/<pid>/ns/net or
+     * has moved into a different namespace since creating the socket. */
+    struct sock___local *socket = (struct sock___local *)sk;
+    if (bpf_core_field_exists(socket->__sk_common.skc_net.net))
+        scratch->info.socket_netns_id = BPF_CORE_READ(socket, __sk_common.skc_net.net, ns.inum);
+    int result = bpf_map_update_elem(&socket_map, key, &scratch->info, BPF_ANY);
+    scratch->busy = 0;
+    return result;
+}
+
+static __always_inline void fill_socket_ports(struct sock *sk,
+                                               struct conn_key *key)
+{
+    key->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+    key->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+}
+
+static __always_inline void fill_socket_v4_addresses(struct sock *sk,
+                                                     struct conn_key *key)
+{
+    key->saddr[0] = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    key->daddr[0] = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+}
+
+static __always_inline void fill_socket_v6_addresses(struct sock *sk,
+                                                     struct conn_key *key)
+{
+    struct in6_addr saddr = {};
+    struct in6_addr daddr = {};
+
+    BPF_CORE_READ_INTO(&saddr, sk, __sk_common.skc_v6_rcv_saddr);
+    BPF_CORE_READ_INTO(&daddr, sk, __sk_common.skc_v6_daddr);
+    __builtin_memcpy(key->saddr, &saddr, sizeof(saddr));
+    __builtin_memcpy(key->daddr, &daddr, sizeof(daddr));
+}
+
+static __always_inline int track_tcp_v4(struct sock *sk)
+{
+    if (!sk)
+        return 0;
+
+    struct conn_key key = {};
+    fill_socket_v4_addresses(sk, &key);
+    fill_socket_ports(sk, &key);
+    key.proto = IPPROTO_TCP;
+    key.family = AF_INET;
+    return store_connection(&key, sk);
+}
+
+static __always_inline int track_tcp_v6(struct sock *sk)
+{
+    if (!sk)
+        return 0;
+
+    struct conn_key key = {};
+    fill_socket_v6_addresses(sk, &key);
+    fill_socket_ports(sk, &key);
+    key.proto = IPPROTO_TCP;
+    key.family = AF_INET6;
+    return store_connection(&key, sk);
+}
+
+/*
+ * A dual-stack AF_INET6 socket connected to an IPv4 peer keeps sk_family ==
+ * AF_INET6 while the kernel records the peer as ::ffff:a.b.c.d and mirrors the
+ * plain IPv4 addresses into skc_rcv_saddr / skc_daddr. Only IPv4 packets appear
+ * on the wire, so userspace builds an AF_INET key; the tuple must be stored
+ * under that key rather than the mapped IPv6 one.
+ */
+static __always_inline bool tcp_socket_is_v4_mapped(struct sock *sk)
+{
+    struct in6_addr daddr = {};
+    BPF_CORE_READ_INTO(&daddr, sk, __sk_common.skc_v6_daddr);
+    return daddr.in6_u.u6_addr32[0] == 0 && daddr.in6_u.u6_addr32[1] == 0 &&
+           daddr.in6_u.u6_addr32[2] == bpf_htonl(0x0000ffff);
+}
+
+static __always_inline int track_tcp_socket(struct sock *sk)
+{
+    if (!sk)
+        return 0;
+
+    __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+    if (family == AF_INET6)
+        return tcp_socket_is_v4_mapped(sk) ? track_tcp_v4(sk) : track_tcp_v6(sk);
+    if (family == AF_INET)
+        return track_tcp_v4(sk);
+    return 0;
+}
+
+static __always_inline int track_accepted_socket(struct sock *accepted)
+{
+    return track_tcp_socket(accepted);
+}
+
+/*
+ * Record a datagram send: the socket's own addresses, the destination taken
+ * from msg_name, and the ports. UDP sockets carry both ports and the
+ * destination port comes from msg_name; ping sockets only have the source
+ * (the ICMP identifier lives in skc_num). Every caller passes a literal
+ * proto, so the port branch folds away and each tracker keeps its own
+ * instruction stream for the verifier.
+ */
+static __always_inline int track_dgram_v4(struct sock *sk, struct msghdr *msg,
+                                          __u8 proto)
+{
+    if (!sk || !msg)
+        return 0;
+
+    struct conn_key key = {};
+    fill_socket_v4_addresses(sk, &key);
+    if (proto == IPPROTO_UDP)
+        fill_socket_ports(sk, &key);
+    else
+        key.sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+
+    struct sockaddr_in *dest = BPF_CORE_READ(msg, msg_name);
+    if (dest)
+    {
+        bpf_probe_read_kernel(&key.daddr[0], sizeof(key.daddr[0]),
+                              &dest->sin_addr.s_addr);
+        if (proto == IPPROTO_UDP)
+        {
+            __u16 dport = 0;
+            bpf_probe_read_kernel(&dport, sizeof(dport), &dest->sin_port);
+            key.dport = bpf_ntohs(dport);
+        }
+    }
+
+    if (key.daddr[0] == 0)
+        return 0;
+
+    key.proto = proto;
+    key.family = AF_INET;
+    return store_connection(&key, sk);
+}
+
+static __always_inline int track_dgram_v6(struct sock *sk, struct msghdr *msg,
+                                          __u8 proto)
+{
+    if (!sk || !msg)
+        return 0;
+
+    struct conn_key key = {};
+    fill_socket_v6_addresses(sk, &key);
+    if (proto == IPPROTO_UDP)
+        fill_socket_ports(sk, &key);
+    else
+        key.sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+
+    struct sockaddr_in6 *dest = BPF_CORE_READ(msg, msg_name);
+    if (dest)
+    {
+        struct in6_addr daddr = {};
+        bpf_probe_read_kernel(&daddr, sizeof(daddr), &dest->sin6_addr);
+        __builtin_memcpy(key.daddr, &daddr, sizeof(daddr));
+        if (proto == IPPROTO_UDP)
+        {
+            __u16 dport = 0;
+            bpf_probe_read_kernel(&dport, sizeof(dport), &dest->sin6_port);
+            key.dport = bpf_ntohs(dport);
+        }
+    }
+
+    key.proto = proto;
+    key.family = AF_INET6;
+    return store_connection(&key, sk);
+}
+
+static __always_inline int track_udp_v4(struct sock *sk, struct msghdr *msg)
+{
+    return track_dgram_v4(sk, msg, IPPROTO_UDP);
+}
+
+static __always_inline int track_udp_v6(struct sock *sk, struct msghdr *msg)
+{
+    return track_dgram_v6(sk, msg, IPPROTO_UDP);
+}
+
+static __always_inline int track_ping_v4(struct sock *sk, struct msghdr *msg)
+{
+    return track_dgram_v4(sk, msg, IPPROTO_ICMP);
+}
+
+static __always_inline int track_ping_v6(struct sock *sk, struct msghdr *msg)
+{
+    return track_dgram_v6(sk, msg, IPPROTO_ICMPV6);
+}
+
+#endif

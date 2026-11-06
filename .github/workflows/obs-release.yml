@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -32,16 +32,13 @@ jobs:
 
       - name: Setup Linux dependencies
         uses: ./.github/actions/setup-linux-deps
+        with:
+          extra-packages: osc obs-build build-essential
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
         with:
           toolchain: stable
-
-      - name: Install OBS dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y osc obs-build build-essential
 
       - name: Configure OBS credentials
         run: |
@@ -75,7 +72,6 @@ jobs:
       - name: Vendor dependencies
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          PACKAGE_NAME="rustnet"
           RELEASE_TAG="v${VERSION}"
           
           mkdir -p build-vendor
