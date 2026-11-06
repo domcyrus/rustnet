@@ -1075,7 +1075,7 @@ fn draw_process_table(
     draw_scrollbar(f, rows_area, processes.len(), offset, browser.viewport);
 }
 
-fn right_cell(value: impl Into<String>) -> Cell<'static> {
+fn right_cell(value: impl Into<std::borrow::Cow<'static, str>>) -> Cell<'static> {
     Cell::from(Line::from(value.into()).right_aligned())
 }
 

@@ -1000,7 +1000,7 @@ fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
             if conn.is_historic {
                 "n/a".to_string()
             } else {
-                format_rate(conn.current_incoming_rate_bps)
+                format_rate(conn.current_incoming_rate_bps).into_owned()
             },
             rx,
         ),
@@ -1009,7 +1009,7 @@ fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
             if conn.is_historic {
                 "n/a".to_string()
             } else {
-                format_rate(conn.current_outgoing_rate_bps)
+                format_rate(conn.current_outgoing_rate_bps).into_owned()
             },
             tx,
         ),
@@ -2224,12 +2224,12 @@ fn draw_traffic(
     let current_in_rate = if conn.is_historic {
         "n/a".to_string()
     } else {
-        format_rate(conn.current_incoming_rate_bps)
+        format_rate(conn.current_incoming_rate_bps).into_owned()
     };
     let current_out_rate = if conn.is_historic {
         "n/a".to_string()
     } else {
-        format_rate(conn.current_outgoing_rate_bps)
+        format_rate(conn.current_outgoing_rate_bps).into_owned()
     };
     let traffic_area = section_header(
         f,

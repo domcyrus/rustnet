@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
 
 ### Changed
+- Avoid allocating idle rate strings in the UI while preserving rate labels and placeholders (#429)
 - Reuse unchanged historic headless connection JSON with a bounded cache while preserving full snapshots and late metadata updates (#707)
 - Share DNS/RTT pending-request bookkeeping, procfs socket parsing, and JSON log construction while preserving protocol and output behavior (#699)
 - Remove redundant `IngestOutcome` timing fields and the `network::platform` shim; library callers read retained timings from `Connection` and import host lookup from `rustnet_host` (#699)
