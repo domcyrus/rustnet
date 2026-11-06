@@ -206,3 +206,5 @@ timeout 60 sudo -E ~/.cargo/bin/flamegraph -- ./target/release/rustnet
 2. **检查连接数量**：连接数过高会增加排序开销
 3. **分析 UI 循环**：在 `run_ui_loop`、`draw` 或 `sort_connections` 中查找热点
 4. **监控线程争用**：检查数据包处理线程是否阻塞了快照提供者
+
+对于无界面输出序列化，请使用[快照分析工具](HEADLESS_PROFILING.zh-CN.md)，分别测量快照构建、输出格式转换、序列化以及保留历史记录时的负载大小。

@@ -207,3 +207,5 @@ If the TUI feels sluggish:
 2. **Check connection count**: High connection counts increase sorting overhead
 3. **Profile the UI loop**: Look for hot spots in `run_ui_loop`, `draw`, or `sort_connections`
 4. **Monitor thread contention**: Check if packet processing threads are blocking the snapshot provider
+
+For headless serialization, use the [snapshot profiling harness](HEADLESS_PROFILING.md) to separate snapshot building, wire projection, serialization, and payload size across retained-history workloads.

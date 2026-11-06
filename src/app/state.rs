@@ -826,6 +826,17 @@ impl App {
         self.snapshot_generation.fetch_add(1, Ordering::Release);
     }
 
+    /// Publish a replay tracker's state through the production snapshot builder.
+    #[cfg(test)]
+    pub(crate) fn publish_tracker_snapshot_for_test(&self, tracker: &ConnectionTracker) {
+        self.set_connections_snapshot_for_test(build_connection_snapshot(
+            tracker,
+            &self.service_lookup,
+            false,
+            true,
+        ));
+    }
+
     /// Override the loading flag. Tests only.
     #[cfg(test)]
     pub(crate) fn set_loading_for_test(&self, value: bool) {
