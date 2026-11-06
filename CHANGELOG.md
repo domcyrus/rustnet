@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Share DNS/RTT pending-request bookkeeping, procfs socket parsing, and JSON log construction while preserving protocol and output behavior (#699)
 - Remove redundant `IngestOutcome` timing fields and the `network::platform` shim; library callers read retained timings from `Connection` and import host lookup from `rustnet_host` (#699)
 - Run Windows CI tests independently and start DEB installation checks after GNU/Linux builds, preserving all existing checks (#686)
+- Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
 - Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible

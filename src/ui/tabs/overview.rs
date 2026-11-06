@@ -614,13 +614,13 @@ fn connections_title<'a>(
     filtered_count: Option<usize>,
 ) -> Line<'a> {
     let base = match (grouped, ui_state.show_historic) {
-        (true, true) => "Process Aggregate · active + historic",
-        (true, false) => "Process Aggregate",
-        (false, true) => "Live + Historic Connections",
-        (false, false) => "Live Connections",
+        (true, true) => " Process Aggregate · active + historic",
+        (true, false) => " Process Aggregate",
+        (false, true) => " Live + Historic Connections",
+        (false, false) => " Live Connections",
     };
     let mut spans = vec![Span::styled(
-        format!(" {base}"),
+        base,
         Style::default().add_modifier(Modifier::BOLD),
     )];
     if let Some(shown) = filtered_count {
@@ -712,7 +712,7 @@ fn draw_grouped_connections_list(
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
                 let process_cell = Line::from(vec![
-                    Span::styled(connector.to_string(), theme::fg(theme::muted())),
+                    Span::styled(connector, theme::fg(theme::muted())),
                     Span::raw(pid),
                 ]);
                 connection_row(
