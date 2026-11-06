@@ -136,38 +136,40 @@ fn json_writes_one_final_versioned_snapshot() {
 
 #[test]
 fn jsonl_emits_an_initial_snapshot_and_applies_filter() {
-    let mut app = app_with_connections();
-    let output = SharedWriter::default();
-    let stop_report = run(
-        &mut app,
-        output.clone(),
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: Some(Duration::ZERO),
-            filter_query: Some("proto:tcp".to_string()),
-        },
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+    for format in [HeadlessFormat::JsonLines, HeadlessFormat::JsonLinesDelta] {
+        let mut app = app_with_connections();
+        let output = SharedWriter::default();
+        let stop_report = run(
+            &mut app,
+            output.clone(),
+            &HeadlessOptions {
+                format,
+                duration: Some(Duration::ZERO),
+                filter_query: Some("proto:tcp".to_string()),
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
-    assert_eq!(stop_report.timed_out_workers, 0);
-    let output = output.bytes();
-    let records: Vec<Value> = output
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice(line).unwrap())
-        .collect();
-    assert!((1..=2).contains(&records.len()));
+        assert_eq!(stop_report.timed_out_workers, 0);
+        let output = output.bytes();
+        let records: Vec<Value> = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert!((1..=2).contains(&records.len()));
 
-    let value = records.last().unwrap();
-    assert_eq!(value["filter"], "proto:tcp");
-    assert_eq!(value["connection_count"], 1);
-    assert_eq!(value["connections"][0]["protocol"], "TCP");
-    assert_eq!(value["connections"][0]["process"]["name"], "curl");
+        let value = records.last().unwrap();
+        assert_eq!(value["filter"], "proto:tcp");
+        assert_eq!(value["connection_count"], 1);
+        assert_eq!(value["connections"][0]["protocol"], "TCP");
+        assert_eq!(value["connections"][0]["process"]["name"], "curl");
 
-    assert_eq!(value["runtime"]["status"], "stopped");
-    assert_eq!(value["runtime"]["termination_reason"], "duration_elapsed");
-    assert!(value["runtime"]["shutdown"].is_object());
+        assert_eq!(value["runtime"]["status"], "stopped");
+        assert_eq!(value["runtime"]["termination_reason"], "duration_elapsed");
+        assert!(value["runtime"]["shutdown"].is_object());
+    }
 }
 
 enum FailingWriter {
@@ -196,16 +198,21 @@ impl Write for FailingWriter {
 
 #[test]
 fn broken_pipe_is_a_clean_exit() {
-    let mut app = app_with_connections();
-    let stop_report = run(
-        &mut app,
-        FailingWriter::Write(io::ErrorKind::BrokenPipe),
-        &HeadlessOptions::default(),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+    for format in [HeadlessFormat::JsonLines, HeadlessFormat::JsonLinesDelta] {
+        let mut app = app_with_connections();
+        let stop_report = run(
+            &mut app,
+            FailingWriter::Write(io::ErrorKind::BrokenPipe),
+            &HeadlessOptions {
+                format,
+                ..HeadlessOptions::default()
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
-    assert_eq!(stop_report.timed_out_workers, 0);
+        assert_eq!(stop_report.timed_out_workers, 0);
+    }
 }
 
 #[test]
@@ -381,27 +388,86 @@ fn superseded_snapshots_are_dropped_without_serialization_and_terminal_is_writte
 }
 
 #[test]
-fn stalled_writer_cannot_block_duration_shutdown() {
-    let (writer, _output, entered, release, finished) = stalled_writer();
-    let mut app = app_with_connections();
-    let started = Instant::now();
-    let error = run_with_writer_deadline(
-        &mut app,
-        writer,
-        &HeadlessOptions {
-            duration: Some(Duration::from_millis(20)),
-            ..HeadlessOptions::default()
-        },
-        &AtomicBool::new(false),
-        Duration::from_millis(30),
-    )
-    .unwrap_err();
-
-    assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(error.to_string().contains("did not finish within 30ms"));
+fn incremental_baseline_tracks_written_records_after_queue_replacement() {
+    let app = app_with_connections();
+    let snapshot = || SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None).1;
+    let expected = serde_json::to_value(snapshot()).unwrap();
+    let (writer, output, entered, release, finished) = stalled_writer();
+    let mut encoder = IncrementalEncoder::default();
+    let (encoded_tx, encoded_rx) = mpsc::channel();
+    let mut sink = AsyncOutput::spawn_with_serializer(writer, move |record| {
+        let bytes = encoder.serialize(record)?;
+        encoded_tx.send(()).unwrap();
+        Ok(bytes)
+    })
+    .unwrap();
+    sink.offer_latest(snapshot());
     entered.recv_timeout(Duration::from_secs(1)).unwrap();
+    encoded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    for _ in 0..20 {
+        let filtered =
+            SnapshotEnvelope::new(&app, Some("proto:tcp"), RuntimePhase::Running, None, None).1;
+        sink.offer_latest(filtered);
+    }
+    // Every filtered snapshot is superseded while the first write is blocked.
+    // Diffing on the producer would incorrectly reinsert the UDP connection.
+    sink.offer_latest(snapshot());
     release.send(()).unwrap();
+    encoded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let terminal = SnapshotEnvelope::new(
+        &app,
+        None,
+        RuntimePhase::Stopped,
+        Some(TerminationReason::DurationElapsed),
+        Some(StopReport::default()),
+    )
+    .1;
+    sink.finish(terminal, Duration::from_secs(1)).unwrap();
     finished.recv_timeout(Duration::from_secs(1)).unwrap();
+    let records: Vec<Value> = output
+        .bytes()
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["connections"], expected["connections"]);
+    assert_eq!(records[1]["type"], "delta");
+    assert_eq!(records[1]["sequence"], 2);
+    assert_eq!(records[1]["base_sequence"], 1);
+    assert_eq!(records[1]["connections"], serde_json::json!([]));
+    assert_eq!(records[1]["removed_connection_ids"], serde_json::json!([]));
+    assert_eq!(records[2]["type"], "snapshot");
+    assert_eq!(records[2]["sequence"], 3);
+    assert_eq!(records[2]["connections"], expected["connections"]);
+    assert_eq!(records[2]["runtime"]["status"], "stopped");
+}
+
+#[test]
+fn stalled_writer_cannot_block_duration_shutdown() {
+    for format in [HeadlessFormat::JsonLines, HeadlessFormat::JsonLinesDelta] {
+        let (writer, _output, entered, release, finished) = stalled_writer();
+        let mut app = app_with_connections();
+        let started = Instant::now();
+        let error = run_with_writer_deadline(
+            &mut app,
+            writer,
+            &HeadlessOptions {
+                format,
+                duration: Some(Duration::from_millis(20)),
+                ..HeadlessOptions::default()
+            },
+            &AtomicBool::new(false),
+            Duration::from_millis(30),
+        )
+        .unwrap_err();
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(error.to_string().contains("did not finish within 30ms"));
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
 }
 
 #[test]
@@ -633,7 +699,11 @@ fn capture_failure_stops_an_indefinite_run() {
 
 #[test]
 fn capture_failure_wins_a_simultaneous_normal_exit() {
-    for format in [HeadlessFormat::JsonLines, HeadlessFormat::Json] {
+    for format in [
+        HeadlessFormat::JsonLines,
+        HeadlessFormat::JsonLinesDelta,
+        HeadlessFormat::Json,
+    ] {
         let mut app = app_with_connections();
         app.set_capture_error_for_test(Some("injected device failure"));
         let output = SharedWriter::default();
@@ -714,6 +784,8 @@ fn format_tokens_are_stable() {
     assert_eq!(HeadlessFormat::JsonLines.as_str(), "jsonl");
     assert_eq!(HeadlessFormat::Json.as_str(), "json");
     assert_eq!("jsonl".parse(), Ok(HeadlessFormat::JsonLines));
+    assert_eq!(HeadlessFormat::JsonLinesDelta.as_str(), "jsonl-delta");
+    assert_eq!("jsonl-delta".parse(), Ok(HeadlessFormat::JsonLinesDelta));
     assert_eq!("json".parse(), Ok(HeadlessFormat::Json));
     assert!("yaml".parse::<HeadlessFormat>().is_err());
 }

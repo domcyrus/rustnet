@@ -71,9 +71,9 @@ pub fn build_cli() -> Command {
                 .long("output")
                 .value_name("FORMAT")
                 .help(
-                    "Headless output format: jsonl (stream snapshots) or json (final snapshot)",
+                    "Headless output format: jsonl (snapshots), jsonl-delta (incremental), or json (final snapshot)",
                 )
-                .value_parser(["jsonl", "json"])
+                .value_parser(["jsonl", "jsonl-delta", "json"])
                 .requires("headless")
                 .required(false),
         )
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn headless_output_accepts_each_supported_format() {
-        for format in ["jsonl", "json"] {
+        for format in ["jsonl", "jsonl-delta", "json"] {
             let matches = build_cli()
                 .try_get_matches_from(["rustnet", "--headless", "--output", format])
                 .unwrap_or_else(|e| panic!("--output {format} should parse: {e}"));

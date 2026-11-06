@@ -17,13 +17,17 @@ mod output;
 mod schema;
 
 use output::AsyncOutput;
+use schema::incremental::IncrementalEncoder;
 use schema::{ConnectionCache, RuntimePhase, SnapshotEnvelope};
 
 #[cfg(test)]
 mod tests;
 
-/// Current headless output schema.
+/// Default full-snapshot output schema.
 pub const SCHEMA_VERSION: u8 = 1;
+
+/// Opt-in incremental headless output schema.
+pub const INCREMENTAL_SCHEMA_VERSION: u8 = 2;
 
 const MAX_STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const OUTPUT_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
@@ -36,6 +40,9 @@ pub enum HeadlessFormat {
     /// gaps because stale queued snapshots are replaced under backpressure.
     #[default]
     JsonLines,
+    /// Emit an initial full snapshot, batched connection changes, periodic full
+    /// snapshots for resynchronization, and a full terminal snapshot.
+    JsonLinesDelta,
     /// Emit exactly one snapshot after the shutdown attempt.
     Json,
 }
@@ -45,6 +52,7 @@ impl HeadlessFormat {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::JsonLines => "jsonl",
+            Self::JsonLinesDelta => "jsonl-delta",
             Self::Json => "json",
         }
     }
@@ -62,8 +70,9 @@ impl std::str::FromStr for HeadlessFormat {
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
             "jsonl" => Ok(Self::JsonLines),
+            "jsonl-delta" => Ok(Self::JsonLinesDelta),
             "json" => Ok(Self::Json),
-            _ => Err("expected jsonl or json"),
+            _ => Err("expected jsonl, jsonl-delta or json"),
         }
     }
 }
@@ -151,14 +160,21 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
     writer_deadline: Duration,
 ) -> Result<StopReport> {
     let mut cache = ConnectionCache::default();
-    let mut output =
-        match AsyncOutput::spawn_with_serializer(writer, move |value| cache.serialize(value)) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = app.stop();
-                return Err(error).context("failed to start headless output writer");
-            }
-        };
+    let mut incremental = IncrementalEncoder::default();
+    let format = options.format;
+    let mut output = match AsyncOutput::spawn_with_serializer(writer, move |value| {
+        if format == HeadlessFormat::JsonLinesDelta {
+            incremental.serialize(value)
+        } else {
+            cache.serialize(value)
+        }
+    }) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = app.stop();
+            return Err(error).context("failed to start headless output writer");
+        }
+    };
     let started = Instant::now();
     let poll_interval = app
         .snapshot_refresh_interval()
@@ -166,7 +182,7 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
         .max(Duration::from_millis(1));
 
     let monitor_result = match options.format {
-        HeadlessFormat::JsonLines => stream_json_lines(
+        HeadlessFormat::JsonLines | HeadlessFormat::JsonLinesDelta => stream_json_lines(
             app,
             &mut output,
             options,

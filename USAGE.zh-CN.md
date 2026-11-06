@@ -155,15 +155,35 @@ rustnet --headless --filter 'process:curl app:https'
 
 #### Schema 约定
 
-当前输出格式版本为 `schema_version = 1`。每条记录都是快照对象，顶层字段为 `schema_version`、`type`、`timestamp`、`runtime`、`sandbox`、`stats`、`filter`、`connection_count` 和 `connections`。最终终止记录会将 `runtime.status` 设为 `stopping`、`stopped` 或 `stopped_with_errors`，并包含 `runtime.termination_reason` 和 `runtime.shutdown`。连接记录涵盖端点、进程归属、流量、各协议计时、GeoIP，以及可选的 Kubernetes 元数据。`rtt` 对象以毫秒为单位提供当前值、初始值、平滑 TCP 值，以及 DNS、LLMNR、NetBIOS、ICMP echo、STUN 和 NTP 计时。可选的增强与计时字段在被发现前保持为 null；关闭期间排空的连接可能在进程、GeoIP 或 Kubernetes 增强完成前就出现在最终记录中。使用方必须根据 `schema_version` 选择解析逻辑，并允许出现新增的未知字段。
+默认 `jsonl` 和 `json` 输出格式版本为 `schema_version = 1`。每条记录都是快照对象，顶层字段为 `schema_version`、`type`、`timestamp`、`runtime`、`sandbox`、`stats`、`filter`、`connection_count` 和 `connections`。最终终止记录会将 `runtime.status` 设为 `stopping`、`stopped` 或 `stopped_with_errors`，并包含 `runtime.termination_reason` 和 `runtime.shutdown`。连接记录涵盖端点、进程归属、流量、各协议计时、GeoIP，以及可选的 Kubernetes 元数据。`rtt` 对象以毫秒为单位提供当前值、初始值、平滑 TCP 值，以及 DNS、LLMNR、NetBIOS、ICMP echo、STUN 和 NTP 计时。可选的增强与计时字段在被发现前保持为 null；关闭期间排空的连接可能在进程、GeoIP 或 Kubernetes 增强完成前就出现在最终记录中。使用方必须根据 `schema_version` 选择解析逻辑，并允许出现新增的未知字段。
 
-开发版本会复用未变化的无界面历史连接记录的 JSON 编码。缓存最多保留 10,000 条记录和 16 MiB 的连接 JSON 编码，以及对应的投影字段和管理数据。它会比较所有导出的连接字段，因此延迟到达的元数据和最终计数仍会更新。每条输出记录仍然是版本 1 的完整快照；快照构建开销和输出大小仍会随可见连接数量增长。
+开发版本会复用未变化的无界面历史连接记录的 JSON 编码。缓存最多保留 10,000 条记录和 16 MiB 的连接 JSON 编码，以及对应的投影字段和管理数据。它会比较所有导出的连接字段，因此延迟到达的元数据和最终计数仍会更新。在 `jsonl` 和 `json` 模式下，每条输出记录仍然是版本 1 的完整快照；快照构建开销和输出大小仍会随可见连接数量增长。
 
 连接 `id` 是不透明标识符，连接转为历史记录后保持不变，并区分之后复用同一端点的连接。流量速率字段为 `traffic.outgoing_bytes_per_second` 和 `traffic.incoming_bytes_per_second`，单位均为字节每秒。如果工作线程超过关闭期限，终止状态保持为 `stopping`，`runtime.shutdown.timed_out_workers` 会报告其数量。此时记录可能仍是最后发布的快照，而非完全排空后的状态；进程以非零状态退出。
 
 如果 JSONL 管道的下游提前关闭，例如使用 `head`，会产生 broken pipe。RustNet 会将其视为成功的停止请求，关闭所有工作线程，并且不会尝试向已经关闭的管道写入最终终止记录。抓包初始化失败或之后发生抓包故障时，程序会以非零状态退出。`--duration`、`--output` 和 `--filter` 必须与 `--headless` 一起使用。
 
 `stats.packets_captured` 和 `stats.bytes_captured` 是从启动开始的累计计数，不受连接保留策略、`--filter` 或 TUI 清空操作影响。libpcap 交付的每个数据包都会在归属判断、处理队列丢包、解析或连接跟踪限制之前计入。字节数使用 libpcap 报告的 snaplen 截断前原始包长，包含捕获链路类型的头部，既不是应用负载字节数，也不是精确的物理线路用量。捕获接口和 `--bpf-filter` 决定覆盖范围；交付前丢失或绕过捕获的数据包不计入，在多个接口上重复观察到的数据包会分别计数。这些总量不区分流入、流出或客户端。字段以新增方式扩展 schema 版本 1，旧版本输出可能没有这些字段。外部导出器可将其映射为 Prometheus counter，将重启视为计数重置，并检查快照新鲜度和捕获丢包。捕获运行期间，各计数值独立采样。
+
+#### 增量 JSONL（未发布）
+
+开发版本还支持 `--headless --output jsonl-delta`。此可选格式使用 **schema 版本 2**，现有 `jsonl` 和 `json` 使用方继续使用版本 1。增量输出减少未变化连接的重复编码和传输，但每次刷新仍会构建并比较完整的所选快照，不会增加逐包或连接事件历史。
+
+每行包含常规快照信封字段，以及 `sequence`、`base_sequence` 和 `removed_connection_ids`：
+
+- **`type: "snapshot"`**：替换使用方的全部状态。`connections` 包含所有选中的连接，`base_sequence` 为 null，`removed_connection_ids` 为空。首次输出和最终终止记录始终是完整快照。距离上次完整快照输出 60 条记录后，或满 30 秒后的下一次输出时，再发送完整快照，以先到者为准。
+- **`type: "delta"`**：一个原子批次。先删除 `removed_connection_ids`，再按不透明的 `id` 插入或替换 `connections` 中的条目。这些条目是完整连接对象，而非字段补丁；未变化的连接不输出。每条记录的 `timestamp`、`runtime`、`sandbox`、`stats` 和 `filter` 都完整提供，应直接替换。`connection_count` 是应用批次后的总连接数，不是更新条目数。按 `id` 排序即可与完整快照的连接顺序一致。
+- **顺序与恢复：**每个新输出流的 `sequence` 从 1 开始，每输出一条记录递增 1。仅当 `base_sequence` 等于最后应用的序号，且 `sequence` 是其下一序号时，才能应用增量。遇到缺失、重复、乱序或无效记录时，将状态标为过期并忽略增量，直到有效的完整快照将其替换。还应验证重建后的连接数等于 `connection_count`。新的进程或管道是新流，不得混合不同流。没有通过 stdin 请求重新同步的机制；周期性和最终完整快照用于恢复。
+- **背压与关闭：**写入线程在替换队列中的过期快照之后，基于上一次实际输出的状态计算增量。因此 `runtime.snapshot_generation` 的间断不会使增量失效。broken pipe 处理、有界缓冲、关闭期限和错误报告与 `jsonl` 相同。写入阻塞或失败仍可能导致最终记录无法输出。
+- **上限：**基线最多保留合计 10,000 条活跃和历史记录、16 MiB 的连接 JSON 编码，以及投影字段和管理数据。超过任一上限时，输出完整快照且不保留不完整基线。完整基线再次满足上限后恢复增量。所有导出的连接字段都参与比较，以保留延迟元数据、最终计数、过滤变化、历史淘汰和端点复用。
+
+可运行以下可复现的合成基准：
+
+```bash
+cargo test --release --locked --lib --all-features benchmark_history_encoding -- --ignored --nocapture
+```
+
+基准报告未缓存完整快照、缓存完整快照和增量输出的投影耗时、编码耗时和平均字节数。它改变活跃及历史连接数和元数据大小，包含周期性完整快照，并测试基线上限回退。这是合成测量，并非长时间实际抓包的 CPU 结果。实际分析应在相同流量、接口、过滤器、历史设置和刷新间隔下比较 `--output jsonl` 与 `--output jsonl-delta`，按照 [PROFILING.zh-CN.md](PROFILING.zh-CN.md) 记录 CPU、内存、输出字节数、连接数和抓包丢包。当大部分连接都发生变化时，增量编码的开销可能高于完整输出，应测量目标工作负载。现有使用方必须先实现并验证版本 2 重建，再启用此格式。
 
 #### 流量历史与抓包文件
 
@@ -181,7 +201,7 @@ rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
 
 stdout、JSON 日志、PCAP、自动生成的 `.connections.jsonl` 旁路文件和 PCAPNG 必须使用不同文件。RustNet 会在截断或写入配置的输出文件前拒绝指向同一普通文件的 stdout。然而，shell 的 `>` 重定向可能在 RustNet 启动前截断文件，因此务必为快照选择独立路径。
 
-每条输出记录都包含一份完整的选定快照。连接越多、元数据越丰富、刷新间隔越短，CPU、内存和磁盘开销通常越大。五秒间隔可降低输出频率，但不能保留快照之间错过的连接，也不会消除后台采集开销。无人值守运行前，请测量实际流量下的资源和存储需求。
+在 `jsonl` 和 `json` 模式下，每条输出记录都包含一份完整的选定快照。连接越多、元数据越丰富、刷新间隔越短，CPU、内存和磁盘开销通常越大。五秒间隔可降低输出频率，但不能保留快照之间错过的连接，也不会消除后台采集开销。无人值守运行前，请测量实际流量下的资源和存储需求。
 
 ### 选项详情<a id="option-details"></a>
 
