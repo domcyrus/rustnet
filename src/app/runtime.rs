@@ -282,6 +282,8 @@ impl RuntimeSupervisor {
             let now = Instant::now();
             if now >= deadline {
                 report.timed_out_workers = workers.len();
+                // Return the report without synchronous I/O: even diagnostics
+                // can block or fail after the shutdown deadline.
                 break;
             }
 
@@ -425,6 +427,64 @@ mod tests {
         let report = runtime.stop_and_join(|_| {}, |_| {});
         assert_eq!(report.joined_workers, 1);
         assert_eq!(report.panicked_workers, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_deadline_survives_stalled_and_broken_stderr() {
+        use std::io::{ErrorKind, Write};
+        use std::os::fd::OwnedFd;
+        use std::os::unix::net::UnixStream;
+        use std::process::{Command, Stdio};
+
+        for broken in [false, true] {
+            let (mut writer, reader) = UnixStream::pair().unwrap();
+            let unread = if broken {
+                drop(reader);
+                None
+            } else {
+                writer.set_nonblocking(true).unwrap();
+                loop {
+                    match writer.write(&[0; 4096]) {
+                        Ok(0) => panic!("stderr stream stopped accepting data"),
+                        Ok(_) => {}
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("fill stderr: {error}"),
+                    }
+                }
+                writer.set_nonblocking(false).unwrap();
+                Some(reader)
+            };
+            // Run the timeout regression without libtest's output capture so
+            // any diagnostic really reaches the stalled or broken descriptor.
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "app::runtime::tests::one_deadline_bounds_all_workers_and_skips_finalization",
+                    "--nocapture",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(OwnedFd::from(writer)))
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("shutdown blocked on stderr (broken={broken})");
+                }
+                thread::sleep(Duration::from_millis(10));
+            };
+            drop(unread);
+            assert!(
+                status.success(),
+                "shutdown failed with broken={broken}: {status}"
+            );
+        }
     }
 
     #[test]

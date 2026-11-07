@@ -24,7 +24,7 @@ pub use output::{
 pub use runtime::{InitStatus, StopReport, WorkerStartupPermit};
 pub use state::App;
 pub(crate) use types::ConnectionCounts;
-pub use types::{AppOutputHandles, AppStats, Config};
+pub use types::{AppOutputHandles, AppStats, CaptureAccounting, Config};
 
 use std::time::Duration;
 

@@ -3,9 +3,10 @@ use crate::headless::output::serialize_record;
 use crate::headless::tests::app_with_connections;
 
 fn snapshot(app: &App) -> SnapshotEnvelope {
-    let mut record = SnapshotEnvelope::new(app, None, RuntimePhase::Running, None, None).1;
-    for connection in &mut record.connections {
-        connection.historic = true;
+    let mut record = SnapshotEnvelope::new(app, None, RuntimePhase::Running, None, None, true).1;
+    for connection in record.connections.full_mut() {
+        connection.connection.historic = true;
+        connection.details.lifecycle = None;
     }
     record
 }
@@ -20,14 +21,14 @@ fn unchanged_connections_reuse_json_but_envelope_stays_fresh() {
     let app = app_with_connections();
     let mut cache = ConnectionCache::default();
     assert_matches_uncached(&mut cache, snapshot(&app));
-    let original = Arc::clone(&cache.entries[0].json);
+    let original = Arc::clone(&cache.full.entries[0].json);
     let mut record = snapshot(&app);
     record.runtime.snapshot_generation += 1;
     record.runtime.status = "stopped";
     record.runtime.termination_reason = Some("duration_elapsed");
     record.stats.bytes_captured += 100;
     assert_matches_uncached(&mut cache, record);
-    assert!(Arc::ptr_eq(&original, &cache.entries[0].json));
+    assert!(Arc::ptr_eq(&original, &cache.full.entries[0].json));
 }
 
 #[test]
@@ -35,9 +36,11 @@ fn archived_connections_preserve_late_metadata_and_final_counters() {
     let app = app_with_connections();
     // Each update must invalidate independently, even when counters and
     // last_activity are unchanged.
-    let updates: [fn(&mut ConnectionSnapshot); 6] = [
+    let updates: [fn(&mut ConnectionSnapshot<FullProcessSnapshot>); 6] = [
         |connection| connection.hostname = Some("late.example".into()),
-        |connection| connection.process.as_mut().unwrap().name = Some("late process".into()),
+        |connection| {
+            connection.process.as_mut().unwrap().process.name = Some("late process".into())
+        },
         |connection| {
             connection.geoip = Some(GeoIpSnapshot {
                 country_code: Some("CH".into()),
@@ -55,11 +58,11 @@ fn archived_connections_preserve_late_metadata_and_final_counters() {
     for update in updates {
         let mut cache = ConnectionCache::default();
         assert_matches_uncached(&mut cache, snapshot(&app));
-        let original = Arc::clone(&cache.entries[0].json);
+        let original = Arc::clone(&cache.full.entries[0].json);
         let mut record = snapshot(&app);
-        update(&mut record.connections[0]);
+        update(&mut record.connections.full_mut()[0].connection);
         assert_matches_uncached(&mut cache, record);
-        assert!(!Arc::ptr_eq(&original, &cache.entries[0].json));
+        assert!(!Arc::ptr_eq(&original, &cache.full.entries[0].json));
     }
 }
 
@@ -69,9 +72,10 @@ fn filtering_clearing_and_tuple_reuse_evict_old_records() {
     let mut cache = ConnectionCache::default();
     assert_matches_uncached(&mut cache, snapshot(&app));
     let original_ids: Vec<_> = cache
+        .full
         .entries
         .iter()
-        .map(|entry| entry.projected.id.clone())
+        .map(|entry| entry.projected.connection.id.clone())
         .collect();
     let mut filtered = SnapshotEnvelope::new(
         &app,
@@ -79,13 +83,15 @@ fn filtering_clearing_and_tuple_reuse_evict_old_records() {
         RuntimePhase::Running,
         None,
         None,
+        true,
     )
     .1;
-    for connection in &mut filtered.connections {
-        connection.historic = true;
+    for connection in filtered.connections.full_mut() {
+        connection.connection.historic = true;
+        connection.details.lifecycle = None;
     }
     assert_matches_uncached(&mut cache, filtered);
-    assert_eq!(cache.entries.len(), 1);
+    assert_eq!(cache.full.entries.len(), 1);
 
     let mut connections = app.get_connections();
     for connection in &mut connections {
@@ -93,14 +99,16 @@ fn filtering_clearing_and_tuple_reuse_evict_old_records() {
     }
     app.set_connections_snapshot_for_test(connections);
     assert_matches_uncached(&mut cache, snapshot(&app));
-    assert!(
-        original_ids
+    assert!(original_ids.iter().all(|id| {
+        !cache
+            .full
+            .entries
             .iter()
-            .all(|id| !cache.entries.iter().any(|entry| &entry.projected.id == id))
-    );
+            .any(|entry| &entry.projected.connection.id == id)
+    }));
     app.set_connections_snapshot_for_test(vec![]);
     assert_matches_uncached(&mut cache, snapshot(&app));
-    assert!(cache.entries.is_empty());
+    assert!(cache.full.entries.is_empty());
 }
 
 #[test]
@@ -117,9 +125,10 @@ fn cache_limits_do_not_truncate_output() {
                     .unwrap(),
                 expected
             );
-            assert!(cache.entries.len() <= max_connections);
+            assert!(cache.full.entries.len() <= max_connections);
             assert!(
                 cache
+                    .full
                     .entries
                     .iter()
                     .map(|entry| entry.json.get().len())
@@ -136,14 +145,14 @@ fn active_connections_and_transitions_keep_full_output() {
     let mut cache = ConnectionCache::default();
     assert_matches_uncached(&mut cache, snapshot(&app));
     let mut record = snapshot(&app);
-    record.connections[0].historic = false;
+    record.connections.full_mut()[0].connection.historic = false;
     assert_matches_uncached(&mut cache, record);
-    assert_eq!(cache.entries.len(), 1);
-    let record = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None).1;
+    assert_eq!(cache.full.entries.len(), 1);
+    let record = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, true).1;
     assert_matches_uncached(&mut cache, record);
-    assert!(cache.entries.is_empty());
+    assert!(cache.full.entries.is_empty());
     assert_matches_uncached(&mut cache, snapshot(&app));
-    assert_eq!(cache.entries.len(), 2);
+    assert_eq!(cache.full.entries.len(), 2);
 }
 
 #[test]
@@ -152,7 +161,10 @@ fn signed_zero_changes_preserve_the_original_encoding() {
     let mut cache = ConnectionCache::default();
     for rate in [0.0, -0.0, 0.0] {
         let mut record = snapshot(&app);
-        record.connections[0].traffic.outgoing_bytes_per_second = finite(rate);
+        record.connections.full_mut()[0]
+            .connection
+            .traffic
+            .outgoing_bytes_per_second = finite(rate);
         assert_matches_uncached(&mut cache, record);
     }
 }
@@ -173,6 +185,7 @@ fn benchmark_history_encoding() {
         .into_iter()
         .find(|c| c.pid.is_some())
         .unwrap();
+    let full = std::env::var_os("RUSTNET_PROFILE_FULL_DETAILS").is_some();
     const ITERATIONS: usize = 120;
     for (active, historic, metadata_bytes) in [
         (100, 0, 0),
@@ -200,7 +213,8 @@ fn benchmark_history_encoding() {
         app.set_connections_snapshot_for_test(connections);
         let mut cache = ConnectionCache::default();
         let mut incremental = IncrementalEncoder::default();
-        let snapshot = || SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None).1;
+        let snapshot =
+            || SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, full).1;
         cache.serialize(snapshot()).unwrap();
         incremental.serialize(snapshot()).unwrap();
         let mut projection_time = [Duration::ZERO; 3];
@@ -212,12 +226,19 @@ fn benchmark_history_encoding() {
                 let mode = (iteration + offset) % 3;
                 let started = Instant::now();
                 let mut record = snapshot();
-                for connection in &mut record.connections {
-                    if !connection.historic {
-                        connection.traffic.bytes_sent += iteration as u64 + 1;
-                        connection.traffic.outgoing_bytes_per_second =
-                            finite(iteration as f64 + 1.0);
+                let update = |historic: bool, traffic: &mut TrafficSnapshot| {
+                    if !historic {
+                        traffic.bytes_sent += iteration as u64 + 1;
+                        traffic.outgoing_bytes_per_second = finite(iteration as f64 + 1.0);
                     }
+                };
+                match &mut record.connections {
+                    ConnectionSnapshots::Basic(records) => records
+                        .iter_mut()
+                        .for_each(|record| update(record.historic, &mut record.traffic)),
+                    ConnectionSnapshots::Full(records) => records.iter_mut().for_each(|record| {
+                        update(record.connection.historic, &mut record.connection.traffic)
+                    }),
                 }
                 projection_time[mode] += started.elapsed();
                 let started = Instant::now();
@@ -243,5 +264,75 @@ fn benchmark_history_encoding() {
                     / ITERATIONS as f64,
             );
         }
+    }
+}
+
+impl ConnectionSnapshots {
+    fn full_mut(&mut self) -> &mut Vec<FullConnectionSnapshot> {
+        match self {
+            Self::Full(records) => records,
+            Self::Basic(_) => panic!("expected full projection"),
+        }
+    }
+}
+
+#[test]
+fn full_details_invalidate_without_base_connection_changes() {
+    let app = app_with_connections();
+    let updates: [fn(&mut FullConnectionSnapshot); 5] = [
+        |value| value.details.network_context.remote_hostname = Some("late.example".into()),
+        |value| {
+            value.details.network_context.remote_mac = Some(NeighborSnapshot {
+                mac: "02:00:00:00:00:01".into(),
+                vendor: Some("test".into()),
+            })
+        },
+        |value| {
+            value
+                .details
+                .protocol_details
+                .push(crate::connection_details::DetailField {
+                    label: "test",
+                    value: Some("late".into()),
+                    warning: false,
+                })
+        },
+        |value| value.details.request_health.quic_retries += 1,
+        |value| value.connection.process.as_mut().unwrap().user_group = Some("user:group".into()),
+    ];
+    for update in updates {
+        let mut cache = ConnectionCache::default();
+        assert_matches_uncached(&mut cache, snapshot(&app));
+        let original = Arc::clone(&cache.full.entries[0].json);
+        let mut record = snapshot(&app);
+        update(&mut record.connections.full_mut()[0]);
+        assert_matches_uncached(&mut cache, record);
+        assert!(!Arc::ptr_eq(&original, &cache.full.entries[0].json));
+    }
+}
+
+#[test]
+fn basic_and_full_modes_preserve_their_wire_shapes() {
+    let app = app_with_connections();
+    let mut cache = ConnectionCache::default();
+    for full in [false, true, false] {
+        let mut record =
+            SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, full).1;
+        match &mut record.connections {
+            ConnectionSnapshots::Full(records) => {
+                for value in records {
+                    value.connection.historic = true;
+                    value.details.lifecycle = None;
+                }
+            }
+            ConnectionSnapshots::Basic(records) => {
+                for value in records {
+                    value.historic = true;
+                }
+            }
+        }
+        assert_matches_uncached(&mut cache, record);
+        assert_eq!(cache.basic.entries.len(), if full { 0 } else { 2 });
+        assert_eq!(cache.full.entries.len(), if full { 2 } else { 0 });
     }
 }

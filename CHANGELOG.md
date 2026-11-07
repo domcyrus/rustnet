@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
 
 ### Changed
+- Skip process ownership accounting work on the default packet ingestion path (#721)
+- Speed up executable-path conversion in headless snapshots while preserving path encoding (#721)
+- Retain only directory traversal privileges in the Windows sandbox while preserving token groups and integrity level (#721)
 - Avoid allocating idle rate strings in the UI while preserving rate labels and placeholders (#429)
 - Reuse unchanged historic headless connection JSON with a bounded cache while preserving full snapshots and late metadata updates (#709)
 - Share DNS/RTT pending-request bookkeeping, procfs socket parsing, and JSON log construction while preserving protocol and output behavior (#699)
@@ -20,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
+- Add headless automation controls, opt-in full metadata and capture accounting, and guarded Linux executable retention (#721)
 - Add opt-in incremental headless JSONL with sequence checks, bounded baselines, and periodic full snapshots for resynchronization (#719)
 - Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible
 - Show per-resolver DNS health, retries, pending age, selectable 60s/5m/1h/since-startup windows, and 15-minute recent issue evidence in Host
@@ -29,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Keep headless shutdown bounded when stderr or account-name services stall, using numeric account IDs until background lookups finish (#721)
 - Discard pending TCP RTT probes on one-byte keepalives to prevent inflated or ambiguous timing samples after missed ACKs or last-byte retransmissions
 - Match local IPv4/IPv6 DNS stub replies correctly and prevent healthy resolvers from hiding a failing secondary resolver
 - Fall back to a pinned, checksum-verified Npcap SDK mirror when the primary download fails during Windows builds or CI test setup.

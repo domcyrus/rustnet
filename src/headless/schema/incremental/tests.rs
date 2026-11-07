@@ -60,7 +60,7 @@ impl Consumer {
 }
 
 fn snapshot(app: &App) -> SnapshotEnvelope {
-    SnapshotEnvelope::new(app, None, RuntimePhase::Running, None, None).1
+    SnapshotEnvelope::new(app, None, RuntimePhase::Running, None, None, false).1
 }
 
 fn assert_reconstructs(
@@ -85,13 +85,13 @@ fn reconstructs_updates_archival_late_metadata_eviction_and_tuple_reuse() {
     let mut encoder = IncrementalEncoder::default();
     let mut consumer = Consumer::default();
     assert_reconstructs(&mut encoder, &mut consumer, snapshot(&app), now);
-    let original = Arc::clone(&encoder.previous.as_ref().unwrap()[0].json);
+    let original = Arc::clone(&ConnectionSnapshot::previous(&encoder.previous).unwrap()[0].json);
     let unchanged = assert_reconstructs(&mut encoder, &mut consumer, snapshot(&app), now);
     assert_eq!(unchanged["type"], "delta");
     assert_eq!(unchanged["connections"], serde_json::json!([]));
     assert!(Arc::ptr_eq(
         &original,
-        &encoder.previous.as_ref().unwrap()[0].json
+        &ConnectionSnapshot::previous(&encoder.previous).unwrap()[0].json
     ));
 
     for iteration in 0..150 {
@@ -100,14 +100,18 @@ fn reconstructs_updates_archival_late_metadata_eviction_and_tuple_reuse() {
         record.stats.packets_captured += iteration;
         record.stats.bytes_captured += iteration * 100;
         if iteration > 5 {
-            record.connections[0].historic = true;
-            record.connections[0].closed_at = Some("2026-01-01T00:00:00Z".into());
-            record.connections[0].traffic.bytes_received = 500;
+            record.connections.basic_mut()[0].historic = true;
+            record.connections.basic_mut()[0].closed_at = Some("2026-01-01T00:00:00Z".into());
+            record.connections.basic_mut()[0].traffic.bytes_received = 500;
         }
         if iteration > 10 {
-            record.connections[0].hostname = Some("late.example".into());
-            record.connections[0].process.as_mut().unwrap().name = Some("late process".into());
-            record.connections[0].geoip = Some(GeoIpSnapshot {
+            record.connections.basic_mut()[0].hostname = Some("late.example".into());
+            record.connections.basic_mut()[0]
+                .process
+                .as_mut()
+                .unwrap()
+                .name = Some("late process".into());
+            record.connections.basic_mut()[0].geoip = Some(GeoIpSnapshot {
                 country_code: Some("CH".into()),
                 country_name: None,
                 asn: Some(64512),
@@ -116,20 +120,23 @@ fn reconstructs_updates_archival_late_metadata_eviction_and_tuple_reuse() {
                 postal_code: None,
             });
         }
-        record.connections[1].traffic.bytes_sent += iteration;
-        record.connections[1].traffic.outgoing_bytes_per_second =
-            finite(if iteration % 2 == 0 { 0.0 } else { -0.0 });
+        record.connections.basic_mut()[1].traffic.bytes_sent += iteration;
+        record.connections.basic_mut()[1]
+            .traffic
+            .outgoing_bytes_per_second = finite(if iteration % 2 == 0 { 0.0 } else { -0.0 });
         if iteration > 20 {
-            record.connections[1].id.push_str("-new-lifetime");
+            record.connections.basic_mut()[1]
+                .id
+                .push_str("-new-lifetime");
         }
         if iteration > 25 {
-            record.connections.remove(0);
+            record.connections.basic_mut().remove(0);
             record.filter = Some("process:resolver".into());
         }
         if iteration > 40 {
-            record.connections.clear();
+            record.connections.basic_mut().clear();
         }
-        record.connection_count = record.connections.len();
+        record.connection_count = record.connections.basic_mut().len();
         assert_reconstructs(&mut encoder, &mut consumer, record, now);
     }
 }
@@ -186,9 +193,10 @@ fn full_snapshots_are_periodic_and_terminal_is_self_contained() {
         RuntimePhase::StoppedWithErrors,
         Some(TerminationReason::RuntimeFailed),
         Some(StopReport::default()),
+        false,
     )
     .1;
-    terminal.connections[0].traffic.bytes_received += 77;
+    terminal.connections.basic_mut()[0].traffic.bytes_received += 77;
     terminal.stats.bytes_captured += 77;
     let expected = serde_json::to_value(&terminal).unwrap();
     let record = assert_reconstructs(&mut encoder, &mut consumer, terminal, now);
@@ -221,5 +229,105 @@ fn limits_fall_back_to_complete_snapshots_and_resume_deltas_when_state_fits() {
         assert_eq!(full["type"], "snapshot");
         let delta = assert_reconstructs(&mut encoder, &mut consumer, snapshot(&app), now);
         assert_eq!(delta["type"], "delta");
+    }
+}
+
+impl ConnectionSnapshots {
+    fn basic_mut(&mut self) -> &mut Vec<ConnectionSnapshot> {
+        match self {
+            Self::Basic(records) => records,
+            Self::Full(_) => panic!("expected basic records"),
+        }
+    }
+}
+
+#[test]
+fn full_metadata_and_detail_mode_changes_reconstruct_exactly() {
+    let app = app_with_connections();
+    let now = Instant::now();
+    let mut encoder = IncrementalEncoder::default();
+    let mut consumer = Consumer::default();
+    assert_reconstructs(&mut encoder, &mut consumer, snapshot(&app), now);
+    for iteration in 0..4 {
+        let mut full = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, true).1;
+        let ConnectionSnapshots::Full(records) = &mut full.connections else {
+            unreachable!()
+        };
+        let record = &mut records[0];
+        record.connection.historic = true;
+        record.connection.process.as_mut().unwrap().user_group =
+            Some(format!("user-{iteration}:group"));
+        record.details.network_context.remote_hostname = Some(format!("late-{iteration}.example"));
+        record.details.request_health.retries = Some(iteration);
+        full.stats.capture_accounting = Some(crate::app::CaptureAccounting {
+            captured: 42 + iteration,
+            ..Default::default()
+        });
+        let wire = assert_reconstructs(&mut encoder, &mut consumer, full, now);
+        assert!(!wire["connections"].as_array().unwrap().is_empty());
+    }
+    assert_reconstructs(&mut encoder, &mut consumer, snapshot(&app), now);
+    let mut full = SnapshotEnvelope::new(
+        &app,
+        None,
+        RuntimePhase::Stopped,
+        Some(TerminationReason::DurationElapsed),
+        Some(StopReport::default()),
+        true,
+    )
+    .1;
+    full.stats.capture_accounting = Some(crate::app::CaptureAccounting::default());
+    let expected = serde_json::to_value(&full).unwrap();
+    let wire = assert_reconstructs(&mut encoder, &mut consumer, full, now);
+    assert_eq!(Consumer::default().apply(&wire).unwrap(), expected);
+}
+
+#[test]
+fn changing_metadata_mode_emits_a_complete_baseline() {
+    let app = app_with_connections();
+    let mut encoder = IncrementalEncoder::default();
+    let mut consumer = Consumer::default();
+    let now = Instant::now();
+    for full in [false, true, false] {
+        let record = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, full).1;
+        let wire = assert_reconstructs(&mut encoder, &mut consumer, record, now);
+        assert_eq!(wire["type"], "snapshot");
+        assert!(wire["base_sequence"].is_null());
+    }
+}
+
+#[test]
+fn executable_paths_keep_old_baselines_and_detect_replacement() {
+    for full in [false, true] {
+        let app = app_with_connections();
+        let mut connections = app.get_connections();
+        connections.truncate(1);
+        connections[0].is_historic = true;
+        let mut encoder = IncrementalEncoder::default();
+        let mut consumer = Consumer::default();
+        let now = Instant::now();
+        for (index, path) in [
+            Some("/bin/old"),
+            Some("/bin//new"),
+            Some("/bin//new"),
+            Some("/bin/new"),
+            None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Equal text in a new allocation must remain an unchanged record.
+            connections[0].executable = path.map(|p| std::path::PathBuf::from(p).into());
+            app.set_connections_snapshot_for_test(connections.clone());
+            let record =
+                SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, full).1;
+            let wire = assert_reconstructs(&mut encoder, &mut consumer, record, now);
+            assert_eq!(
+                wire["connections"].as_array().unwrap().len(),
+                usize::from(index != 2)
+            );
+            let retained = consumer.connections.values().next().unwrap();
+            assert_eq!(retained["process"]["executable"], serde_json::json!(path));
+        }
     }
 }

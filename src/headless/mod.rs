@@ -80,6 +80,8 @@ impl std::str::FromStr for HeadlessFormat {
 /// Settings used by [`run`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HeadlessOptions {
+    /// Include protocol, health, network and lifecycle details.
+    pub full_details: bool,
     pub format: HeadlessFormat,
     /// Stop after this much wall-clock time. `None` waits for a shutdown
     /// signal in JSON mode. JSONL can also stop when its consumer closes the
@@ -87,6 +89,8 @@ pub struct HeadlessOptions {
     pub duration: Option<Duration>,
     /// Optional connection filter using the same syntax as the TUI.
     pub filter_query: Option<String>,
+    /// Include retained closed connections in snapshots.
+    pub include_historic: bool,
 }
 
 /// Why a headless run ended.
@@ -159,6 +163,7 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
     shutdown_requested: &AtomicBool,
     writer_deadline: Duration,
 ) -> Result<StopReport> {
+    app.set_show_historic(options.include_historic);
     let mut cache = ConnectionCache::default();
     let mut incremental = IncrementalEncoder::default();
     let format = options.format;
@@ -224,6 +229,7 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
         phase,
         termination_reason,
         Some(stop_report),
+        options.full_details,
     );
 
     let terminal_result = output.finish(snapshot, writer_deadline);
@@ -265,8 +271,14 @@ fn stream_json_lines(
             } else {
                 RuntimePhase::Running
             };
-            let (generation, snapshot) =
-                SnapshotEnvelope::new(app, options.filter_query.as_deref(), phase, None, None);
+            let (generation, snapshot) = SnapshotEnvelope::new(
+                app,
+                options.filter_query.as_deref(),
+                phase,
+                None,
+                None,
+                options.full_details,
+            );
             if last_generation != Some(generation) {
                 output.offer_latest(snapshot);
                 last_generation = Some(generation);

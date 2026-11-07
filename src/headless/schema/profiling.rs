@@ -45,10 +45,13 @@ impl Profiler {
         let build = started.elapsed();
         let started = Instant::now();
         let (_, snapshot) =
-            SnapshotEnvelope::new(&self.app, None, RuntimePhase::Running, None, None);
+            SnapshotEnvelope::new(&self.app, None, RuntimePhase::Running, None, None, false);
         let project = started.elapsed();
-        let historic = snapshot.connections.iter().filter(|c| c.historic).count();
-        let active = snapshot.connections.len() - historic;
+        let ConnectionSnapshots::Basic(connections) = &snapshot.connections else {
+            unreachable!("profiling uses basic metadata");
+        };
+        let historic = connections.iter().filter(|c| c.historic).count();
+        let active = connections.len() - historic;
 
         // Serialize the exact same projection without the cache as a reference.
         // This is always first, so these are diagnostic timings, not a paired
@@ -63,13 +66,19 @@ impl Profiler {
             reference, encoded,
             "cached output differs from full snapshot"
         );
-        let cached_bytes: usize = self.cache.entries.iter().map(|c| c.json.get().len()).sum();
+        let cached_bytes: usize = self
+            .cache
+            .basic
+            .entries
+            .iter()
+            .map(|c| c.json.get().len())
+            .sum();
         writeln!(
             self.output,
             "{workload},{sample},{},{active},{historic},{},{},{cached_bytes},{},{},{},{}",
             at.as_millis(),
             encoded.len(),
-            self.cache.entries.len(),
+            self.cache.basic.entries.len(),
             build.as_nanos(),
             project.as_nanos(),
             serialize.as_nanos(),

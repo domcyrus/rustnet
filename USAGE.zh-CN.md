@@ -148,10 +148,37 @@ rustnet --headless --filter 'process:curl app:https'
 
 无界面模式的参数如下：
 
+开发中的扩展输出需要显式启用。`--headless-details full` 增加协议、健康状态、
+网络、账户名称和生命周期字段。默认的 `--headless-details basic` 保持上游 schema，
+并跳过这些额外工作。`--capture-accounting` 独立启用 `stats.capture_accounting` 下的
+累计抓包、已跟踪和进程归属帧字节统计；未启用时该字段不存在。这两个选项均要求
+`--headless`。统计每个处理批次发布一次，重置 UI 计数不会清除累计值。归属以数据包
+处理时的信息为准，不会追溯修改。完整详情遵循现有 DNS/DPI 设置，可能增加 CPU
+使用率和输出大小。
+在 Unix 上，账户名称在后台解析。查询尚未完成、不可用或达到容量限制时，使用数字 ID，
+终态记录也不例外，因此目录服务不会延迟关闭。后续快照可用解析出的名称替换这些 ID。
+查询队列和账户缓存均有容量上限。
+
 - **`--headless`**：不设置终端，并确保 stdout 仅包含机器可读记录。诊断信息会写入 stderr 或已配置的日志文件。
 - **`--duration <SECONDS>`**：在指定的正整数秒数后停止。如果省略，监控会持续到收到支持的关闭信号。JSONL 在发现输出管道已关闭时也会停止。无界面模式在 Unix 上支持 SIGINT、SIGTERM 和 SIGHUP，在 Windows 上支持 Ctrl+C 和 Ctrl+Break。
 - **`--output jsonl|json`**：选择输出形式。JSONL 是默认格式，以每行一个 JSON 对象的方式写出带版本号的最新值快照。当输出产生背压时，队列中的旧快照会被最新快照替换；使用方可通过不连续的 `runtime.snapshot_generation` 值检测到跳过的快照。由时长或信号触发关闭后，JSONL 还会写出一条最终终止记录，其中包含终止原因和关闭结果。JSON 会等待监控停止，然后仅写出一条带版本号的最终记录。
 - **`--filter <QUERY>`**：使用与 TUI 相同的连接过滤语法，包括 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:` 和 `proto:` 等字段，以及 `/pattern/` 正则表达式。
+
+#### 无界面自动化（未发布）
+
+`--list-interfaces` 返回抓包接口的 JSON 数组，包含 `name`、可为空的
+`description` 和 `addresses`，不会打开抓包。该选项不需要 `--headless`；
+Windows 枚举接口仍需要 Npcap 运行时。
+
+控制器启动抓包时使用 `--headless --stop-on-stdin-close` 并保持 stdin 打开。
+EOF 或读取失败会请求正常关闭并输出终态记录。`--include-historic` 在引擎的
+保留限制内包含已关闭连接。这两个选项均要求 `--headless`。
+
+完整元数据和抓包统计支持 `jsonl`、`json` 与 `jsonl-delta`。增量记录替换完整
+连接对象，包括延迟元数据和变化的生命周期倒计时。未变化的历史连接在现有缓存
+限制内复用编码 JSON。在 Linux 上，后续 procfs 访问被拒绝时，可复用启动时记录的
+可执行文件路径。复用前必须核验 PID、进程启动时间和套接字身份；无法验证或已变化
+的身份不会采用。
 
 #### Schema 约定
 

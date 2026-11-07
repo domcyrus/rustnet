@@ -147,12 +147,44 @@ rustnet --headless --duration 60 --output json
 rustnet --headless --filter 'process:curl app:https'
 ```
 
+Development-only extended output is opt-in. `--headless-details full` adds
+protocol, health, network, account-name and lifecycle fields. The default
+`--headless-details basic` preserves the basic schema and skips that work.
+`--capture-accounting` independently enables lifetime captured, tracked and
+process-attributed frame-byte totals under `stats.capture_accounting`; otherwise
+that field is absent. These options require `--headless`. Accounting publishes
+once per processor batch and survives UI counter resets. Ownership is recorded
+when each packet is processed, without retroactive attribution. Full details
+respect the existing DNS/DPI settings and can increase CPU use and output size.
+Account names resolve in the background on Unix. Pending, unavailable, or
+capacity-limited lookups use numeric IDs, including in terminal records, so
+directory services cannot delay shutdown. Later snapshots can replace those IDs
+with resolved names. The lookup queue and account cache are bounded.
+
 The headless controls are:
 
 - **`--headless`**: disables terminal setup and reserves stdout for machine-readable records only. Diagnostics go to stderr or configured log files.
 - **`--duration <SECONDS>`**: stops after a positive whole number of seconds. Without it, monitoring continues until a supported shutdown signal arrives. JSONL also stops when it discovers that its output pipe has closed. Headless shutdown signals are SIGINT, SIGTERM, and SIGHUP on Unix, and Ctrl+C and Ctrl+Break on Windows.
 - **`--output jsonl|json`**: selects the output shape. JSONL is the default and writes versioned latest-value snapshots, one JSON object per line. Under output backpressure, a stale queued snapshot is replaced by the newest one; consumers can detect skipped `runtime.snapshot_generation` values. After a duration or signal shutdown, JSONL also writes a final terminal record containing the termination reason and shutdown result. JSON waits for shutdown and writes exactly one final versioned record.
 - **`--filter <QUERY>`**: applies the same connection-filter syntax as the TUI, including fields such as `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, and `proto:`, plus `/pattern/` regular expressions.
+
+#### Headless automation (unreleased)
+
+`--list-interfaces` returns a JSON array of capture interfaces (`name`, nullable
+`description`, and `addresses`) without opening capture. It does not require
+`--headless`; Windows still requires the Npcap runtime for enumeration.
+
+For a controller-owned capture, use `--headless --stop-on-stdin-close` and keep
+stdin open. EOF or a read failure requests normal shutdown and terminal output.
+`--include-historic` includes retained closed connections within the engine's
+retention limits. Both flags require `--headless`.
+
+Full metadata and capture accounting work with `jsonl`, `json`, and `jsonl-delta`.
+Deltas replace complete connection records, including late metadata and changing
+lifecycle countdowns. Unchanged historic records reuse encoded JSON within the
+existing cache limits. Linux process details retain executable paths observed at
+startup when later procfs access is denied. Reuse requires matching PID, process start time, and
+socket identity; unverifiable or changed identities stay unresolved.
 
 #### Schema contract
 

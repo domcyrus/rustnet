@@ -379,6 +379,30 @@ impl ConnectionTracker {
     /// shared timestamp collapses every round trip that completes within one
     /// batch to zero.
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
+        self.ingest_at_impl(parsed, now, |_| {})
+    }
+
+    /// Ingest a packet and return capture-time ownership collected under its connection guard.
+    /// Ownership is `None` for untracked packets. Ordinary ingestion skips this collection
+    /// and keeps its original result layout.
+    pub fn ingest_at_with_accounting(
+        &self,
+        parsed: &ParsedPacket,
+        now: SystemTime,
+    ) -> (IngestOutcome, Option<bool>) {
+        let mut attributed = None;
+        let outcome = self.ingest_at_impl(parsed, now, |conn| {
+            attributed = Some(conn.pid.is_some());
+        });
+        (outcome, attributed)
+    }
+
+    fn ingest_at_impl(
+        &self,
+        parsed: &ParsedPacket,
+        now: SystemTime,
+        observe: impl FnOnce(&Connection),
+    ) -> IngestOutcome {
         // Harvest IP -> MAC mappings from ARP and NDP packets; only they pay
         // this cost.
         match &parsed.protocol_state {
@@ -418,7 +442,7 @@ impl ConnectionTracker {
             Vec::new()
         };
 
-        let outcome = self.ingest_update(parsed, now, timings);
+        let outcome = self.ingest_update(parsed, now, timings, observe);
 
         // Tag drained waiters after the table update so the DNS packet's own
         // row never holds an entry lock while a waiter's row is taken.
@@ -439,6 +463,7 @@ impl ConnectionTracker {
         parsed: &ParsedPacket,
         now: SystemTime,
         timings: PacketTimings,
+        observe: impl FnOnce(&Connection),
     ) -> IngestOutcome {
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
@@ -459,12 +484,13 @@ impl ConnectionTracker {
                 // generation. Never retain a shard guard while upgrading.
                 drop(conn);
                 drop(lifecycle);
-                return self.ingest_new_generation(parsed, now, key, timings);
+                return self.ingest_new_generation(parsed, now, key, timings, observe);
             }
 
             let deltas = merge_packet_into_connection(&mut conn, parsed, now);
             apply_timings(&mut conn, &timings);
             apply_observed_protocol_health(&mut conn, parsed);
+            observe(&conn);
             drop(conn);
             return self.finish_ingest(key, false, deltas);
         }
@@ -484,10 +510,10 @@ impl ConnectionTracker {
             .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
         if starts_new_generation {
             drop(lifecycle);
-            return self.ingest_new_generation(parsed, now, key, timings);
+            return self.ingest_new_generation(parsed, now, key, timings, observe);
         }
 
-        self.ingest_into_active(parsed, now, key, timings)
+        self.ingest_into_active(parsed, now, key, timings, observe)
     }
 
     /// Called under the lifecycle guard, before taking any connection shard.
@@ -703,6 +729,7 @@ impl ConnectionTracker {
         now: SystemTime,
         key: ConnectionKey,
         timings: PacketTimings,
+        observe: impl FnOnce(&Connection),
     ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
@@ -721,7 +748,8 @@ impl ConnectionTracker {
 
         let mut created = false;
         let mut deltas = TcpMergeEvents::default();
-        self.connections
+        let conn = self
+            .connections
             .entry(key)
             .and_modify(|conn| {
                 deltas = merge_packet_into_connection(conn, parsed, now);
@@ -741,6 +769,8 @@ impl ConnectionTracker {
                 }
                 conn
             });
+        observe(&conn);
+        drop(conn);
         if created {
             self.active_count.fetch_add(1, Ordering::Relaxed);
         }
@@ -780,6 +810,7 @@ impl ConnectionTracker {
         now: SystemTime,
         key: ConnectionKey,
         timings: PacketTimings,
+        observe: impl FnOnce(&Connection),
     ) -> IngestOutcome {
         let _lifecycle = self
             .lifecycle
@@ -816,7 +847,7 @@ impl ConnectionTracker {
         // waiting to acquire the write guard. Reassociate any visible QUIC ID
         // before creating the replacement.
         self.associate_quic_id(parsed, key);
-        let mut outcome = self.ingest_into_active(parsed, replacement_now, key, timings);
+        let mut outcome = self.ingest_into_active(parsed, replacement_now, key, timings, observe);
         outcome.archived = archived;
         self.enforce_historic_limit();
         self.prune_recently_closed(now);
@@ -2470,6 +2501,51 @@ mod tests {
         assert_eq!(retransmit.retransmits, 1);
         let conn = tracker.connections.get(&sent.key).unwrap();
         assert_eq!(conn.packets_sent + conn.packets_received, 4);
+    }
+
+    #[test]
+    fn ingest_reports_ownership_at_the_time_of_each_packet() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            max_connections: 1,
+            ..TrackerConfig::default()
+        });
+        let now = SystemTime::now();
+        let mut packet = parse(&udp_frame(40000, 9999));
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(false)
+        );
+        packet.process_id = Some(42);
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(true)
+        );
+        let ordinary = tracker.ingest_at(&packet, now);
+        assert_eq!(
+            tracker.connections().get(&ordinary.key).unwrap().pid,
+            Some(42)
+        );
+        packet.process_id = None;
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(true)
+        );
+        let mut dropped = parse(&udp_frame(40001, 9999));
+        dropped.process_id = Some(43);
+        let (outcome, attributed) = tracker.ingest_at_with_accounting(&dropped, now);
+        assert!(outcome.dropped);
+        assert_eq!(attributed, None);
+        tracker.clear();
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(false)
+        );
+        tracker.clear();
+        packet.process_id = Some(44);
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(true)
+        );
     }
 
     #[test]

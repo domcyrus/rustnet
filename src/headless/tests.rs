@@ -7,6 +7,7 @@ use serde::{Serialize, Serializer};
 use serde_json::Value;
 use std::io;
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::SystemTime;
 
 #[derive(Clone, Default)]
 struct SharedWriter(Arc<Mutex<Vec<u8>>>);
@@ -96,6 +97,131 @@ pub(super) fn object_keys(value: &Value) -> Vec<&str> {
 }
 
 #[test]
+fn extended_output_is_independent_and_applies_to_live_and_terminal_records() {
+    for full_details in [false, true] {
+        for capture_accounting in [false, true] {
+            for format in [
+                HeadlessFormat::Json,
+                HeadlessFormat::JsonLines,
+                HeadlessFormat::JsonLinesDelta,
+            ] {
+                let mut app = App::new(Config {
+                    capture_accounting,
+                    resolve_dns: false,
+                    disable_geoip: true,
+                    ..Config::default()
+                })
+                .unwrap();
+                let mut packet = ParsedPacket::new(
+                    Protocol::Tcp,
+                    "127.0.0.1:40000".parse().unwrap(),
+                    "192.0.2.1:443".parse().unwrap(),
+                    ProtocolState::Tcp(TcpState::Established),
+                    true,
+                    100,
+                    Some("fixture".into()),
+                    Some(42),
+                );
+                app.ingest_packet_for_test(&packet);
+                packet.process_id = None;
+                app.ingest_packet_for_test(&packet);
+                app.set_connections_snapshot_for_test(app_with_connections().get_connections());
+                let writer = SharedWriter::default();
+                let report = run(
+                    &mut app,
+                    writer.clone(),
+                    &HeadlessOptions {
+                        full_details,
+                        format,
+                        duration: Some(Duration::ZERO),
+                        ..HeadlessOptions::default()
+                    },
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+                assert_eq!(report.panicked_workers, 0);
+                assert_eq!(report.timed_out_workers, 0);
+                let records = writer.bytes();
+                for line in records
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                {
+                    let value: Value = serde_json::from_slice(line).unwrap();
+                    assert_eq!(
+                        value["stats"].get("capture_accounting").is_some(),
+                        capture_accounting
+                    );
+                    for connection in value["connections"].as_array().unwrap() {
+                        for field in [
+                            "protocol_details",
+                            "health_details",
+                            "tcp_health",
+                            "request_health",
+                            "network_context",
+                            "remote_scope",
+                            "attributed_hostname",
+                            "lifecycle",
+                        ] {
+                            assert_eq!(connection.get(field).is_some(), full_details, "{field}");
+                        }
+                        if connection["process"].is_object() {
+                            assert_eq!(
+                                connection["process"].get("user_group").is_some(),
+                                full_details
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn retained_history_is_exported_only_when_requested() {
+    for include_historic in [false, true] {
+        for format in [
+            HeadlessFormat::Json,
+            HeadlessFormat::JsonLines,
+            HeadlessFormat::JsonLinesDelta,
+        ] {
+            let mut app = app_with_connections();
+            app.cleanup_connections_for_test(SystemTime::now() + Duration::from_secs(86400));
+            let output = SharedWriter::default();
+            let outcome = run(
+                &mut app,
+                output.clone(),
+                &HeadlessOptions {
+                    full_details: false,
+                    format,
+                    duration: Some(Duration::ZERO),
+                    filter_query: Some("proto:tcp".into()),
+                    include_historic,
+                },
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(outcome.output_errors, 0);
+            let records = output.bytes();
+            let final_record = records
+                .split(|byte| *byte == b'\n')
+                .rfind(|line| !line.is_empty())
+                .unwrap();
+            let value: Value = serde_json::from_slice(final_record).unwrap();
+            assert_eq!(value["runtime"]["termination_reason"], "duration_elapsed");
+            let connections = value["connections"].as_array().unwrap();
+            assert_eq!(connections.len(), usize::from(include_historic));
+            if include_historic {
+                assert_eq!(connections[0]["historic"], true);
+                assert_eq!(connections[0]["protocol"], "TCP");
+                assert!(connections[0]["closed_at"].is_string());
+                assert_eq!(connections[0]["traffic"]["incoming_bytes_per_second"], 0.0);
+            }
+        }
+    }
+}
+
+#[test]
 fn json_writes_one_final_versioned_snapshot() {
     let mut app = app_with_connections();
     let output = SharedWriter::default();
@@ -103,6 +229,8 @@ fn json_writes_one_final_versioned_snapshot() {
         &mut app,
         output.clone(),
         &HeadlessOptions {
+            full_details: false,
+            include_historic: false,
             format: HeadlessFormat::Json,
             duration: Some(Duration::ZERO),
             filter_query: None,
@@ -146,6 +274,7 @@ fn jsonl_emits_an_initial_snapshot_and_applies_filter() {
                 format,
                 duration: Some(Duration::ZERO),
                 filter_query: Some("proto:tcp".to_string()),
+                ..HeadlessOptions::default()
             },
             &AtomicBool::new(false),
         )
@@ -389,58 +518,90 @@ fn superseded_snapshots_are_dropped_without_serialization_and_terminal_is_writte
 
 #[test]
 fn incremental_baseline_tracks_written_records_after_queue_replacement() {
-    let app = app_with_connections();
-    let snapshot = || SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None).1;
-    let expected = serde_json::to_value(snapshot()).unwrap();
-    let (writer, output, entered, release, finished) = stalled_writer();
-    let mut encoder = IncrementalEncoder::default();
-    let (encoded_tx, encoded_rx) = mpsc::channel();
-    let mut sink = AsyncOutput::spawn_with_serializer(writer, move |record| {
-        let bytes = encoder.serialize(record)?;
-        encoded_tx.send(()).unwrap();
-        Ok(bytes)
-    })
-    .unwrap();
-    sink.offer_latest(snapshot());
-    entered.recv_timeout(Duration::from_secs(1)).unwrap();
-    encoded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    for _ in 0..20 {
-        let filtered =
-            SnapshotEnvelope::new(&app, Some("proto:tcp"), RuntimePhase::Running, None, None).1;
-        sink.offer_latest(filtered);
+    for full_details in [false, true] {
+        let app = app_with_connections();
+        let snapshot =
+            || SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, full_details).1;
+        let initial = snapshot();
+        let expected = serde_json::to_value(&initial).unwrap();
+        let (writer, output, entered, release, finished) = stalled_writer();
+        let mut encoder = IncrementalEncoder::default();
+        let (encoded_tx, encoded_rx) = mpsc::channel();
+        let mut sink = AsyncOutput::spawn_with_serializer(writer, move |record| {
+            let bytes = encoder.serialize(record)?;
+            encoded_tx.send(()).unwrap();
+            Ok(bytes)
+        })
+        .unwrap();
+        sink.offer_latest(initial);
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        encoded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        for _ in 0..20 {
+            let filtered = SnapshotEnvelope::new(
+                &app,
+                Some("proto:tcp"),
+                RuntimePhase::Running,
+                None,
+                None,
+                full_details,
+            )
+            .1;
+            sink.offer_latest(filtered);
+        }
+        // Every filtered snapshot is superseded while the first write is blocked.
+        // Diffing on the producer would incorrectly reinsert the UDP connection.
+        let next = snapshot();
+        let next_expected = serde_json::to_value(&next).unwrap();
+        // Full metadata includes a countdown. Compare the exact queued projections,
+        // allowing real metadata changes without diffing against discarded offers.
+        let expected_updates: Vec<_> = next_expected["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|connection| {
+                !expected["connections"]
+                    .as_array()
+                    .unwrap()
+                    .contains(connection)
+            })
+            .cloned()
+            .collect();
+        sink.offer_latest(next);
+        release.send(()).unwrap();
+        encoded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let terminal = SnapshotEnvelope::new(
+            &app,
+            None,
+            RuntimePhase::Stopped,
+            Some(TerminationReason::DurationElapsed),
+            Some(StopReport::default()),
+            full_details,
+        )
+        .1;
+        let terminal_expected = serde_json::to_value(&terminal).unwrap();
+        sink.finish(terminal, Duration::from_secs(1)).unwrap();
+        finished.recv_timeout(Duration::from_secs(1)).unwrap();
+        let records: Vec<Value> = output
+            .bytes()
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0]["connections"], expected["connections"]);
+        assert_eq!(records[1]["type"], "delta");
+        assert_eq!(records[1]["sequence"], 2);
+        assert_eq!(records[1]["base_sequence"], 1);
+        assert_eq!(
+            records[1]["connections"],
+            serde_json::json!(expected_updates)
+        );
+        assert_eq!(records[1]["removed_connection_ids"], serde_json::json!([]));
+        assert_eq!(records[2]["type"], "snapshot");
+        assert_eq!(records[2]["sequence"], 3);
+        assert_eq!(records[2]["connections"], terminal_expected["connections"]);
+        assert_eq!(records[2]["runtime"]["status"], "stopped");
     }
-    // Every filtered snapshot is superseded while the first write is blocked.
-    // Diffing on the producer would incorrectly reinsert the UDP connection.
-    sink.offer_latest(snapshot());
-    release.send(()).unwrap();
-    encoded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    let terminal = SnapshotEnvelope::new(
-        &app,
-        None,
-        RuntimePhase::Stopped,
-        Some(TerminationReason::DurationElapsed),
-        Some(StopReport::default()),
-    )
-    .1;
-    sink.finish(terminal, Duration::from_secs(1)).unwrap();
-    finished.recv_timeout(Duration::from_secs(1)).unwrap();
-    let records: Vec<Value> = output
-        .bytes()
-        .split(|b| *b == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice(line).unwrap())
-        .collect();
-    assert_eq!(records.len(), 3);
-    assert_eq!(records[0]["connections"], expected["connections"]);
-    assert_eq!(records[1]["type"], "delta");
-    assert_eq!(records[1]["sequence"], 2);
-    assert_eq!(records[1]["base_sequence"], 1);
-    assert_eq!(records[1]["connections"], serde_json::json!([]));
-    assert_eq!(records[1]["removed_connection_ids"], serde_json::json!([]));
-    assert_eq!(records[2]["type"], "snapshot");
-    assert_eq!(records[2]["sequence"], 3);
-    assert_eq!(records[2]["connections"], expected["connections"]);
-    assert_eq!(records[2]["runtime"]["status"], "stopped");
 }
 
 #[test]
@@ -677,6 +838,8 @@ fn capture_failure_stops_an_indefinite_run() {
         &mut app,
         output.clone(),
         &HeadlessOptions {
+            full_details: false,
+            include_historic: false,
             format: HeadlessFormat::Json,
             ..HeadlessOptions::default()
         },
@@ -711,6 +874,8 @@ fn capture_failure_wins_a_simultaneous_normal_exit() {
             &mut app,
             output.clone(),
             &HeadlessOptions {
+                full_details: false,
+                include_historic: false,
                 format,
                 duration: Some(Duration::ZERO),
                 filter_query: None,
@@ -743,6 +908,8 @@ fn unexpected_critical_worker_exit_stops_an_indefinite_run() {
         &mut app,
         output.clone(),
         &HeadlessOptions {
+            full_details: false,
+            include_historic: false,
             format: HeadlessFormat::Json,
             ..HeadlessOptions::default()
         },
@@ -765,6 +932,8 @@ fn shared_shutdown_condition_ends_json_mode() {
         &mut app,
         output.clone(),
         &HeadlessOptions {
+            full_details: false,
+            include_historic: false,
             format: HeadlessFormat::Json,
             ..HeadlessOptions::default()
         },

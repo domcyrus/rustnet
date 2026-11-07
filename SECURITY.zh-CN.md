@@ -172,19 +172,19 @@ FreeBSD 当前未启用沙箱。计划使用 `cap_enter()` 配合 `libcasper` �
 
 ## 权限剥离与 Job Object 沙箱（Windows）<a id="privilege-drop-and-job-object-sandboxing-windows"></a>
 
-在 Windows 上，RustNet 在初始化后从进程令牌中移除危险特权，并应用 Job Object 阻止子进程创建。
+在未发布的 Windows 构建中，RustNet 在初始化后永久移除除普通目录遍历特权（`SeChangeNotifyPrivilege`）之外的所有令牌特权，并应用 Job Object 阻止子进程创建。
 
 ### 受限制的内容
 
 | 限制项 | 描述 |
 |--------|------|
-| 特权移除 | 永久移除 SeDebugPrivilege、SeTakeOwnershipPrivilege、SeBackupPrivilege、SeRestorePrivilege 等危险特权 |
+| 特权移除 | 永久移除除 SeChangeNotifyPrivilege 外的所有特权，包括未启用的特权 |
 | 子进程 | Job Object 阻止创建子进程（反向 shell、基于 exec 的数据外泄） |
 
 ### 工作原理
 
 1. **初始化阶段**：RustNet 打开 Npcap 句柄并创建日志文件
-2. **特权移除**：`AdjustTokenPrivileges` 配合 `SE_PRIVILEGE_REMOVED` 永久从进程令牌中剥离危险特权
+2. **特权移除**：`AdjustTokenPrivileges` 配合 `SE_PRIVILEGE_REMOVED` 永久剥离除 SeChangeNotifyPrivilege 外的所有令牌特权
 3. **Job Object**：应用 `JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 1` 的 Job Object，阻止任何子进程创建
 
 ### 安全收益
@@ -203,6 +203,7 @@ FreeBSD 目前没有同类沙箱：
 - 无文件系统限制 —— Windows 缺少与 Landlock 或 Seatbelt 等效的进程级文件系统沙箱
 - 无网络限制；仍可建立出站连接
 - 特权移除仅影响提升进程已拥有的特权
+- 令牌组和完整性级别保持不变。提升的进程仍有 Administrator ACL 访问权限，并未转换为普通用户令牌。
 
 ### CLI 选项
 

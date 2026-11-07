@@ -15,10 +15,12 @@
 //! The library surface is unstable and intended for internal use; the
 //! supported product is the `rustnet` binary.
 
+mod accounts;
 pub mod app;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
+mod connection_details;
 pub(crate) mod export;
 pub mod headless;
 pub mod network;

@@ -18,7 +18,7 @@ pub(super) mod incremental;
 mod profiling;
 
 #[derive(Serialize)]
-pub(super) struct SnapshotEnvelope<C = Vec<ConnectionSnapshot>> {
+pub(super) struct SnapshotEnvelope<C = ConnectionSnapshots> {
     schema_version: u8,
     #[serde(rename = "type")]
     record_type: &'static str,
@@ -31,8 +31,8 @@ pub(super) struct SnapshotEnvelope<C = Vec<ConnectionSnapshot>> {
     connections: C,
 }
 
-impl SnapshotEnvelope {
-    fn with_connections<C>(self, connections: C) -> SnapshotEnvelope<C> {
+impl<C> SnapshotEnvelope<C> {
+    fn with_connections<D>(self, connections: D) -> SnapshotEnvelope<D> {
         SnapshotEnvelope {
             schema_version: self.schema_version,
             record_type: self.record_type,
@@ -45,24 +45,56 @@ impl SnapshotEnvelope {
             connections,
         }
     }
+}
 
+impl SnapshotEnvelope {
     pub(super) fn new(
         app: &App,
         filter_query: Option<&str>,
         phase: RuntimePhase,
         termination_reason: Option<TerminationReason>,
         stop_report: Option<StopReport>,
+        full_details: bool,
     ) -> (u64, Self) {
         let filter = filter_query
             .map(str::trim)
             .filter(|query| !query.is_empty());
         let (generation, connections) =
             app.get_filtered_connections_with_generation(filter.unwrap_or_default());
-        let mut connections: Vec<_> = connections
-            .iter()
-            .map(ConnectionSnapshot::from_connection)
-            .collect();
-        connections.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+        let connection_count = connections.len();
+        let connections = if full_details {
+            let resolver = app.get_dns_resolver();
+            let mut snapshots: Vec<_> = connections
+                .iter()
+                .map(|connection| {
+                    let mut snapshot = FullConnectionSnapshot::from_connection(connection);
+                    snapshot.details.network_context = NetworkContextSnapshot {
+                        local_hostname: resolver
+                            .as_ref()
+                            .and_then(|r| r.get_hostname(&connection.local_addr.ip())),
+                        remote_hostname: resolver
+                            .as_ref()
+                            .and_then(|r| r.get_hostname(&connection.remote_addr.ip())),
+                        local_mac: app
+                            .lookup_neighbor(connection.local_addr.ip())
+                            .map(NeighborSnapshot::from),
+                        remote_mac: app
+                            .lookup_neighbor(connection.remote_addr.ip())
+                            .map(NeighborSnapshot::from),
+                    };
+                    snapshot
+                })
+                .collect();
+            snapshots.sort_unstable_by(|left, right| left.connection.id.cmp(&right.connection.id));
+            ConnectionSnapshots::Full(snapshots)
+        } else {
+            let mut snapshots: Vec<_> = connections
+                .iter()
+                .map(ConnectionSnapshot::from_connection)
+                .collect();
+            snapshots.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+            ConnectionSnapshots::Basic(snapshots)
+        };
 
         (
             generation,
@@ -80,7 +112,7 @@ impl SnapshotEnvelope {
                 sandbox: SandboxSnapshot::from_app(app),
                 stats: StatsSnapshot::from_stats(&app.get_stats()),
                 filter: filter.map(str::to_string),
-                connection_count: connections.len(),
+                connection_count,
                 connections,
             },
         )
@@ -94,19 +126,20 @@ const MAX_CACHED_JSON_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(untagged)]
-enum EncodedConnection {
+enum EncodedConnection<T> {
     Cached(Arc<RawValue>),
-    Direct(Box<ConnectionSnapshot>),
+    Direct(Box<T>),
 }
 
-struct CachedConnection {
-    projected: ConnectionSnapshot,
+struct CachedConnection<T> {
+    projected: T,
     json: Arc<RawValue>,
 }
 
 #[derive(Default)]
 pub(super) struct ConnectionCache {
-    entries: Vec<CachedConnection>,
+    basic: RecordCache<ConnectionSnapshot>,
+    full: RecordCache<FullConnectionSnapshot>,
 }
 
 impl ConnectionCache {
@@ -120,22 +153,61 @@ impl ConnectionCache {
         max_connections: usize,
         max_bytes: usize,
     ) -> anyhow::Result<Vec<u8>> {
-        if !snapshot
-            .connections
-            .iter()
-            .any(|connection| connection.historic)
-        {
-            self.entries.clear();
+        let has_history = match &snapshot.connections {
+            ConnectionSnapshots::Basic(records) => {
+                records.iter().any(CacheableConnection::historic)
+            }
+            ConnectionSnapshots::Full(records) => records.iter().any(CacheableConnection::historic),
+        };
+        if !has_history {
+            self.basic.entries.clear();
+            self.full.entries.clear();
             return super::output::serialize_record(&snapshot);
         }
+        let records = std::mem::replace(
+            &mut snapshot.connections,
+            ConnectionSnapshots::Basic(Vec::new()),
+        );
+        match records {
+            ConnectionSnapshots::Basic(records) => {
+                self.full.entries.clear();
+                let encoded = self.basic.encode(records, max_connections, max_bytes)?;
+                super::output::serialize_record(&snapshot.with_connections(encoded))
+            }
+            ConnectionSnapshots::Full(records) => {
+                self.basic.entries.clear();
+                let encoded = self.full.encode(records, max_connections, max_bytes)?;
+                super::output::serialize_record(&snapshot.with_connections(encoded))
+            }
+        }
+    }
+}
+
+struct RecordCache<T> {
+    entries: Vec<CachedConnection<T>>,
+}
+impl<T> Default for RecordCache<T> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+impl<T: CacheableConnection> RecordCache<T> {
+    fn encode(
+        &mut self,
+        connections: Vec<T>,
+        max_connections: usize,
+        max_bytes: usize,
+    ) -> anyhow::Result<Vec<EncodedConnection<T>>> {
         let mut previous = std::mem::take(&mut self.entries).into_iter().peekable();
         let mut next = Vec::with_capacity(previous.len().min(max_connections));
         let mut cached_bytes = 0;
-        let mut encoded = Vec::with_capacity(snapshot.connections.len());
-        for projected in std::mem::take(&mut snapshot.connections) {
+        let mut encoded = Vec::with_capacity(connections.len());
+        for projected in connections {
             // Active records usually change every tick. Serialize them directly
             // to avoid allocating a separate JSON buffer for each connection.
-            if !projected.historic {
+            if !projected.historic() {
                 encoded.push(EncodedConnection::Direct(Box::new(projected)));
                 continue;
             }
@@ -143,13 +215,13 @@ impl ConnectionCache {
             // table and duplicating connection IDs for each emitted snapshot.
             while previous
                 .peek()
-                .is_some_and(|entry| entry.projected.id < projected.id)
+                .is_some_and(|entry| entry.projected.id() < projected.id())
             {
                 previous.next();
             }
             let matching = if previous
                 .peek()
-                .is_some_and(|entry| entry.projected.id == projected.id)
+                .is_some_and(|entry| entry.projected.id() == projected.id())
             {
                 previous.next()
             } else {
@@ -171,9 +243,8 @@ impl ConnectionCache {
                 next.push(cached);
             }
         }
-        // Evicted, filtered-out and cleared connections cannot accumulate here.
         self.entries = next;
-        super::output::serialize_record(&snapshot.with_connections(encoded))
+        Ok(encoded)
     }
 }
 
@@ -311,6 +382,8 @@ impl SandboxSnapshot {
 
 #[derive(Serialize)]
 struct StatsSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_accounting: Option<crate::app::CaptureAccounting>,
     packets_captured: u64,
     bytes_captured: u64,
     packets_processed: u64,
@@ -338,6 +411,7 @@ impl StatsSnapshot {
     fn from_stats(stats: &AppStats) -> Self {
         let load = |counter: &std::sync::atomic::AtomicU64| counter.load(Ordering::Relaxed);
         Self {
+            capture_accounting: stats.capture_accounting(),
             packets_captured: load(&stats.packets_captured),
             bytes_captured: load(&stats.bytes_captured),
             packets_processed: load(&stats.packets_processed),
@@ -363,8 +437,60 @@ impl StatsSnapshot {
     }
 }
 
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(super) enum ConnectionSnapshots {
+    Basic(Vec<ConnectionSnapshot>),
+    Full(Vec<FullConnectionSnapshot>),
+}
+
+trait CacheableConnection: PartialEq + Serialize {
+    fn id(&self) -> &str;
+    fn historic(&self) -> bool;
+}
+impl CacheableConnection for ConnectionSnapshot {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn historic(&self) -> bool {
+        self.historic
+    }
+}
+impl CacheableConnection for FullConnectionSnapshot {
+    fn id(&self) -> &str {
+        &self.connection.id
+    }
+    fn historic(&self) -> bool {
+        self.connection.historic
+    }
+}
+
 #[derive(PartialEq, Serialize)]
-pub(super) struct ConnectionSnapshot {
+pub(super) struct FullConnectionSnapshot {
+    #[serde(flatten)]
+    connection: ConnectionSnapshot<FullProcessSnapshot>,
+    #[serde(flatten)]
+    details: ConnectionDetailsSnapshot,
+}
+
+impl FullConnectionSnapshot {
+    fn from_connection(connection: &Connection) -> Self {
+        Self {
+            connection: ConnectionSnapshot::from_connection_with_process(connection, |process| {
+                FullProcessSnapshot {
+                    user_group: process.uid.map(|uid| {
+                        crate::accounts::format_user_group_nonblocking(uid, process.gid)
+                    }),
+                    process,
+                }
+            }),
+            details: ConnectionDetailsSnapshot::new(connection),
+        }
+    }
+}
+
+#[derive(PartialEq, Serialize)]
+pub(super) struct ConnectionSnapshot<P = ProcessSnapshot> {
     id: String,
     protocol: &'static str,
     state: String,
@@ -373,7 +499,7 @@ pub(super) struct ConnectionSnapshot {
     remote_is_gateway: bool,
     observed_vlan_ids: Vec<u16>,
     direction: Option<&'static str>,
-    process: Option<ProcessSnapshot>,
+    process: Option<P>,
     service: Option<String>,
     application: Option<&'static str>,
     hostname: Option<String>,
@@ -389,8 +515,50 @@ pub(super) struct ConnectionSnapshot {
     closed_at: Option<String>,
 }
 
+#[derive(PartialEq, Serialize)]
+struct ConnectionDetailsSnapshot {
+    protocol_details: Vec<crate::connection_details::DetailField>,
+    health_details: Vec<crate::connection_details::DetailField>,
+    tcp_health: Option<TcpHealthSnapshot>,
+    request_health: RequestHealthSnapshot,
+    network_context: NetworkContextSnapshot,
+    remote_scope: &'static str,
+    attributed_hostname: Option<AttributedHostnameSnapshot>,
+    lifecycle: Option<LifecycleSnapshot>,
+}
+
+#[derive(PartialEq, Serialize)]
+struct LifecycleSnapshot {
+    timeout_ms: u64,
+    remaining_ms: u64,
+}
+
+impl LifecycleSnapshot {
+    fn from_connection(connection: &Connection, now: SystemTime) -> Option<Self> {
+        if connection.is_historic {
+            return None;
+        }
+        let timeout = connection.get_timeout();
+        Some(Self {
+            timeout_ms: timeout.as_millis() as u64,
+            remaining_ms: timeout
+                .saturating_sub(connection.cleanup_age(now))
+                .as_millis() as u64,
+        })
+    }
+}
+
 impl ConnectionSnapshot {
     fn from_connection(connection: &Connection) -> Self {
+        Self::from_connection_with_process(connection, |process| process)
+    }
+}
+
+impl<P> ConnectionSnapshot<P> {
+    fn from_connection_with_process(
+        connection: &Connection,
+        map_process: impl FnOnce(ProcessSnapshot) -> P,
+    ) -> Self {
         let authoritative_hostname = connection.authoritative_hostname();
         let (hostname, hostname_source) = if let Some(hostname) = authoritative_hostname {
             (Some(hostname.to_string()), Some("application"))
@@ -419,7 +587,7 @@ impl ConnectionSnapshot {
                 executable: connection
                     .executable
                     .as_ref()
-                    .map(|path| path.display().to_string()),
+                    .map(|path| executable_path(path)),
                 uid: connection.process_uid,
                 gid: connection.process_gid,
                 attribution_match: connection
@@ -436,7 +604,7 @@ impl ConnectionSnapshot {
                                 executable: ancestor
                                     .executable
                                     .as_ref()
-                                    .map(|path| path.display().to_string()),
+                                    .map(|path| executable_path(path)),
                                 started_at_unix_ms: ancestor.started_at_unix_ms,
                             })
                             .collect(),
@@ -490,7 +658,7 @@ impl ConnectionSnapshot {
             direction: connection
                 .connection_direction
                 .map(|outgoing| if outgoing { "outbound" } else { "inbound" }),
-            process,
+            process: process.map(map_process),
             service: connection.service_name.clone(),
             application: connection
                 .dpi_info
@@ -541,6 +709,113 @@ impl ConnectionSnapshot {
     }
 }
 
+impl ConnectionDetailsSnapshot {
+    fn new(connection: &Connection) -> Self {
+        Self {
+            protocol_details: crate::connection_details::application_fields(connection),
+            health_details: crate::connection_details::health_fields(connection),
+            tcp_health: connection
+                .tcp_analytics
+                .as_ref()
+                .map(|a| TcpHealthSnapshot {
+                    retransmits: a.retransmit_count,
+                    out_of_order: a.out_of_order_count,
+                    duplicate_acks: a.duplicate_ack_count,
+                    fast_retransmits: a.fast_retransmit_count,
+                    local_receive_window: a.last_window_out.map(WindowSnapshot::from),
+                    remote_receive_window: a.last_window_in.map(WindowSnapshot::from),
+                }),
+            request_health: RequestHealthSnapshot {
+                retries: connection
+                    .protocol_health
+                    .request_observed
+                    .then_some(connection.protocol_health.request_retry_count),
+                timeouts: connection
+                    .protocol_health
+                    .request_observed
+                    .then_some(connection.protocol_health.request_timeout_count),
+                quic_retries: connection.protocol_health.quic_retry_count,
+                quic_version_negotiations: connection
+                    .protocol_health
+                    .quic_version_negotiation_count,
+            },
+            network_context: NetworkContextSnapshot::default(),
+            remote_scope: if connection.remote_addr_kind
+                == crate::network::types::AddrKind::Broadcast
+            {
+                crate::network::bogon::Scope::Broadcast
+            } else {
+                crate::network::bogon::classify(connection.remote_addr.ip())
+            }
+            .label(),
+            attributed_hostname: connection.attributed_hostname.as_ref().map(|a| {
+                AttributedHostnameSnapshot {
+                    name: a.name.clone(),
+                    source: "captured_dns",
+                    observed_at: timestamp(a.observed_at),
+                }
+            }),
+            lifecycle: LifecycleSnapshot::from_connection(connection, SystemTime::now()),
+        }
+    }
+}
+
+#[derive(PartialEq, Serialize, Default)]
+struct NetworkContextSnapshot {
+    local_hostname: Option<String>,
+    remote_hostname: Option<String>,
+    local_mac: Option<NeighborSnapshot>,
+    remote_mac: Option<NeighborSnapshot>,
+}
+#[derive(PartialEq, Serialize)]
+struct NeighborSnapshot {
+    mac: String,
+    vendor: Option<String>,
+}
+impl From<crate::network::neighbors::NeighborEntry> for NeighborSnapshot {
+    fn from(n: crate::network::neighbors::NeighborEntry) -> Self {
+        Self {
+            mac: n.mac,
+            vendor: n.vendor,
+        }
+    }
+}
+#[derive(PartialEq, Serialize)]
+struct AttributedHostnameSnapshot {
+    name: String,
+    source: &'static str,
+    observed_at: String,
+}
+#[derive(PartialEq, Serialize)]
+struct TcpHealthSnapshot {
+    retransmits: u64,
+    out_of_order: u64,
+    duplicate_acks: u64,
+    fast_retransmits: u64,
+    local_receive_window: Option<WindowSnapshot>,
+    remote_receive_window: Option<WindowSnapshot>,
+}
+#[derive(PartialEq, Serialize)]
+struct WindowSnapshot {
+    bytes: u64,
+    scale_known: bool,
+}
+impl From<crate::network::types::WindowSample> for WindowSnapshot {
+    fn from(w: crate::network::types::WindowSample) -> Self {
+        Self {
+            bytes: w.bytes(),
+            scale_known: w.scale_known,
+        }
+    }
+}
+#[derive(PartialEq, Serialize)]
+struct RequestHealthSnapshot {
+    retries: Option<u64>,
+    timeouts: Option<u64>,
+    quic_retries: u64,
+    quic_version_negotiations: u64,
+}
+
 #[derive(PartialEq, Serialize)]
 struct EndpointSnapshot {
     ip: String,
@@ -549,7 +824,14 @@ struct EndpointSnapshot {
 }
 
 #[derive(PartialEq, Serialize)]
-struct ProcessSnapshot {
+struct FullProcessSnapshot {
+    #[serde(flatten)]
+    process: ProcessSnapshot,
+    user_group: Option<String>,
+}
+
+#[derive(PartialEq, Serialize)]
+pub(super) struct ProcessSnapshot {
     pid: Option<u32>,
     ppid: Option<u32>,
     name: Option<String>,
@@ -625,6 +907,15 @@ struct KubernetesSnapshot {
     cgroup_path: Option<String>,
 }
 
+fn executable_path(path: &std::path::Path) -> String {
+    // Validate UTF-8 directly on the common path, retaining the existing
+    // replacement behavior for non-Unicode paths.
+    match path.to_str() {
+        Some(path) => path.to_owned(),
+        None => path.to_string_lossy().into_owned(),
+    }
+}
+
 fn timestamp(time: SystemTime) -> String {
     DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Millis, true)
 }
@@ -672,6 +963,83 @@ mod tests {
         tests::{app_with_connections, object_keys},
     };
     use crate::network::types::{Protocol, ProtocolState, TcpState};
+
+    #[test]
+    fn rich_connection_details_keep_observations_and_missing_measurements_distinct() {
+        use crate::network::types::{
+            ApplicationProtocol, DpiInfo, HttpsInfo, TlsInfo, TlsVersion, WindowSample,
+        };
+        let app = app_with_connections();
+        let mut c = app
+            .get_connections()
+            .into_iter()
+            .find(|c| c.protocol == Protocol::Tcp)
+            .unwrap();
+        c.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Https(HttpsInfo {
+                tls_info: Some(TlsInfo {
+                    version: Some(TlsVersion::Tls13),
+                    sni: Some("example.org".into()),
+                    alpn: vec!["h2".into()],
+                    cipher_suite: Some(0x1301),
+                }),
+            }),
+        });
+        c.packets_received = 42;
+        let tcp = c.tcp_analytics.as_mut().unwrap();
+        tcp.retransmit_count = 3;
+        tcp.last_window_in = Some(WindowSample {
+            raw: 1024,
+            shift: 0,
+            scale_known: false,
+        });
+        tcp.last_window_out = Some(WindowSample {
+            raw: 1024,
+            shift: 7,
+            scale_known: true,
+        });
+        let value = serde_json::to_value(FullConnectionSnapshot::from_connection(&c)).unwrap();
+        let fields = value["protocol_details"].as_array().unwrap();
+        assert!(
+            fields
+                .iter()
+                .any(|f| f["label"] == "SNI" && f["value"] == "example.org")
+        );
+        assert!(
+            fields
+                .iter()
+                .any(|f| f["label"] == "TLS Version" && f["value"] == "TLS 1.3")
+        );
+        assert!(
+            fields
+                .iter()
+                .any(|f| f["label"] == "ALPN" && f["value"] == "h2")
+        );
+        assert!(fields.iter().any(
+            |f| f["label"] == "Cipher Suite" && f["value"].as_str().unwrap().contains("0x1301")
+        ));
+        assert_eq!(value["tcp_health"]["retransmits"], 3);
+        assert_eq!(value["tcp_health"]["local_receive_window"]["bytes"], 131072);
+        assert_eq!(
+            value["tcp_health"]["remote_receive_window"]["scale_known"],
+            false
+        );
+        assert_eq!(value["traffic"]["packets_received"], 42);
+        assert!(value["request_health"]["retries"].is_null());
+        assert!(value["network_context"]["remote_mac"].is_null());
+        c.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Https(HttpsInfo { tls_info: None }),
+        });
+        let value = serde_json::to_value(FullConnectionSnapshot::from_connection(&c)).unwrap();
+        assert_eq!(value["protocol_details"].as_array().unwrap().len(), 4);
+        assert!(
+            value["protocol_details"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|f| f["value"].is_null())
+        );
+    }
 
     #[test]
     fn capture_totals_survive_stats_snapshot_and_reset_in_wire_output() {
@@ -732,9 +1100,38 @@ mod tests {
     }
 
     #[test]
+    fn executable_paths_keep_display_encoding() {
+        let mut paths = vec![
+            std::path::PathBuf::from("/usr/bin/client"),
+            std::path::PathBuf::from("/home/用户/client"),
+            std::path::PathBuf::from(format!("/profile/{}/client", "x".repeat(4096))),
+        ];
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            paths.push(std::ffi::OsString::from_vec(b"/bin/invalid-\xff".to_vec()).into());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            paths.push(std::ffi::OsString::from_wide(&[67, 58, 92, 0xd800, 97]).into());
+        }
+        let app = app_with_connections();
+        let mut connection = app.get_connections().remove(0);
+        for path in paths {
+            let expected = path.display().to_string();
+            connection.executable = Some(path.into());
+            let record =
+                serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
+            assert_eq!(record["process"]["executable"], expected);
+        }
+    }
+
+    #[test]
     fn version_one_schema_keys_and_protocol_timings_are_stable() {
         let app = app_with_connections();
-        let (_, snapshot) = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None);
+        let (_, snapshot) =
+            SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, false);
         let value = serde_json::to_value(snapshot).unwrap();
 
         assert_eq!(
@@ -1000,6 +1397,32 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_uses_engine_cleanup_clock_and_stops_at_archival() {
+        let now = SystemTime::now();
+        let mut connection = Connection::new(
+            Protocol::Tcp,
+            "127.0.0.1:45000".parse().unwrap(),
+            "93.184.216.34:443".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Closed),
+        );
+        let timeout = connection.get_timeout();
+        connection.terminal_since = Some(now - timeout / 2);
+        connection.last_activity = now;
+        let lifecycle = LifecycleSnapshot::from_connection(&connection, now).unwrap();
+        assert_eq!(lifecycle.timeout_ms, timeout.as_millis() as u64);
+        assert_eq!(lifecycle.remaining_ms, (timeout / 2).as_millis() as u64);
+        let expired = LifecycleSnapshot::from_connection(&connection, now + timeout).unwrap();
+        assert_eq!(expired.remaining_ms, 0);
+        connection.is_historic = true;
+        assert!(LifecycleSnapshot::from_connection(&connection, now).is_none());
+        connection.is_historic = false;
+        connection.protocol_state = ProtocolState::Tcp(TcpState::Established);
+        connection.last_activity = now - Duration::from_secs(10);
+        let active = LifecycleSnapshot::from_connection(&connection, now).unwrap();
+        assert_eq!(active.remaining_ms, active.timeout_ms - 10_000);
+    }
+
+    #[test]
     fn traffic_rates_serialize_explicit_byte_units() {
         let mut connection = Connection::new(
             Protocol::Udp,
@@ -1038,6 +1461,7 @@ mod tests {
                 RuntimePhase::after_stop(report, true),
                 Some(failure.kind.termination_reason()),
                 Some(report),
+                false,
             );
             let value = serde_json::to_value(snapshot).unwrap();
             assert_eq!(value["runtime"]["status"], "stopping");
@@ -1068,7 +1492,7 @@ mod tests {
     fn whitespace_only_filter_serializes_as_null() {
         let app = app_with_connections();
         let (_, snapshot) =
-            SnapshotEnvelope::new(&app, Some(" \t "), RuntimePhase::Running, None, None);
+            SnapshotEnvelope::new(&app, Some(" \t "), RuntimePhase::Running, None, None, false);
         let value = serde_json::to_value(snapshot).unwrap();
 
         assert!(value["filter"].is_null());
