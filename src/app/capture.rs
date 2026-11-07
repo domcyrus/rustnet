@@ -982,7 +982,7 @@ impl App {
                         |packet: &mut CapturedPacket, parsed: Option<&ParsedPacket>| {
                             let packet_timestamp = packet.timestamp;
                             let key = parsed.and_then(|parsed| {
-                                let outcome = update_connection(
+                                let (outcome, attributed) = update_connection(
                                     &tracker,
                                     parsed,
                                     packet_timestamp,
@@ -1000,7 +1000,7 @@ impl App {
                                         batch.record_tracked(
                                             u64::from(packet.original_len),
                                             parsed.is_outgoing,
-                                            outcome.attributed == Some(true),
+                                            attributed == Some(true),
                                         );
                                     }
                                     Some(outcome.key)
@@ -1106,11 +1106,11 @@ fn update_connection(
     json_log_file: Option<(&JsonLineWriter, &RwLock<SocketSnapshot>)>,
     pcap_sidecar_file: &Option<Arc<JsonLineWriter>>,
     dns_resolver: Option<&DnsResolver>,
-) -> IngestOutcome {
-    let outcome = if stats.capture_accounting_enabled() {
+) -> (IngestOutcome, Option<bool>) {
+    let (outcome, attributed) = if stats.capture_accounting_enabled() {
         tracker.ingest_at_with_accounting(parsed, now)
     } else {
-        tracker.ingest_at(parsed, now)
+        (tracker.ingest_at(parsed, now), None)
     };
 
     if outcome.retransmits > 0 {
@@ -1134,14 +1134,14 @@ fn update_connection(
             "Connection limit reached, dropping new connection: {}",
             outcome.key
         );
-        return outcome;
+        return (outcome, attributed);
     }
     if outcome.ignored_late {
         debug!(
             "Ignoring delayed packet for recently archived connection: {}",
             outcome.key
         );
-        return outcome;
+        return (outcome, attributed);
     }
 
     if let Some(conn) = &outcome.archived {
@@ -1187,7 +1187,7 @@ fn update_connection(
         }
     }
 
-    outcome
+    (outcome, attributed)
 }
 
 #[cfg(test)]
@@ -2107,7 +2107,7 @@ mod connection_lifecycle_tests {
             }
             let tracker = ConnectionTracker::new();
             let sockets = RwLock::new((*snapshot).clone());
-            let outcome = update_connection(
+            let (outcome, _) = update_connection(
                 &tracker,
                 &parsed,
                 SystemTime::now(),
