@@ -295,3 +295,39 @@ fn changing_metadata_mode_emits_a_complete_baseline() {
         assert!(wire["base_sequence"].is_null());
     }
 }
+
+#[test]
+fn executable_paths_keep_old_baselines_and_detect_replacement() {
+    for full in [false, true] {
+        let app = app_with_connections();
+        let mut connections = app.get_connections();
+        connections.truncate(1);
+        connections[0].is_historic = true;
+        let mut encoder = IncrementalEncoder::default();
+        let mut consumer = Consumer::default();
+        let now = Instant::now();
+        for (index, path) in [
+            Some("/bin/old"),
+            Some("/bin//new"),
+            Some("/bin//new"),
+            Some("/bin/new"),
+            None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Equal text in a new allocation must remain an unchanged record.
+            connections[0].executable = path.map(|p| std::path::PathBuf::from(p).into());
+            app.set_connections_snapshot_for_test(connections.clone());
+            let record =
+                SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, full).1;
+            let wire = assert_reconstructs(&mut encoder, &mut consumer, record, now);
+            assert_eq!(
+                wire["connections"].as_array().unwrap().len(),
+                usize::from(index != 2)
+            );
+            let retained = consumer.connections.values().next().unwrap();
+            assert_eq!(retained["process"]["executable"], serde_json::json!(path));
+        }
+    }
+}

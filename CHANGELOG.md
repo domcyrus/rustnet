@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
 
 ### Changed
+- Speed up executable-path conversion in headless snapshots while preserving path encoding (#721)
 - Retain only directory traversal privileges in the Windows sandbox while preserving token groups and integrity level (#721)
 - Avoid allocating idle rate strings in the UI while preserving rate labels and placeholders (#429)
 - Reuse unchanged historic headless connection JSON with a bounded cache while preserving full snapshots and late metadata updates (#709)

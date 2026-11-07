@@ -587,7 +587,7 @@ impl<P> ConnectionSnapshot<P> {
                 executable: connection
                     .executable
                     .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned()),
+                    .map(|path| executable_path(path)),
                 uid: connection.process_uid,
                 gid: connection.process_gid,
                 attribution_match: connection
@@ -604,7 +604,7 @@ impl<P> ConnectionSnapshot<P> {
                                 executable: ancestor
                                     .executable
                                     .as_ref()
-                                    .map(|path| path.to_string_lossy().into_owned()),
+                                    .map(|path| executable_path(path)),
                                 started_at_unix_ms: ancestor.started_at_unix_ms,
                             })
                             .collect(),
@@ -905,6 +905,15 @@ struct KubernetesSnapshot {
     container_id: Option<String>,
     container_name: Option<String>,
     cgroup_path: Option<String>,
+}
+
+fn executable_path(path: &std::path::Path) -> String {
+    // Validate UTF-8 directly on the common path, retaining the existing
+    // replacement behavior for non-Unicode paths.
+    match path.to_str() {
+        Some(path) => path.to_owned(),
+        None => path.to_string_lossy().into_owned(),
+    }
 }
 
 fn timestamp(time: SystemTime) -> String {
