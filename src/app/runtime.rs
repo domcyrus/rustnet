@@ -282,6 +282,12 @@ impl RuntimeSupervisor {
             let now = Instant::now();
             if now >= deadline {
                 report.timed_out_workers = workers.len();
+                for worker in &workers {
+                    eprintln!(
+                        "Worker did not stop before shutdown deadline: {}",
+                        worker.thread().name().unwrap_or("unnamed")
+                    );
+                }
                 break;
             }
 

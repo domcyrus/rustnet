@@ -15,7 +15,29 @@ use std::time::Duration;
 
 /// Parse CLI options and initialize the selected frontend.
 pub fn run() -> Result<()> {
+    #[cfg(windows)]
+    let mut desktop = crate::windows_helper::connect()?;
+    #[cfg(windows)]
+    let matches = match &desktop {
+        Some(session) => cli::build_cli().try_get_matches_from(session.arguments())?,
+        None => cli::build_cli().get_matches(),
+    };
+    #[cfg(not(windows))]
     let matches = cli::build_cli().get_matches();
+    if matches.get_flag("list-interfaces") {
+        #[cfg(target_os = "windows")]
+        initialize_windows_npcap()?;
+        let interfaces: Vec<_> = pcap::Device::list()?
+            .into_iter()
+            .map(|device| serde_json::json!({
+                "name": device.name,
+                "description": device.desc,
+                "addresses": device.addresses.iter().map(|address| address.addr.to_string()).collect::<Vec<_>>()
+            }))
+            .collect();
+        serde_json::to_writer(io::stdout().lock(), &interfaces)?;
+        return Ok(());
+    }
     let headless = matches.get_flag("headless");
 
     // Never start terminal control or privileged capture accidentally from a
@@ -27,6 +49,7 @@ pub fn run() -> Result<()> {
     }
 
     let mut config = app::Config {
+        capture_accounting: matches.get_flag("capture-accounting"),
         json_log_file: matches.get_one::<String>("json-log").cloned(),
         pcap_export_file: matches.get_one::<String>("pcap-export").cloned(),
         pcapng_export_file: matches.get_one::<String>("pcapng-export").cloned(),
@@ -36,6 +59,12 @@ pub fn run() -> Result<()> {
     // creation so a bad combination cannot truncate an existing destination,
     // including a regular file inherited as stdout for headless snapshots.
     app::validate_output_paths(&config).context("invalid output paths")?;
+    #[cfg(windows)]
+    if let Some(session) = &desktop {
+        // A display label only: the helper never opens this as a pathname.
+        config.pcapng_export_file = session.has_recording().then(|| "desktop recording".into());
+        config.disable_geoip = true; // no elevated automatic pathname discovery
+    }
 
     // Clap handles --help and --version before this point, so both remain
     // available even when Npcap is not installed. The Npcap DLLs are
@@ -199,7 +228,12 @@ pub fn run() -> Result<()> {
     // drop or granting pathname write access through the sandbox.
     #[cfg(unix)]
     let prepared = app::prepare_output_handles_for_invoking_uid(&config, invoking_output_uid());
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let prepared = match desktop.as_mut() {
+        Some(session) => Ok((session.take_outputs(), None)),
+        None => app::prepare_output_handles(&config),
+    };
+    #[cfg(not(any(unix, windows)))]
     let prepared = app::prepare_output_handles(&config);
     let (output_handles, pcap_export_file) =
         prepared.context("failed to prepare runtime outputs")?;
@@ -361,6 +395,12 @@ pub fn run() -> Result<()> {
         app.apply_sandbox(&sandbox_config)?
     };
 
+    #[cfg(windows)]
+    if let Some(session) = desktop.as_mut() {
+        // Parse caller-provided databases only after privilege reduction.
+        app.set_desktop_geoip(session.take_geoip()?);
+    }
+
     // Before this point the platform default remains in effect, so SIGTERM or
     // SIGHUP can still terminate a slow synchronous capture/process setup.
     install_signal_handlers()?;
@@ -370,6 +410,21 @@ pub fn run() -> Result<()> {
     // On Linux these inherit the Landlock domain and the dropped capabilities, so
     // a compromise in a DPI parser is contained even when running as root.
     app.start_workers(worker_startup_permit)?;
+    #[cfg(windows)]
+    if let Some(session) = &desktop {
+        session.ready();
+    }
+
+    if matches.get_flag("stop-on-stdin-close") {
+        // Created after the sandbox transition so this thread inherits the
+        // same restrictions as the capture workers. EOF also covers a crashed
+        // desktop parent, including when no packets are arriving.
+        std::thread::Builder::new()
+            .name("stdin-shutdown".into())
+            .spawn(|| {
+                request_shutdown_on_eof(io::stdin().lock(), &SHUTDOWN_REQUESTED);
+            })?;
+    }
 
     if headless {
         return run_headless(&matches, &mut app);
@@ -399,11 +454,15 @@ fn run_headless(matches: &clap::ArgMatches, app: &mut app::App) -> Result<()> {
         .map_err(anyhow::Error::msg)?
         .unwrap_or_default();
     let options = crate::headless::HeadlessOptions {
+        full_details: matches
+            .get_one::<String>("headless-details")
+            .is_some_and(|level| level == "full"),
         format,
         duration: matches
             .get_one::<u64>("duration")
             .map(|seconds| Duration::from_secs(*seconds)),
         filter_query: matches.get_one::<String>("filter").cloned(),
+        include_historic: matches.get_flag("include-historic"),
     };
     let stop_report = match crate::headless::run(app, io::stdout(), &options, &SHUTDOWN_REQUESTED) {
         Ok(outcome) => outcome,
@@ -516,7 +575,7 @@ fn chown_to_uid_drop_target(
 
 /// Set from the signal handler; the UI loop exits through its normal
 /// cleanup path (flush outputs, restore the terminal) when it flips.
-static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
+pub(crate) static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Route termination signals through the regular shutdown path so output is
@@ -660,4 +719,32 @@ fn initialize_windows_npcap() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Consume the controller pipe without interpreting any commands or buffering
+/// its contents. Closing it requests the ordinary flushing shutdown path.
+fn request_shutdown_on_eof(mut reader: impl io::Read, shutdown: &std::sync::atomic::AtomicBool) {
+    let mut buffer = [0_u8; 256];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn controller_eof_requests_shutdown_after_consuming_input() {
+        let shutdown = AtomicBool::new(false);
+        request_shutdown_on_eof(io::Cursor::new(vec![42; 1024]), &shutdown);
+        assert!(shutdown.load(Ordering::Relaxed));
+    }
 }

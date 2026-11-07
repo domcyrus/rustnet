@@ -92,6 +92,35 @@ pub struct GeoIpResolver {
 }
 
 impl GeoIpResolver {
+    /// Load only files already opened by the invoking desktop user. No path lookup.
+    #[cfg(windows)]
+    pub fn from_preopened(files: [Option<std::fs::File>; 3]) -> std::io::Result<Self> {
+        use std::io::{self, Read};
+        const MAX_DATABASE: u64 = 256 * 1024 * 1024;
+        let mut readers = Vec::new();
+        for file in files {
+            readers.push(match file {
+                None => None,
+                Some(file) => {
+                    let mut bytes = Vec::new();
+                    file.take(MAX_DATABASE + 1).read_to_end(&mut bytes)?;
+                    if bytes.len() as u64 > MAX_DATABASE {
+                        return Err(io::Error::other("GeoIP database exceeds 256 MiB"));
+                    }
+                    Some(Reader::from_source(bytes).map_err(io::Error::other)?)
+                }
+            });
+        }
+        let mut readers = readers.into_iter();
+        Ok(Self {
+            country_reader: readers.next().flatten(),
+            asn_reader: readers.next().flatten(),
+            city_reader: readers.next().flatten(),
+            cache: Arc::new(DashMap::new()),
+            config: GeoIpConfig::default(),
+        })
+    }
+
     /// Create a new GeoIP resolver with the given configuration
     pub fn new(config: GeoIpConfig) -> Self {
         let country_reader = Self::open_reader(config.country_db_path.as_ref(), "Country");

@@ -237,3 +237,34 @@ fn version_remains_available_without_a_terminal() {
         "unexpected stdout: {stdout}"
     );
 }
+
+#[test]
+fn controller_pipe_option_requires_headless_mode() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rustnet"))
+        .arg("--stop-on-stdin-close")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--headless"));
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn interface_inventory_is_json_without_a_terminal_or_capture_privileges() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rustnet"))
+        .arg("--list-interfaces")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let interfaces: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    for interface in interfaces.as_array().unwrap() {
+        assert!(interface["name"].is_string());
+        assert!(interface["addresses"].is_array());
+    }
+}

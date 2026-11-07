@@ -26,7 +26,7 @@ use super::packet_queue::{CAPTURE_QUEUE_WAIT, send_with_backpressure};
 use super::pcapng_export::{PcapngRecord, send_pcapng_record};
 use super::runtime::InitStatus;
 use super::state::App;
-use super::types::AppStats;
+use super::types::{AppStats, CaptureAccounting};
 use super::{PACKET_BATCH_QUEUE_CAPACITY, PACKET_BATCH_SIZE, PCAPNG_ATTRIBUTION_WAIT};
 
 #[cfg(target_os = "linux")]
@@ -882,6 +882,7 @@ impl App {
         let dns_resolver = self.dns_resolver.clone();
         let socket_snapshot = Arc::clone(&self.socket_snapshot);
         let oui_lookup = self.oui_lookup.clone();
+        let capture_accounting = self.config.capture_accounting;
         let parser_config = ParserConfig {
             enable_dpi: self.config.enable_dpi,
         };
@@ -976,7 +977,8 @@ impl App {
                     };
 
                     // Both worker modes share the exact tracker/export path.
-                    let commit_packet =
+                    let mut accounting = capture_accounting.then(CaptureAccounting::default);
+                    let mut commit_packet =
                         |packet: &mut CapturedPacket, parsed: Option<&ParsedPacket>| {
                             let packet_timestamp = packet.timestamp;
                             let key = parsed.and_then(|parsed| {
@@ -994,6 +996,13 @@ impl App {
                                 if outcome.dropped || outcome.ignored_late {
                                     None
                                 } else {
+                                    if let Some(batch) = &mut accounting {
+                                        batch.record_tracked(
+                                            u64::from(packet.original_len),
+                                            parsed.is_outgoing,
+                                            outcome.attributed,
+                                        );
+                                    }
                                     Some(outcome.key)
                                 }
                             });
@@ -1052,6 +1061,9 @@ impl App {
                     // Ingestion only borrows parsed data. Drop frame and DPI
                     // storage after releasing the ordered commit, retaining
                     // the scratch vector's capacity for the next batch.
+                    if let Some(batch) = accounting {
+                        stats.publish_capture_accounting(batch);
+                    }
                     parsed_batch.clear();
 
                     total_processed += batch_len as u64;
@@ -1673,6 +1685,95 @@ mod packet_worker_tests {
         ];
         frame.extend_from_slice(&[marker, !marker]);
         frame
+    }
+
+    #[test]
+    fn capture_accounting_batches_preserve_frame_totals_and_final_partial_groups() {
+        for workers in [1, 4] {
+            for enabled in [false, true] {
+                for attributed in [false, true] {
+                    let mut app = App::new(Config {
+                        capture_accounting: enabled,
+                        resolve_dns: false,
+                        disable_geoip: true,
+                        enable_dpi: false,
+                        ..Config::default()
+                    })
+                    .unwrap();
+                    *app.linktype.write().unwrap() = Some(1);
+                    let now = SystemTime::now();
+                    let parser = PacketParser::new().with_linktype(1);
+                    let mut seed = parser.parse_packet(&udp_frame(0)).unwrap();
+                    seed.process_id = attributed.then_some(42);
+                    app.tracker.ingest_at(&seed, now);
+                    let (tx, rx) = channel::bounded(4);
+                    let rx = Arc::new(OrderedBatchReceiver::new(rx));
+                    let committer = Arc::new(OrderedBatchCommitter::default());
+                    for id in 0..workers {
+                        app.start_packet_processor(
+                            id,
+                            workers,
+                            rx.clone(),
+                            committer.clone(),
+                            app.tracker.clone(),
+                            None,
+                        )
+                        .unwrap();
+                    }
+                    let mut expected = CaptureAccounting::default();
+                    let mut batch = Vec::new();
+                    for i in 0..83 {
+                        let bytes = 1500 + i;
+                        expected.captured += bytes;
+                        let invalid = i % 5 == 4;
+                        let incoming = i % 2 == 1;
+                        let mut data = udp_frame(i as u8);
+                        if incoming {
+                            for offset in 0..4 {
+                                data.swap(26 + offset, 30 + offset);
+                            }
+                            for offset in 0..2 {
+                                data.swap(34 + offset, 36 + offset);
+                            }
+                        }
+                        if invalid {
+                            data.truncate(3);
+                        } else if incoming {
+                            expected.tracked_received += bytes;
+                        } else {
+                            expected.tracked_sent += bytes;
+                        }
+                        let packet = CapturedPacket {
+                            data,
+                            timestamp: now + Duration::from_millis(i),
+                            original_len: bytes as u32,
+                        };
+                        batch.push(route_captured_packet(packet, None, None, &app.stats).unwrap());
+                        if batch.len() == 3 {
+                            tx.send(std::mem::take(&mut batch)).unwrap();
+                        }
+                        if let Some(totals) = app.stats.capture_accounting() {
+                            assert!(
+                                totals.tracked_sent + totals.tracked_received <= totals.captured
+                            );
+                            assert!(totals.attributed_sent <= totals.tracked_sent);
+                            assert!(totals.attributed_received <= totals.tracked_received);
+                        }
+                    }
+                    tx.send(batch).unwrap();
+                    drop(tx);
+                    let report = app.runtime.stop_and_join(|_| {}, |_| {});
+                    assert_eq!(report.panicked_workers, 0);
+                    assert_eq!(report.timed_out_workers, 0);
+                    if attributed {
+                        expected.attributed_sent = expected.tracked_sent;
+                        expected.attributed_received = expected.tracked_received;
+                    }
+                    assert_eq!(app.stats.capture_accounting(), enabled.then_some(expected));
+                    assert_eq!(app.stats.packets_processed.load(Ordering::Relaxed), 83);
+                }
+            }
+        }
     }
 
     fn tcp_frame(flags: u8, sequence: u32) -> Vec<u8> {

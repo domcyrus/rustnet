@@ -15,10 +15,12 @@
 //! The library surface is unstable and intended for internal use; the
 //! supported product is the `rustnet` binary.
 
+mod accounts;
 pub mod app;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
+mod connection_details;
 pub(crate) mod export;
 pub mod headless;
 pub mod network;
@@ -26,6 +28,8 @@ pub mod network;
 mod test_support;
 mod tui;
 pub mod ui;
+#[cfg(windows)]
+mod windows_helper;
 
 /// Check if the current process is running with Administrator privileges (Windows only)
 #[cfg(target_os = "windows")]

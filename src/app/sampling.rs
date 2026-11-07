@@ -154,12 +154,25 @@ pub(super) fn build_connection_snapshot(
         passes_localhost_filter(connection, filter_localhost)
     };
 
-    let mut snapshot = snapshot_source(tracker.connections(), enrich_and_filter);
-    if include_historic {
-        snapshot.extend(snapshot_source(tracker.historic(), enrich_and_filter));
-    }
+    let mut snapshot = snapshot_retained_connections(tracker, include_historic, enrich_and_filter);
     snapshot.sort_by_key(|connection| connection.created_at);
     snapshot
+}
+
+fn snapshot_retained_connections(
+    tracker: &ConnectionTracker,
+    include_historic: bool,
+    enrich_and_filter: impl Fn(&mut Connection) -> bool,
+) -> Vec<Connection> {
+    // Keep lifecycle transitions out of the two-table scan. Otherwise a flow
+    // archived after the active scan can appear again in the historic scan.
+    tracker.with_retained_sources(|active, historic| {
+        let mut snapshot = snapshot_source(active, &enrich_and_filter);
+        if include_historic {
+            snapshot.extend(snapshot_source(historic, &enrich_and_filter));
+        }
+        snapshot
+    })
 }
 
 impl App {
@@ -550,6 +563,54 @@ mod live_rate_sampling_tests {
     use crate::network::types::{
         ApplicationProtocol, ConnectionKey, DnsInfo, DnsQueryType, DpiInfo, Protocol, ProtocolState,
     };
+
+    #[test]
+    fn connection_snapshot_blocks_archival_until_both_tables_are_scanned() {
+        let tracker = Arc::new(ConnectionTracker::new());
+        let packet = crate::network::parser::ParsedPacket::new(
+            Protocol::Udp,
+            "192.0.2.1:40000".parse().unwrap(),
+            "198.51.100.1:53".parse().unwrap(),
+            ProtocolState::Udp,
+            true,
+            100,
+            None,
+            None,
+        );
+        tracker.ingest_at(&packet, SystemTime::now());
+        let (scanned_tx, scanned_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let reader_tracker = Arc::clone(&tracker);
+        let reader = std::thread::spawn(move || {
+            snapshot_retained_connections(&reader_tracker, true, |conn| {
+                if !conn.is_historic {
+                    scanned_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }
+                true
+            })
+        });
+        scanned_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let cleaner_tracker = Arc::clone(&tracker);
+        let cleaner = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            cleaner_tracker.cleanup(SystemTime::now() + Duration::from_secs(86400));
+            done_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        release_tx.send(()).unwrap();
+        let snapshot = reader.join().unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert!(!snapshot[0].is_historic);
+        cleaner.join().unwrap();
+        let snapshot = snapshot_retained_connections(&tracker, true, |_| true);
+        assert_eq!(snapshot.len(), 1);
+        assert!(snapshot[0].is_historic);
+        assert!(snapshot_retained_connections(&tracker, false, |_| true).is_empty());
+    }
 
     #[test]
     fn activity_and_overview_share_ptr_visibility_for_active_and_historic_dns() {

@@ -196,6 +196,8 @@ pub struct IngestOutcome {
     pub key: ConnectionKey,
     /// `true` if this packet created a new connection entry.
     pub created: bool,
+    /// Whether this connection had a process owner when this packet was ingested.
+    pub attributed: bool,
     /// `true` if the packet was dropped because `max_connections` was reached
     /// (the connection did not already exist and was not inserted).
     pub dropped: bool,
@@ -230,6 +232,7 @@ impl IngestOutcome {
         Self {
             key,
             created: false,
+            attributed: false,
             dropped: false,
             ignored_late: false,
             archived: None,
@@ -465,8 +468,9 @@ impl ConnectionTracker {
             let deltas = merge_packet_into_connection(&mut conn, parsed, now);
             apply_timings(&mut conn, &timings);
             apply_observed_protocol_health(&mut conn, parsed);
+            let attributed = conn.pid.is_some();
             drop(conn);
-            return self.finish_ingest(key, false, deltas);
+            return self.finish_ingest(key, false, attributed, deltas);
         }
 
         if self.is_recent_late_packet(key, parsed, now) {
@@ -721,7 +725,8 @@ impl ConnectionTracker {
 
         let mut created = false;
         let mut deltas = TcpMergeEvents::default();
-        self.connections
+        let conn = self
+            .connections
             .entry(key)
             .and_modify(|conn| {
                 deltas = merge_packet_into_connection(conn, parsed, now);
@@ -741,11 +746,13 @@ impl ConnectionTracker {
                 }
                 conn
             });
+        let attributed = conn.pid.is_some();
+        drop(conn);
         if created {
             self.active_count.fetch_add(1, Ordering::Relaxed);
         }
 
-        self.finish_ingest(key, created, deltas)
+        self.finish_ingest(key, created, attributed, deltas)
     }
 
     /// Finish an update after releasing the connection's shard guard. RTT
@@ -754,6 +761,7 @@ impl ConnectionTracker {
         &self,
         key: ConnectionKey,
         created: bool,
+        attributed: bool,
         deltas: TcpMergeEvents,
     ) -> IngestOutcome {
         // Feed completed data round trips into the aggregate view, so the
@@ -767,6 +775,7 @@ impl ConnectionTracker {
 
         IngestOutcome {
             created,
+            attributed,
             retransmits: deltas.retransmits,
             out_of_order: deltas.out_of_order,
             fast_retransmits: deltas.fast_retransmits,
@@ -2470,6 +2479,30 @@ mod tests {
         assert_eq!(retransmit.retransmits, 1);
         let conn = tracker.connections.get(&sent.key).unwrap();
         assert_eq!(conn.packets_sent + conn.packets_received, 4);
+    }
+
+    #[test]
+    fn ingest_reports_ownership_at_the_time_of_each_packet() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            max_connections: 1,
+            ..TrackerConfig::default()
+        });
+        let mut packet = parse(&udp_frame(40000, 9999));
+        assert!(!tracker.ingest(&packet).attributed);
+        packet.process_id = Some(42);
+        assert!(tracker.ingest(&packet).attributed);
+        packet.process_id = None;
+        assert!(tracker.ingest(&packet).attributed);
+        let mut dropped = parse(&udp_frame(40001, 9999));
+        dropped.process_id = Some(43);
+        let outcome = tracker.ingest(&dropped);
+        assert!(outcome.dropped);
+        assert!(!outcome.attributed);
+        tracker.clear();
+        assert!(!tracker.ingest(&packet).attributed);
+        tracker.clear();
+        packet.process_id = Some(44);
+        assert!(tracker.ingest(&packet).attributed);
     }
 
     #[test]

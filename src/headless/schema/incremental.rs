@@ -18,10 +18,27 @@ struct IncrementalRecord<C> {
     snapshot: SnapshotEnvelope<C>,
 }
 
+// Keep the complete basic or full projection in the baseline so late detail
+// enrichment invalidates a record even when traffic counters do not change.
+#[derive(PartialEq, Serialize)]
+#[serde(untagged)]
+enum IncrementalConnection {
+    Basic(Box<ConnectionSnapshot>),
+    Full(Box<FullConnectionSnapshot>),
+}
+impl IncrementalConnection {
+    fn id(&self) -> &str {
+        match self {
+            Self::Basic(record) => record.id(),
+            Self::Full(record) => record.id(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(in crate::headless) struct IncrementalEncoder {
     // None means no complete baseline is retained. An empty baseline is valid.
-    previous: Option<Vec<CachedConnection>>,
+    previous: Option<Vec<CachedConnection<IncrementalConnection>>>,
     sequence: u64,
     last_full: Option<(u64, Instant)>,
 }
@@ -46,6 +63,20 @@ impl IncrementalEncoder {
         max_connections: usize,
         max_bytes: usize,
     ) -> anyhow::Result<Vec<u8>> {
+        let records = match std::mem::replace(
+            &mut snapshot.connections,
+            ConnectionSnapshots::Basic(Vec::new()),
+        ) {
+            ConnectionSnapshots::Basic(records) => records
+                .into_iter()
+                .map(|record| IncrementalConnection::Basic(Box::new(record)))
+                .collect::<Vec<_>>(),
+            ConnectionSnapshots::Full(records) => records
+                .into_iter()
+                .map(|record| IncrementalConnection::Full(Box::new(record)))
+                .collect::<Vec<_>>(),
+        };
+        let mut snapshot = snapshot.with_connections(records);
         let sequence = self
             .sequence
             .checked_add(1)
@@ -72,13 +103,13 @@ impl IncrementalEncoder {
             // merge. Compare every exported field, including late enrichment.
             while previous
                 .peek()
-                .is_some_and(|entry| entry.projected.id < projected.id)
+                .is_some_and(|entry| entry.projected.id() < projected.id())
             {
-                removed.push(previous.next().unwrap().projected.id.clone());
+                removed.push(previous.next().unwrap().projected.id().to_owned());
             }
             let matching = if previous
                 .peek()
-                .is_some_and(|entry| entry.projected.id == projected.id)
+                .is_some_and(|entry| entry.projected.id() == projected.id())
             {
                 previous.next()
             } else {
@@ -101,7 +132,7 @@ impl IncrementalEncoder {
             encoded.push(json);
         }
         if !full {
-            removed.extend(previous.map(|entry| entry.projected.id.clone()));
+            removed.extend(previous.map(|entry| entry.projected.id().to_owned()));
             snapshot.record_type = "delta";
         } else {
             removed.clear();
@@ -131,7 +162,7 @@ impl IncrementalEncoder {
 
     fn full_without_baseline(
         &mut self,
-        snapshot: SnapshotEnvelope,
+        snapshot: SnapshotEnvelope<Vec<IncrementalConnection>>,
         sequence: u64,
         now: Instant,
     ) -> anyhow::Result<Vec<u8>> {

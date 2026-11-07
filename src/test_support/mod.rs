@@ -15,6 +15,7 @@ pub(crate) fn test_config() -> Config {
         filter_localhost: false,
         refresh_interval: 1000,
         enable_dpi: false,
+        capture_accounting: false,
         bpf_filter: None,
         json_log_file: None,
         pcap_export_file: None,

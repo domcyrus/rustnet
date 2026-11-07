@@ -240,6 +240,11 @@ fn build_geoip_resolver(config: &Config) -> Option<Arc<GeoIpResolver>> {
 }
 
 impl App {
+    #[cfg(windows)]
+    pub(crate) fn set_desktop_geoip(&mut self, resolver: GeoIpResolver) {
+        self.geoip_resolver = resolver.is_available().then(|| Arc::new(resolver));
+    }
+
     /// Create a test application with default output handles.
     #[cfg(test)]
     pub(crate) fn new(config: Config) -> Result<Self> {
@@ -316,6 +321,7 @@ impl App {
         let runtime = RuntimeSupervisor::new();
         let should_stop = runtime.stop_token();
 
+        let stats = Arc::new(AppStats::with_capture_accounting(config.capture_accounting));
         Ok(Self {
             config,
             lifecycle: Mutex::new(AppLifecycle::Created),
@@ -327,7 +333,7 @@ impl App {
             show_historic: Arc::new(AtomicBool::new(false)),
             service_lookup: Arc::new(service_lookup),
             oui_lookup,
-            stats: Arc::new(AppStats::default()),
+            stats,
             is_loading: Arc::new(AtomicBool::new(true)),
             current_interface: Arc::new(RwLock::new(None)),
             linktype: Arc::new(RwLock::new(None)),
@@ -853,6 +859,12 @@ impl App {
     #[cfg(test)]
     pub(crate) fn ingest_packet_at_for_test(&self, parsed: &ParsedPacket, at: SystemTime) {
         self.tracker.ingest_at(parsed, at);
+    }
+
+    /// Advance the production cleanup path without waiting for expiry.
+    #[cfg(test)]
+    pub(crate) fn cleanup_connections_for_test(&self, at: SystemTime) {
+        self.tracker.cleanup(at);
     }
 
     /// Override the current interface label. Tests only.

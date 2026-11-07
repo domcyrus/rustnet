@@ -464,6 +464,12 @@ impl DnsResolver {
             let now = Instant::now();
             if now >= deadline {
                 report.timed_out = lifecycle.handles.len();
+                for handle in &lifecycle.handles {
+                    eprintln!(
+                        "DNS worker did not stop before shutdown deadline: {}",
+                        handle.thread().name().unwrap_or("unnamed")
+                    );
+                }
                 lifecycle.handles.clear();
                 break;
             }

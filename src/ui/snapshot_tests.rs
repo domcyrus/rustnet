@@ -1503,7 +1503,7 @@ fn details_tab_shows_complete_process_attribution() {
     assert!(attributed.contains("1900"));
     assert!(attributed.contains("/usr/lib/firefox/firefox"));
     assert!(attributed.contains("systemd > bash > firefox"));
-    assert!(attributed.contains(&tabs::details::format_user_group(1000, Some(1000))));
+    assert!(attributed.contains(&crate::accounts::format_user_group(1000, Some(1000))));
     assert!(attributed.contains("exact tuple"));
 }
 
