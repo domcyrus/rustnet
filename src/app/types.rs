@@ -274,6 +274,10 @@ impl AppStats {
         }
     }
 
+    pub(super) fn capture_accounting_enabled(&self) -> bool {
+        self.capture_accounting.is_some()
+    }
+
     pub fn capture_accounting(&self) -> Option<CaptureAccounting> {
         let totals = self
             .capture_accounting

@@ -1000,7 +1000,7 @@ impl App {
                                         batch.record_tracked(
                                             u64::from(packet.original_len),
                                             parsed.is_outgoing,
-                                            outcome.attributed,
+                                            outcome.attributed == Some(true),
                                         );
                                     }
                                     Some(outcome.key)
@@ -1107,7 +1107,11 @@ fn update_connection(
     pcap_sidecar_file: &Option<Arc<JsonLineWriter>>,
     dns_resolver: Option<&DnsResolver>,
 ) -> IngestOutcome {
-    let outcome = tracker.ingest_at(parsed, now);
+    let outcome = if stats.capture_accounting_enabled() {
+        tracker.ingest_at_with_accounting(parsed, now)
+    } else {
+        tracker.ingest_at(parsed, now)
+    };
 
     if outcome.retransmits > 0 {
         stats
