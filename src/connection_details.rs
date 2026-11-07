@@ -9,24 +9,33 @@ pub(crate) struct DetailField {
     pub warning: bool,
 }
 
-#[derive(Default)]
-struct Fields(Vec<DetailField>);
-impl Fields {
-    fn app_rows(&mut self, rows: &[(&'static str, Option<String>)]) {
-        self.0.extend(rows.iter().map(|(label, value)| DetailField {
-            label,
-            value: value.clone(),
-            warning: false,
-        }));
+struct Fields<F>(F);
+impl<F: FnMut(DetailField)> Fields<F> {
+    fn app_rows(&mut self, rows: impl IntoIterator<Item = (&'static str, Option<String>)>) {
+        for (label, value) in rows {
+            (self.0)(DetailField {
+                label,
+                value,
+                warning: false,
+            });
+        }
     }
 }
 
 pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
-    let mut details = Fields::default();
+    let mut fields = Vec::new();
+    visit_application_fields(conn, |field| fields.push(field));
+    fields
+}
+
+/// Emit owned fields directly so terminal rendering needs no intermediate list
+/// or extra string clones. Headless output collects only when requested.
+pub(crate) fn visit_application_fields(conn: &Connection, emit: impl FnMut(DetailField)) {
+    let mut details = Fields(emit);
     if let Some(dpi) = &conn.dpi_info {
         match &dpi.application {
             crate::network::types::ApplicationProtocol::Http(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("HTTP Version", Some(info.version.to_string())),
                     ("HTTP Method", info.method.clone()),
                     ("HTTP Host", info.host.clone()),
@@ -37,7 +46,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
             }
             crate::network::types::ApplicationProtocol::Https(info) => {
                 let tls = info.tls_info.as_ref();
-                details.app_rows(&[
+                details.app_rows([
                     ("SNI", tls.and_then(|t| t.sni.clone())),
                     (
                         "ALPN",
@@ -48,13 +57,14 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                         tls.and_then(|t| t.version.map(|v| v.to_string())),
                     ),
                 ]);
-                details.app_rows(&[("Cipher Suite", tls.and_then(|t| t.format_cipher_suite()))]);
-                if let Some(field) = details.0.last_mut() {
-                    field.warning = tls.and_then(|t| t.is_cipher_suite_secure()) == Some(false);
-                }
+                (details.0)(DetailField {
+                    label: "Cipher Suite",
+                    value: tls.and_then(|t| t.format_cipher_suite()),
+                    warning: tls.and_then(|t| t.is_cipher_suite_secure()) == Some(false),
+                });
             }
             crate::network::types::ApplicationProtocol::Dns(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("DNS Query", info.query_name.clone()),
                     ("DNS Type", info.query_type.map(|t| t.to_string())),
                     ("DNS Response IPs", join_ips(&info.response_ips)),
@@ -68,7 +78,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
             }
             crate::network::types::ApplicationProtocol::Quic(info) => {
                 let tls = info.tls_info.as_ref();
-                details.app_rows(&[
+                details.app_rows([
                     ("QUIC SNI", tls.and_then(|t| t.sni.clone())),
                     (
                         "QUIC ALPN",
@@ -84,7 +94,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::Ssh(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("SSH Version", info.version.as_ref().map(|v| v.to_string())),
                     ("Connection State", Some(info.connection_state.to_string())),
                     ("Server Software", info.server_software.clone()),
@@ -97,7 +107,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::Ntp(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("NTP Version", Some(info.version.to_string())),
                     ("NTP Mode", Some(info.mode.to_string())),
                     (
@@ -107,7 +117,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::Mdns(info) => {
-                details.app_rows(&name_service_rows(
+                details.app_rows(name_service_rows(
                     info.query_name.as_ref(),
                     info.query_type.as_ref(),
                     &info.response_ips,
@@ -119,7 +129,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                     info.query_type.as_ref(),
                     &info.response_ips,
                 );
-                details.app_rows(&[
+                details.app_rows([
                     name,
                     query_type,
                     ips,
@@ -127,27 +137,27 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::Dhcp(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("Message Type", Some(info.message_type.to_string())),
                     ("Hostname", info.hostname.clone()),
                     ("Client MAC", info.client_mac.clone()),
                 ]);
             }
             crate::network::types::ApplicationProtocol::Snmp(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("SNMP Version", Some(info.version.to_string())),
                     ("PDU Type", Some(info.pdu_type.to_string())),
                     ("Community", info.community.clone()),
                 ]);
             }
             crate::network::types::ApplicationProtocol::Ssdp(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("Method", Some(info.method.to_string())),
                     ("Service Type", info.service_type.clone()),
                 ]);
             }
             crate::network::types::ApplicationProtocol::NetBios(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("Service", Some(info.service.to_string())),
                     ("Opcode", Some(info.opcode.to_string())),
                     ("Name", info.name.clone()),
@@ -166,7 +176,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 .into_iter()
                 .filter_map(|(supported, name)| supported.then_some(name))
                 .collect();
-                details.app_rows(&[
+                details.app_rows([
                     ("Type", Some(info.protocol_type.to_string())),
                     ("Client", info.client.clone()),
                     ("Info Hash", info.info_hash.clone()),
@@ -178,7 +188,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::Stun(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("Method", Some(info.method.to_string())),
                     ("Class", Some(info.message_class.to_string())),
                     (
@@ -189,7 +199,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::MySql(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("Server Version", info.server_version.clone()),
                     ("Connection ID", info.connection_id.map(|id| id.to_string())),
                     (
@@ -214,7 +224,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::Redis(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("Command", Some(info.command.clone())),
                     (
                         "Requested RESP",
@@ -227,7 +237,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::PostgreSql(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     (
                         "Startup Version",
                         info.protocol_minor.map(|v| format!("3.{v}")),
@@ -257,7 +267,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                     (None, Some(message)) => Some(message.clone()),
                     (None, None) => None,
                 };
-                details.app_rows(&[
+                details.app_rows([
                     ("Message Type", Some(info.message_type.to_string())),
                     ("Command", info.command.clone()),
                     ("Arguments", info.args.clone()),
@@ -268,7 +278,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::Mqtt(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("Packet Type", Some(info.packet_type.to_string())),
                     ("Version", info.version.map(|v| v.to_string())),
                     ("Client ID", info.client_id.clone()),
@@ -277,17 +287,17 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
                 ]);
             }
             crate::network::types::ApplicationProtocol::WireGuard(info) => {
-                details.app_rows(&[("Packet Type", Some(info.packet_type.to_string()))]);
+                details.app_rows([("Packet Type", Some(info.packet_type.to_string()))]);
             }
             crate::network::types::ApplicationProtocol::OpenVpn(info) => {
-                details.app_rows(&[
+                details.app_rows([
                     ("Packet Type", Some(info.packet_type.to_string())),
                     ("Key ID", Some(info.key_id.to_string())),
                 ]);
             }
         }
     } else if let ProtocolState::Arp(info) = &conn.protocol_state {
-        details.app_rows(&[
+        details.app_rows([
             (
                 "Operation",
                 Some(
@@ -317,7 +327,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
             Some(vendor) => format!("{} at {} ({})", n.ip, n.mac, vendor),
             None => format!("{} at {}", n.ip, n.mac),
         });
-        details.app_rows(&[
+        details.app_rows([
             (
                 "Message",
                 Some(crate::network::types::icmp_message_name(*icmp_type, is_ipv6).into_owned()),
@@ -331,7 +341,7 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
         group_addr,
     } = &conn.protocol_state
     {
-        details.app_rows(&[
+        details.app_rows([
             (
                 "Message",
                 Some(crate::network::types::igmp_message_name(*igmp_type).into_owned()),
@@ -339,10 +349,8 @@ pub(crate) fn application_fields(conn: &Connection) -> Vec<DetailField> {
             ("Group Address", group_addr.map(|addr| addr.to_string())),
         ]);
     } else {
-        details.app_rows(&[("Detected", None)]);
+        details.app_rows([("Detected", None)]);
     }
-
-    details.0
 }
 
 /// Comma-joined display form of a response-IP list, `None` when empty so the
@@ -375,9 +383,10 @@ fn name_service_rows(
 /// Outcomes that accompany protocol timing and request counters.
 pub(crate) fn health_fields(conn: &Connection) -> Vec<DetailField> {
     use crate::network::types::ApplicationProtocol;
-    let mut fields = Fields::default();
+    let mut output = Vec::new();
+    let mut fields = Fields(|field| output.push(field));
     match conn.dpi_info.as_ref().map(|d| &d.application) {
-        Some(ApplicationProtocol::Quic(q)) => fields.app_rows(&[
+        Some(ApplicationProtocol::Quic(q)) => fields.app_rows([
             (
                 "Idle timeout",
                 q.idle_timeout.map(|d| format!("{} s", d.as_secs_f64())),
@@ -397,18 +406,18 @@ pub(crate) fn health_fields(conn: &Connection) -> Vec<DetailField> {
                 }),
             ),
         ]),
-        Some(ApplicationProtocol::Dns(d)) => fields.app_rows(&[(
+        Some(ApplicationProtocol::Dns(d)) => fields.app_rows([(
             "Last response code",
             d.rcode
                 .map(|code| crate::network::types::dns_rcode_name(code).into_owned()),
         )]),
-        Some(ApplicationProtocol::NetBios(n)) => fields.app_rows(&[(
+        Some(ApplicationProtocol::NetBios(n)) => fields.app_rows([(
             "Last response status",
             n.response_status.map(|status| status.to_string()),
         )]),
         _ => {}
     }
-    fields.0
+    output
 }
 
 /// Preserve the observed token and flag malformed values only in the display.

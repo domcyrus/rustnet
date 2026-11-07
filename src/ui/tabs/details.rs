@@ -205,16 +205,6 @@ impl<'a> DetailsBuilder<'a> {
         self.fields.push(Some((label.to_string(), copy)));
     }
 
-    /// Push a fixed set of Application-card rows. Every row renders, absent
-    /// data as [`NONE_PLACEHOLDER`], so the card's row set is a function of
-    /// the protocol class alone and never grows or shrinks with data
-    /// availability.
-    fn app_rows(&mut self, rows: &[(&str, Option<String>)]) {
-        for (label, value) in rows {
-            self.field_opt(label, value.clone());
-        }
-    }
-
     /// Push an RTT field with the value colored by latency
     /// (`theme::rtt_color`), or the "-" placeholder when unmeasured.
     fn rtt_field(&mut self, label: &str, rtt: Option<std::time::Duration>) {
@@ -1263,7 +1253,7 @@ pub(in crate::ui) fn draw_connection_details(
         };
         details.section_styled(title, theme::bold_fg(non_dpi_app_color()));
     }
-    for field in crate::connection_details::application_fields(conn) {
+    crate::connection_details::visit_application_fields(conn, |field| {
         if field.label == "Cipher Suite" && field.value.is_some() {
             let color = if field.warning {
                 theme::warn()
@@ -1272,9 +1262,9 @@ pub(in crate::ui) fn draw_connection_details(
             };
             details.field_styled_opt(field.label, field.value, theme::fg(color));
         } else {
-            details.app_rows(&[(field.label, field.value)]);
+            details.field_opt(field.label, field.value);
         }
-    }
+    });
 
     // Keep attribution at the same position across application protocols.
     details.pad_section(application_start, APPLICATION_CARD_ROWS - 2);

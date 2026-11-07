@@ -164,13 +164,14 @@ fn snapshot_retained_connections(
     include_historic: bool,
     enrich_and_filter: impl Fn(&mut Connection) -> bool,
 ) -> Vec<Connection> {
+    if !include_historic {
+        return snapshot_source(tracker.connections(), enrich_and_filter);
+    }
     // Keep lifecycle transitions out of the two-table scan. Otherwise a flow
     // archived after the active scan can appear again in the historic scan.
     tracker.with_retained_sources(|active, historic| {
         let mut snapshot = snapshot_source(active, &enrich_and_filter);
-        if include_historic {
-            snapshot.extend(snapshot_source(historic, &enrich_and_filter));
-        }
+        snapshot.extend(snapshot_source(historic, &enrich_and_filter));
         snapshot
     })
 }

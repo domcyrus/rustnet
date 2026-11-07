@@ -5172,3 +5172,31 @@ fn details_tab_arp_application_card() {
         arp_details_connection(true)
     });
 }
+
+// Compare the same fixtures and dimensions on both revisions in release mode.
+#[test]
+#[ignore = "manual release-mode Details rendering measurement"]
+fn profile_details_rendering() {
+    fn require_release() {
+        #[cfg(debug_assertions)]
+        panic!("run with --release");
+    }
+    require_release();
+    let app = test_app();
+    for variant in dpi_variants_full() {
+        let name = variant.sort_key();
+        let connections = vec![dpi_details_connection(variant)];
+        app.set_connections_snapshot_for_test(connections.clone());
+        for _ in 0..10 {
+            std::hint::black_box(render_details(&app, &connections, 0));
+        }
+        let started = std::time::Instant::now();
+        for _ in 0..200 {
+            std::hint::black_box(render_details(&app, &connections, 0));
+        }
+        eprintln!(
+            "details protocol={name} ns={}",
+            started.elapsed().as_nanos() / 200
+        );
+    }
+}

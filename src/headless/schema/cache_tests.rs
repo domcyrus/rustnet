@@ -185,6 +185,7 @@ fn benchmark_history_encoding() {
         .into_iter()
         .find(|c| c.pid.is_some())
         .unwrap();
+    let full = std::env::var_os("RUSTNET_PROFILE_FULL_DETAILS").is_some();
     const ITERATIONS: usize = 120;
     for (active, historic, metadata_bytes) in [
         (100, 0, 0),
@@ -213,7 +214,7 @@ fn benchmark_history_encoding() {
         let mut cache = ConnectionCache::default();
         let mut incremental = IncrementalEncoder::default();
         let snapshot =
-            || SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, true).1;
+            || SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, full).1;
         cache.serialize(snapshot()).unwrap();
         incremental.serialize(snapshot()).unwrap();
         let mut projection_time = [Duration::ZERO; 3];
@@ -225,13 +226,19 @@ fn benchmark_history_encoding() {
                 let mode = (iteration + offset) % 3;
                 let started = Instant::now();
                 let mut record = snapshot();
-                for connection in record.connections.full_mut() {
-                    let connection = &mut connection.connection;
-                    if !connection.historic {
-                        connection.traffic.bytes_sent += iteration as u64 + 1;
-                        connection.traffic.outgoing_bytes_per_second =
-                            finite(iteration as f64 + 1.0);
+                let update = |historic: bool, traffic: &mut TrafficSnapshot| {
+                    if !historic {
+                        traffic.bytes_sent += iteration as u64 + 1;
+                        traffic.outgoing_bytes_per_second = finite(iteration as f64 + 1.0);
                     }
+                };
+                match &mut record.connections {
+                    ConnectionSnapshots::Basic(records) => records
+                        .iter_mut()
+                        .for_each(|record| update(record.historic, &mut record.traffic)),
+                    ConnectionSnapshots::Full(records) => records.iter_mut().for_each(|record| {
+                        update(record.connection.historic, &mut record.connection.traffic)
+                    }),
                 }
                 projection_time[mode] += started.elapsed();
                 let started = Instant::now();
