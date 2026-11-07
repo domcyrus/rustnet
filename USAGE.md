@@ -164,7 +164,7 @@ The headless controls are:
 - **`--output jsonl|json`**: selects the output shape. JSONL is the default and writes versioned latest-value snapshots, one JSON object per line. Under output backpressure, a stale queued snapshot is replaced by the newest one; consumers can detect skipped `runtime.snapshot_generation` values. After a duration or signal shutdown, JSONL also writes a final terminal record containing the termination reason and shutdown result. JSON waits for shutdown and writes exactly one final versioned record.
 - **`--filter <QUERY>`**: applies the same connection-filter syntax as the TUI, including fields such as `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, and `proto:`, plus `/pattern/` regular expressions.
 
-#### Desktop controllers (unreleased)
+#### Headless automation (unreleased)
 
 `--list-interfaces` returns a JSON array of capture interfaces (`name`, nullable
 `description`, and `addresses`) without opening capture. It does not require
@@ -181,17 +181,6 @@ lifecycle countdowns. Unchanged historic records reuse encoded JSON within the
 existing cache limits. Linux process details retain executable paths observed at
 startup when later procfs access is denied. Reuse requires matching PID, process start time, and
 socket identity; unverifiable or changed identities stay unresolved.
-
-On Windows, the desktop can launch the internal `--desktop-helper <ID> <PID>`
-mode through UAC for one capture. The helper checks each named pipe's server PID,
-duplicates regular-file handles from that controller with their existing rights,
-and uses those handles for recording and GeoIP. It uses strict sandboxing and
-passive DNS enrichment, and requests shutdown when the controller disconnects.
-Startup and shutdown watchdogs bound stalled sessions. See
-[`src/windows_helper.rs`](src/windows_helper.rs) for the versioned pipe protocol.
-Only `SeChangeNotifyPrivilege` is retained after capture initialization; token
-groups and integrity level remain unchanged, so the elevated helper still has
-Administrator ACL access. See [Windows sandbox limits](SECURITY.md#privilege-drop-and-job-object-sandboxing-windows).
 
 #### Schema contract
 

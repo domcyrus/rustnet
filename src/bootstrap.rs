@@ -15,14 +15,6 @@ use std::time::Duration;
 
 /// Parse CLI options and initialize the selected frontend.
 pub fn run() -> Result<()> {
-    #[cfg(windows)]
-    let mut desktop = crate::windows_helper::connect()?;
-    #[cfg(windows)]
-    let matches = match &desktop {
-        Some(session) => cli::build_cli().try_get_matches_from(session.arguments())?,
-        None => cli::build_cli().get_matches(),
-    };
-    #[cfg(not(windows))]
     let matches = cli::build_cli().get_matches();
     if matches.get_flag("list-interfaces") {
         #[cfg(target_os = "windows")]
@@ -59,12 +51,6 @@ pub fn run() -> Result<()> {
     // creation so a bad combination cannot truncate an existing destination,
     // including a regular file inherited as stdout for headless snapshots.
     app::validate_output_paths(&config).context("invalid output paths")?;
-    #[cfg(windows)]
-    if let Some(session) = &desktop {
-        // A display label only: the helper never opens this as a pathname.
-        config.pcapng_export_file = session.has_recording().then(|| "desktop recording".into());
-        config.disable_geoip = true; // no elevated automatic pathname discovery
-    }
 
     // Clap handles --help and --version before this point, so both remain
     // available even when Npcap is not installed. The Npcap DLLs are
@@ -228,12 +214,7 @@ pub fn run() -> Result<()> {
     // drop or granting pathname write access through the sandbox.
     #[cfg(unix)]
     let prepared = app::prepare_output_handles_for_invoking_uid(&config, invoking_output_uid());
-    #[cfg(windows)]
-    let prepared = match desktop.as_mut() {
-        Some(session) => Ok((session.take_outputs(), None)),
-        None => app::prepare_output_handles(&config),
-    };
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     let prepared = app::prepare_output_handles(&config);
     let (output_handles, pcap_export_file) =
         prepared.context("failed to prepare runtime outputs")?;
@@ -395,12 +376,6 @@ pub fn run() -> Result<()> {
         app.apply_sandbox(&sandbox_config)?
     };
 
-    #[cfg(windows)]
-    if let Some(session) = desktop.as_mut() {
-        // Parse caller-provided databases only after privilege reduction.
-        app.set_desktop_geoip(session.take_geoip()?);
-    }
-
     // Before this point the platform default remains in effect, so SIGTERM or
     // SIGHUP can still terminate a slow synchronous capture/process setup.
     install_signal_handlers()?;
@@ -410,15 +385,11 @@ pub fn run() -> Result<()> {
     // On Linux these inherit the Landlock domain and the dropped capabilities, so
     // a compromise in a DPI parser is contained even when running as root.
     app.start_workers(worker_startup_permit)?;
-    #[cfg(windows)]
-    if let Some(session) = &desktop {
-        session.ready();
-    }
 
     if matches.get_flag("stop-on-stdin-close") {
         // Created after the sandbox transition so this thread inherits the
         // same restrictions as the capture workers. EOF also covers a crashed
-        // desktop parent, including when no packets are arriving.
+        // supervising process, including when no packets are arriving.
         std::thread::Builder::new()
             .name("stdin-shutdown".into())
             .spawn(|| {
@@ -575,7 +546,7 @@ fn chown_to_uid_drop_target(
 
 /// Set from the signal handler; the UI loop exits through its normal
 /// cleanup path (flush outputs, restore the terminal) when it flips.
-pub(crate) static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
+static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Route termination signals through the regular shutdown path so output is
@@ -737,7 +708,7 @@ fn request_shutdown_on_eof(mut reader: impl io::Read, shutdown: &std::sync::atom
 }
 
 #[cfg(test)]
-mod desktop_tests {
+mod stdin_shutdown_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 

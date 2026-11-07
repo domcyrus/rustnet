@@ -213,7 +213,6 @@ Linux Landlock or macOS Seatbelt. FreeBSD currently has no comparable sandbox:
 - No network restriction; outbound connections remain possible
 - Privilege removal only affects privileges the elevated process held
 - Token groups and integrity level are unchanged. An elevated process retains Administrator ACL access; this is not a standard-user token.
-- The desktop helper accepts controller-owned file handles for recording and GeoIP, verifies named-pipe server PIDs, and uses identification-only pipe access to prevent server impersonation of the elevated engine. Strict sandboxing and a controller-lifetime watchdog remain required.
 
 ### CLI Options
 

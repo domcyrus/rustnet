@@ -240,11 +240,6 @@ fn build_geoip_resolver(config: &Config) -> Option<Arc<GeoIpResolver>> {
 }
 
 impl App {
-    #[cfg(windows)]
-    pub(crate) fn set_desktop_geoip(&mut self, resolver: GeoIpResolver) {
-        self.geoip_resolver = resolver.is_available().then(|| Arc::new(resolver));
-    }
-
     /// Create a test application with default output handles.
     #[cfg(test)]
     pub(crate) fn new(config: Config) -> Result<Self> {

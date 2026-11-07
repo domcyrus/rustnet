@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
-- Add desktop headless controls, opt-in full metadata and capture accounting, Linux executable fallback, and a Windows per-capture helper (#721)
+- Add headless automation controls, opt-in full metadata and capture accounting, and guarded Linux executable retention (#721)
 - Add opt-in incremental headless JSONL with sequence checks, bounded baselines, and periodic full snapshots for resynchronization (#719)
 - Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible
 - Show per-resolver DNS health, retries, pending age, selectable 60s/5m/1h/since-startup windows, and 15-minute recent issue evidence in Host

@@ -161,7 +161,7 @@ rustnet --headless --filter 'process:curl app:https'
 - **`--output jsonl|json`**：选择输出形式。JSONL 是默认格式，以每行一个 JSON 对象的方式写出带版本号的最新值快照。当输出产生背压时，队列中的旧快照会被最新快照替换；使用方可通过不连续的 `runtime.snapshot_generation` 值检测到跳过的快照。由时长或信号触发关闭后，JSONL 还会写出一条最终终止记录，其中包含终止原因和关闭结果。JSON 会等待监控停止，然后仅写出一条带版本号的最终记录。
 - **`--filter <QUERY>`**：使用与 TUI 相同的连接过滤语法，包括 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:` 和 `proto:` 等字段，以及 `/pattern/` 正则表达式。
 
-#### 桌面控制器（未发布）
+#### 无界面自动化（未发布）
 
 `--list-interfaces` 返回抓包接口的 JSON 数组，包含 `name`、可为空的
 `description` 和 `addresses`，不会打开抓包。该选项不需要 `--headless`；
@@ -176,14 +176,6 @@ EOF 或读取失败会请求正常关闭并输出终态记录。`--include-histo
 限制内复用编码 JSON。在 Linux 上，后续 procfs 访问被拒绝时，可复用启动时记录的
 可执行文件路径。复用前必须核验 PID、进程启动时间和套接字身份；无法验证或已变化
 的身份不会采用。
-
-在 Windows 上，桌面通过 UAC 启动内部 `--desktop-helper <ID> <PID>` 模式，
-每次运行处理一次抓包。助手核验各命名管道的服务端 PID，以原有访问权限复制
-控制器的普通文件句柄，并用于录制和 GeoIP。助手启用严格沙箱和被动 DNS 元数据，
-控制器断开时请求关闭。启动和关闭看门狗限制卡住的会话。
-版本化管道协议见 [`src/windows_helper.rs`](src/windows_helper.rs)。初始化抓包后
-仅保留 `SeChangeNotifyPrivilege`；令牌组和完整性级别保持不变，因此提升的助手
-仍有 Administrator ACL 访问权限。详见 [Windows 沙箱限制](SECURITY.zh-CN.md#privilege-drop-and-job-object-sandboxing-windows)。
 
 #### Schema 约定
 
