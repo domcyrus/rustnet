@@ -587,7 +587,7 @@ impl<P> ConnectionSnapshot<P> {
                 executable: connection
                     .executable
                     .as_ref()
-                    .map(|path| path.display().to_string()),
+                    .map(|path| path.to_string_lossy().into_owned()),
                 uid: connection.process_uid,
                 gid: connection.process_gid,
                 attribution_match: connection
@@ -604,7 +604,7 @@ impl<P> ConnectionSnapshot<P> {
                                 executable: ancestor
                                     .executable
                                     .as_ref()
-                                    .map(|path| path.display().to_string()),
+                                    .map(|path| path.to_string_lossy().into_owned()),
                                 started_at_unix_ms: ancestor.started_at_unix_ms,
                             })
                             .collect(),
@@ -1087,6 +1087,34 @@ mod tests {
             connection.dpi_info = Some(DpiInfo { application });
             let snapshot = ConnectionSnapshot::from_connection(&connection);
             assert_eq!(serde_json::to_value(snapshot).unwrap()["application"], name);
+        }
+    }
+
+    #[test]
+    fn executable_paths_keep_display_encoding() {
+        let mut paths = vec![
+            std::path::PathBuf::from("/usr/bin/client"),
+            std::path::PathBuf::from("/home/用户/client"),
+            std::path::PathBuf::from(format!("/profile/{}/client", "x".repeat(4096))),
+        ];
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            paths.push(std::ffi::OsString::from_vec(b"/bin/invalid-\xff".to_vec()).into());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            paths.push(std::ffi::OsString::from_wide(&[67, 58, 92, 0xd800, 97]).into());
+        }
+        let app = app_with_connections();
+        let mut connection = app.get_connections().remove(0);
+        for path in paths {
+            let expected = path.display().to_string();
+            connection.executable = Some(path.into());
+            let record =
+                serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
+            assert_eq!(record["process"]["executable"], expected);
         }
     }
 
