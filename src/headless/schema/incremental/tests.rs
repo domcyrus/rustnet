@@ -85,13 +85,13 @@ fn reconstructs_updates_archival_late_metadata_eviction_and_tuple_reuse() {
     let mut encoder = IncrementalEncoder::default();
     let mut consumer = Consumer::default();
     assert_reconstructs(&mut encoder, &mut consumer, snapshot(&app), now);
-    let original = Arc::clone(&encoder.previous.as_ref().unwrap()[0].json);
+    let original = Arc::clone(&ConnectionSnapshot::previous(&encoder.previous).unwrap()[0].json);
     let unchanged = assert_reconstructs(&mut encoder, &mut consumer, snapshot(&app), now);
     assert_eq!(unchanged["type"], "delta");
     assert_eq!(unchanged["connections"], serde_json::json!([]));
     assert!(Arc::ptr_eq(
         &original,
-        &encoder.previous.as_ref().unwrap()[0].json
+        &ConnectionSnapshot::previous(&encoder.previous).unwrap()[0].json
     ));
 
     for iteration in 0..150 {
@@ -280,4 +280,18 @@ fn full_metadata_and_detail_mode_changes_reconstruct_exactly() {
     let expected = serde_json::to_value(&full).unwrap();
     let wire = assert_reconstructs(&mut encoder, &mut consumer, full, now);
     assert_eq!(Consumer::default().apply(&wire).unwrap(), expected);
+}
+
+#[test]
+fn changing_metadata_mode_emits_a_complete_baseline() {
+    let app = app_with_connections();
+    let mut encoder = IncrementalEncoder::default();
+    let mut consumer = Consumer::default();
+    let now = Instant::now();
+    for full in [false, true, false] {
+        let record = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, full).1;
+        let wire = assert_reconstructs(&mut encoder, &mut consumer, record, now);
+        assert_eq!(wire["type"], "snapshot");
+        assert!(wire["base_sequence"].is_null());
+    }
 }

@@ -18,27 +18,48 @@ struct IncrementalRecord<C> {
     snapshot: SnapshotEnvelope<C>,
 }
 
-// Keep the complete basic or full projection in the baseline so late detail
-// enrichment invalidates a record even when traffic counters do not change.
-#[derive(PartialEq, Serialize)]
-#[serde(untagged)]
-enum IncrementalConnection {
-    Basic(Box<ConnectionSnapshot>),
-    Full(Box<FullConnectionSnapshot>),
+// Keep homogeneous projections contiguous. Selecting a metadata mode once per
+// snapshot avoids a box and an enum dispatch for every connection.
+enum PreviousConnections {
+    Basic(Vec<CachedConnection<ConnectionSnapshot>>),
+    Full(Vec<CachedConnection<FullConnectionSnapshot>>),
 }
-impl IncrementalConnection {
-    fn id(&self) -> &str {
-        match self {
-            Self::Basic(record) => record.id(),
-            Self::Full(record) => record.id(),
+
+trait IncrementalProjection: CacheableConnection + Sized {
+    fn previous(state: &Option<PreviousConnections>) -> Option<&[CachedConnection<Self>]>;
+    fn retain(records: Vec<CachedConnection<Self>>) -> PreviousConnections;
+}
+
+impl IncrementalProjection for ConnectionSnapshot {
+    fn previous(state: &Option<PreviousConnections>) -> Option<&[CachedConnection<Self>]> {
+        match state {
+            Some(PreviousConnections::Basic(records)) => Some(records),
+            _ => None,
         }
+    }
+
+    fn retain(records: Vec<CachedConnection<Self>>) -> PreviousConnections {
+        PreviousConnections::Basic(records)
+    }
+}
+
+impl IncrementalProjection for FullConnectionSnapshot {
+    fn previous(state: &Option<PreviousConnections>) -> Option<&[CachedConnection<Self>]> {
+        match state {
+            Some(PreviousConnections::Full(records)) => Some(records),
+            _ => None,
+        }
+    }
+
+    fn retain(records: Vec<CachedConnection<Self>>) -> PreviousConnections {
+        PreviousConnections::Full(records)
     }
 }
 
 #[derive(Default)]
 pub(in crate::headless) struct IncrementalEncoder {
     // None means no complete baseline is retained. An empty baseline is valid.
-    previous: Option<Vec<CachedConnection<IncrementalConnection>>>,
+    previous: Option<PreviousConnections>,
     sequence: u64,
     last_full: Option<(u64, Instant)>,
 }
@@ -63,26 +84,39 @@ impl IncrementalEncoder {
         max_connections: usize,
         max_bytes: usize,
     ) -> anyhow::Result<Vec<u8>> {
-        let records = match std::mem::replace(
+        let records = std::mem::replace(
             &mut snapshot.connections,
             ConnectionSnapshots::Basic(Vec::new()),
-        ) {
-            ConnectionSnapshots::Basic(records) => records
-                .into_iter()
-                .map(|record| IncrementalConnection::Basic(Box::new(record)))
-                .collect::<Vec<_>>(),
-            ConnectionSnapshots::Full(records) => records
-                .into_iter()
-                .map(|record| IncrementalConnection::Full(Box::new(record)))
-                .collect::<Vec<_>>(),
-        };
-        let mut snapshot = snapshot.with_connections(records);
+        );
+        match records {
+            ConnectionSnapshots::Basic(records) => self.serialize_connections(
+                snapshot.with_connections(records),
+                now,
+                max_connections,
+                max_bytes,
+            ),
+            ConnectionSnapshots::Full(records) => self.serialize_connections(
+                snapshot.with_connections(records),
+                now,
+                max_connections,
+                max_bytes,
+            ),
+        }
+    }
+
+    fn serialize_connections<T: IncrementalProjection>(
+        &mut self,
+        mut snapshot: SnapshotEnvelope<Vec<T>>,
+        now: Instant,
+        max_connections: usize,
+        max_bytes: usize,
+    ) -> anyhow::Result<Vec<u8>> {
         let sequence = self
             .sequence
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("headless output sequence exhausted"))?;
         snapshot.schema_version = INCREMENTAL_SCHEMA_VERSION;
-        let full = self.previous.is_none()
+        let full = T::previous(&self.previous).is_none()
             || snapshot.runtime.shutdown.is_some()
             || self.last_full.is_none_or(|(last_sequence, time)| {
                 sequence - last_sequence >= FULL_SNAPSHOT_RECORDS
@@ -93,7 +127,7 @@ impl IncrementalEncoder {
             return self.full_without_baseline(snapshot, sequence, now);
         }
 
-        let mut previous = self.previous.iter().flatten().peekable();
+        let mut previous = T::previous(&self.previous).into_iter().flatten().peekable();
         let mut encoded = Vec::with_capacity(snapshot.connections.len());
         let mut updates = Vec::new();
         let mut removed = Vec::new();
@@ -146,13 +180,13 @@ impl IncrementalEncoder {
             snapshot: snapshot.with_connections(if full { &encoded } else { &updates }),
         };
         let result = serialize_record(&record)?;
-        self.previous = Some(
+        self.previous = Some(T::retain(
             projected
                 .into_iter()
                 .zip(encoded)
                 .map(|(projected, json)| CachedConnection { projected, json })
                 .collect(),
-        );
+        ));
         self.sequence = sequence;
         if full {
             self.last_full = Some((sequence, now));
@@ -160,9 +194,9 @@ impl IncrementalEncoder {
         Ok(result)
     }
 
-    fn full_without_baseline(
+    fn full_without_baseline<T: Serialize>(
         &mut self,
-        snapshot: SnapshotEnvelope<Vec<IncrementalConnection>>,
+        snapshot: SnapshotEnvelope<Vec<T>>,
         sequence: u64,
         now: Instant,
     ) -> anyhow::Result<Vec<u8>> {
