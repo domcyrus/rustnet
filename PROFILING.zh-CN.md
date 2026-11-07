@@ -106,6 +106,25 @@ Criterion 会在 `target/criterion/` 中生成 HTML 报告，并对多次运行�
 
 比较修改前后的性能时，两版应使用相同的基准测试源码、抓包文件、编译器、构建配置和机器。先完成两版构建，再交替重复测量，避免同时运行其他高负载任务。数据库识别增加了基础版本没有执行的工作，因此应将其开销与普通流量的变化分别报告。这些测量覆盖解析和连接跟踪的 CPU 耗时，不代表实时抓包丢包率或界面响应速度。
 
+## 无界面快照<a id="headless-snapshots"></a>
+
+手动运行的 release 测试测量快照构建、输出格式转换、序列化和负载大小，并比较缓存输出与完整序列化结果。矩阵改变活动/历史连接数及元数据大小；PCAP 回放按轨迹时间每 500 ms 采样、每五秒清理，不等待真实时间。
+
+```bash
+RUSTNET_PROFILE_CSV=/tmp/matrix.csv cargo test --locked --release --lib \
+  profile_headless_matrix -- --ignored --nocapture --test-threads=1
+python3 scripts/summarize-headless-profile.py /tmp/matrix.csv
+
+RUSTNET_PROFILE_PCAP=/path/to/capture.pcap RUSTNET_PROFILE_CSV=/tmp/replay.csv \
+  cargo test --locked --release --lib profile_headless_pcap \
+  -- --ignored --nocapture --test-threads=1
+python3 scripts/summarize-headless-profile.py /tmp/replay.csv
+```
+
+每次使用新的 CSV 文件名，已有文件不会被覆盖。生成 30 分钟合成轨迹可运行 `python3 scripts/generate-headless-profile.py /tmp/churn.pcap`（稳定流量添加 `--active 1000 --churn 0`）。
+
+计时不包含抓包、解析/跟踪、主机信息补充或输出 I/O。回放使用回放主机的地址且没有并发工作线程。无缓存参考先执行并预热内存，因此其比例不是无偏的加速测量。**代表性实时抓包验证仍待完成**；合成回放结果不代表生产环境 CPU 或内存测量。
+
 ## 临时基准测试<a id="ad-hoc-benchmarking"></a>
 
 要获得稳定一致的基准测试：

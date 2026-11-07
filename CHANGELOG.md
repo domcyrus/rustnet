@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stop counting one-byte TCP keepalive probes as retransmits or out-of-order segments (#713)
 
 ### Documentation
+- Add release-mode headless snapshot profiling with PCAP replay and controlled history/payload workloads (#720)
 - Consolidate terminal guidance into concise usage documentation in English, Chinese, and Japanese (#683)
 - Add Repology packaging badges, Alpine edge installation instructions, and credit the Alpine maintainer (#671)
 - Refresh the demo GIF and screenshots for v1.7.0, including Host sockets and DNS analytics

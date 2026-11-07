@@ -13,6 +13,9 @@ use crate::network::types::{AttributionSource, Connection, ConnectionKey};
 
 use super::{SCHEMA_VERSION, TerminationReason};
 
+#[cfg(test)]
+mod profiling;
+
 #[derive(Serialize)]
 pub(super) struct SnapshotEnvelope<C = Vec<ConnectionSnapshot>> {
     schema_version: u8,
