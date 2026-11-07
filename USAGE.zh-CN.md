@@ -155,6 +155,9 @@ rustnet --headless --filter 'process:curl app:https'
 `--headless`。统计每个处理批次发布一次，重置 UI 计数不会清除累计值。归属以数据包
 处理时的信息为准，不会追溯修改。完整详情遵循现有 DNS/DPI 设置，可能增加 CPU
 使用率和输出大小。
+在 Unix 上，账户名称在后台解析。查询尚未完成、不可用或达到容量限制时，使用数字 ID，
+终态记录也不例外，因此目录服务不会延迟关闭。后续快照可用解析出的名称替换这些 ID。
+查询队列和账户缓存均有容量上限。
 
 - **`--headless`**：不设置终端，并确保 stdout 仅包含机器可读记录。诊断信息会写入 stderr 或已配置的日志文件。
 - **`--duration <SECONDS>`**：在指定的正整数秒数后停止。如果省略，监控会持续到收到支持的关闭信号。JSONL 在发现输出管道已关闭时也会停止。无界面模式在 Unix 上支持 SIGINT、SIGTERM 和 SIGHUP，在 Windows 上支持 Ctrl+C 和 Ctrl+Break。

@@ -478,9 +478,9 @@ impl FullConnectionSnapshot {
         Self {
             connection: ConnectionSnapshot::from_connection_with_process(connection, |process| {
                 FullProcessSnapshot {
-                    user_group: process
-                        .uid
-                        .map(|uid| crate::accounts::format_user_group(uid, process.gid)),
+                    user_group: process.uid.map(|uid| {
+                        crate::accounts::format_user_group_nonblocking(uid, process.gid)
+                    }),
                     process,
                 }
             }),

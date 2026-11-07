@@ -156,6 +156,10 @@ that field is absent. These options require `--headless`. Accounting publishes
 once per processor batch and survives UI counter resets. Ownership is recorded
 when each packet is processed, without retroactive attribution. Full details
 respect the existing DNS/DPI settings and can increase CPU use and output size.
+Account names resolve in the background on Unix. Pending, unavailable, or
+capacity-limited lookups use numeric IDs, including in terminal records, so
+directory services cannot delay shutdown. Later snapshots can replace those IDs
+with resolved names. The lookup queue and account cache are bounded.
 
 The headless controls are:
 
