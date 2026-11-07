@@ -62,6 +62,8 @@ pub fn parse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::dns_analytics::DnsHealth;
+    use crate::network::time_window::TimeWindow;
     use crate::network::tracker::ConnectionTracker;
     use std::{
         collections::HashSet,
@@ -157,5 +159,67 @@ mod tests {
                 .lookups,
             0
         );
+    }
+
+    #[test]
+    fn non_dns_port53_packets_do_not_pollute_resolver_evidence() {
+        let mut stun = [0; 20];
+        stun[1] = 1;
+        stun[4..8].copy_from_slice(&0x2112_A442u32.to_be_bytes());
+        // A question for "a" with the final QCLASS byte missing.
+        let truncated_question = [0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, b'a', 0, 0, 1, 0];
+        for (client, resolver, probe_target) in [
+            ("192.0.2.10", "192.0.2.53", "192.0.2.20"),
+            ("2001:db8::10", "2001:db8::53", "2001:db8::20"),
+        ] {
+            let client: IpAddr = client.parse().unwrap();
+            let resolver: IpAddr = resolver.parse().unwrap();
+            let probe_target: IpAddr = probe_target.parse().unwrap();
+            let local_ips = HashSet::from([client]);
+            let at = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+            for payload in [&stun[..], &[0; 12], &truncated_question] {
+                let tracker = ConnectionTracker::new();
+                for source_port in 40000u16..40003 {
+                    let mut udp = Vec::from(source_port.to_be_bytes());
+                    udp.extend(53u16.to_be_bytes());
+                    udp.extend(((payload.len() + 8) as u16).to_be_bytes());
+                    udp.extend([0, 0]);
+                    udp.extend(payload);
+                    let packet = parse(
+                        &udp,
+                        TransportParams::new(client, probe_target, udp.len(), None, None),
+                        &ParserConfig::default(),
+                        &local_ips,
+                    )
+                    .unwrap();
+                    tracker.ingest_at(&packet, at);
+                }
+                let now = at + Duration::from_secs(11);
+                let snapshot = tracker.dns_analytics_snapshot_at(now);
+                assert_eq!(snapshot.lookups, 0);
+                assert_eq!(snapshot.health, DnsHealth::NotObserved);
+                assert!(snapshot.resolvers.is_empty());
+                assert!(snapshot.recent_issues.is_empty());
+
+                tracker.ingest_at(&dns_packet(client, resolver, false, &local_ips), now);
+                tracker.ingest_at(
+                    &dns_packet(resolver, client, true, &local_ips),
+                    now + Duration::from_millis(20),
+                );
+                for window in [TimeWindow::OneMinute, TimeWindow::SinceStartup] {
+                    let snapshot = tracker.dns_analytics_snapshot_for_window_at(
+                        now + Duration::from_millis(21),
+                        window,
+                    );
+                    assert_eq!(snapshot.health, DnsHealth::Responsive);
+                    assert_eq!(snapshot.lookups, 1);
+                    assert_eq!(snapshot.answered, 1);
+                    assert_eq!(snapshot.timeouts, 0);
+                    assert_eq!(snapshot.resolvers.len(), 1);
+                    assert_eq!(snapshot.resolvers[0].address.ip(), resolver);
+                    assert!(snapshot.recent_issues.is_empty());
+                }
+            }
+        }
     }
 }
