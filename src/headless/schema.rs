@@ -13,6 +13,7 @@ use crate::network::types::{AttributionSource, Connection, ConnectionKey};
 
 use super::{SCHEMA_VERSION, TerminationReason};
 
+pub(super) mod incremental;
 #[cfg(test)]
 mod profiling;
 

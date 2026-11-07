@@ -13,13 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Avoid allocating idle rate strings in the UI while preserving rate labels and placeholders (#429)
-- Reuse unchanged historic headless connection JSON with a bounded cache while preserving full snapshots and late metadata updates (#707)
+- Reuse unchanged historic headless connection JSON with a bounded cache while preserving full snapshots and late metadata updates (#709)
 - Share DNS/RTT pending-request bookkeeping, procfs socket parsing, and JSON log construction while preserving protocol and output behavior (#699)
 - Remove redundant `IngestOutcome` timing fields and the `network::platform` shim; library callers read retained timings from `Connection` and import host lookup from `rustnet_host` (#699)
 - Run Windows CI tests independently and start DEB installation checks after GNU/Linux builds, preserving all existing checks (#686)
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
+- Add opt-in incremental headless JSONL with sequence checks, bounded baselines, and periodic full snapshots for resynchronization (#719)
 - Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible
 - Show per-resolver DNS health, retries, pending age, selectable 60s/5m/1h/since-startup windows, and 15-minute recent issue evidence in Host
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)

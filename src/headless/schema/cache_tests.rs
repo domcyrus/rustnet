@@ -157,11 +157,12 @@ fn signed_zero_changes_preserve_the_original_encoding() {
     }
 }
 
-// Run explicitly in release mode. Measures projection plus encoding, not capture
-// or whole-process CPU. Both paths use the same synthetic connection snapshots.
+// Run explicitly in release mode. Includes periodic full resynchronization.
+// Measures projection and encoding, not capture or whole-process CPU.
 #[test]
 #[ignore = "manual release-mode performance measurement"]
 fn benchmark_history_encoding() {
+    use super::incremental::IncrementalEncoder;
     use std::hint::black_box;
     use std::time::Instant;
 
@@ -172,8 +173,15 @@ fn benchmark_history_encoding() {
         .into_iter()
         .find(|c| c.pid.is_some())
         .unwrap();
-    const ITERATIONS: usize = 100;
-    for (active, historic) in [(100, 0), (100, 1_000), (100, 5_000), (5_000, 0)] {
+    const ITERATIONS: usize = 120;
+    for (active, historic, metadata_bytes) in [
+        (100, 0, 0),
+        (100, 1_000, 0),
+        (100, 5_000, 0),
+        (5_000, 0, 0),
+        (100, 5_000, 1_024),
+        (100, 10_000, 0),
+    ] {
         let connections: Vec<_> = (0..active + historic)
             .map(|index| {
                 let mut connection = template.clone();
@@ -182,27 +190,28 @@ fn benchmark_history_encoding() {
                 connection.closed_at = connection.is_historic.then_some(connection.last_activity);
                 connection.current_incoming_rate_bps = 0.0;
                 connection.current_outgoing_rate_bps = 0.0;
+                if metadata_bytes > 0 {
+                    connection.executable =
+                        Some(std::path::PathBuf::from("x".repeat(metadata_bytes)).into());
+                }
                 connection
             })
             .collect();
         app.set_connections_snapshot_for_test(connections);
         let mut cache = ConnectionCache::default();
-        cache
-            .serialize(SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None).1)
-            .unwrap();
-        let mut uncached_time = Duration::ZERO;
-        let mut cached_time = Duration::ZERO;
-        let mut payload = 0;
+        let mut incremental = IncrementalEncoder::default();
+        let snapshot = || SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None).1;
+        cache.serialize(snapshot()).unwrap();
+        incremental.serialize(snapshot()).unwrap();
+        let mut projection_time = [Duration::ZERO; 3];
+        let mut encoding_time = [Duration::ZERO; 3];
+        let mut payload = [0; 3];
         for iteration in 0..ITERATIONS {
-            // Alternate execution order to reduce systematic warm-up bias.
-            for cached in if iteration % 2 == 0 {
-                [false, true]
-            } else {
-                [true, false]
-            } {
+            // Rotate execution order to reduce systematic warm-up bias.
+            for offset in 0..3 {
+                let mode = (iteration + offset) % 3;
                 let started = Instant::now();
-                let mut record =
-                    SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None).1;
+                let mut record = snapshot();
                 for connection in &mut record.connections {
                     if !connection.historic {
                         connection.traffic.bytes_sent += iteration as u64 + 1;
@@ -210,24 +219,29 @@ fn benchmark_history_encoding() {
                             finite(iteration as f64 + 1.0);
                     }
                 }
-                let bytes = if cached {
-                    cache.serialize(record).unwrap()
-                } else {
-                    serialize_record(&record).unwrap()
+                projection_time[mode] += started.elapsed();
+                let started = Instant::now();
+                let bytes = match mode {
+                    0 => serialize_record(&record).unwrap(),
+                    1 => cache.serialize(record).unwrap(),
+                    _ => incremental.serialize(record).unwrap(),
                 };
-                payload = black_box(bytes).len();
-                if cached {
-                    cached_time += started.elapsed();
-                } else {
-                    uncached_time += started.elapsed();
-                }
+                payload[mode] += black_box(bytes).len();
+                encoding_time[mode] += started.elapsed();
             }
         }
-        eprintln!(
-            "active={active} historic={historic} bytes={payload} projection+encoding uncached={:.3}ms cached={:.3}ms ratio={:.2}x",
-            uncached_time.as_secs_f64() * 1_000.0 / ITERATIONS as f64,
-            cached_time.as_secs_f64() * 1_000.0 / ITERATIONS as f64,
-            uncached_time.as_secs_f64() / cached_time.as_secs_f64()
-        );
+        for (mode, name) in ["uncached", "cached", "incremental"]
+            .into_iter()
+            .enumerate()
+        {
+            eprintln!(
+                "active={active} historic={historic} metadata_bytes={metadata_bytes} mode={name} avg_bytes={} projection={:.3}ms encoding={:.3}ms total={:.3}ms",
+                payload[mode] / ITERATIONS,
+                projection_time[mode].as_secs_f64() * 1_000.0 / ITERATIONS as f64,
+                encoding_time[mode].as_secs_f64() * 1_000.0 / ITERATIONS as f64,
+                (projection_time[mode] + encoding_time[mode]).as_secs_f64() * 1_000.0
+                    / ITERATIONS as f64,
+            );
+        }
     }
 }

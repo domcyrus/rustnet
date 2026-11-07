@@ -156,15 +156,32 @@ The headless controls are:
 
 #### Schema contract
 
-The current wire schema is `schema_version = 1`. Every record is a snapshot object with these top-level fields: `schema_version`, `type`, `timestamp`, `runtime`, `sandbox`, `stats`, `filter`, `connection_count`, and `connections`. A terminal record sets `runtime.status` to `stopping`, `stopped`, or `stopped_with_errors`, and includes `runtime.termination_reason` and `runtime.shutdown`. Connection records cover endpoints, process attribution, traffic, protocol timing, GeoIP, and optional Kubernetes metadata. The `rtt` object includes current, initial, smoothed TCP, DNS, LLMNR, NetBIOS, ICMP echo, STUN, and NTP timings in milliseconds. Optional enrichment and timing fields remain null until discovered; connections drained during shutdown can appear before process, GeoIP, or Kubernetes enrichment completes. Consumers must branch on `schema_version` and tolerate unknown additive fields.
+The default `jsonl` and `json` wire schema is `schema_version = 1`. Every record is a snapshot object with these top-level fields: `schema_version`, `type`, `timestamp`, `runtime`, `sandbox`, `stats`, `filter`, `connection_count`, and `connections`. A terminal record sets `runtime.status` to `stopping`, `stopped`, or `stopped_with_errors`, and includes `runtime.termination_reason` and `runtime.shutdown`. Connection records cover endpoints, process attribution, traffic, protocol timing, GeoIP, and optional Kubernetes metadata. The `rtt` object includes current, initial, smoothed TCP, DNS, LLMNR, NetBIOS, ICMP echo, STUN, and NTP timings in milliseconds. Optional enrichment and timing fields remain null until discovered; connections drained during shutdown can appear before process, GeoIP, or Kubernetes enrichment completes. Consumers must branch on `schema_version` and tolerate unknown additive fields.
 
-Development builds reuse encoded JSON for unchanged historic headless connections. The cache retains at most 10,000 records and 16 MiB of encoded connection JSON, plus their projected fields and bookkeeping. It compares all exported connection fields, so late metadata and final counters still update. Every output record remains a full snapshot with schema version 1; snapshot construction and output size still grow with the number of visible connections.
+Development builds reuse encoded JSON for unchanged historic headless connections. The cache retains at most 10,000 records and 16 MiB of encoded connection JSON, plus their projected fields and bookkeeping. It compares all exported connection fields, so late metadata and final counters still update. In `jsonl` and `json` mode, every output record remains a full snapshot with schema version 1; snapshot construction and output size still grow with the number of visible connections.
 
 Connection `id` values are opaque identifiers that remain stable when a connection becomes historic and distinguish later connections reusing the same endpoints. Traffic rates use `traffic.outgoing_bytes_per_second` and `traffic.incoming_bytes_per_second`, both in bytes per second. If workers exceed the shutdown deadline, the terminal status remains `stopping` and `runtime.shutdown.timed_out_workers` reports their count. That record can contain the last published snapshot rather than fully drained state; the process exits unsuccessfully.
 
 Closing a JSONL pipeline early, for example with `head`, produces a broken pipe. RustNet treats that as a successful request to stop, shuts down its workers, and does not attempt a terminal record on the closed pipe. A packet-capture initialization failure or a later capture failure exits with a nonzero status. `--duration`, `--output`, and `--filter` require `--headless`.
 
 `stats.packets_captured` and `stats.bytes_captured` are cumulative totals since startup, independent of connection retention, `--filter`, and TUI clears. Every packet delivered by libpcap is counted before attribution gating, processing queue drops, parsing, or tracking limits. Bytes use libpcap's original packet length before snaplen truncation, including the capture link type's headers; they are neither application payload bytes nor exact physical wire usage. Capture interface selection and `--bpf-filter` determine coverage. Packets lost before delivery or bypassing capture are excluded, and duplicate observations on multiple interfaces are counted separately. These totals have no ingress/egress or client attribution. The fields extend schema version 1 additively; older producers may omit them. External exporters can expose them as Prometheus counters, treating restart as a reset and checking snapshot freshness and capture drops. Values are sampled independently while capture is running.
+
+#### Incremental JSONL (unreleased)
+
+`--headless --output jsonl-delta` opts into **schema version 2**. Default `jsonl` and `json` output stays at version 1. Consumers must support these rules before switching:
+
+- **Snapshots:** `type: "snapshot"` replaces all state. `connections` contains all selected connections, `base_sequence` is null, and `removed_connection_ids` is empty. Full snapshots are sent initially, at shutdown, and after 60 records or on the next emission after 30 seconds, whichever comes first.
+- **Deltas:** apply `type: "delta"` atomically: delete `removed_connection_ids`, then insert or replace the complete `connections` objects by `id`. Replace `timestamp`, `runtime`, `sandbox`, `stats`, and `filter` on every record. Verify the resulting total equals `connection_count`; sort by `id` to match full-snapshot ordering.
+- **Recovery:** each new stream starts at `sequence: 1`. A delta's `base_sequence` must equal the last applied sequence, and `sequence` must be its successor. On gaps, duplicates, invalid records, or count mismatches, mark state stale and ignore deltas until a valid full snapshot arrives. Do not combine streams. Recovery uses periodic snapshots, with no stdin resync request.
+- **Limits:** the baseline holds up to 10,000 active/historic connections and 16 MiB of encoded JSON, plus projected fields and bookkeeping. Larger states use full snapshots until a complete baseline fits again. All exported fields participate in change detection, including late metadata and final counters.
+
+Deltas compare against the preceding emitted state, so skipped `runtime.snapshot_generation` values under backpressure are safe. Buffering, shutdown deadlines, and error handling match `jsonl`; terminal delivery is not guaranteed if writing fails or blocks.
+
+This reduces unchanged output, but still constructs full snapshots and can cost more when most connections change. It does not add event history. See [PROFILING.md](PROFILING.md) for workload measurements. The synthetic benchmark is:
+
+```bash
+cargo test --release --locked --lib --all-features benchmark_history_encoding -- --ignored --nocapture
+```
 
 #### Traffic history and capture files
 
@@ -182,7 +199,7 @@ When export succeeds, PCAP preserves the packets received by the capture backend
 
 Stdout, JSON logs, PCAP, its generated `.connections.jsonl` sidecar, and PCAPNG must use distinct files. RustNet rejects regular-file stdout aliases before it truncates or writes configured outputs. However, shell redirection with `>` can truncate a file before RustNet starts, so always choose a separate snapshot path.
 
-Every emitted record contains a full selected snapshot. More connections, richer metadata, and shorter refresh intervals increase CPU, memory, and disk usage. A five-second interval reduces output frequency but does not preserve connections missed between snapshots or remove background collection costs. Measure your own traffic and storage budget before unattended use.
+With `jsonl` or `json`, every emitted record contains a full selected snapshot. More connections, richer metadata, and shorter refresh intervals increase CPU, memory, and disk usage. A five-second interval reduces output frequency but does not preserve connections missed between snapshots or remove background collection costs. Measure your own traffic and storage budget before unattended use.
 
 ### Option Details
 
