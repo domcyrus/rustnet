@@ -121,6 +121,10 @@ Derivatives register PPAs under their Ubuntu base series, so the same commands w
 - Linux Mint 21.x (Jammy base) and 22.x (Noble base)
 - Pop!_OS 22.04 (Jammy base) and 24.04 (Noble base). Pop!_OS ships `apt-manage` instead of `add-apt-repository`: use `sudo apt-manage add ppa:domcyrus/rustnet`.
 
+**Ubuntu 26.04 with `amd64v3` enabled (including cloud images):** After adding
+the PPA, apply the [per-repository architecture workaround](#ubuntu-ppa-package-not-found-with-amd64v3)
+before installing. Otherwise APT can report `Unable to locate package rustnet`.
+
 ```bash
 # Add the RustNet PPA
 sudo add-apt-repository ppa:domcyrus/rustnet
@@ -982,6 +986,47 @@ RustNet auto-discovers databases from standard locations. Run `rustnet --help` t
 ## Troubleshooting
 
 ### Common Installation Issues
+
+#### Ubuntu PPA: package not found with amd64v3
+
+On Ubuntu 26.04 (`resolute`), `APT::Architecture-Variants "amd64v3";` can make
+`apt install rustnet` fail with `Unable to locate package rustnet`, while
+`apt-cache policy rustnet` shows no candidate. The PPA advertises an `amd64v3`
+package index, but it is empty until variant builds are published. APT selects
+that index instead of the populated `amd64` index.
+
+On an **amd64/x86-64 host**, select the baseline architecture for the RustNet
+PPA only. After `add-apt-repository`, open its existing source file:
+
+```bash
+sudoedit /etc/apt/sources.list.d/domcyrus-ubuntu-rustnet-resolute.sources
+```
+
+In the stanza whose `URIs:` points to
+`https://ppa.launchpadcontent.net/domcyrus/rustnet/ubuntu/`, add the following
+field, or replace the existing `Architectures:` field with it:
+
+```deb822
+Architectures: amd64
+```
+
+Keep the other fields, especially `Signed-By:`, unchanged. If your source file
+has a different name, edit the existing RustNet PPA entry rather than adding a
+second one. For a legacy `.list` entry, set `arch=amd64` inside its `deb [...]`
+options, preserving any existing options such as `signed-by`.
+
+Refresh the package lists and install:
+
+```bash
+sudo apt update
+apt-cache policy rustnet
+sudo apt install rustnet
+```
+
+The policy output should now show a candidate from the RustNet PPA. This keeps
+`amd64v3` enabled for Ubuntu's own repositories and preserves signature
+verification. Do not apply the `amd64` setting to ARM hosts. Alternatively, use
+the [release DEB package](#debianubuntu-deb-packages).
 
 #### Permission Denied Errors
 

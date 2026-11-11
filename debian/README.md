@@ -40,6 +40,10 @@ gpg --list-keys cadetg@gmail.com
 
 ## Installation (for users)
 
+On Ubuntu 26.04 hosts with `amd64v3` enabled, follow the
+[per-repository architecture workaround in INSTALL.md](../INSTALL.md#ubuntu-ppa-package-not-found-with-amd64v3)
+after adding the PPA and before installing.
+
 ```bash
 sudo add-apt-repository ppa:domcyrus/rustnet
 sudo apt update
@@ -54,6 +58,29 @@ sudo apt install rustnet
 - **PPA**: https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet
 - **Supported**: Ubuntu 22.04 LTS (Jammy), 24.04 LTS (Noble) and 26.04 LTS (Resolute)
 - **Architectures**: amd64, arm64, armhf
+
+## Publishing the amd64v3 variant
+
+Launchpad controls the PPA's enabled build processors separately from this
+repository. Its [PPA documentation](https://ubuntu.com/docs/launchpad/user/reference/packaging/ppas/ppa/)
+lists `amd64v3` as supported but not built by default. The RustNet PPA currently
+enables `amd64`, `arm64`, and `armhf` only.
+
+For Resolute, Launchpad nevertheless advertises an `amd64v3` index in
+`InRelease`. While that index is empty, APT with architecture variants enabled
+can hide the baseline `amd64` package. A successful source upload or baseline
+build alone does not establish that installation works on these hosts.
+
+To remove the need for the client workaround, a PPA owner must enable the
+`amd64v3` processor in Launchpad's PPA settings and arrange a Resolute build
+for that variant. Verify that the build succeeds and that the published
+`dists/resolute/main/binary-amd64v3/Packages` index contains `Package: rustnet`.
+Then test `apt update` and `apt-cache policy rustnet` on a variant-enabled
+Ubuntu 26.04 host without an explicit `Architectures: amd64` override.
+Do not remove the workaround merely because the processor has been enabled.
+
+The GitHub workflow uploads source packages; it does not configure Launchpad's
+processors. Changes to these docs do not enable or publish variant builds.
 
 ## Workflow
 

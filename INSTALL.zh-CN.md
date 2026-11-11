@@ -121,6 +121,10 @@ scoop install rustnet
 - Linux Mint 21.x（基于 Jammy）和 22.x（基于 Noble）
 - Pop!_OS 22.04（基于 Jammy）和 24.04（基于 Noble）。Pop!_OS 使用 `apt-manage` 而非 `add-apt-repository`：请运行 `sudo apt-manage add ppa:domcyrus/rustnet`。
 
+**启用了 `amd64v3` 的 Ubuntu 26.04（包括云镜像）：** 添加 PPA 后，请先应用
+[仅针对该仓库的架构设置](#ubuntu-ppa-package-not-found-with-amd64v3)，再安装软件包。
+否则 APT 可能报告 `Unable to locate package rustnet`。
+
 ```bash
 # 添加 RustNet PPA
 sudo add-apt-repository ppa:domcyrus/rustnet
@@ -949,6 +953,43 @@ RustNet 从标准位置自动发现数据库。运行 `rustnet --help` 查看完
 ## 故障排查<a id="troubleshooting"></a>
 
 ### 常见安装问题<a id="common-installation-issues"></a>
+
+#### Ubuntu PPA：启用 amd64v3 后找不到软件包<a id="ubuntu-ppa-package-not-found-with-amd64v3"></a>
+
+在 Ubuntu 26.04（`resolute`）上，`APT::Architecture-Variants "amd64v3";` 可能导致
+`apt install rustnet` 报告 `Unable to locate package rustnet`，而
+`apt-cache policy rustnet` 不显示候选版本。PPA 声明提供 `amd64v3` 软件包索引，
+但在发布该变体的构建之前，索引为空。APT 会选择此索引，而不是包含软件包的 `amd64` 索引。
+
+在 **amd64/x86-64 主机**上，仅为 RustNet PPA 选择基础架构。
+运行 `add-apt-repository` 后，打开已有的源配置文件：
+
+```bash
+sudoedit /etc/apt/sources.list.d/domcyrus-ubuntu-rustnet-resolute.sources
+```
+
+在 `URIs:` 指向 `https://ppa.launchpadcontent.net/domcyrus/rustnet/ubuntu/` 的配置段中，
+添加以下字段；如果已有 `Architectures:` 字段，则将其替换为：
+
+```deb822
+Architectures: amd64
+```
+
+保留其他字段，尤其是 `Signed-By:`。如果源文件名称不同，请修改已有的 RustNet PPA
+条目，不要添加重复条目。对于旧式 `.list` 条目，在 `deb [...]` 的选项中设置
+`arch=amd64`，并保留已有的 `signed-by` 等选项。
+
+刷新软件包列表并安装：
+
+```bash
+sudo apt update
+apt-cache policy rustnet
+sudo apt install rustnet
+```
+
+此时 policy 输出应显示来自 RustNet PPA 的候选版本。此设置保留 Ubuntu 官方仓库的
+`amd64v3` 支持，也保留签名验证。不要在 ARM 主机上应用 `amd64` 设置。
+也可以改用[发布的 DEB 软件包](#debianubuntu-deb-packages)。
 
 #### 权限被拒绝错误<a id="permission-denied-errors"></a>
 
