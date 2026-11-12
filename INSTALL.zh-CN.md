@@ -121,9 +121,6 @@ scoop install rustnet
 - Linux Mint 21.x（基于 Jammy）和 22.x（基于 Noble）
 - Pop!_OS 22.04（基于 Jammy）和 24.04（基于 Noble）。Pop!_OS 使用 `apt-manage` 而非 `add-apt-repository`：请运行 `sudo apt-manage add ppa:domcyrus/rustnet`。
 
-在启用了 `amd64v3` 的 Ubuntu 26.04 主机上，APT 会通过下面相同的命令选择已发布的变体。
-如果 APT 找不到 RustNet，请参阅 [amd64v3 故障排查](#ubuntu-ppa-package-not-found-with-amd64v3)。
-
 ```bash
 # 添加 RustNet PPA
 sudo add-apt-repository ppa:domcyrus/rustnet
@@ -952,25 +949,6 @@ RustNet 从标准位置自动发现数据库。运行 `rustnet --help` 查看完
 ## 故障排查<a id="troubleshooting"></a>
 
 ### 常见安装问题<a id="common-installation-issues"></a>
-
-#### Ubuntu PPA：启用 amd64v3 后找不到软件包<a id="ubuntu-ppa-package-not-found-with-amd64v3"></a>
-
-在 Ubuntu 26.04（`resolute`）上，启用 `amd64v3` 后，APT 会选择 PPA 的变体索引，
-而不是基础 `amd64` 索引。变体构建必须完成并发布后，APT 才能找到软件包。
-请检查 [PPA 构建状态](https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet/+builds)，
-然后刷新软件包列表：
-
-```bash
-sudo apt update
-apt-cache policy rustnet
-sudo apt install rustnet
-```
-
-变体发布后，正常安装不需要覆盖 `Architectures:` 设置。如果你之前仅为解决
-[#727](https://github.com/domcyrus/rustnet/issues/727) 而添加了 `Architectures: amd64`
-（或旧式 `arch=amd64`），请从 RustNet PPA 条目中移除该覆盖设置，让 APT 自动选择变体。
-保留其他源设置，尤其是 `Signed-By:`，然后再次运行 `sudo apt update`。
-如果仍在等待发布而你需要立即使用 RustNet，可以安装[发布的 DEB 软件包](#debianubuntu-deb-packages)。
 
 #### 权限被拒绝错误<a id="permission-denied-errors"></a>
 

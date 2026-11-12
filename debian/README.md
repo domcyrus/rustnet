@@ -57,42 +57,20 @@ sudo apt install rustnet
 
 ## Publishing the amd64v3 variant
 
-The PPA has the `amd64v3` build processor enabled for Resolute. This is a
-Launchpad setting, separate from the source-upload workflow in this repository.
-Keep it enabled alongside `amd64`, `arm64`, and `armhf` so new uploads can
-produce variant builds. APT on variant-enabled hosts selects the `amd64v3`
-index, so a successful baseline build alone is insufficient.
+Keep the PPA's `amd64v3` build processor enabled for Resolute alongside
+`amd64`, `arm64`, and `armhf`. This Launchpad setting lets variant-enabled
+APT clients use the normal PPA installation commands without an architecture
+override.
 
-Enabling a processor does not automatically build already-published sources.
-To request a missing build for an existing release without a new upload:
+For an existing source missing a variant build, use
+[Copy packages](https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet/+copy-packages)
+with **This PPA**, **The same series**, and **Copy existing binaries**.
+A source-only rebuild copy is rejected when that version already has binaries.
 
-1. Open [Copy packages](https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet/+copy-packages)
-   while signed in as the PPA owner.
-2. Select the published `rustnet-monitor` source for **Resolute**.
-3. Choose **This PPA**, **The same series**, and **Copy existing binaries**.
-4. Submit **Copy Packages** and check the new `amd64v3` build.
-
-**Copy existing binaries** preserves completed builds while allowing builds
-for newly enabled processors. Do not select **Rebuild the copied sources**:
-Launchpad rejects a source-only copy when the same version already has
-published binaries in the destination archive. See the
-[Launchpad PPA guide](https://launchpad-help.readthedocs.io/en/latest/how-to/distribute-ubuntu-software.html).
-
-Before considering the installation issue resolved:
-
-- Confirm the variant build succeeds and completes publication. A queued,
-  building, or uploading status is not enough.
-- Check that the published
-  [variant index](https://ppa.launchpadcontent.net/domcyrus/rustnet/ubuntu/dists/resolute/main/binary-amd64v3/Packages.gz)
-  contains `Package: rustnet` for the expected version.
-- On an Ubuntu 26.04 host with `APT::Architecture-Variants "amd64v3";` enabled
-  and no per-PPA architecture override, run `sudo apt update` and
-  `apt-cache policy rustnet`. Verify that the candidate comes from the variant
-  index, then test installation with `sudo apt install rustnet`.
-
-The [installation guide](../INSTALL.md#ubuntu-ppa-package-not-found-with-amd64v3)
-explains refreshing package lists and removing an earlier baseline override
-once the variant is published.
+A successful build must also finish publication. Check the
+[variant index](https://ppa.launchpadcontent.net/domcyrus/rustnet/ubuntu/dists/resolute/main/binary-amd64v3/Packages.gz),
+then verify `apt-cache policy rustnet` selects it after `sudo apt update` on
+Ubuntu 26.04 with `APT::Architecture-Variants "amd64v3";` enabled.
 
 ## Workflow
 
