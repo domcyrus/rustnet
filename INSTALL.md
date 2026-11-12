@@ -121,9 +121,9 @@ Derivatives register PPAs under their Ubuntu base series, so the same commands w
 - Linux Mint 21.x (Jammy base) and 22.x (Noble base)
 - Pop!_OS 22.04 (Jammy base) and 24.04 (Noble base). Pop!_OS ships `apt-manage` instead of `add-apt-repository`: use `sudo apt-manage add ppa:domcyrus/rustnet`.
 
-**Ubuntu 26.04 with `amd64v3` enabled (including cloud images):** After adding
-the PPA, apply the [per-repository architecture workaround](#ubuntu-ppa-package-not-found-with-amd64v3)
-before installing. Otherwise APT can report `Unable to locate package rustnet`.
+On Ubuntu 26.04 hosts with `amd64v3` enabled, APT selects the published variant
+using the same commands below. If APT cannot find RustNet, see
+[amd64v3 troubleshooting](#ubuntu-ppa-package-not-found-with-amd64v3).
 
 ```bash
 # Add the RustNet PPA
@@ -989,33 +989,11 @@ RustNet auto-discovers databases from standard locations. Run `rustnet --help` t
 
 #### Ubuntu PPA: package not found with amd64v3
 
-On Ubuntu 26.04 (`resolute`), `APT::Architecture-Variants "amd64v3";` can make
-`apt install rustnet` fail with `Unable to locate package rustnet`, while
-`apt-cache policy rustnet` shows no candidate. The PPA advertises an `amd64v3`
-package index, but it is empty until variant builds are published. APT selects
-that index instead of the populated `amd64` index.
-
-On an **amd64/x86-64 host**, select the baseline architecture for the RustNet
-PPA only. After `add-apt-repository`, open its existing source file:
-
-```bash
-sudoedit /etc/apt/sources.list.d/domcyrus-ubuntu-rustnet-resolute.sources
-```
-
-In the stanza whose `URIs:` points to
-`https://ppa.launchpadcontent.net/domcyrus/rustnet/ubuntu/`, add the following
-field, or replace the existing `Architectures:` field with it:
-
-```deb822
-Architectures: amd64
-```
-
-Keep the other fields, especially `Signed-By:`, unchanged. If your source file
-has a different name, edit the existing RustNet PPA entry rather than adding a
-second one. For a legacy `.list` entry, set `arch=amd64` inside its `deb [...]`
-options, preserving any existing options such as `signed-by`.
-
-Refresh the package lists and install:
+On Ubuntu 26.04 (`resolute`), APT with `amd64v3` enabled selects the PPA's
+variant index instead of its baseline `amd64` index. The variant build must
+finish and be published before APT can find the package. Check the
+[PPA build status](https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet/+builds),
+then refresh the package lists:
 
 ```bash
 sudo apt update
@@ -1023,10 +1001,13 @@ apt-cache policy rustnet
 sudo apt install rustnet
 ```
 
-The policy output should now show a candidate from the RustNet PPA. This keeps
-`amd64v3` enabled for Ubuntu's own repositories and preserves signature
-verification. Do not apply the `amd64` setting to ARM hosts. Alternatively, use
-the [release DEB package](#debianubuntu-deb-packages).
+Once the variant is published, normal installation needs no `Architectures:`
+override. If you previously added `Architectures: amd64` (or legacy
+`arch=amd64`) solely as the workaround for [#727](https://github.com/domcyrus/rustnet/issues/727),
+remove that override from the RustNet PPA entry to let APT select the variant.
+Keep the other source settings, especially `Signed-By:`, unchanged and run
+`sudo apt update` again. If publication is still pending and you need RustNet
+immediately, use the [release DEB package](#debianubuntu-deb-packages).
 
 #### Permission Denied Errors
 

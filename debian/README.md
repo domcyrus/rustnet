@@ -40,10 +40,6 @@ gpg --list-keys cadetg@gmail.com
 
 ## Installation (for users)
 
-On Ubuntu 26.04 hosts with `amd64v3` enabled, follow the
-[per-repository architecture workaround in INSTALL.md](../INSTALL.md#ubuntu-ppa-package-not-found-with-amd64v3)
-after adding the PPA and before installing.
-
 ```bash
 sudo add-apt-repository ppa:domcyrus/rustnet
 sudo apt update
@@ -57,30 +53,46 @@ sudo apt install rustnet
 - **Maintainer**: Marco Cadetg <cadetg@gmail.com>
 - **PPA**: https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet
 - **Supported**: Ubuntu 22.04 LTS (Jammy), 24.04 LTS (Noble) and 26.04 LTS (Resolute)
-- **Architectures**: amd64, arm64, armhf
+- **Build processors enabled**: amd64, arm64, armhf, and amd64v3 (for Resolute); package availability depends on successful build and publication
 
 ## Publishing the amd64v3 variant
 
-Launchpad controls the PPA's enabled build processors separately from this
-repository. Its [PPA documentation](https://ubuntu.com/docs/launchpad/user/reference/packaging/ppas/ppa/)
-lists `amd64v3` as supported but not built by default. The RustNet PPA currently
-enables `amd64`, `arm64`, and `armhf` only.
+The PPA has the `amd64v3` build processor enabled for Resolute. This is a
+Launchpad setting, separate from the source-upload workflow in this repository.
+Keep it enabled alongside `amd64`, `arm64`, and `armhf` so new uploads can
+produce variant builds. APT on variant-enabled hosts selects the `amd64v3`
+index, so a successful baseline build alone is insufficient.
 
-For Resolute, Launchpad nevertheless advertises an `amd64v3` index in
-`InRelease`. While that index is empty, APT with architecture variants enabled
-can hide the baseline `amd64` package. A successful source upload or baseline
-build alone does not establish that installation works on these hosts.
+Enabling a processor does not automatically build already-published sources.
+To request a missing build for an existing release without a new upload:
 
-To remove the need for the client workaround, a PPA owner must enable the
-`amd64v3` processor in Launchpad's PPA settings and arrange a Resolute build
-for that variant. Verify that the build succeeds and that the published
-`dists/resolute/main/binary-amd64v3/Packages` index contains `Package: rustnet`.
-Then test `apt update` and `apt-cache policy rustnet` on a variant-enabled
-Ubuntu 26.04 host without an explicit `Architectures: amd64` override.
-Do not remove the workaround merely because the processor has been enabled.
+1. Open [Copy packages](https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet/+copy-packages)
+   while signed in as the PPA owner.
+2. Select the published `rustnet-monitor` source for **Resolute**.
+3. Choose **This PPA**, **The same series**, and **Copy existing binaries**.
+4. Submit **Copy Packages** and check the new `amd64v3` build.
 
-The GitHub workflow uploads source packages; it does not configure Launchpad's
-processors. Changes to these docs do not enable or publish variant builds.
+**Copy existing binaries** preserves completed builds while allowing builds
+for newly enabled processors. Do not select **Rebuild the copied sources**:
+Launchpad rejects a source-only copy when the same version already has
+published binaries in the destination archive. See the
+[Launchpad PPA guide](https://launchpad-help.readthedocs.io/en/latest/how-to/distribute-ubuntu-software.html).
+
+Before considering the installation issue resolved:
+
+- Confirm the variant build succeeds and completes publication. A queued,
+  building, or uploading status is not enough.
+- Check that the published
+  [variant index](https://ppa.launchpadcontent.net/domcyrus/rustnet/ubuntu/dists/resolute/main/binary-amd64v3/Packages.gz)
+  contains `Package: rustnet` for the expected version.
+- On an Ubuntu 26.04 host with `APT::Architecture-Variants "amd64v3";` enabled
+  and no per-PPA architecture override, run `sudo apt update` and
+  `apt-cache policy rustnet`. Verify that the candidate comes from the variant
+  index, then test installation with `sudo apt install rustnet`.
+
+The [installation guide](../INSTALL.md#ubuntu-ppa-package-not-found-with-amd64v3)
+explains refreshing package lists and removing an earlier baseline override
+once the variant is published.
 
 ## Workflow
 
