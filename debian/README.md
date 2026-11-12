@@ -53,7 +53,24 @@ sudo apt install rustnet
 - **Maintainer**: Marco Cadetg <cadetg@gmail.com>
 - **PPA**: https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet
 - **Supported**: Ubuntu 22.04 LTS (Jammy), 24.04 LTS (Noble) and 26.04 LTS (Resolute)
-- **Architectures**: amd64, arm64, armhf
+- **Build processors enabled**: amd64, arm64, armhf, and amd64v3 (for Resolute); package availability depends on successful build and publication
+
+## Publishing the amd64v3 variant
+
+Keep the PPA's `amd64v3` build processor enabled for Resolute alongside
+`amd64`, `arm64`, and `armhf`. This Launchpad setting lets variant-enabled
+APT clients use the normal PPA installation commands without an architecture
+override.
+
+For an existing source missing a variant build, use
+[Copy packages](https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet/+copy-packages)
+with **This PPA**, **The same series**, and **Copy existing binaries**.
+A source-only rebuild copy is rejected when that version already has binaries.
+
+A successful build must also finish publication. Check the
+[variant index](https://ppa.launchpadcontent.net/domcyrus/rustnet/ubuntu/dists/resolute/main/binary-amd64v3/Packages.gz),
+then verify `apt-cache policy rustnet` selects it after `sudo apt update` on
+Ubuntu 26.04 with `APT::Architecture-Variants "amd64v3";` enabled.
 
 ## Workflow
 
