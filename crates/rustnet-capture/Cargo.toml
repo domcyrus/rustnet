@@ -6,7 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 description = "libpcap/Npcap-based packet-capture backend for rustnet: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame reader"
 repository.workspace = true
-homepage.workspace = true
 documentation = "https://docs.rs/rustnet-capture"
 readme = "README.md"
 license.workspace = true
