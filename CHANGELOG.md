@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Link Windows synchronization APIs explicitly to prevent x86 startup failures and x64 test crashes caused by enclave DLL imports (#731)
+- Remove redundant homepage metadata to prevent Cargo manifest warnings when building from source (#731)
 - Validate complete DNS questions and recognize STUN on port 53 before DNS to prevent false resolver failures (#722)
 - Keep headless shutdown bounded when stderr or account-name services stall, using numeric account IDs until background lookups finish (#721)
 - Discard pending TCP RTT probes on one-byte keepalives to prevent inflated or ambiguous timing samples after missed ACKs or last-byte retransmissions

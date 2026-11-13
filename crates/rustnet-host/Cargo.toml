@@ -6,7 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Cross-platform process attribution and host TCP/UDP socket inventory for rustnet"
 repository.workspace = true
-homepage.workspace = true
 documentation = "https://docs.rs/rustnet-host"
 readme = "README.md"
 license.workspace = true
