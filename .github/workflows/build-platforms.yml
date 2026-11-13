@@ -197,6 +197,15 @@ jobs:
           default-features: ${{ (contains(matrix.target, 'linux') || contains(matrix.target, 'apple')) && 'true' || 'false' }}
           strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
 
+      - name: Test Windows executable startup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & './target/${{ matrix.target }}/release/rustnet.exe' --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & './target/${{ matrix.target }}/release/rustnet.exe' --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run workspace tests
         if: matrix.run-tests
         run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
