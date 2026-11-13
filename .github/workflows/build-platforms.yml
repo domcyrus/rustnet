@@ -283,21 +283,7 @@ jobs:
         with:
           key: ${{ matrix.build }}-tests-${{ hashFiles('.github/actions/setup-windows-tests/**', '.github/actions/cache-cargo/**', '.github/workflows/build-platforms.yml') }}
       - name: Run workspace tests
-        env:
-          RUSTC_LOG: rustc_codegen_ssa::back::link=info
         run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
-      - name: Diagnose Windows test startup failures
-        if: failure()
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $dumpbin = & $vswhere -latest -products '*' -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
-          Get-ChildItem "target/${{ matrix.target }}/debug" -Filter 'rustnet*.exe' -Recurse | ForEach-Object {
-            Write-Host "Imports for $($_.FullName)"
-            & $dumpbin /DEPENDENTS $_.FullName
-            & $dumpbin /IMPORTS:vertdll.dll $_.FullName
-          }
-          cargo test --locked -p rustnet-monitor --lib --all-features --target ${{ matrix.target }} -- --test-threads=1 --nocapture
 
   # x86_64 and the native Android build link against Alpine's static libpcap.
   # armv7 and x86 (i686) are cross-compiled with zig cc as the C compiler and
