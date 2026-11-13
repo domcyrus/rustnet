@@ -283,6 +283,8 @@ jobs:
         with:
           key: ${{ matrix.build }}-tests-${{ hashFiles('.github/actions/setup-windows-tests/**', '.github/actions/cache-cargo/**', '.github/workflows/build-platforms.yml') }}
       - name: Run workspace tests
+        env:
+          RUSTC_LOG: rustc_codegen_ssa::back::link=info
         run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
       - name: Diagnose Windows test startup failures
         if: failure()
