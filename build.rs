@@ -85,6 +85,7 @@ fn setup_windows_npcap_delay_load() {
         // WakeByAddress* from the enclave-only vertdll.dll. Resolve those
         // symbols through the desktop synchronization API even when their
         // callers are pulled from a dependency after normal library scanning.
+        println!("cargo:rustc-link-lib=synchronization");
         println!("cargo:rustc-link-arg=/WHOLEARCHIVE:synchronization.lib");
         println!("cargo:rustc-link-arg=/DELAYLOAD:Packet.dll");
         println!("cargo:rustc-link-arg=/DELAYLOAD:wpcap.dll");
