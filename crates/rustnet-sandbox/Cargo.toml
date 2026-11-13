@@ -6,7 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Post-initialization sandboxing and root privilege dropping for rustnet: Landlock + capability drops on Linux, Seatbelt on macOS, restricted token + job object on Windows, and a shared uid drop on Linux/macOS/FreeBSD"
 repository.workspace = true
-homepage.workspace = true
 documentation = "https://docs.rs/rustnet-sandbox"
 readme = "README.md"
 license.workspace = true

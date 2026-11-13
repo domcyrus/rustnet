@@ -17,7 +17,6 @@ authors = ["domcyrus"]
 edition = "2024"
 rust-version = "1.88.0" # Let-chains require Rust 1.88.0+
 repository = "https://github.com/domcyrus/rustnet"
-homepage = "https://github.com/domcyrus/rustnet"
 license = "Apache-2.0"
 
 # Single source of truth for the internal crate versions (and the few deps
@@ -47,7 +46,6 @@ edition.workspace = true
 rust-version.workspace = true
 description = "A cross-platform per-process network monitor with TUI and headless JSON modes"
 repository.workspace = true
-homepage.workspace = true
 documentation = "https://docs.rs/rustnet-monitor"
 readme = "README.md"
 license.workspace = true
