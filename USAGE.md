@@ -420,6 +420,37 @@ config file (default: `false`). `NO_COLOR` or `--no-color` disables the shadow.
 Related: `--no-color` disables all colors entirely (also honors the `NO_COLOR`
 environment variable).
 
+#### Experimental cell borders (unreleased)
+
+The optional [cell-border protocol](https://www.joshka.net/cell-borders/) draws
+lines on terminal-cell edges without taking a text row or column. It currently
+requires a terminal implementing the draft protocol, such as Joshka's patched
+Ghostty. It is **off by default**; stock Ghostty is not assumed to support it.
+
+```bash
+rustnet --cell-borders auto
+```
+
+Or enable probing in the configuration file:
+
+```toml
+[ui]
+cell_borders = "auto"
+```
+
+`--cell-borders off` overrides that setting. On a supporting terminal, tabs use
+one row, the System sidebar uses cell-edge separators, the selected connection
+gets a thin outline, and the filter gets an underline. Traffic charts add grid
+and 2-second-average reference lines without replacing braille dots. The average
+line is rounded to the nearest cell edge; its exact value remains in the header.
+Help uses a compact outline and masks decorations underneath it.
+
+Detection currently runs on Unix before the UI starts, with a bounded 150 ms
+wait. Unsupported terminals, unsupported multiplexers, and Windows keep the
+standard layout. RustNet never assumes support from terminal names or enables
+multiplexer passthrough. Missing optional dashed-line support uses a solid line.
+`NO_COLOR` keeps outlines in the terminal's default foreground colour.
+
 #### `-f, --bpf-filter <FILTER>`
 
 Apply a BPF (Berkeley Packet Filter) expression to filter packets at capture time. This is more efficient than application-level filtering as packets are filtered in the kernel before reaching RustNet.

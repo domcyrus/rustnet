@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
+- Add opt-in experimental cell borders with capability detection, compact tabs and sidebar separators, connection selection outlines, filter underlines, graph reference lines, and Help outlines; unsupported terminals retain the standard UI
 - Add headless automation controls, opt-in full metadata and capture accounting, and guarded Linux executable retention (#721)
 - Add opt-in incremental headless JSONL with sequence checks, bounded baselines, and periodic full snapshots for resynchronization (#719)
 - Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible

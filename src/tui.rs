@@ -129,6 +129,7 @@ where
                     error!("UI draw error: {}", err);
                 }
             })?;
+            ui::cell_borders::paint(&mut std::io::stdout().lock())?;
             last_draw = std::time::Instant::now();
             needs_redraw = false;
         }

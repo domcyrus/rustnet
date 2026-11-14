@@ -164,7 +164,7 @@ pub(super) fn draw_selector(
         );
     }
     strip.draw(f, area, regions);
-    let height = area.height.min(tab_strip::HEIGHT);
+    let height = area.height.min(tab_strip::height());
     Rect::new(
         area.x,
         area.y + height,
