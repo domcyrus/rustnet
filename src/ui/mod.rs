@@ -18,6 +18,7 @@ use ratatui::{
 use crate::app::{App, AppStats};
 use crate::network::types::{Connection, ProtocolState, TcpState};
 
+pub(crate) mod cell_borders;
 mod terminal;
 pub use terminal::{Terminal, restore_terminal, setup_terminal};
 
@@ -342,6 +343,7 @@ pub fn draw(
     stats: &AppStats,
     click_regions: &mut ClickableRegions,
 ) -> Result<()> {
+    cell_borders::begin_frame(f.area());
     click_regions.clear();
     ui_state.graph_animation_visible.set(false);
     ui_state
@@ -366,7 +368,8 @@ pub fn draw(
 
     use widgets::filter_input::FILTER_INPUT_HEIGHT;
     use widgets::status_bar::status_bar_height;
-    use widgets::tabs_bar::TABS_BAR_HEIGHT;
+    use widgets::tabs_bar::tabs_bar_height;
+    let tabs_height = tabs_bar_height();
 
     // A capture failure can need a second row, so the status bar is measured
     // before the layout is split.
@@ -377,7 +380,7 @@ pub fn draw(
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(TABS_BAR_HEIGHT),     // Tabs
+                Constraint::Length(tabs_height),         // Tabs
                 Constraint::Min(0),                      // Content
                 Constraint::Length(FILTER_INPUT_HEIGHT), // Filter input area
                 Constraint::Length(status_height),       // Status bar
@@ -387,9 +390,9 @@ pub fn draw(
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(TABS_BAR_HEIGHT), // Tabs
-                Constraint::Min(0),                  // Content
-                Constraint::Length(status_height),   // Status bar
+                Constraint::Length(tabs_height),   // Tabs
+                Constraint::Min(0),                // Content
+                Constraint::Length(status_height), // Status bar
             ])
             .split(f.area())
     };

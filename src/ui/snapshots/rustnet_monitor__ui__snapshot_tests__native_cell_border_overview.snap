@@ -1,0 +1,22 @@
+---
+source: src/ui/snapshot_tests.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                            ● eth0
+▎ Live Connections ─────────────────────────────────────────────────────────────────────────────────
+  Process               Remote                   App                       State           Rx↓/Tx↑  
+                                                                                                    
+▌ firefox (2001)        140.82.121.4:443         TCP                       ESTABLISHED 3.1Mi/928Ki  
+  systemd-resolved (82… 1.1.1.1:53               UDP·DNS (example.com)     DNS_QUERY     47Ki/82Ki  
+  sshd (1500)           10.0.0.5:51022           TCP                       ESTABLISHED 410Ki/1.7Mi  
+  curl (9876)           151.101.1.195:443        TCP                       TIME_WAIT           -/-  
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ ↑↓ select  / filter  a group  t history  i info  c copy                             h help  q quit

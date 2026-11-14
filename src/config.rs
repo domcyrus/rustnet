@@ -56,6 +56,16 @@ struct RawTheme {
 #[serde(default)]
 struct RawUi {
     popup_shadow: bool,
+    cell_borders: CellBordersMode,
+}
+
+/// Experimental terminal decoration mode. Off avoids probing by default.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CellBordersMode {
+    #[default]
+    Off,
+    Auto,
 }
 
 /// Parsed user configuration. Override values are validated later by
@@ -64,6 +74,7 @@ struct RawUi {
 pub struct UserConfig {
     pub theme: Option<String>,
     pub popup_shadow: bool,
+    pub cell_borders: CellBordersMode,
     pub overrides: Vec<(String, String)>,
     pub group_by_process: bool,
 }
@@ -138,6 +149,7 @@ fn parse(contents: &str) -> Result<UserConfig, String> {
     Ok(UserConfig {
         theme: raw.theme.name,
         popup_shadow: raw.ui.popup_shadow,
+        cell_borders: raw.ui.cell_borders,
         overrides: raw.theme.overrides.into_iter().collect(),
         group_by_process: raw.view.group_by_process,
     })
@@ -240,6 +252,21 @@ mod tests {
         // An empty home field is not a usable answer.
         assert_eq!(passwd_home(passwd, "noshell"), None);
         assert_eq!(passwd_home(passwd, "absent"), None);
+    }
+
+    #[test]
+    fn cell_borders_are_opt_in_and_validated() {
+        assert_eq!(parse("").unwrap().cell_borders, CellBordersMode::Off);
+        assert_eq!(
+            parse("[ui]\ncell_borders = 'auto'").unwrap().cell_borders,
+            CellBordersMode::Auto
+        );
+        assert_eq!(
+            parse("[ui]\ncell_borders = 'off'").unwrap().cell_borders,
+            CellBordersMode::Off
+        );
+        assert!(parse("[ui]\ncell_borders = 'force'").is_err());
+        assert!(parse("[ui]\ncell_borders = true").is_err());
     }
 
     #[test]
