@@ -1639,7 +1639,7 @@ cat capture.pcap.connections.jsonl | jq -r '[.protocol, .local_addr, .remote_add
 
 ### TCP 连接尝试健康状态（未发布）
 
-Host > Sockets 显示固定五分钟窗口内观测到的出站 TCP 连接尝试，不受 Host 时间范围或连接筛选条件影响。初始出站 SYN 开始一次尝试，相同 SYN 重传合并计数。只有匹配的 SYN-ACK 和最终出站 ACK 都被观测到，才算成功，包括本机端点之间的连接，以及 SYN 数据未被接受时的 TCP Fast Open 回退。匹配的对端重置、十秒内未观测到完整握手，以及新的初始序列号替代旧尝试分别统计。仅入站或从连接中途开始捕获的流量不计入尝试。异常 ACK 和确认号不匹配的 SYN-ACK 即使后来恢复成功也会保留；本地纠正性 RST 不会立即结束尝试。
+Host > Sockets 显示固定五分钟窗口内观测到的出站 TCP 连接尝试，不受 Host 时间范围或连接筛选条件影响。初始出站 SYN 开始一次尝试，相同 SYN 重传合并计数。只有匹配的 SYN-ACK 和最终出站 ACK 都被观测到，才算成功，包括本机端点之间的连接，以及 SYN 数据未被接受时的 TCP Fast Open 回退。匹配的对端重置（包括 TCP Fast Open 回退）、十秒内未观测到完整握手，以及新的初始序列号替代旧尝试分别统计。仅入站或从连接中途开始捕获的流量不计入尝试。异常 ACK 和确认号不匹配的 SYN-ACK 即使后来恢复成功也会保留；本地纠正性 RST 不会立即结束尝试。
 
 无界面 `json`、`jsonl`、`jsonl-delta` 输出新增 `tcp_attempts` 对象，包括 `window_seconds`、`timeout_seconds`、`pending`、`omitted_since_clear`、`total`、`destinations` 和 `recent_issues`。增量记录中的此对象必须整体替换。已完成结果按远端套接字地址和 `ip_version` 分组，以完成时间计算窗口。计数包含 `completed`、`established`、`reset`、`no_handshake_observed`、`superseded`、`syn_retries` 和 `anomalous`（包括已恢复尝试的异常响应）。待完成尝试不是失败；滚动计数不能跨快照累加。
 
@@ -1647,7 +1647,7 @@ Host > Sockets 显示固定五分钟窗口内观测到的出站 TCP 连接尝试
 
 在 Host > Sockets 中按 `h` 打开 TCP Attempt Health 帮助，查看计数含义、固定窗口、已恢复的异常、导出证据及诊断限制。
 
-Overview > Network Stats 也显示同一固定五分钟窗口的 TCP 握手健康状态，区分未观测、检查中、健康、异常后恢复、降级和证据不完整。捕获错误、报告的丢包或跟踪容量遗漏会覆盖健康标签。仅被替代的尝试不能确定故障。最差目标按重置或握手不完整比例排序，再比较失败次数、异常比例和异常次数；完全相同时按地址稳定排序。显示样本数量，因为小样本不能证明持续故障。健康的 IPv6 流量不会稀释 IPv4 目标的问题。侧栏可能缩短长地址，Host 和 JSON 保留完整地址。在 Overview 按 `h` 查看解释与限制。JSON 计数新增 `recovered_anomalies`，直接统计异常后成功建立连接的尝试，不从数量受限的近期问题列表推算。
+Overview > Network Stats 也显示同一固定五分钟窗口的 TCP 握手健康状态，区分未观测、检查中、健康、异常后恢复、降级和证据不完整。捕获错误、报告的丢包或跟踪容量遗漏会覆盖健康标签。仅被替代的尝试不能确定故障。Overview 和 Host 均按重置或握手不完整比例对受影响目标排序，再比较失败次数、异常比例和异常次数；完全相同时按地址稳定排序。显示样本数量，因为小样本不能证明持续故障。健康的 IPv6 流量不会稀释 IPv4 目标的问题。侧栏可能缩短长地址，Host 和 JSON 保留完整地址。在 Overview 按 `h` 查看解释与限制。JSON 计数新增 `recovered_anomalies`，直接统计异常后成功建立连接的尝试，不从数量受限的近期问题列表推算。
 
 #### TCP 健康状态性能测量
 

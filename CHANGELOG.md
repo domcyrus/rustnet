@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Reduce TCP attempt hashing and repeated map lookups while preserving retry, replacement and capacity handling (#734)
 - Reuse unchanged TCP health snapshots, preserve exact expiry deadlines, and select recent issues without sorting all retained attempts (#734)
+- Share TCP destination ranking and health help between Overview and Host (#734)
 - Skip process ownership accounting work on the default packet ingestion path (#721)
 - Speed up executable-path conversion in headless snapshots while preserving path encoding (#721)
 - Retain only directory traversal privileges in the Windows sandbox while preserving token groups and integrity level (#721)

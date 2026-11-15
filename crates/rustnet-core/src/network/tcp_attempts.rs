@@ -98,6 +98,12 @@ struct PendingAttempt {
 }
 
 impl PendingAttempt {
+    fn acknowledges_syn(&self, ack: u32) -> bool {
+        // Fast Open peers may acknowledge the SYN without accepting all its data.
+        let start = self.attempt.initial_sequence.wrapping_add(1);
+        ack.wrapping_sub(start) <= self.attempt.expected_acknowledgment.wrapping_sub(start)
+    }
+
     fn new(key: ConnectionKey, tcp: &TcpHeaderInfo, now: SystemTime) -> Self {
         let syn_end = tcp.seq.wrapping_add(1).wrapping_add(tcp.payload_len);
         Self {
@@ -302,16 +308,11 @@ impl TcpAttemptTracker {
                 outcome = Some(AttemptOutcome::Established);
             }
         } else if flags.rst {
-            if flags.ack && tcp.ack == p.attempt.expected_acknowledgment {
+            if flags.ack && p.acknowledges_syn(tcp.ack) {
                 outcome = Some(AttemptOutcome::Reset);
             }
         } else if flags.syn && flags.ack {
-            let syn_ack = p.attempt.initial_sequence.wrapping_add(1);
-            // Fast Open may acknowledge only the SYN and defer its data to the final ACK.
-            if !flags.fin
-                && tcp.ack.wrapping_sub(syn_ack)
-                    <= p.attempt.expected_acknowledgment.wrapping_sub(syn_ack)
-            {
+            if !flags.fin && p.acknowledges_syn(tcp.ack) {
                 p.final_ack = Some((
                     tcp.ack,
                     tcp.seq.wrapping_add(1).wrapping_add(tcp.payload_len),
@@ -763,7 +764,7 @@ mod tests {
     #[test]
     fn fast_open_fallback_accepts_syn_only_acknowledgment() {
         for seq in [100_u32, u32::MAX - 5] {
-            for retry in [false, true] {
+            for (retry, reset) in [(false, false), (true, false), (false, true), (true, true)] {
                 let mut t = TcpAttemptTracker::default();
                 let k = key(false);
                 let mut syn = header(2, seq, 0);
@@ -773,12 +774,25 @@ mod tests {
                     send(&mut t, k, 1, true, header(2, seq, 0));
                 }
                 let accepted = seq.wrapping_add(1);
-                send(&mut t, k, 2, false, header(18, 200, accepted));
+                // Out-of-range or unacknowledged resets cannot close the attempt.
+                for ack in [seq, seq.wrapping_add(12)] {
+                    send(&mut t, k, 2, false, header(20, 200, ack));
+                }
+                send(&mut t, k, 2, false, header(4, 200, accepted));
+                assert_eq!(t.snapshot(at(2)).pending, 1);
+                send(
+                    &mut t,
+                    k,
+                    2,
+                    false,
+                    header(if reset { 20 } else { 18 }, 200, accepted),
+                );
                 let mut ack = header(16, accepted, 201);
                 ack.payload_len = 10;
                 send(&mut t, k, 3, true, ack);
                 let s = t.snapshot(at(10_000));
-                assert_eq!(s.total.established, 1);
+                assert_eq!(s.total.established, u64::from(!reset));
+                assert_eq!(s.total.reset, u64::from(reset));
                 assert_eq!(s.total.no_handshake, 0);
                 assert_eq!(s.total.anomalous, 0);
                 assert_eq!(s.total.syn_retries, u64::from(retry));
@@ -786,20 +800,20 @@ mod tests {
         }
     }
 
+    fn retained_resets(count: usize) -> TcpAttemptTracker {
+        let mut tracker = TcpAttemptTracker::default();
+        for seq in 0..count as u32 {
+            send(&mut tracker, key(false), 0, true, header(2, seq, 0));
+            send(&mut tracker, key(false), 0, false, header(20, 0, seq + 1));
+        }
+        tracker
+    }
+
     #[test]
     fn window_expiry_does_not_count_as_capacity_loss() {
         for snapshot_ms in [300_000, 610_000] {
-            let mut t = TcpAttemptTracker::default();
+            let mut t = retained_resets(MAX_RETAINED);
             let k = key(false);
-            send(&mut t, k, 0, true, header(2, 10, 0));
-            send(&mut t, k, 0, false, header(20, 0, 11));
-            let template = t.retained[0].clone();
-            for seq in 1..MAX_RETAINED as u32 {
-                t.retain(TcpAttempt {
-                    initial_sequence: seq + 10,
-                    ..template.clone()
-                });
-            }
             send(&mut t, k, 290_000, true, header(2, 20_000, 0));
             let s = t.snapshot(at(snapshot_ms));
             assert_eq!(s.pending, 0);
@@ -817,17 +831,8 @@ mod tests {
 
     #[test]
     fn eviction_between_sweeps_does_not_count_expired_records_as_lost() {
-        let mut t = TcpAttemptTracker::default();
+        let mut t = retained_resets(MAX_RETAINED - 1);
         let k = key(false);
-        send(&mut t, k, 0, true, header(2, 10, 0));
-        send(&mut t, k, 0, false, header(20, 0, 11));
-        let template = t.retained[0].clone();
-        for seq in 1..MAX_RETAINED as u32 - 1 {
-            t.retain(TcpAttempt {
-                initial_sequence: seq + 10,
-                ..template.clone()
-            });
-        }
         send(&mut t, k, 289_999, true, header(2, 20_000, 0));
         send(&mut t, k, 290_000, false, header(20, 0, 20_001));
         assert_eq!(t.snapshot(at(299_999)).omitted, 0);

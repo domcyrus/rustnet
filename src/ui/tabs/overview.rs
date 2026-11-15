@@ -887,19 +887,7 @@ fn tcp_handshake_lines(
         .destinations
         .iter()
         .filter(|(_, c)| c.reset + c.no_handshake + c.anomalous > 0)
-        .max_by(|(addr_a, a), (addr_b, b)| {
-            let fa = u128::from(a.reset + a.no_handshake);
-            let fb = u128::from(b.reset + b.no_handshake);
-            (fa * u128::from(b.completed.max(1)))
-                .cmp(&(fb * u128::from(a.completed.max(1))))
-                .then_with(|| fa.cmp(&fb))
-                .then_with(|| {
-                    (u128::from(a.anomalous) * u128::from(b.completed.max(1)))
-                        .cmp(&(u128::from(b.anomalous) * u128::from(a.completed.max(1))))
-                })
-                .then_with(|| a.anomalous.cmp(&b.anomalous))
-                .then_with(|| addr_b.cmp(addr_a))
-        });
+        .max_by(|a, b| super::compare_tcp_destinations(*a, *b));
     let mut lines = vec![
         Line::from(vec![
             Span::raw("TCP (5m): "),
@@ -2166,9 +2154,11 @@ mod tcp_handshake_tests {
     fn ranking_prefers_failure_fraction_then_sample_evidence() {
         let mut s = TcpAttemptSnapshot::default();
         for (address, completed, failures) in [
-            ("192.0.2.1:443", 100, 10),
+            ("192.0.2.1:443", 100, 15),
             ("192.0.2.2:443", 10, 5),
             ("192.0.2.3:443", 20, 10),
+            ("192.0.2.4:443", 100, 14),
+            ("192.0.2.5:443", 100, 13),
         ] {
             s.destinations.insert(
                 address.parse().unwrap(),
@@ -2180,5 +2170,10 @@ mod tcp_handshake_tests {
             );
         }
         assert!(text(&s, false).contains("Worst: 192.0.2.3:443"));
+        let host = super::super::host::tcp_attempt_lines(&s);
+        for (line, address) in host[2..5].iter().zip([3, 2, 1]) {
+            assert!(line.to_string().contains(&format!("192.0.2.{address}:443")));
+        }
+        assert!(host[5].to_string().contains("2 more affected destinations"));
     }
 }

@@ -377,63 +377,36 @@ const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
     ),
 ];
 
-const TCP_OVERVIEW_CONCEPTS: &[HelpRow] = &[
+const TCP_HEALTH_CONCEPTS: &[HelpRow] = &[
     (
         "Window",
-        "Observed outbound handshakes over fixed 5m; not all TCP health",
-    ),
-    ("Not observed", "No completed or pending attempts observed"),
-    (
-        "Checking",
-        "Attempts pending; do not count them as failures",
-    ),
-    ("Healthy", "Observed handshakes completed without anomalies"),
-    (
-        "Recovered",
-        "Unexpected replies occurred, but handshakes succeeded",
-    ),
-    (
-        "Degraded",
-        "Peer resets or no complete handshake observed within 10s",
-    ),
-    (
-        "Incomplete",
-        "Capture error, drops since clear, capacity omissions or superseded attempts",
-    ),
-    (
-        "Worst",
-        "Highest reset/incomplete fraction; ties favor more evidence, then anomalies",
-    ),
-    (
-        "Counts",
-        "Completed attempts, not packets; recovered anomalies are successes",
-    ),
-    (
-        "Limits",
-        "Missing packets or cancellation can mislead; cannot locate faulty NAT",
+        "Observed outbound attempts over fixed 5m, by completion time",
     ),
     (
         "Scope",
-        "Successful handshakes do not prove TLS, application or QUIC health",
-    ),
-    (
-        "Details",
-        "Full endpoints: Host > Sockets; evidence: tcp_attempts JSON",
-    ),
-];
-
-const TCP_ATTEMPT_CONCEPTS: &[HelpRow] = &[
-    (
-        "Window",
-        "Fixed 5m by completion time; unaffected by w or filters",
+        "Independent of Host window and filters; excludes inbound/midstream",
     ),
     (
         "Attempt",
-        "Starts at an observed outbound SYN; retries share it",
+        "Initial outbound SYN; repeated SYNs count as retries",
     ),
     (
         "Established",
         "Matching SYN-ACK and final outbound ACK observed",
+    ),
+    ("Not observed", "No completed or pending attempts observed"),
+    (
+        "Pending/checking",
+        "Awaiting completion; pending attempts are not failures",
+    ),
+    ("Healthy", "Observed handshakes completed without anomalies"),
+    (
+        "Anomalous",
+        "Unexpected ACK or invalid SYN-ACK; may still recover",
+    ),
+    (
+        "Recovered",
+        "Anomalous attempts that established; counted as successes",
     ),
     ("Reset", "Matching peer reset observed during the attempt"),
     (
@@ -441,36 +414,40 @@ const TCP_ATTEMPT_CONCEPTS: &[HelpRow] = &[
         "No complete handshake observed within 10s, not proof of loss",
     ),
     (
+        "Degraded",
+        "Peer resets or no complete handshake observed within 10s",
+    ),
+    (
         "Superseded",
         "A new initial sequence replaced a pending attempt",
     ),
     (
-        "Pending",
-        "Still awaiting completion; not counted as a failure",
+        "Incomplete",
+        "Capture error, drops since clear, omissions or superseded attempts",
     ),
     (
-        "Anomalous",
-        "Unexpected ACK or invalid SYN-ACK; may still recover",
+        "Capacity",
+        "Omissions mean incomplete evidence, not network failures",
     ),
     (
-        "SYN retries",
-        "Repeated SYN observations, not additional attempts",
+        "Worst",
+        "Highest reset/incomplete fraction; ties favor evidence, then anomalies",
+    ),
+    (
+        "Counts",
+        "Completed attempts, not packets; pending attempts are separate",
     ),
     (
         "Evidence",
-        "Check capture drops; missing packets or cancellation can mislead",
+        "Missing packets or local cancellation can mislead; check capture drops",
     ),
     (
         "Limits",
         "Does not diagnose NAT, TLS, application or QUIC failures",
     ),
     (
-        "JSON",
-        "tcp_attempts includes destinations and recent ACK evidence",
-    ),
-    (
-        "Capacity",
-        "Omissions mean incomplete evidence, not network failures",
+        "Details",
+        "Full endpoints: Host > Sockets; recent ACK evidence: tcp_attempts JSON",
     ),
 ];
 
@@ -637,7 +614,7 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
         HelpContext::Overview => {
             push_section(&mut lines, "Connection Navigation", CONNECTION_NAV_KEYS);
             push_section(&mut lines, "Overview Actions", OVERVIEW_KEYS);
-            push_section(&mut lines, "TCP Handshake Health", TCP_OVERVIEW_CONCEPTS);
+            push_section(&mut lines, "TCP Handshake Health", TCP_HEALTH_CONCEPTS);
             push_section(&mut lines, "Connection Display", CONNECTION_DISPLAY);
             push_section(&mut lines, "Filter Examples", FILTER_EXAMPLES);
             push_section(&mut lines, "Mouse", OVERVIEW_MOUSE);
@@ -663,7 +640,7 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
             );
             push_section(&mut lines, "Socket Actions", &rows);
             push_section(&mut lines, "Socket Concepts", HOST_SOCKET_CONCEPTS);
-            push_section(&mut lines, "TCP Attempt Health", TCP_ATTEMPT_CONCEPTS);
+            push_section(&mut lines, "TCP Attempt Health", TCP_HEALTH_CONCEPTS);
         }
         HelpContext::HostInterfaces => {
             let rows = host_pane_rows(
@@ -930,6 +907,11 @@ mod tests {
         assert!(text.contains("TCP Attempt Health"));
         assert!(text.contains("may still recover"));
         assert!(text.contains("not proof of loss"));
+        let overview = plain_text(&UiState::default());
+        for (label, description) in TCP_HEALTH_CONCEPTS {
+            assert!(text.contains(label) && text.contains(description));
+            assert!(overview.contains(label) && overview.contains(description));
+        }
         assert!(!text.contains("Interface Actions"));
 
         let interfaces = UiState {

@@ -978,7 +978,7 @@ fn draw_endpoint_table(
     );
 }
 
-fn tcp_attempt_lines(
+pub(super) fn tcp_attempt_lines(
     snapshot: &crate::network::tcp_attempts::TcpAttemptSnapshot,
 ) -> Vec<Line<'static>> {
     let c = &snapshot.total;
@@ -997,12 +997,7 @@ fn tcp_attempt_lines(
         .iter()
         .filter(|(_, c)| c.reset + c.no_handshake + c.anomalous > 0)
         .collect();
-    destinations.sort_by_key(|(addr, c)| {
-        (
-            std::cmp::Reverse(c.reset + c.no_handshake + c.anomalous),
-            **addr,
-        )
-    });
+    destinations.sort_by(|a, b| super::compare_tcp_destinations(*b, *a));
     for (address, c) in destinations.iter().take(3) {
         lines.push(Line::from(format!(
             "  {address}: {}/{} reset or incomplete; {} anomalous, {} SYN retries",
