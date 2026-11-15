@@ -198,7 +198,7 @@ cargo test --release --locked --lib --all-features benchmark_history_encoding --
 
 ### TCP 接続試行の状態（未リリース）
 
-Host > Sockets は、観測した送信 TCP 接続試行を固定の5分間ウィンドウで表示します。Host の選択期間や接続フィルターには依存しません。最初の送信 SYN で試行を開始し、同じ SYN の再送は同じ試行として数えます。対応する SYN-ACK と最後の送信 ACK の両方を観測した場合だけ成功です。対応する相手のリセット、10秒以内に完全なハンドシェイクを観測できなかった場合、新しい初期シーケンス番号による置き換えを区別します。受信のみ、または途中から捕獲した通信は試行に含めません。予期しない ACK や不一致の SYN-ACK は、後で成功しても証拠として残ります。ローカルの訂正 RST だけでは試行を終了しません。
+Host > Sockets は、観測した送信 TCP 接続試行を固定の5分間ウィンドウで表示します。Host の選択期間や接続フィルターには依存しません。最初の送信 SYN で試行を開始し、同じ SYN の再送は同じ試行として数えます。対応する SYN-ACK と最後の送信 ACK の両方を観測した場合だけ成功です。同一ホスト内の接続や、SYN データが受理されない場合の TCP Fast Open のフォールバックも対象です。対応する相手のリセット、10秒以内に完全なハンドシェイクを観測できなかった場合、新しい初期シーケンス番号による置き換えを区別します。受信のみ、または途中から捕獲した通信は試行に含めません。予期しない ACK や不一致の SYN-ACK は、後で成功しても証拠として残ります。ローカルの訂正 RST だけでは試行を終了しません。
 
 ヘッドレスの `json`、`jsonl`、`jsonl-delta` に `tcp_attempts` オブジェクトを追加します。フィールドは `window_seconds`、`timeout_seconds`、`pending`、`omitted_since_clear`、`total`、`destinations`、`recent_issues` です。増分レコードごとにオブジェクト全体を置き換えてください。完了結果はリモートソケットアドレスと `ip_version` ごとに集計し、完了時刻で期間を判定します。カウンターは `completed`、`established`、`reset`、`no_handshake_observed`、`superseded`、`syn_retries`、`anomalous`（回復した試行も含む異常応答）です。保留中は失敗ではありません。ローリング値をスナップショット間で加算しないでください。
 

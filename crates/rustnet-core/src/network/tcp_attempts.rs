@@ -93,8 +93,8 @@ pub struct TcpAttemptSnapshot {
 
 struct PendingAttempt {
     attempt: TcpAttempt,
-    syn_end: u32,
-    peer_end: Option<u32>,
+    /// Sequence and acknowledgment expected in the final outbound ACK.
+    final_ack: Option<(u32, u32)>,
 }
 
 impl PendingAttempt {
@@ -114,8 +114,7 @@ impl PendingAttempt {
                 invalid_syn_acks: 0,
                 local_resets: 0,
             },
-            syn_end,
-            peer_end: None,
+            final_ack: None,
         }
     }
 }
@@ -149,12 +148,21 @@ impl TcpAttemptTracker {
 
     fn retain(&mut self, attempt: TcpAttempt) {
         self.snapshot_dirty = true;
+        if self
+            .clock
+            .is_some_and(|now| now >= attempt.finished_at + WINDOW)
+        {
+            return;
+        }
         self.schedule_expiration(attempt.finished_at + WINDOW);
-        if self.retained.len() == MAX_RETAINED {
-            if let Some(old) = self.retained.pop_front() {
-                self.finished_syns.remove(&(old.key, old.initial_sequence));
+        if self.retained.len() == MAX_RETAINED
+            && let Some(old) = self.retained.pop_front()
+        {
+            self.finished_syns.remove(&(old.key, old.initial_sequence));
+            // A throttled sweep can leave expired entries until the next packet.
+            if self.clock.is_none_or(|now| now < old.finished_at + WINDOW) {
+                self.omitted = self.omitted.saturating_add(1);
             }
-            self.omitted = self.omitted.saturating_add(1);
         }
         self.finished_syns
             .insert((attempt.key, attempt.initial_sequence), attempt.finished_at);
@@ -177,21 +185,7 @@ impl TcpAttemptTracker {
             return;
         }
         self.last_sweep = Some(now);
-        let expired: Vec<_> = self
-            .pending
-            .extract_if(|_, p| {
-                now.duration_since(p.attempt.started_at).unwrap_or_default() >= ATTEMPT_TIMEOUT
-            })
-            .map(|(_, mut p)| {
-                p.attempt.finished_at = p.attempt.started_at + ATTEMPT_TIMEOUT;
-                p.attempt.outcome = AttemptOutcome::NoHandshake;
-                p.attempt
-            })
-            .collect();
-        for attempt in expired {
-            self.retain(attempt);
-        }
-        // Expiration can append older timestamps, so do not assume time order.
+        // Free expired capacity before retaining timeouts. Retention is not time ordered.
         self.finished_syns
             .retain(|_, at| now.duration_since(*at).unwrap_or_default() < WINDOW);
         let previous_len = self.retained.len();
@@ -199,6 +193,16 @@ impl TcpAttemptTracker {
             .retain(|a| now.duration_since(a.finished_at).unwrap_or_default() < WINDOW);
         if self.retained.len() != previous_len {
             self.snapshot_dirty = true;
+        }
+        let expired: Vec<_> = self
+            .pending
+            .extract_if(|_, p| {
+                now.duration_since(p.attempt.started_at).unwrap_or_default() >= ATTEMPT_TIMEOUT
+            })
+            .map(|(_, p)| p)
+            .collect();
+        for pending in expired {
+            self.finish_timeout(pending);
         }
         self.next_expiration = self
             .pending
@@ -266,8 +270,17 @@ impl TcpAttemptTracker {
         if self.pending.is_empty() {
             return;
         }
-        let Entry::Occupied(mut entry) = self.pending.entry(key) else {
-            return;
+        let (mut entry, outgoing) = match self.pending.entry(key) {
+            Entry::Occupied(entry) => (entry, outgoing),
+            Entry::Vacant(_) if outgoing => {
+                // Local-to-local replies are parsed as outgoing with reversed endpoints.
+                let reversed = ConnectionKey::new(key.protocol, key.remote_addr, key.local_addr);
+                let Entry::Occupied(entry) = self.pending.entry(reversed) else {
+                    return;
+                };
+                (entry, false)
+            }
+            Entry::Vacant(_) => return,
         };
         let p = entry.get_mut();
         if now.duration_since(p.attempt.started_at).unwrap_or_default() >= ATTEMPT_TIMEOUT {
@@ -284,22 +297,29 @@ impl TcpAttemptTracker {
             } else if flags.ack
                 && !flags.syn
                 && !flags.fin
-                && tcp.seq == p.syn_end
-                && p.peer_end == Some(tcp.ack)
+                && p.final_ack == Some((tcp.seq, tcp.ack))
             {
                 outcome = Some(AttemptOutcome::Established);
             }
         } else if flags.rst {
-            if flags.ack && tcp.ack == p.syn_end {
+            if flags.ack && tcp.ack == p.attempt.expected_acknowledgment {
                 outcome = Some(AttemptOutcome::Reset);
             }
         } else if flags.syn && flags.ack {
-            if tcp.ack == p.syn_end && !flags.fin {
-                p.peer_end = Some(tcp.seq.wrapping_add(1).wrapping_add(tcp.payload_len));
+            let syn_ack = p.attempt.initial_sequence.wrapping_add(1);
+            // Fast Open may acknowledge only the SYN and defer its data to the final ACK.
+            if !flags.fin
+                && tcp.ack.wrapping_sub(syn_ack)
+                    <= p.attempt.expected_acknowledgment.wrapping_sub(syn_ack)
+            {
+                p.final_ack = Some((
+                    tcp.ack,
+                    tcp.seq.wrapping_add(1).wrapping_add(tcp.payload_len),
+                ));
             } else {
                 p.attempt.invalid_syn_acks += 1;
             }
-        } else if flags.ack && p.peer_end.is_none() {
+        } else if flags.ack && p.final_ack.is_none() {
             p.attempt.unexpected_acks += 1;
             p.attempt.last_unexpected_acknowledgment = Some(tcp.ack);
         }
@@ -678,5 +698,145 @@ mod tests {
         send(&mut t, k, 500, false, header(18, 200, 111));
         send(&mut t, k, 1200, true, header(16, 111, 201));
         assert_eq!(t.snapshot(at(1200)).total.established, 1);
+    }
+
+    #[test]
+    fn local_handshakes_use_the_initiators_direction() {
+        use crate::network::parser::ParserConfig;
+        use crate::network::protocol::{TransportParams, tcp};
+
+        for (local, remote) in [
+            ("127.0.0.1:40000", "127.0.0.1:443"),
+            ("[::1]:40000", "[::1]:443"),
+            ("192.0.2.1:40000", "192.0.2.2:443"),
+            ("[2001:db8::1]:40000", "[2001:db8::2]:443"),
+        ] {
+            for reset in [false, true] {
+                let k = ConnectionKey::new(
+                    Protocol::Tcp,
+                    local.parse().unwrap(),
+                    remote.parse().unwrap(),
+                );
+                let locals = [k.local_addr.ip(), k.remote_addr.ip()].into();
+                let tracker = ConnectionTracker::new();
+                for (ms, source, destination, flags, seq, ack) in [
+                    (0, k.local_addr, k.remote_addr, 2, 10_u32, 0_u32),
+                    (1, k.remote_addr, k.local_addr, 16, 20, 99),
+                    (
+                        2,
+                        k.remote_addr,
+                        k.local_addr,
+                        if reset { 20 } else { 18 },
+                        20,
+                        11,
+                    ),
+                    (3, k.local_addr, k.remote_addr, 16, 11, 21),
+                ] {
+                    let mut bytes = [0_u8; 20];
+                    bytes[..2].copy_from_slice(&source.port().to_be_bytes());
+                    bytes[2..4].copy_from_slice(&destination.port().to_be_bytes());
+                    bytes[4..8].copy_from_slice(&seq.to_be_bytes());
+                    bytes[8..12].copy_from_slice(&ack.to_be_bytes());
+                    bytes[12] = 5 << 4;
+                    bytes[13] = flags;
+                    let packet = tcp::parse(
+                        &bytes,
+                        TransportParams::new(source.ip(), destination.ip(), 40, None, None),
+                        &ParserConfig::default(),
+                        &locals,
+                    )
+                    .unwrap();
+                    assert!(packet.is_outgoing);
+                    tracker.ingest_at(&packet, at(ms));
+                }
+                let s = tracker.tcp_attempt_snapshot_at(at(10_000));
+                assert_eq!(s.total.completed, 1);
+                assert_eq!(s.total.established, u64::from(!reset));
+                assert_eq!(s.total.reset, u64::from(reset));
+                assert_eq!(s.total.anomalous, 1);
+                assert_eq!(s.total.no_handshake, 0);
+                assert_eq!(s.recent_issues[0].key, k);
+            }
+        }
+    }
+
+    #[test]
+    fn fast_open_fallback_accepts_syn_only_acknowledgment() {
+        for seq in [100_u32, u32::MAX - 5] {
+            for retry in [false, true] {
+                let mut t = TcpAttemptTracker::default();
+                let k = key(false);
+                let mut syn = header(2, seq, 0);
+                syn.payload_len = 10;
+                send(&mut t, k, 0, true, syn);
+                if retry {
+                    send(&mut t, k, 1, true, header(2, seq, 0));
+                }
+                let accepted = seq.wrapping_add(1);
+                send(&mut t, k, 2, false, header(18, 200, accepted));
+                let mut ack = header(16, accepted, 201);
+                ack.payload_len = 10;
+                send(&mut t, k, 3, true, ack);
+                let s = t.snapshot(at(10_000));
+                assert_eq!(s.total.established, 1);
+                assert_eq!(s.total.no_handshake, 0);
+                assert_eq!(s.total.anomalous, 0);
+                assert_eq!(s.total.syn_retries, u64::from(retry));
+            }
+        }
+    }
+
+    #[test]
+    fn window_expiry_does_not_count_as_capacity_loss() {
+        for snapshot_ms in [300_000, 610_000] {
+            let mut t = TcpAttemptTracker::default();
+            let k = key(false);
+            send(&mut t, k, 0, true, header(2, 10, 0));
+            send(&mut t, k, 0, false, header(20, 0, 11));
+            let template = t.retained[0].clone();
+            for seq in 1..MAX_RETAINED as u32 {
+                t.retain(TcpAttempt {
+                    initial_sequence: seq + 10,
+                    ..template.clone()
+                });
+            }
+            send(&mut t, k, 290_000, true, header(2, 20_000, 0));
+            let s = t.snapshot(at(snapshot_ms));
+            assert_eq!(s.pending, 0);
+            assert_eq!(s.omitted, 0);
+            assert_eq!(s.total.no_handshake, u64::from(snapshot_ms == 300_000));
+        }
+        // A timeout already outside the window must still invalidate pending state.
+        let mut t = TcpAttemptTracker::default();
+        send(&mut t, key(false), 0, true, header(2, 10, 0));
+        assert_eq!(t.snapshot(at(0)).pending, 1);
+        let s = t.snapshot(at(400_000));
+        assert_eq!(s.pending, 0);
+        assert_eq!(s.total.completed, 0);
+    }
+
+    #[test]
+    fn eviction_between_sweeps_does_not_count_expired_records_as_lost() {
+        let mut t = TcpAttemptTracker::default();
+        let k = key(false);
+        send(&mut t, k, 0, true, header(2, 10, 0));
+        send(&mut t, k, 0, false, header(20, 0, 11));
+        let template = t.retained[0].clone();
+        for seq in 1..MAX_RETAINED as u32 - 1 {
+            t.retain(TcpAttempt {
+                initial_sequence: seq + 10,
+                ..template.clone()
+            });
+        }
+        send(&mut t, k, 289_999, true, header(2, 20_000, 0));
+        send(&mut t, k, 290_000, false, header(20, 0, 20_001));
+        assert_eq!(t.snapshot(at(299_999)).omitted, 0);
+        assert_eq!(t.last_sweep, Some(at(299_999)));
+        send(&mut t, k, 300_000, true, header(2, 30_000, 0));
+        send(&mut t, k, 300_001, false, header(20, 0, 30_001));
+        assert_eq!(t.last_sweep, Some(at(299_999)));
+        let s = t.snapshot(at(300_001));
+        assert_eq!(s.omitted, 0);
+        assert_eq!(s.total.reset, 2);
     }
 }

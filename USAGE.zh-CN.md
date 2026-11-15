@@ -197,7 +197,7 @@ EOF 或读取失败会请求正常关闭并输出终态记录。`--include-histo
 `--headless --output jsonl-delta` 显式启用 **schema 版本 2**。默认 `jsonl` 和 `json` 仍使用版本 1。使用方切换前必须支持以下规则：
 
 - **快照：**`type: "snapshot"` 替换全部状态。`connections` 包含所有选中的连接，`base_sequence` 为 null，`removed_connection_ids` 为空。首次、关闭时，以及距上次完整快照 60 条记录后或满 30 秒后的下一次输出时，发送完整快照，以先到者为准。
-- **增量：**原子应用 `type: "delta"`：先删除 `removed_connection_ids`，再按 `id` 插入或替换完整的 `connections` 对象。每条记录都替换 `timestamp`、`runtime`、`sandbox`、`stats` 和 `filter`。验证最终总数等于 `connection_count`；按 `id` 排序可匹配完整快照的顺序。
+- **增量：**原子应用 `type: "delta"`：先删除 `removed_connection_ids`，再按 `id` 插入或替换完整的 `connections` 对象。每条记录都替换 `timestamp`、`runtime`、`sandbox`、`stats`、`tcp_attempts` 和 `filter`。验证最终总数等于 `connection_count`；按 `id` 排序可匹配完整快照的顺序。
 - **恢复：**每个新流从 `sequence: 1` 开始。增量的 `base_sequence` 必须等于最后应用的序号，`sequence` 必须是其下一序号。遇到间断、重复、无效记录或数量不符时，将状态标为过期，并忽略增量直到有效完整快照到达。不要混合不同流。恢复依靠周期性快照，不支持 stdin 重新同步请求。
 - **上限：**基线最多保留合计 10,000 条活跃及历史连接、16 MiB 的 JSON 编码，以及投影字段和管理数据。超过上限时使用完整快照，直到完整基线再次满足上限。所有导出字段都参与变化检测，包括延迟元数据和最终计数。
 
@@ -1639,7 +1639,7 @@ cat capture.pcap.connections.jsonl | jq -r '[.protocol, .local_addr, .remote_add
 
 ### TCP 连接尝试健康状态（未发布）
 
-Host > Sockets 显示固定五分钟窗口内观测到的出站 TCP 连接尝试，不受 Host 时间范围或连接筛选条件影响。初始出站 SYN 开始一次尝试，相同 SYN 重传合并计数。只有匹配的 SYN-ACK 和最终出站 ACK 都被观测到，才算成功。匹配的对端重置、十秒内未观测到完整握手，以及新的初始序列号替代旧尝试分别统计。仅入站或从连接中途开始捕获的流量不计入尝试。异常 ACK 和确认号不匹配的 SYN-ACK 即使后来恢复成功也会保留；本地纠正性 RST 不会立即结束尝试。
+Host > Sockets 显示固定五分钟窗口内观测到的出站 TCP 连接尝试，不受 Host 时间范围或连接筛选条件影响。初始出站 SYN 开始一次尝试，相同 SYN 重传合并计数。只有匹配的 SYN-ACK 和最终出站 ACK 都被观测到，才算成功，包括本机端点之间的连接，以及 SYN 数据未被接受时的 TCP Fast Open 回退。匹配的对端重置、十秒内未观测到完整握手，以及新的初始序列号替代旧尝试分别统计。仅入站或从连接中途开始捕获的流量不计入尝试。异常 ACK 和确认号不匹配的 SYN-ACK 即使后来恢复成功也会保留；本地纠正性 RST 不会立即结束尝试。
 
 无界面 `json`、`jsonl`、`jsonl-delta` 输出新增 `tcp_attempts` 对象，包括 `window_seconds`、`timeout_seconds`、`pending`、`omitted_since_clear`、`total`、`destinations` 和 `recent_issues`。增量记录中的此对象必须整体替换。已完成结果按远端套接字地址和 `ip_version` 分组，以完成时间计算窗口。计数包含 `completed`、`established`、`reset`、`no_handshake_observed`、`superseded`、`syn_retries` 和 `anomalous`（包括已恢复尝试的异常响应）。待完成尝试不是失败；滚动计数不能跨快照累加。
 
