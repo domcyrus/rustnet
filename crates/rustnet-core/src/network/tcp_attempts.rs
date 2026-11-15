@@ -3,7 +3,8 @@
 //! Only an observed initial SYN starts an attempt. Missing packets, local
 //! cancellation and asymmetric capture can all prevent observed completion;
 //! a timeout is evidence of an incomplete handshake, not proof of packet loss.
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use rustc_hash::FxBuildHasher;
+use std::collections::{BTreeMap, HashMap, VecDeque, hash_map::Entry};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -96,11 +97,34 @@ struct PendingAttempt {
     peer_end: Option<u32>,
 }
 
+impl PendingAttempt {
+    fn new(key: ConnectionKey, tcp: &TcpHeaderInfo, now: SystemTime) -> Self {
+        let syn_end = tcp.seq.wrapping_add(1).wrapping_add(tcp.payload_len);
+        Self {
+            attempt: TcpAttempt {
+                key,
+                started_at: now,
+                finished_at: now,
+                initial_sequence: tcp.seq,
+                expected_acknowledgment: syn_end,
+                last_unexpected_acknowledgment: None,
+                outcome: AttemptOutcome::NoHandshake,
+                syn_retries: 0,
+                unexpected_acks: 0,
+                invalid_syn_acks: 0,
+                local_resets: 0,
+            },
+            syn_end,
+            peer_end: None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct TcpAttemptTracker {
-    pending: HashMap<ConnectionKey, PendingAttempt>,
+    pending: HashMap<ConnectionKey, PendingAttempt, FxBuildHasher>,
     retained: VecDeque<TcpAttempt>,
-    finished_syns: HashMap<(ConnectionKey, u32), SystemTime>,
+    finished_syns: HashMap<(ConnectionKey, u32), SystemTime, FxBuildHasher>,
     next_expiration: Option<SystemTime>,
     last_sweep: Option<SystemTime>,
     cached_snapshot: Option<Arc<TcpAttemptSnapshot>>,
@@ -210,54 +234,44 @@ impl TcpAttemptTracker {
             if self.finished_syns.contains_key(&(key, tcp.seq)) {
                 return;
             }
-            if let Some(p) = self.pending.get_mut(&key)
-                && p.attempt.initial_sequence == tcp.seq
-            {
-                p.attempt.syn_retries += 1;
-                return;
-            }
-            if let Some(mut previous) = self.pending.remove(&key) {
+            let has_capacity = self.pending.len() < MAX_PENDING;
+            let previous = match self.pending.entry(key) {
+                Entry::Occupied(mut entry) => {
+                    if entry.get().attempt.initial_sequence == tcp.seq {
+                        entry.get_mut().attempt.syn_retries += 1;
+                        return;
+                    }
+                    Some(entry.insert(PendingAttempt::new(key, tcp, now)))
+                }
+                Entry::Vacant(entry) => {
+                    if !has_capacity {
+                        self.snapshot_dirty = true;
+                        self.omitted = self.omitted.saturating_add(1);
+                        return;
+                    }
+                    entry.insert(PendingAttempt::new(key, tcp, now));
+                    None
+                }
+            };
+            if let Some(mut previous) = previous {
                 previous.attempt.outcome = AttemptOutcome::Superseded;
                 previous.attempt.finished_at = now;
                 self.retain(previous.attempt);
             }
-            if self.pending.len() >= MAX_PENDING {
-                self.snapshot_dirty = true;
-                self.omitted = self.omitted.saturating_add(1);
-                return;
-            }
             self.snapshot_dirty = true;
             self.schedule_expiration(now + ATTEMPT_TIMEOUT);
-            self.pending.insert(
-                key,
-                PendingAttempt {
-                    attempt: TcpAttempt {
-                        key,
-                        started_at: now,
-                        finished_at: now,
-                        initial_sequence: tcp.seq,
-                        expected_acknowledgment: tcp
-                            .seq
-                            .wrapping_add(1)
-                            .wrapping_add(tcp.payload_len),
-                        last_unexpected_acknowledgment: None,
-                        outcome: AttemptOutcome::NoHandshake,
-                        syn_retries: 0,
-                        unexpected_acks: 0,
-                        invalid_syn_acks: 0,
-                        local_resets: 0,
-                    },
-                    syn_end: tcp.seq.wrapping_add(1).wrapping_add(tcp.payload_len),
-                    peer_end: None,
-                },
-            );
             return;
         }
-        let Some(p) = self.pending.get_mut(&key) else {
+        // Avoid hashing unrelated established packets when no attempts await replies.
+        if self.pending.is_empty() {
+            return;
+        }
+        let Entry::Occupied(mut entry) = self.pending.entry(key) else {
             return;
         };
+        let p = entry.get_mut();
         if now.duration_since(p.attempt.started_at).unwrap_or_default() >= ATTEMPT_TIMEOUT {
-            let expired = self.pending.remove(&key).expect("expired attempt exists");
+            let expired = entry.remove();
             self.finish_timeout(expired);
             return;
         }
@@ -290,7 +304,7 @@ impl TcpAttemptTracker {
             p.attempt.last_unexpected_acknowledgment = Some(tcp.ack);
         }
         if let Some(outcome) = outcome {
-            let mut p = self.pending.remove(&key).expect("pending attempt exists");
+            let mut p = entry.remove();
             p.attempt.outcome = outcome;
             p.attempt.finished_at = now;
             self.retain(p.attempt);
@@ -396,6 +410,32 @@ mod tests {
         h: TcpHeaderInfo,
     ) {
         t.record(k, &h, outgoing, at(ms));
+    }
+
+    #[test]
+    fn replacement_at_capacity_reuses_slot_and_ignores_retained_syns() {
+        let mut t = TcpAttemptTracker::default();
+        let mut k = key(false);
+        for port in 1..=MAX_PENDING {
+            k.local_addr.set_port(port as u16);
+            send(&mut t, k, 0, true, header(2, 10, 0));
+        }
+        k.local_addr.set_port(1);
+        send(&mut t, k, 1, true, header(2, 10, 0));
+        send(&mut t, k, 2, true, header(2, 20, 0));
+        // A delayed SYN from the superseded attempt cannot replace the new one.
+        send(&mut t, k, 3, true, header(2, 10, 0));
+        let s = t.snapshot(at(3));
+        assert_eq!(s.pending, MAX_PENDING);
+        assert_eq!(s.omitted, 0);
+        assert_eq!(s.total.superseded, 1);
+        assert_eq!(s.total.syn_retries, 1);
+        assert_eq!(t.pending[&k].attempt.initial_sequence, 20);
+        send(&mut t, k, 4, false, header(18, 100, 21));
+        send(&mut t, k, 5, true, header(16, 21, 101));
+        let s = t.snapshot(at(5));
+        assert_eq!(s.pending, MAX_PENDING - 1);
+        assert_eq!(s.total.established, 1);
     }
 
     #[test]

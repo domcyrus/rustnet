@@ -87,6 +87,34 @@ fn benchmark_tcp_ingestion() {
         }
         report("handshake_packets", sample, packets.len() * 8, elapsed);
 
+        let packets: Vec<_> = (0..32)
+            .flat_map(|burst| {
+                [(2, 10, 0), (18, 20, 11), (16, 11, 21)]
+                    .into_iter()
+                    .flat_map(move |(flags, seq, ack)| {
+                        (0..256).map(move |offset| {
+                            let i = burst * 256 + offset;
+                            packet(i, i % 64, flags, seq, ack)
+                        })
+                    })
+            })
+            .collect();
+        let mut elapsed = Duration::ZERO;
+        for _ in 0..8 {
+            let tracker = ConnectionTracker::new();
+            let start = Instant::now();
+            for p in &packets {
+                black_box(tracker.ingest_at(black_box(p), now));
+            }
+            elapsed += start.elapsed();
+        }
+        report(
+            "overlapping_handshake_packets",
+            sample,
+            packets.len() * 8,
+            elapsed,
+        );
+
         let packets: Vec<_> = (0..16_384).map(|i| packet(i, i % 64, 2, 10, 0)).collect();
         let tracker = ConnectionTracker::new();
         let start = Instant::now();

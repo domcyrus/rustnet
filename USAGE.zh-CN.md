@@ -1659,6 +1659,6 @@ TCP 汇总共享不可变的缓存快照，直到可见状态改变或到达超�
 cargo test --release --locked -p rustnet-core --lib benchmark_tcp_ -- --ignored --nocapture --test-threads=1
 ```
 
-`BENCH` 行依次报告工作负载、样本、操作数和耗时纳秒。将耗时除以操作数以比较样本；`RUSTNET_BENCH_SAMPLES` 默认为 7。摄取测试涵盖已建立连接、新握手和交错超时。快照测试保留 8,192 次尝试，分布在 1、64 或 8,192 个目标端点，分别测量未改变的读取和每次读取前新增一次重置的情况。更新读取的耗时包括两次数据包摄取。这些测试测量核心摄取和快照 API，不包含捕获、解析、UI 渲染、JSON 序列化或锁竞争。
+`BENCH` 行依次报告工作负载、样本、操作数和耗时纳秒。将耗时除以操作数以比较样本；`RUSTNET_BENCH_SAMPLES` 默认为 7。摄取测试涵盖已建立连接、顺序握手、每批 256 个重叠握手以及交错超时。有界尝试映射使用与连接表相同的哈希器；替换和完成操作复用已找到的条目，避免重复查找。快照测试保留 8,192 次尝试，分布在 1、64 或 8,192 个目标端点，分别测量未改变的读取和每次读取前新增一次重置的情况。更新读取的耗时包括两次数据包摄取。这些测试测量核心摄取和快照 API，不包含捕获、解析、UI 渲染、JSON 序列化或锁竞争。
 
 与没有此功能的版本比较时，将 `crates/rustnet-core/src/network/tracker_benchmarks.rs` 复制到该版本，并在其网络 `mod.rs` 注册 `#[cfg(test)] mod tracker_benchmarks;`，然后在两版本上运行 `benchmark_tcp_ingestion` 筛选器。main 没有对应的 TCP 汇总 API。保持 release 设置一致，交替运行版本，先预热，并在其他负载较低的机器上报告重复样本。
