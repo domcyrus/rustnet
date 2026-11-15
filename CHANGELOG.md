@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
 
 ### Changed
+- Reuse unchanged TCP health snapshots, preserve exact expiry deadlines, and select recent issues without sorting all retained attempts (#734)
 - Skip process ownership accounting work on the default packet ingestion path (#721)
 - Speed up executable-path conversion in headless snapshots while preserving path encoding (#721)
 - Retain only directory traversal privileges in the Windows sandbox while preserving token groups and integrity level (#721)

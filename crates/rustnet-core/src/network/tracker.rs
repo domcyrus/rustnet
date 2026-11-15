@@ -1146,10 +1146,11 @@ impl ConnectionTracker {
     }
 
     /// Outbound TCP attempt evidence over the last five minutes, on capture time.
+    /// Shares an immutable snapshot until visible state or an expiry deadline changes.
     pub fn tcp_attempt_snapshot_at(
         &self,
         now: SystemTime,
-    ) -> super::tcp_attempts::TcpAttemptSnapshot {
+    ) -> std::sync::Arc<super::tcp_attempts::TcpAttemptSnapshot> {
         self.tcp_attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

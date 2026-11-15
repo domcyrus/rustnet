@@ -1648,3 +1648,17 @@ Host > Sockets 显示固定五分钟窗口内观测到的出站 TCP 连接尝试
 在 Host > Sockets 中按 `h` 打开 TCP Attempt Health 帮助，查看计数含义、固定窗口、已恢复的异常、导出证据及诊断限制。
 
 Overview > Network Stats 也显示同一固定五分钟窗口的 TCP 握手健康状态，区分未观测、检查中、健康、异常后恢复、降级和证据不完整。捕获错误、报告的丢包或跟踪容量遗漏会覆盖健康标签。仅被替代的尝试不能确定故障。最差目标按重置或握手不完整比例排序，再比较失败次数、异常比例和异常次数；完全相同时按地址稳定排序。显示样本数量，因为小样本不能证明持续故障。健康的 IPv6 流量不会稀释 IPv4 目标的问题。侧栏可能缩短长地址，Host 和 JSON 保留完整地址。在 Overview 按 `h` 查看解释与限制。JSON 计数新增 `recovered_anomalies`，直接统计异常后成功建立连接的尝试，不从数量受限的近期问题列表推算。
+
+#### TCP 健康状态性能测量
+
+TCP 汇总共享不可变的缓存快照，直到可见状态改变或到达超时、窗口到期时间。数据包处理的全局到期扫描最多每秒一次；快照和待完成连接元组的数据包仍严格检查到期时间。重建汇总时先选出最新的 32 条问题再排序。每条导出记录仍需执行 JSON 投影和序列化。
+
+运行可选的合成 release 基准测试（不使用捕获文件或网络）：
+
+```bash
+cargo test --release --locked -p rustnet-core --lib benchmark_tcp_ -- --ignored --nocapture --test-threads=1
+```
+
+`BENCH` 行依次报告工作负载、样本、操作数和耗时纳秒。将耗时除以操作数以比较样本；`RUSTNET_BENCH_SAMPLES` 默认为 7。摄取测试涵盖已建立连接、新握手和交错超时。快照测试保留 8,192 次尝试，分布在 1、64 或 8,192 个目标端点，分别测量未改变的读取和每次读取前新增一次重置的情况。更新读取的耗时包括两次数据包摄取。这些测试测量核心摄取和快照 API，不包含捕获、解析、UI 渲染、JSON 序列化或锁竞争。
+
+与没有此功能的版本比较时，将 `crates/rustnet-core/src/network/tracker_benchmarks.rs` 复制到该版本，并在其网络 `mod.rs` 注册 `#[cfg(test)] mod tracker_benchmarks;`，然后在两版本上运行 `benchmark_tcp_ingestion` 筛选器。main 没有对应的 TCP 汇总 API。保持 release 设置一致，交替运行版本，先预热，并在其他负载较低的机器上报告重复样本。

@@ -547,7 +547,7 @@ impl App {
 
     pub(crate) fn get_tcp_attempt_snapshot(
         &self,
-    ) -> crate::network::tcp_attempts::TcpAttemptSnapshot {
+    ) -> Arc<crate::network::tcp_attempts::TcpAttemptSnapshot> {
         self.tracker.tcp_attempt_snapshot_at(SystemTime::now())
     }
 

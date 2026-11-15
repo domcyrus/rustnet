@@ -5,6 +5,7 @@
 //! a timeout is evidence of an incomplete handshake, not proof of packet loss.
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use super::protocol::tcp::TcpHeaderInfo;
@@ -100,7 +101,10 @@ pub(super) struct TcpAttemptTracker {
     pending: HashMap<ConnectionKey, PendingAttempt>,
     retained: VecDeque<TcpAttempt>,
     finished_syns: HashMap<(ConnectionKey, u32), SystemTime>,
+    next_expiration: Option<SystemTime>,
     last_sweep: Option<SystemTime>,
+    cached_snapshot: Option<Arc<TcpAttemptSnapshot>>,
+    snapshot_dirty: bool,
     clock: Option<SystemTime>,
     omitted: u64,
 }
@@ -112,7 +116,16 @@ impl TcpAttemptTracker {
         now
     }
 
+    fn schedule_expiration(&mut self, deadline: SystemTime) {
+        self.next_expiration = Some(
+            self.next_expiration
+                .map_or(deadline, |old| old.min(deadline)),
+        );
+    }
+
     fn retain(&mut self, attempt: TcpAttempt) {
+        self.snapshot_dirty = true;
+        self.schedule_expiration(attempt.finished_at + WINDOW);
         if self.retained.len() == MAX_RETAINED {
             if let Some(old) = self.retained.pop_front() {
                 self.finished_syns.remove(&(old.key, old.initial_sequence));
@@ -124,11 +137,19 @@ impl TcpAttemptTracker {
         self.retained.push_back(attempt);
     }
 
-    fn expire(&mut self, now: SystemTime) {
-        // Scan bounded pending state at most once per second, not per packet.
-        if self.last_sweep.is_some_and(|last| {
-            now.duration_since(last).unwrap_or_default() < Duration::from_secs(1)
-        }) {
+    fn expire(&mut self, now: SystemTime, exact: bool) {
+        // A removed attempt may leave an earlier deadline behind. That costs
+        // one extra scan, but never postpones a live attempt's expiration.
+        if self.next_expiration.is_none_or(|deadline| now < deadline) {
+            return;
+        }
+        // Packet ingestion sweeps at most once a second. Snapshots honor exact
+        // deadlines, but must not turn staggered timeouts into per-packet scans.
+        if !exact
+            && self.last_sweep.is_some_and(|last| {
+                now.duration_since(last).unwrap_or_default() < Duration::from_secs(1)
+            })
+        {
             return;
         }
         self.last_sweep = Some(now);
@@ -149,8 +170,24 @@ impl TcpAttemptTracker {
         // Expiration can append older timestamps, so do not assume time order.
         self.finished_syns
             .retain(|_, at| now.duration_since(*at).unwrap_or_default() < WINDOW);
+        let previous_len = self.retained.len();
         self.retained
             .retain(|a| now.duration_since(a.finished_at).unwrap_or_default() < WINDOW);
+        if self.retained.len() != previous_len {
+            self.snapshot_dirty = true;
+        }
+        self.next_expiration = self
+            .pending
+            .values()
+            .map(|p| p.attempt.started_at + ATTEMPT_TIMEOUT)
+            .chain(self.retained.iter().map(|a| a.finished_at + WINDOW))
+            .min();
+    }
+
+    fn finish_timeout(&mut self, mut p: PendingAttempt) {
+        p.attempt.finished_at = p.attempt.started_at + ATTEMPT_TIMEOUT;
+        p.attempt.outcome = AttemptOutcome::NoHandshake;
+        self.retain(p.attempt);
     }
 
     pub fn record(
@@ -161,18 +198,15 @@ impl TcpAttemptTracker {
         now: SystemTime,
     ) {
         let now = self.advance(now);
-        self.expire(now);
-        // Enforce this tuple's deadline even between global sweeps.
-        if self.pending.get(&key).is_some_and(|p| {
-            now.duration_since(p.attempt.started_at).unwrap_or_default() >= ATTEMPT_TIMEOUT
-        }) {
-            let mut expired = self.pending.remove(&key).expect("expired attempt exists");
-            expired.attempt.finished_at = expired.attempt.started_at + ATTEMPT_TIMEOUT;
-            expired.attempt.outcome = AttemptOutcome::NoHandshake;
-            self.retain(expired.attempt);
-        }
+        self.expire(now, false);
         let flags = tcp.flags;
         if outgoing && flags.syn && !flags.ack && !flags.rst && !flags.fin {
+            if self.pending.get(&key).is_some_and(|p| {
+                now.duration_since(p.attempt.started_at).unwrap_or_default() >= ATTEMPT_TIMEOUT
+            }) {
+                let expired = self.pending.remove(&key).expect("expired attempt exists");
+                self.finish_timeout(expired);
+            }
             if self.finished_syns.contains_key(&(key, tcp.seq)) {
                 return;
             }
@@ -188,9 +222,12 @@ impl TcpAttemptTracker {
                 self.retain(previous.attempt);
             }
             if self.pending.len() >= MAX_PENDING {
+                self.snapshot_dirty = true;
                 self.omitted = self.omitted.saturating_add(1);
                 return;
             }
+            self.snapshot_dirty = true;
+            self.schedule_expiration(now + ATTEMPT_TIMEOUT);
             self.pending.insert(
                 key,
                 PendingAttempt {
@@ -219,6 +256,11 @@ impl TcpAttemptTracker {
         let Some(p) = self.pending.get_mut(&key) else {
             return;
         };
+        if now.duration_since(p.attempt.started_at).unwrap_or_default() >= ATTEMPT_TIMEOUT {
+            let expired = self.pending.remove(&key).expect("expired attempt exists");
+            self.finish_timeout(expired);
+            return;
+        }
         let mut outcome = None;
         if outgoing {
             if flags.rst {
@@ -255,38 +297,49 @@ impl TcpAttemptTracker {
         }
     }
 
-    pub fn snapshot(&mut self, now: SystemTime) -> TcpAttemptSnapshot {
+    pub fn snapshot(&mut self, now: SystemTime) -> Arc<TcpAttemptSnapshot> {
         let now = self.advance(now);
-        self.last_sweep = None;
-        self.expire(now);
+        self.expire(now, true);
+        if !self.snapshot_dirty
+            && let Some(snapshot) = &self.cached_snapshot
+        {
+            return Arc::clone(snapshot);
+        }
         let mut snapshot = TcpAttemptSnapshot {
             pending: self.pending.len(),
             omitted: self.omitted,
             ..Default::default()
         };
-        for attempt in self
-            .retained
-            .iter()
-            .filter(|a| now.duration_since(a.finished_at).unwrap_or_default() < WINDOW)
-        {
+        let mut issues = Vec::new();
+        for (index, attempt) in self.retained.iter().enumerate() {
             snapshot.total.record(attempt);
             snapshot
                 .destinations
                 .entry(attempt.key.remote_addr)
                 .or_default()
                 .record(attempt);
+            if attempt.outcome != AttemptOutcome::Established
+                || attempt.unexpected_acks + attempt.invalid_syn_acks > 0
+            {
+                issues.push((index, attempt));
+            }
         }
-        let mut issues: Vec<_> = self
-            .retained
-            .iter()
-            .filter(|a| {
-                now.duration_since(a.finished_at).unwrap_or_default() < WINDOW
-                    && (a.outcome != AttemptOutcome::Established
-                        || a.unexpected_acks + a.invalid_syn_acks > 0)
-            })
-            .collect();
-        issues.sort_by_key(|a| std::cmp::Reverse(a.finished_at));
-        snapshot.recent_issues = issues.into_iter().take(32).cloned().collect();
+        // Select only the newest 32 before sorting. Retention order breaks ties
+        // deterministically, matching the previous stable full sort.
+        let order = |a: &(usize, &TcpAttempt), b: &(usize, &TcpAttempt)| {
+            b.1.finished_at.cmp(&a.1.finished_at).then(a.0.cmp(&b.0))
+        };
+        if issues.len() > 32 {
+            issues.select_nth_unstable_by(32, order);
+            issues.truncate(32);
+        }
+        issues.sort_unstable_by(order);
+        snapshot.recent_issues = issues.into_iter().map(|(_, a)| a.clone()).collect();
+        let snapshot = Arc::new(snapshot);
+        // Replace the old snapshot here so packet ingestion never frees a
+        // potentially large destination map when marking the cache dirty.
+        self.cached_snapshot = Some(Arc::clone(&snapshot));
+        self.snapshot_dirty = false;
         snapshot
     }
 }
@@ -343,6 +396,115 @@ mod tests {
         h: TcpHeaderInfo,
     ) {
         t.record(k, &h, outgoing, at(ms));
+    }
+
+    #[test]
+    fn staggered_packet_timeouts_do_not_trigger_repeated_global_sweeps() {
+        let mut t = TcpAttemptTracker::default();
+        let first = key(false);
+        let mut second = first;
+        second.local_addr.set_port(40001);
+        let mut third = first;
+        third.local_addr.set_port(40002);
+        send(&mut t, first, 0, true, header(2, 10, 0));
+        send(&mut t, second, 10, true, header(2, 10, 0));
+        send(&mut t, third, 20, true, header(2, 10, 0));
+        send(&mut t, first, 10_000, false, header(18, 20, 11));
+        assert_eq!(t.last_sweep, Some(at(10_000)));
+        send(&mut t, second, 10_010, false, header(18, 20, 11));
+        assert_eq!(t.last_sweep, Some(at(10_000)));
+        assert!(!t.pending.contains_key(&second));
+        // A read at the third deadline must still expire that pending attempt.
+        let s = t.snapshot(at(10_020));
+        assert_eq!(s.pending, 0);
+        assert_eq!(s.total.no_handshake, 3);
+    }
+
+    #[test]
+    fn snapshots_share_unchanged_state_but_expire_at_exact_deadlines() {
+        let mut t = TcpAttemptTracker::default();
+        let k = key(false);
+        let empty = t.snapshot(at(0));
+        assert!(Arc::ptr_eq(&empty, &t.snapshot(at(1))));
+        send(&mut t, k, 2, true, header(2, 10, 0));
+        let pending = t.snapshot(at(2));
+        assert_eq!(pending.pending, 1);
+        assert_eq!(empty.pending, 0);
+        assert!(Arc::ptr_eq(&pending, &t.snapshot(at(10_001))));
+        let timed_out = t.snapshot(at(10_002));
+        assert_eq!(timed_out.pending, 0);
+        assert_eq!(timed_out.total.no_handshake, 1);
+        assert_eq!(pending.pending, 1); // Existing readers keep an immutable view.
+        assert!(Arc::ptr_eq(&timed_out, &t.snapshot(at(310_001))));
+        let expired = t.snapshot(at(310_002));
+        assert_eq!(expired.total.completed, 0);
+        assert!(!Arc::ptr_eq(&timed_out, &expired));
+    }
+
+    #[test]
+    fn completion_and_capacity_omissions_invalidate_cached_snapshots() {
+        let mut t = TcpAttemptTracker::default();
+        let k = key(false);
+        send(&mut t, k, 0, true, header(2, 10, 0));
+        let pending = t.snapshot(at(0));
+        send(&mut t, k, 1, false, header(18, 20, 11));
+        send(&mut t, k, 2, true, header(16, 11, 21));
+        let completed = t.snapshot(at(2));
+        assert_eq!(completed.total.established, 1);
+        assert_eq!(completed.pending, 0);
+        assert_eq!(pending.pending, 1);
+        // Established packets and an obsolete pending deadline do not rebuild.
+        send(&mut t, k, 3, true, header(16, 12, 21));
+        assert!(Arc::ptr_eq(&completed, &t.snapshot(at(10_000))));
+        for port in 1..=MAX_PENDING {
+            let mut k = k;
+            k.local_addr.set_port(port as u16);
+            send(&mut t, k, 10_001, true, header(2, 30, 0));
+        }
+        let full = t.snapshot(at(10_001));
+        let mut extra = k;
+        extra.local_addr.set_port(50000);
+        send(&mut t, extra, 10_002, true, header(2, 30, 0));
+        let omitted = t.snapshot(at(10_002));
+        assert_eq!(full.omitted, 0);
+        assert_eq!(omitted.omitted, 1);
+        assert_eq!(omitted.pending, MAX_PENDING);
+    }
+
+    #[test]
+    fn recent_issue_selection_matches_stable_sort_with_ties_and_late_timeouts() {
+        let mut t = TcpAttemptTracker::default();
+        let k = key(false);
+        send(&mut t, k, 0, true, header(2, 10, 0));
+        let template = t.pending[&k].attempt.clone();
+        let mut t = TcpAttemptTracker::default();
+        for i in 0..100 {
+            let mut a = template.clone();
+            a.initial_sequence = i;
+            a.finished_at = at(u64::from(i * 17 % 43));
+            t.retain(a);
+        }
+        let mut expected: Vec<_> = t.retained.iter().collect();
+        expected.sort_by_key(|a| std::cmp::Reverse(a.finished_at));
+        let expected: Vec<_> = expected
+            .iter()
+            .take(32)
+            .map(|a| a.initial_sequence)
+            .collect();
+        let s = t.snapshot(at(100));
+        let actual: Vec<_> = s.recent_issues.iter().map(|a| a.initial_sequence).collect();
+        assert_eq!(actual, expected);
+        assert_eq!(s.total.completed, 100);
+        // Retention order is not timestamp order; the oldest entry expires first.
+        let after_expiry = t.snapshot(at(300_000));
+        assert_eq!(after_expiry.total.completed, 97);
+        assert_eq!(after_expiry.recent_issues.len(), 32);
+        assert!(
+            after_expiry
+                .recent_issues
+                .iter()
+                .all(|a| a.finished_at > at(0))
+        );
     }
 
     #[test]

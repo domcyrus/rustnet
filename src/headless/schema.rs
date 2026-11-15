@@ -113,7 +113,7 @@ impl SnapshotEnvelope {
                 ),
                 sandbox: SandboxSnapshot::from_app(app),
                 stats: StatsSnapshot::from_stats(&app.get_stats()),
-                tcp_attempts: TcpAttemptSummary::from(app.get_tcp_attempt_snapshot()),
+                tcp_attempts: TcpAttemptSummary::from(app.get_tcp_attempt_snapshot().as_ref()),
                 filter: filter.map(str::to_string),
                 connection_count,
                 connections,
@@ -1590,26 +1590,26 @@ struct TcpAttemptIssue {
     invalid_syn_acks: u64,
     local_resets: u64,
 }
-impl From<crate::network::tcp_attempts::TcpAttemptSnapshot> for TcpAttemptSummary {
-    fn from(s: crate::network::tcp_attempts::TcpAttemptSnapshot) -> Self {
+impl From<&crate::network::tcp_attempts::TcpAttemptSnapshot> for TcpAttemptSummary {
+    fn from(s: &crate::network::tcp_attempts::TcpAttemptSnapshot) -> Self {
         Self {
             window_seconds: crate::network::tcp_attempts::WINDOW.as_secs(),
             timeout_seconds: crate::network::tcp_attempts::ATTEMPT_TIMEOUT.as_secs(),
             pending: s.pending,
             omitted_since_clear: s.omitted,
-            total: s.total.into(),
+            total: s.total.clone().into(),
             destinations: s
                 .destinations
-                .into_iter()
+                .iter()
                 .map(|(address, counts)| TcpAttemptDestination {
                     address: address.to_string(),
                     ip_version: if address.is_ipv4() { 4 } else { 6 },
-                    counts: counts.into(),
+                    counts: counts.clone().into(),
                 })
                 .collect(),
             recent_issues: s
                 .recent_issues
-                .into_iter()
+                .iter()
                 .map(|a| TcpAttemptIssue {
                     local_address: a.key.local_addr.to_string(),
                     remote_address: a.key.remote_addr.to_string(),
@@ -1670,7 +1670,7 @@ mod tcp_attempt_json_tests {
                 local_resets: 2,
             }],
         };
-        let value = serde_json::to_value(TcpAttemptSummary::from(snapshot)).unwrap();
+        let value = serde_json::to_value(TcpAttemptSummary::from(&snapshot)).unwrap();
         assert_eq!(value["window_seconds"], 300);
         assert_eq!(value["timeout_seconds"], 10);
         assert_eq!(value["omitted_since_clear"], 3);
