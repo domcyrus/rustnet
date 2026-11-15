@@ -322,6 +322,7 @@ pub struct ConnectionTracker {
     lifecycle: RwLock<()>,
     rtt: Mutex<RttTracker>,
     dns_analytics: Mutex<DnsAnalyticsTracker>,
+    tcp_attempts: Mutex<super::tcp_attempts::TcpAttemptTracker>,
     network_events: Mutex<NetworkEventHistory>,
     quic_map: Mutex<HashMap<String, ConnectionKey>>,
     recently_closed: Mutex<HashMap<ConnectionKey, SystemTime>>,
@@ -357,6 +358,7 @@ impl ConnectionTracker {
             lifecycle: RwLock::new(()),
             rtt: Mutex::new(RttTracker::new()),
             dns_analytics: Mutex::new(DnsAnalyticsTracker::default()),
+            tcp_attempts: Mutex::new(super::tcp_attempts::TcpAttemptTracker::default()),
             network_events: Mutex::new(NetworkEventHistory::default()),
             quic_map: Mutex::new(HashMap::new()),
             recently_closed: Mutex::new(HashMap::new()),
@@ -415,6 +417,12 @@ impl ConnectionTracker {
         }
 
         let timings = self.measure_timings(parsed, now);
+        if parsed.protocol == Protocol::Tcp
+            && let Some(tcp) = &parsed.tcp_header
+            && let Ok(mut attempts) = self.tcp_attempts.lock()
+        {
+            attempts.record(parsed.connection_key(), tcp, parsed.is_outgoing, now);
+        }
 
         if parsed.protocol == Protocol::Udp
             && let Some(dpi) = &parsed.dpi_result
@@ -1137,6 +1145,17 @@ impl ConnectionTracker {
         self.historic.len()
     }
 
+    /// Outbound TCP attempt evidence over the last five minutes, on capture time.
+    pub fn tcp_attempt_snapshot_at(
+        &self,
+        now: SystemTime,
+    ) -> super::tcp_attempts::TcpAttemptSnapshot {
+        self.tcp_attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot(now)
+    }
+
     /// Return passive DNS analytics for the latest rolling 60-second window.
     pub fn dns_analytics_snapshot(&self) -> DnsAnalyticsSnapshot {
         self.dns_analytics_snapshot_at(SystemTime::now())
@@ -1199,6 +1218,9 @@ impl ConnectionTracker {
             .clear();
         if let Ok(mut tracker) = self.rtt.lock() {
             tracker.clear();
+        }
+        if let Ok(mut attempts) = self.tcp_attempts.lock() {
+            *attempts = super::tcp_attempts::TcpAttemptTracker::default();
         }
         if let Ok(mut analytics) = self.dns_analytics.lock() {
             analytics.clear();

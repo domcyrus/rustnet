@@ -635,7 +635,8 @@ fn draw_dns_questions(
 fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result<()> {
     let snapshot = ctx.app.get_socket_snapshot();
     let events = ctx.app.get_network_event_snapshot(ctx.ui_state.host_window);
-    let event_lines = network_event_lines(&events, ctx.ui_state.host_window, area.width < 100);
+    let mut event_lines = network_event_lines(&events, ctx.ui_state.host_window, area.width < 100);
+    event_lines.extend(tcp_attempt_lines(&ctx.app.get_tcp_attempt_snapshot()));
     let event_height = event_lines.len() as u16 + 1;
     let mut endpoints: Vec<&HostSocket> = snapshot
         .sockets
@@ -975,4 +976,92 @@ fn draw_endpoint_table(
         widths,
         &ctx.ui_state.host_sockets_scroll,
     );
+}
+
+fn tcp_attempt_lines(
+    snapshot: &crate::network::tcp_attempts::TcpAttemptSnapshot,
+) -> Vec<Line<'static>> {
+    let c = &snapshot.total;
+    let mut lines = vec![
+        Line::from(format!(
+            "TCP attempts (5m): {} completed, {} pending",
+            c.completed, snapshot.pending
+        )),
+        Line::from(format!(
+            "  {} established, {} reset, {} no handshake, {} superseded",
+            c.established, c.reset, c.no_handshake, c.superseded
+        )),
+    ];
+    let mut destinations: Vec<_> = snapshot
+        .destinations
+        .iter()
+        .filter(|(_, c)| c.reset + c.no_handshake + c.anomalous > 0)
+        .collect();
+    destinations.sort_by_key(|(addr, c)| {
+        (
+            std::cmp::Reverse(c.reset + c.no_handshake + c.anomalous),
+            **addr,
+        )
+    });
+    for (address, c) in destinations.iter().take(3) {
+        lines.push(Line::from(format!(
+            "  {address}: {}/{} reset or incomplete; {} anomalous, {} SYN retries",
+            c.reset + c.no_handshake,
+            c.completed,
+            c.anomalous,
+            c.syn_retries
+        )));
+    }
+    if destinations.len() > 3 {
+        lines.push(Line::from(format!(
+            "  {} more affected destinations in JSON",
+            destinations.len() - 3
+        )));
+    }
+    if snapshot.omitted > 0 {
+        lines.push(Line::from(format!(
+            "  Incomplete evidence: {} capacity omissions since clear",
+            snapshot.omitted
+        )));
+    }
+    if c.no_handshake + c.anomalous > 0 {
+        lines.push(Line::from(
+            "  Missing capture packets or local cancellation can also prevent observed completion.",
+        ));
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tcp_attempt_tests {
+    use super::*;
+    use crate::network::tcp_attempts::{AttemptCounts, TcpAttemptSnapshot};
+
+    #[test]
+    fn attempt_summary_names_evidence_and_capacity_limits() {
+        let counts = AttemptCounts {
+            completed: 3,
+            established: 1,
+            no_handshake: 2,
+            anomalous: 1,
+            ..Default::default()
+        };
+        let snapshot = TcpAttemptSnapshot {
+            total: counts.clone(),
+            pending: 2,
+            omitted: 4,
+            destinations: [("198.51.100.1:443".parse().unwrap(), counts)].into(),
+            ..Default::default()
+        };
+        let text = tcp_attempt_lines(&snapshot)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("TCP attempts (5m)"));
+        assert!(text.contains("2 no handshake"));
+        assert!(text.contains("198.51.100.1:443: 2/3"));
+        assert!(text.contains("4 capacity omissions"));
+        assert!(text.contains("Missing capture packets or local cancellation"));
+    }
 }

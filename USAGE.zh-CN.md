@@ -182,7 +182,7 @@ EOF 或读取失败会请求正常关闭并输出终态记录。`--include-histo
 
 #### Schema 约定
 
-默认 `jsonl` 和 `json` 输出格式版本为 `schema_version = 1`。每条记录都是快照对象，顶层字段为 `schema_version`、`type`、`timestamp`、`runtime`、`sandbox`、`stats`、`filter`、`connection_count` 和 `connections`。最终终止记录会将 `runtime.status` 设为 `stopping`、`stopped` 或 `stopped_with_errors`，并包含 `runtime.termination_reason` 和 `runtime.shutdown`。连接记录涵盖端点、进程归属、流量、各协议计时、GeoIP，以及可选的 Kubernetes 元数据。`rtt` 对象以毫秒为单位提供当前值、初始值、平滑 TCP 值，以及 DNS、LLMNR、NetBIOS、ICMP echo、STUN 和 NTP 计时。可选的增强与计时字段在被发现前保持为 null；关闭期间排空的连接可能在进程、GeoIP 或 Kubernetes 增强完成前就出现在最终记录中。使用方必须根据 `schema_version` 选择解析逻辑，并允许出现新增的未知字段。
+默认 `jsonl` 和 `json` 输出格式版本为 `schema_version = 1`。每条记录都是快照对象，顶层字段为 `schema_version`、`type`、`timestamp`、`runtime`、`sandbox`、`stats`、`tcp_attempts`、`filter`、`connection_count` 和 `connections`。最终终止记录会将 `runtime.status` 设为 `stopping`、`stopped` 或 `stopped_with_errors`，并包含 `runtime.termination_reason` 和 `runtime.shutdown`。连接记录涵盖端点、进程归属、流量、各协议计时、GeoIP，以及可选的 Kubernetes 元数据。`rtt` 对象以毫秒为单位提供当前值、初始值、平滑 TCP 值，以及 DNS、LLMNR、NetBIOS、ICMP echo、STUN 和 NTP 计时。可选的增强与计时字段在被发现前保持为 null；关闭期间排空的连接可能在进程、GeoIP 或 Kubernetes 增强完成前就出现在最终记录中。使用方必须根据 `schema_version` 选择解析逻辑，并允许出现新增的未知字段。
 
 开发版本会复用未变化的无界面历史连接记录的 JSON 编码。缓存最多保留 10,000 条记录和 16 MiB 的连接 JSON 编码，以及对应的投影字段和管理数据。它会比较所有导出的连接字段，因此延迟到达的元数据和最终计数仍会更新。在 `jsonl` 和 `json` 模式下，每条输出记录仍然是版本 1 的完整快照；快照构建开销和输出大小仍会随可见连接数量增长。
 
@@ -1636,3 +1636,15 @@ cat capture.pcap.connections.jsonl | jq -r '[.protocol, .local_addr, .remote_add
 # 在 Wireshark 中按连接元组过滤
 # ip.addr == 142.250.80.46 && tcp.port == 443
 ```
+
+### TCP 连接尝试健康状态（未发布）
+
+Host > Sockets 显示固定五分钟窗口内观测到的出站 TCP 连接尝试，不受 Host 时间范围或连接筛选条件影响。初始出站 SYN 开始一次尝试，相同 SYN 重传合并计数。只有匹配的 SYN-ACK 和最终出站 ACK 都被观测到，才算成功。匹配的对端重置、十秒内未观测到完整握手，以及新的初始序列号替代旧尝试分别统计。仅入站或从连接中途开始捕获的流量不计入尝试。异常 ACK 和确认号不匹配的 SYN-ACK 即使后来恢复成功也会保留；本地纠正性 RST 不会立即结束尝试。
+
+无界面 `json`、`jsonl`、`jsonl-delta` 输出新增 `tcp_attempts` 对象，包括 `window_seconds`、`timeout_seconds`、`pending`、`omitted_since_clear`、`total`、`destinations` 和 `recent_issues`。增量记录中的此对象必须整体替换。已完成结果按远端套接字地址和 `ip_version` 分组，以完成时间计算窗口。计数包含 `completed`、`established`、`reset`、`no_handshake_observed`、`superseded`、`syn_retries` 和 `anomalous`（包括已恢复尝试的异常响应）。待完成尝试不是失败；滚动计数不能跨快照累加。
+
+最多保留 4,096 个待完成和 8,192 个已完成尝试，每次快照最多导出 32 条近期问题。容量遗漏计入 `omitted_since_clear`，不算网络失败；清除连接历史会重置状态。十秒是观测期限，不是系统连接超时；已完成记录保留期间，相同的迟到 SYN 重传不会重复计数。捕获丢包、单向可见性、本地取消和捕获停止都可能导致无法观测到完整握手。解读前请检查捕获状态和丢包计数。这些观测无法定位故障路由器、NAT 或远端主机；DNS 传输与 IPv4/IPv6 应用成功率是不同指标。
+
+在 Host > Sockets 中按 `h` 打开 TCP Attempt Health 帮助，查看计数含义、固定窗口、已恢复的异常、导出证据及诊断限制。
+
+Overview > Network Stats 也显示同一固定五分钟窗口的 TCP 握手健康状态，区分未观测、检查中、健康、异常后恢复、降级和证据不完整。捕获错误、报告的丢包或跟踪容量遗漏会覆盖健康标签。仅被替代的尝试不能确定故障。最差目标按重置或握手不完整比例排序，再比较失败次数、异常比例和异常次数；完全相同时按地址稳定排序。显示样本数量，因为小样本不能证明持续故障。健康的 IPv6 流量不会稀释 IPv4 目标的问题。侧栏可能缩短长地址，Host 和 JSON 保留完整地址。在 Overview 按 `h` 查看解释与限制。JSON 计数新增 `recovered_anomalies`，直接统计异常后成功建立连接的尝试，不从数量受限的近期问题列表推算。

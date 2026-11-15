@@ -20,5 +20,5 @@ pub use rustnet_capture as capture;
 // Re-export the analysis modules used by the binary and its tests.
 pub use rustnet_core::network::{
     bogon, dns, dns_analytics, geoip, interface_stats, link_layer, neighbors, oui, parser,
-    process_activity, services, time_window, tracker, types, util,
+    process_activity, services, tcp_attempts, time_window, tracker, types, util,
 };

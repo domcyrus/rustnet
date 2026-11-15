@@ -349,7 +349,7 @@ const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
 const TRAFFIC_MIN_HEIGHT: u16 = 4;
 /// Compact Security keeps its heading and overall sandbox status visible.
 const COMPACT_SECURITY_HEIGHT: u16 = 2;
-const NETWORK_STATS_HEIGHT: u16 = 6;
+const NETWORK_STATS_HEIGHT: u16 = 11;
 const SECTION_GAP_HEIGHT: u16 = 1;
 
 /// The sidebar has `SYSTEM_PANEL_WIDTH` minus the rule and padding to play
@@ -859,6 +859,77 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
     ])
 }
 
+/// Conservative evidence summary: capture limitations override a healthy label.
+fn tcp_handshake_lines(
+    snapshot: &crate::network::tcp_attempts::TcpAttemptSnapshot,
+    capture_incomplete: bool,
+) -> Vec<Line<'static>> {
+    let c = &snapshot.total;
+    let failed = c.reset + c.no_handshake;
+    let (status, color) = if capture_incomplete || snapshot.omitted > 0 {
+        ("incomplete evidence", theme::warn())
+    } else if failed > 0 {
+        ("degraded", theme::warn())
+    } else if c.recovered_anomalies > 0 {
+        ("recovered anomalies", theme::warn())
+    } else if c.superseded > 0 {
+        ("incomplete evidence", theme::warn())
+    } else if snapshot.pending > 0 {
+        ("checking", theme::muted())
+    } else if c.established > 0 {
+        ("healthy", theme::ok())
+    } else {
+        ("not observed", theme::muted())
+    };
+    // Highest observed failure fraction first; ties favor more evidence.
+    // Successful IPv6 destinations cannot dilute a failing IPv4 destination.
+    let worst = snapshot
+        .destinations
+        .iter()
+        .filter(|(_, c)| c.reset + c.no_handshake + c.anomalous > 0)
+        .max_by(|(addr_a, a), (addr_b, b)| {
+            let fa = u128::from(a.reset + a.no_handshake);
+            let fb = u128::from(b.reset + b.no_handshake);
+            (fa * u128::from(b.completed.max(1)))
+                .cmp(&(fb * u128::from(a.completed.max(1))))
+                .then_with(|| fa.cmp(&fb))
+                .then_with(|| {
+                    (u128::from(a.anomalous) * u128::from(b.completed.max(1)))
+                        .cmp(&(u128::from(b.anomalous) * u128::from(a.completed.max(1))))
+                })
+                .then_with(|| a.anomalous.cmp(&b.anomalous))
+                .then_with(|| addr_b.cmp(addr_a))
+        });
+    let mut lines = vec![
+        Line::from(vec![
+            Span::raw("TCP (5m): "),
+            Span::styled(status, theme::fg(color)),
+        ]),
+        Line::from(format!("{}/{} reset/incomplete", failed, c.completed)),
+        Line::from(format!(
+            "{} recovered · {} pending",
+            c.recovered_anomalies, snapshot.pending
+        )),
+    ];
+    if let Some((address, counts)) = worst {
+        lines.push(Line::from(truncate_with_ellipsis(
+            &format!("Worst: {address}"),
+            usize::from(SYSTEM_PANEL_WIDTH) - 3,
+        )));
+        lines.push(Line::from(format!(
+            "{}/{} failed · {} anomalous",
+            counts.reset + counts.no_handshake,
+            counts.completed,
+            counts.anomalous
+        )));
+    } else {
+        lines.push(Line::from("Worst: none observed"));
+        lines.push(Line::from("Details: Host > Sockets"));
+    }
+
+    lines
+}
+
 /// Effective-UID privilege line shared by the Linux and macOS Security
 /// sections. (Windows reports Administrator status instead.)
 #[cfg(any(
@@ -1297,7 +1368,7 @@ fn draw_stats_panel(
         .total_tcp_fast_retransmits
         .load(std::sync::atomic::Ordering::Relaxed);
 
-    let network_stats_text: Vec<Line> = vec![
+    let mut network_stats_text: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("Network Stats ", theme::bold_fg(theme::heading())),
             Span::styled("(active / total)", theme::fg(theme::muted())),
@@ -1323,6 +1394,24 @@ fn draw_stats_panel(
             connection_counts.tcp_flows_with_analytics
         )),
     ];
+
+    let capture_incomplete = app.capture_error().is_some()
+        || stats
+            .packets_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+        || stats
+            .capture_packets_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+        || stats
+            .interface_packets_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0;
+    network_stats_text.splice(
+        2..2,
+        tcp_handshake_lines(&app.get_tcp_attempt_snapshot(), capture_incomplete),
+    );
 
     let security_heading = if compact_security {
         Line::from(vec![
@@ -1748,8 +1837,8 @@ mod tests {
 
     #[test]
     fn security_details_only_use_rows_left_after_traffic_minimum() {
-        assert!(!security_details_fit(37, 14, 11));
-        assert!(security_details_fit(38, 14, 11));
+        assert!(!security_details_fit(42, 14, 11));
+        assert!(security_details_fit(43, 14, 11));
     }
 
     #[test]
@@ -1981,5 +2070,115 @@ mod tests {
         assert!(matches!(effects.as_deref(), Some([Effect::Regroup])));
         assert!(!ctx.ui_state.expanded_groups.contains("alpha"));
         assert!(ctx.ui_state.is_group_selected());
+    }
+}
+
+#[cfg(test)]
+mod tcp_handshake_tests {
+    use super::*;
+    use crate::network::tcp_attempts::{AttemptCounts, TcpAttemptSnapshot};
+
+    fn text(s: &TcpAttemptSnapshot, incomplete: bool) -> String {
+        let lines = tcp_handshake_lines(s, incomplete);
+        assert_eq!(lines.len(), 5);
+        assert!(lines[0].to_string().starts_with("TCP (5m): "));
+        assert!(lines[0].width() <= usize::from(SYSTEM_PANEL_WIDTH) - 3);
+        lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn distinguishes_pending_recovery_failures_and_incomplete_evidence() {
+        let mut s = TcpAttemptSnapshot::default();
+        assert!(text(&s, false).contains("not observed"));
+        s.pending = 1;
+        assert!(text(&s, false).contains("checking"));
+        s.pending = 0;
+        s.total.completed = 4;
+        s.total.established = 4;
+        assert!(text(&s, false).contains("healthy"));
+        s.total.anomalous = 1;
+        s.total.recovered_anomalies = 1;
+        assert!(text(&s, false).contains("recovered anomalies"));
+        s.total.no_handshake = 1;
+        assert!(text(&s, false).contains("degraded"));
+        assert!(text(&s, true).contains("incomplete evidence"));
+        s.omitted = 1;
+        assert!(text(&s, false).contains("incomplete evidence"));
+        s = TcpAttemptSnapshot::default();
+        s.total.superseded = 1;
+        assert!(text(&s, false).contains("incomplete evidence"));
+    }
+
+    #[test]
+    fn worst_destination_is_not_hidden_by_healthy_ipv6_or_recovered_anomalies() {
+        let bad = AttemptCounts {
+            completed: 36,
+            established: 31,
+            no_handshake: 5,
+            anomalous: 5,
+            ..Default::default()
+        };
+        let recovered = AttemptCounts {
+            completed: 36,
+            established: 36,
+            anomalous: 4,
+            recovered_anomalies: 4,
+            ..Default::default()
+        };
+        let healthy = AttemptCounts {
+            completed: 72,
+            established: 72,
+            ..Default::default()
+        };
+        let s = TcpAttemptSnapshot {
+            total: AttemptCounts {
+                completed: 144,
+                established: 139,
+                no_handshake: 5,
+                anomalous: 9,
+                recovered_anomalies: 4,
+                ..Default::default()
+            },
+            destinations: [
+                ("192.0.2.10:443".parse().unwrap(), bad),
+                ("192.0.2.20:443".parse().unwrap(), recovered),
+                ("[2001:db8::1]:443".parse().unwrap(), healthy),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let rendered = text(&s, false);
+        assert!(rendered.contains("Worst: 192.0.2.10:443"));
+        assert!(rendered.contains("5/36 failed"));
+        assert!(rendered.contains("4 recovered"));
+        assert!(
+            tcp_handshake_lines(&s, false)
+                .iter()
+                .all(|line| line.width() <= usize::from(SYSTEM_PANEL_WIDTH) - 3)
+        );
+    }
+
+    #[test]
+    fn ranking_prefers_failure_fraction_then_sample_evidence() {
+        let mut s = TcpAttemptSnapshot::default();
+        for (address, completed, failures) in [
+            ("192.0.2.1:443", 100, 10),
+            ("192.0.2.2:443", 10, 5),
+            ("192.0.2.3:443", 20, 10),
+        ] {
+            s.destinations.insert(
+                address.parse().unwrap(),
+                AttemptCounts {
+                    completed,
+                    no_handshake: failures,
+                    ..Default::default()
+                },
+            );
+        }
+        assert!(text(&s, false).contains("Worst: 192.0.2.3:443"));
     }
 }

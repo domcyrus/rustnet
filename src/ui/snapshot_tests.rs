@@ -855,7 +855,7 @@ fn overview_system_panel_compacts_security_on_short_terminals() {
 fn overview_system_panel_expands_security_when_space_returns() {
     let app = test_app();
     let connections = overview_connections();
-    let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 36);
+    let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 42);
 
     assert!(!output.contains("Security (compact)"));
     assert!(output.contains("No restrictions active"));

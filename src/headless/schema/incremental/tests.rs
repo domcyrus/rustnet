@@ -331,3 +331,23 @@ fn executable_paths_keep_old_baselines_and_detect_replacement() {
         }
     }
 }
+
+#[test]
+fn tcp_attempt_summary_replaces_on_delta_even_without_connection_changes() {
+    let app = app_with_connections();
+    let now = Instant::now();
+    let mut encoder = IncrementalEncoder::default();
+    let mut consumer = Consumer::default();
+    assert_reconstructs(&mut encoder, &mut consumer, snapshot(&app), now);
+    let mut next = snapshot(&app);
+    next.tcp_attempts.pending = 4;
+    next.tcp_attempts.total.no_handshake_observed = 2;
+    next.tcp_attempts.total.completed = 2;
+    let record = assert_reconstructs(&mut encoder, &mut consumer, next, now);
+    assert_eq!(record["type"], "delta");
+    assert_eq!(record["connections"], serde_json::json!([]));
+    assert_eq!(record["tcp_attempts"]["pending"], 4);
+    assert_eq!(record["tcp_attempts"]["total"]["no_handshake_observed"], 2);
+    let cleared = assert_reconstructs(&mut encoder, &mut consumer, snapshot(&app), now);
+    assert_eq!(cleared["tcp_attempts"]["total"]["completed"], 0);
+}

@@ -1,5 +1,5 @@
 ---
-source: src/ui/mod.rs
+source: src/ui/snapshot_tests.rs
 expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
@@ -20,11 +20,11 @@ ICMP administratively prohibited                               0 / 0            
 ICMP packet too big / frag needed                              0 / 0                     0 / 1                                              
 ICMP time exceeded                                             0 / 0                     0 / 1                                              
 ICMP parameter problem                                         0 / 0                     0 / 1                                              
+TCP attempts (5m): 0 completed, 0 pending                                                                                                   
+  0 established, 0 reset, 0 no handshake, 0 superseded                                                                                      
                                                                                                                                             
 ▎ Listening and Bound Endpoints  0 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
 Proto   State      Local endpoint                        Peer                                 Service             PID Process               
-                                                                                                                                            
-                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

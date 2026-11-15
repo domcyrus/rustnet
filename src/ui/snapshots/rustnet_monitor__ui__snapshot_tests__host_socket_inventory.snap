@@ -1,5 +1,5 @@
 ---
-source: src/ui/mod.rs
+source: src/ui/snapshot_tests.rs
 expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
@@ -13,13 +13,13 @@ Observed RTT  1 samples   average 24ms   max 24ms
 ▎ Observed network events ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 60s / total (since startup) · captured packets                                                                                              
 No events observed                                                                                                                          
+TCP attempts (5m): 0 completed, 0 pending                                                                                                   
+  0 established, 0 reset, 0 no handshake, 0 superseded                                                                                      
                                                                                                                                             
 ▎ Listening and Bound Endpoints  2 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
 Proto   State      Local endpoint                        Peer                                 Service             PID Process               
 TCP     LISTEN     0.0.0.0:8080                          -                                    webcache           4242 web-server            
 UDP     BOUND      127.0.0.1:53                          -                                    domain               53 resolver              
-                                                                                                                                            
-                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
