@@ -15,6 +15,7 @@
 - [从发布包安装](#installing-from-release-packages)
   - [macOS DMG 安装](#macos-dmg-installation)
   - [Windows MSI 安装](#windows-msi-installation)
+  - [Windows WinGet 安装](#windows-winget-installation)
   - [Windows Chocolatey 安装](#windows-chocolatey-installation)
   - [Windows Scoop 安装](#windows-scoop-installation)
   - [Linux 包安装](#linux-package-installation)
@@ -85,9 +86,26 @@
    - 如果未安装 Npcap 或无法加载 Npcap，RustNet 会显示一条有用的错误消息及安装说明
    - 注意：根据你的 Npcap 安装设置，你可能需要或不需要 Administrator 特权
 
+### Windows WinGet 安装<a id="windows-winget-installation"></a>
+
+在 PowerShell 或命令提示符中使用 WinGet 安装 RustNet：
+
+```powershell
+winget install --id domcyrus.RustNet --exact --source winget
+```
+
+安装后打开新的终端，验证已安装的版本并运行 RustNet：
+
+```powershell
+rustnet --version
+rustnet
+```
+
+**注意：** 请单独安装 [Npcap](https://npcap.com)。RustNet v1.6.0 需要启用 **"WinPcap API compatible mode"**。自 v1.7.0 起支持 Npcap 默认设置。
+
 ### Windows Chocolatey 安装<a id="windows-chocolatey-installation"></a>
 
-在 Windows 上安装 RustNet 最简单的方式是通过 [Chocolatey](https://community.chocolatey.org/packages/rustnet)：
+在 Windows 上通过 [Chocolatey](https://community.chocolatey.org/packages/rustnet) 安装 RustNet：
 
 ```powershell
 # 在 Administrator PowerShell 中运行

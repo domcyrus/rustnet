@@ -77,7 +77,8 @@ v1.7.0 修复了 ARM DEB 与旧版 glibc 及 Debian 13 time64 库的兼容性。
 | Fedora 42+ | `sudo dnf copr enable domcyrus/rustnet`<br>`sudo dnf install rustnet` |
 | Arch Linux | `sudo pacman -S rustnet` |
 | Alpine Linux (edge/community) | `apk add rustnet` |
-| Windows | `choco install rustnet` 或 `scoop install rustnet` |
+| Windows (WinGet) | `winget install --id domcyrus.RustNet --exact --source winget` |
+| Windows (Chocolatey / Scoop) | `choco install rustnet` 或 `scoop install rustnet` |
 | Cargo | `cargo install rustnet-monitor` |
 | Nix / NixOS | `nix-shell -p rustnet` |
 

@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stop counting one-byte TCP keepalive probes as retransmits or out-of-order segments (#713)
 
 ### Documentation
+- Add WinGet installation instructions to the READMEs and installation guides
 - Document Resolute `amd64v3` PPA builds, requesting missing builds for existing releases, and verifying publication without a client architecture override (#727)
 - Add release-mode headless snapshot profiling with PCAP replay and controlled history/payload workloads (#720)
 - Consolidate terminal guidance into concise usage documentation in English, Chinese, and Japanese (#683)
