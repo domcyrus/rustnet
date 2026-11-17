@@ -77,7 +77,8 @@ v1.7.0 では、ARM DEB と古い glibc および Debian 13 の time64 ライブ
 | Fedora 42+ | `sudo dnf copr enable domcyrus/rustnet`<br>`sudo dnf install rustnet` |
 | Arch Linux | `sudo pacman -S rustnet` |
 | Alpine Linux (edge/community) | `apk add rustnet` |
-| Windows | `choco install rustnet` または `scoop install rustnet` |
+| Windows (WinGet) | `winget install --id domcyrus.RustNet --exact --source winget` |
+| Windows (Chocolatey / Scoop) | `choco install rustnet` または `scoop install rustnet` |
 | Cargo | `cargo install rustnet-monitor` |
 | Nix / NixOS | `nix-shell -p rustnet` |
 

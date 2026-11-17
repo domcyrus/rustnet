@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0
 
 ### Documentation
+- Add WinGet installation instructions to the READMEs and installation guides
 - Consolidate terminal guidance into concise usage documentation in English, Chinese, and Japanese (#683)
 - Add Repology packaging badges, Alpine edge installation instructions, and credit the Alpine maintainer (#671)
 - Refresh the demo GIF and screenshots for v1.7.0, including Host sockets and DNS analytics
