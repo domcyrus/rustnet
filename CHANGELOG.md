@@ -8,12 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- Limit Npcap SDK ZIP support to Deflate, removing unused encryption and compression dependencies (#718)
 - Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
 
 ### Changed
+- Skip process ownership accounting work on the default packet ingestion path (#721)
+- Speed up executable-path conversion in headless snapshots while preserving path encoding (#721)
+- Retain only directory traversal privileges in the Windows sandbox while preserving token groups and integrity level (#721)
+- Avoid allocating idle rate strings in the UI while preserving rate labels and placeholders (#429)
+- Reuse unchanged historic headless connection JSON with a bounded cache while preserving full snapshots and late metadata updates (#709)
+- Share DNS/RTT pending-request bookkeeping, procfs socket parsing, and JSON log construction while preserving protocol and output behavior (#699)
+- Remove redundant `IngestOutcome` timing fields and the `network::platform` shim; library callers read retained timings from `Connection` and import host lookup from `rustnet_host` (#699)
 - Run Windows CI tests independently and start DEB installation checks after GNU/Linux builds, preserving all existing checks (#686)
+- Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
+- Add headless automation controls, opt-in full metadata and capture accounting, and guarded Linux executable retention (#721)
+- Add opt-in incremental headless JSONL with sequence checks, bounded baselines, and periodic full snapshots for resynchronization (#719)
 - Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible
 - Show per-resolver DNS health, retries, pending age, selectable 60s/5m/1h/since-startup windows, and 15-minute recent issue evidence in Host
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
@@ -22,14 +33,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Link Windows synchronization APIs explicitly to prevent x86 startup failures and x64 test crashes caused by enclave DLL imports (#731)
+- Remove redundant homepage metadata to prevent Cargo manifest warnings when building from source (#731)
+- Validate complete DNS questions and recognize STUN on port 53 before DNS to prevent false resolver failures (#722)
+- Keep headless shutdown bounded when stderr or account-name services stall, using numeric account IDs until background lookups finish (#721)
+- Discard pending TCP RTT probes on one-byte keepalives to prevent inflated or ambiguous timing samples after missed ACKs or last-byte retransmissions
 - Match local IPv4/IPv6 DNS stub replies correctly and prevent healthy resolvers from hiding a failing secondary resolver
 - Fall back to a pinned, checksum-verified Npcap SDK mirror when the primary download fails during Windows builds or CI test setup.
 - Stop classifying successful DNS ANY answers as NODATA in Details and passive DNS statistics (#689)
 - Preserve FreeBSD IPv6 wildcard bindings when logging local port status (#682)
 - Fix Fedora Rawhide aarch64 RPM builds with Linux 7.3 headers and bundled libbpf 1.7.0
+- Stop counting one-byte TCP keepalive probes as retransmits or out-of-order segments (#713)
 
 ### Documentation
 - Add WinGet installation instructions to the READMEs and installation guides
+- Document Resolute `amd64v3` PPA builds, requesting missing builds for existing releases, and verifying publication without a client architecture override (#727)
+- Add release-mode headless snapshot profiling with PCAP replay and controlled history/payload workloads (#720)
 - Consolidate terminal guidance into concise usage documentation in English, Chinese, and Japanese (#683)
 - Add Repology packaging badges, Alpine edge installation instructions, and credit the Alpine maintainer (#671)
 - Refresh the demo GIF and screenshots for v1.7.0, including Host sockets and DNS analytics

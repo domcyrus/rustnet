@@ -4,8 +4,8 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, RwLock};
 use std::time::{Instant, SystemTime};
 
 use crate::network::types::{Connection, GraphScale, GraphScroll, Protocol};
@@ -60,6 +60,8 @@ pub struct Config {
     pub refresh_interval: u64,
     /// Enable deep packet inspection
     pub enable_dpi: bool,
+    /// Collect lifetime capture coverage, published once per processor batch.
+    pub capture_accounting: bool,
     /// BPF filter for packet capture
     pub bpf_filter: Option<String>,
     /// JSON log file path for connection events
@@ -92,6 +94,7 @@ impl Default for Config {
             filter_localhost: true,
             refresh_interval: 500,
             enable_dpi: true,
+            capture_accounting: false,
             bpf_filter: None, // No filter by default to see all packets
             json_log_file: None,
             pcap_export_file: None,
@@ -164,9 +167,37 @@ impl ConnectionCounts {
     }
 }
 
+/// Lifetime capture coverage, all measured in original captured frame bytes.
+/// Attribution records ownership at packet processing time, without later revision.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct CaptureAccounting {
+    pub captured: u64,
+    pub tracked_received: u64,
+    pub tracked_sent: u64,
+    pub attributed_received: u64,
+    pub attributed_sent: u64,
+}
+
+impl CaptureAccounting {
+    pub(super) fn record_tracked(&mut self, bytes: u64, outgoing: bool, attributed: bool) {
+        if outgoing {
+            self.tracked_sent += bytes;
+            if attributed {
+                self.attributed_sent += bytes;
+            }
+        } else {
+            self.tracked_received += bytes;
+            if attributed {
+                self.attributed_received += bytes;
+            }
+        }
+    }
+}
+
 /// Application statistics
 #[derive(Debug)]
 pub struct AppStats {
+    capture_accounting: Option<Mutex<CaptureAccounting>>,
     /// Packets delivered by the capture backend since startup, before queue
     /// drops, attribution gating, parsing, or connection tracking.
     pub packets_captured: AtomicU64,
@@ -207,6 +238,7 @@ pub struct AppStats {
 impl Default for AppStats {
     fn default() -> Self {
         Self {
+            capture_accounting: None,
             packets_captured: AtomicU64::new(0),
             bytes_captured: AtomicU64::new(0),
             packets_processed: AtomicU64::new(0),
@@ -235,6 +267,43 @@ impl Default for AppStats {
 }
 
 impl AppStats {
+    pub(super) fn with_capture_accounting(enabled: bool) -> Self {
+        Self {
+            capture_accounting: enabled.then(Mutex::default),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn capture_accounting_enabled(&self) -> bool {
+        self.capture_accounting.is_some()
+    }
+
+    pub fn capture_accounting(&self) -> Option<CaptureAccounting> {
+        let totals = self
+            .capture_accounting
+            .as_ref()?
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Capture increments this existing lifetime counter before queueing each
+        // packet. Read it after locking the published tracked totals so a
+        // snapshot cannot report more tracked bytes than captured bytes.
+        Some(CaptureAccounting {
+            captured: self.bytes_captured.load(Ordering::Relaxed),
+            ..*totals
+        })
+    }
+
+    pub(super) fn publish_capture_accounting(&self, batch: CaptureAccounting) {
+        let Some(accounting) = &self.capture_accounting else {
+            return;
+        };
+        let mut totals = accounting.lock().unwrap_or_else(|e| e.into_inner());
+        totals.tracked_received += batch.tracked_received;
+        totals.tracked_sent += batch.tracked_sent;
+        totals.attributed_received += batch.attributed_received;
+        totals.attributed_sent += batch.attributed_sent;
+    }
+
     /// Session counters cleared by the UI, in declaration order. Lifetime
     /// capture totals and output failures are deliberately excluded.
     fn counters(&self) -> [&AtomicU64; 19] {
@@ -271,6 +340,7 @@ impl AppStats {
     /// Copy of the current counter values and last-update timestamp.
     pub(crate) fn snapshot(&self) -> AppStats {
         let snapshot = AppStats {
+            capture_accounting: self.capture_accounting().map(Mutex::new),
             packets_captured: AtomicU64::new(self.packets_captured.load(Ordering::Relaxed)),
             bytes_captured: AtomicU64::new(self.bytes_captured.load(Ordering::Relaxed)),
             last_update: RwLock::new(*self.last_update.read().unwrap()),
@@ -406,6 +476,44 @@ mod conn_rate_history_tests {
 #[cfg(test)]
 mod app_stats_tests {
     use super::*;
+
+    #[test]
+    fn capture_coverage_uses_frame_bytes_and_survives_connection_counter_resets() {
+        let stats = AppStats::with_capture_accounting(true);
+        stats.bytes_captured.store(1000, Ordering::Relaxed);
+        let mut batch = CaptureAccounting::default();
+        batch.record_tracked(200, false, true);
+        batch.record_tracked(300, true, false);
+        batch.record_tracked(100, true, true);
+        assert_eq!(stats.capture_accounting().unwrap().tracked_sent, 0);
+        stats.publish_capture_accounting(batch);
+        let copy = stats.snapshot();
+        stats.reset_counters();
+        stats.bytes_captured.fetch_add(50, Ordering::Relaxed);
+        assert_eq!(
+            stats.capture_accounting().unwrap(),
+            CaptureAccounting {
+                captured: 1050,
+                tracked_received: 200,
+                tracked_sent: 400,
+                attributed_received: 200,
+                attributed_sent: 100,
+            }
+        );
+        assert_eq!(copy.capture_accounting().unwrap().captured, 1000);
+    }
+
+    #[test]
+    fn capture_accounting_is_unavailable_by_default() {
+        let stats = AppStats::default();
+        stats.bytes_captured.store(1000, Ordering::Relaxed);
+        stats.publish_capture_accounting(CaptureAccounting {
+            tracked_sent: 100,
+            ..CaptureAccounting::default()
+        });
+        assert_eq!(stats.capture_accounting(), None);
+        assert_eq!(stats.snapshot().capture_accounting(), None);
+    }
 
     #[test]
     fn snapshots_all_counters_and_resets_only_session_counters() {

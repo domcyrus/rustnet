@@ -944,7 +944,7 @@ mod tests {
         ApplicationProtocol, Connection, DnsInfo, DnsQueryType, DpiInfo, Protocol, ProtocolState,
         QuicInfo, TcpState,
     };
-    use crate::ui::test_support::local_tcp;
+    use crate::test_support::local_tcp;
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
     fn ids(columns: &[Column]) -> Vec<ColumnId> {

@@ -186,7 +186,8 @@ impl Default for TrackerConfig {
 ///
 /// Returned so callers can layer their own concerns (global statistics,
 /// structured logging, DNS enrichment) on top of the core table update without
-/// the tracker needing to know about them.
+/// the tracker needing to know about them. Protocol timing measurements are
+/// retained on the [`Connection`] stored under [`key`](Self::key).
 #[derive(Debug, Clone)]
 pub struct IngestOutcome {
     /// The (possibly QUIC-coalesced) key under which the connection is stored.
@@ -210,32 +211,9 @@ pub struct IngestOutcome {
     pub out_of_order: u64,
     /// New TCP fast-retransmits detected by this packet.
     pub fast_retransmits: u64,
-    /// An RTT sample, if this packet completed a handshake round trip: a TCP
-    /// SYN-ACK matching a prior SYN, or a QUIC handshake packet answering one
-    /// sent the other way.
-    pub measured_rtt: Option<Duration>,
-    /// The latest completed DNS query→response round trip, if this packet was
-    /// a response matching a pending query by transaction ID.
-    pub dns_response_time: Option<Duration>,
-    /// The first completed LLMNR query-to-response round trip, if this packet
-    /// was a response matching a pending multicast query by transaction ID.
-    pub llmnr_response_time: Option<Duration>,
-    /// The latest completed NetBIOS request-to-response round trip, if this
-    /// packet matched a pending request by transaction ID.
-    pub netbios_response_time: Option<Duration>,
-    /// The latest completed ICMP echo round trip, if this packet was a reply
-    /// matching an outgoing request by identifier and sequence number.
-    pub icmp_echo_rtt: Option<Duration>,
-    /// The latest completed STUN request→response round trip, if this packet
-    /// was a response matching a pending request by transaction ID.
-    pub stun_rtt: Option<Duration>,
-    /// The latest completed NTP request→response round trip, if this packet
-    /// was a server response echoing a pending client transmit timestamp.
-    pub ntp_rtt: Option<Duration>,
 }
 
-/// Timing measurements extracted from one packet, carried together through
-/// the connection-table update into the resulting [`IngestOutcome`].
+/// Timing measurements extracted from one packet and applied to its connection.
 #[derive(Clone, Copy, Default)]
 struct PacketTimings {
     measured_rtt: Option<Duration>,
@@ -247,11 +225,9 @@ struct PacketTimings {
     ntp_rtt: Option<Duration>,
 }
 
-impl PacketTimings {
-    /// An [`IngestOutcome`] carrying these timings, with every other field at
-    /// its quiescent value for the caller to override via struct update.
-    fn outcome(self, key: ConnectionKey) -> IngestOutcome {
-        IngestOutcome {
+impl IngestOutcome {
+    fn new(key: ConnectionKey) -> Self {
+        Self {
             key,
             created: false,
             dropped: false,
@@ -260,13 +236,6 @@ impl PacketTimings {
             retransmits: 0,
             out_of_order: 0,
             fast_retransmits: 0,
-            measured_rtt: self.measured_rtt,
-            dns_response_time: self.dns_response_time,
-            llmnr_response_time: self.llmnr_response_time,
-            netbios_response_time: self.netbios_response_time,
-            icmp_echo_rtt: self.icmp_echo_rtt,
-            stun_rtt: self.stun_rtt,
-            ntp_rtt: self.ntp_rtt,
         }
     }
 }
@@ -410,6 +379,30 @@ impl ConnectionTracker {
     /// shared timestamp collapses every round trip that completes within one
     /// batch to zero.
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
+        self.ingest_at_impl(parsed, now, |_| {})
+    }
+
+    /// Ingest a packet and return capture-time ownership collected under its connection guard.
+    /// Ownership is `None` for untracked packets. Ordinary ingestion skips this collection
+    /// and keeps its original result layout.
+    pub fn ingest_at_with_accounting(
+        &self,
+        parsed: &ParsedPacket,
+        now: SystemTime,
+    ) -> (IngestOutcome, Option<bool>) {
+        let mut attributed = None;
+        let outcome = self.ingest_at_impl(parsed, now, |conn| {
+            attributed = Some(conn.pid.is_some());
+        });
+        (outcome, attributed)
+    }
+
+    fn ingest_at_impl(
+        &self,
+        parsed: &ParsedPacket,
+        now: SystemTime,
+        observe: impl FnOnce(&Connection),
+    ) -> IngestOutcome {
         // Harvest IP -> MAC mappings from ARP and NDP packets; only they pay
         // this cost.
         match &parsed.protocol_state {
@@ -449,7 +442,7 @@ impl ConnectionTracker {
             Vec::new()
         };
 
-        let outcome = self.ingest_update(parsed, now, timings);
+        let outcome = self.ingest_update(parsed, now, timings, observe);
 
         // Tag drained waiters after the table update so the DNS packet's own
         // row never holds an entry lock while a waiter's row is taken.
@@ -470,6 +463,7 @@ impl ConnectionTracker {
         parsed: &ParsedPacket,
         now: SystemTime,
         timings: PacketTimings,
+        observe: impl FnOnce(&Connection),
     ) -> IngestOutcome {
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
@@ -490,20 +484,21 @@ impl ConnectionTracker {
                 // generation. Never retain a shard guard while upgrading.
                 drop(conn);
                 drop(lifecycle);
-                return self.ingest_new_generation(parsed, now, key, timings);
+                return self.ingest_new_generation(parsed, now, key, timings, observe);
             }
 
             let deltas = merge_packet_into_connection(&mut conn, parsed, now);
             apply_timings(&mut conn, &timings);
             apply_observed_protocol_health(&mut conn, parsed);
+            observe(&conn);
             drop(conn);
-            return self.finish_ingest(key, timings, false, deltas);
+            return self.finish_ingest(key, false, deltas);
         }
 
         if self.is_recent_late_packet(key, parsed, now) {
             return IngestOutcome {
                 ignored_late: true,
-                ..timings.outcome(key)
+                ..IngestOutcome::new(key)
             };
         }
 
@@ -515,10 +510,10 @@ impl ConnectionTracker {
             .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
         if starts_new_generation {
             drop(lifecycle);
-            return self.ingest_new_generation(parsed, now, key, timings);
+            return self.ingest_new_generation(parsed, now, key, timings, observe);
         }
 
-        self.ingest_into_active(parsed, now, key, timings)
+        self.ingest_into_active(parsed, now, key, timings, observe)
     }
 
     /// Called under the lifecycle guard, before taking any connection shard.
@@ -734,6 +729,7 @@ impl ConnectionTracker {
         now: SystemTime,
         key: ConnectionKey,
         timings: PacketTimings,
+        observe: impl FnOnce(&Connection),
     ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
@@ -746,13 +742,14 @@ impl ConnectionTracker {
         {
             return IngestOutcome {
                 dropped: true,
-                ..timings.outcome(key)
+                ..IngestOutcome::new(key)
             };
         }
 
         let mut created = false;
         let mut deltas = TcpMergeEvents::default();
-        self.connections
+        let conn = self
+            .connections
             .entry(key)
             .and_modify(|conn| {
                 deltas = merge_packet_into_connection(conn, parsed, now);
@@ -772,11 +769,13 @@ impl ConnectionTracker {
                 }
                 conn
             });
+        observe(&conn);
+        drop(conn);
         if created {
             self.active_count.fetch_add(1, Ordering::Relaxed);
         }
 
-        self.finish_ingest(key, timings, created, deltas)
+        self.finish_ingest(key, created, deltas)
     }
 
     /// Finish an update after releasing the connection's shard guard. RTT
@@ -784,7 +783,6 @@ impl ConnectionTracker {
     fn finish_ingest(
         &self,
         key: ConnectionKey,
-        timings: PacketTimings,
         created: bool,
         deltas: TcpMergeEvents,
     ) -> IngestOutcome {
@@ -802,7 +800,7 @@ impl ConnectionTracker {
             retransmits: deltas.retransmits,
             out_of_order: deltas.out_of_order,
             fast_retransmits: deltas.fast_retransmits,
-            ..timings.outcome(key)
+            ..IngestOutcome::new(key)
         }
     }
 
@@ -812,6 +810,7 @@ impl ConnectionTracker {
         now: SystemTime,
         key: ConnectionKey,
         timings: PacketTimings,
+        observe: impl FnOnce(&Connection),
     ) -> IngestOutcome {
         let _lifecycle = self
             .lifecycle
@@ -848,7 +847,7 @@ impl ConnectionTracker {
         // waiting to acquire the write guard. Reassociate any visible QUIC ID
         // before creating the replacement.
         self.associate_quic_id(parsed, key);
-        let mut outcome = self.ingest_into_active(parsed, replacement_now, key, timings);
+        let mut outcome = self.ingest_into_active(parsed, replacement_now, key, timings, observe);
         outcome.archived = archived;
         self.enforce_historic_limit();
         self.prune_recently_closed(now);
@@ -1266,6 +1265,15 @@ mod tests {
         /// packet timing.
         fn ingest(&self, parsed: &ParsedPacket) -> IngestOutcome {
             self.ingest_at(parsed, SystemTime::now())
+        }
+
+        /// Copy a retained connection so assertions never hold a shard lock
+        /// across a later ingest or cleanup.
+        fn connection(&self, key: ConnectionKey) -> Connection {
+            self.connections()
+                .get(&key)
+                .expect("tracked connection")
+                .clone()
         }
     }
 
@@ -1768,7 +1776,7 @@ mod tests {
         let client_initial =
             tracker.ingest_at(&quic_packet(QuicPacketType::Initial, true), capture_time(0));
         assert!(
-            client_initial.measured_rtt.is_none(),
+            tracker.connection(client_initial.key).initial_rtt.is_none(),
             "the opening Initial has nothing to pair with yet"
         );
 
@@ -1777,15 +1785,7 @@ mod tests {
             capture_time(18),
         );
         assert_eq!(
-            server_initial.measured_rtt,
-            Some(Duration::from_millis(18)),
-            "the RTT is the gap between the two capture timestamps"
-        );
-        assert_eq!(
-            tracker
-                .connections()
-                .get(&server_initial.key)
-                .and_then(|conn| conn.initial_rtt),
+            tracker.connection(server_initial.key).initial_rtt,
             Some(Duration::from_millis(18)),
             "the measured RTT should land on the connection"
         );
@@ -1801,14 +1801,7 @@ mod tests {
             &quic_packet(QuicPacketType::Initial, true),
             capture_time(250),
         );
-        assert!(retransmit.measured_rtt.is_none());
-        assert!(
-            tracker
-                .connections()
-                .get(&retransmit.key)
-                .and_then(|conn| conn.initial_rtt)
-                .is_none()
-        );
+        assert!(tracker.connection(retransmit.key).initial_rtt.is_none());
     }
 
     #[test]
@@ -1820,7 +1813,7 @@ mod tests {
             capture_time(1),
         );
 
-        let conn = tracker.connections().get(&retry.key).unwrap().clone();
+        let conn = tracker.connection(retry.key);
         assert_eq!(conn.protocol_health.quic_retry_count, 1);
         assert_eq!(conn.protocol_health.quic_version_negotiation_count, 1);
     }
@@ -1843,17 +1836,7 @@ mod tests {
             &quic_packet(QuicPacketType::Handshake, true),
             capture_time(1),
         );
-        assert!(
-            local_reply.measured_rtt.is_none(),
-            "this host's own turnaround is not a round trip"
-        );
-        assert!(
-            tracker
-                .connections()
-                .get(&local_reply.key)
-                .and_then(|conn| conn.initial_rtt)
-                .is_none()
-        );
+        assert!(tracker.connection(local_reply.key).initial_rtt.is_none());
     }
 
     /// Once the client Initial has been paired with the server's first
@@ -1878,13 +1861,9 @@ mod tests {
             &quic_packet(QuicPacketType::Handshake, true),
             capture_time(19),
         );
-        assert!(ack.measured_rtt.is_none());
 
         assert_eq!(
-            tracker
-                .connections()
-                .get(&ack.key)
-                .and_then(|conn| conn.initial_rtt),
+            tracker.connection(ack.key).initial_rtt,
             Some(Duration::from_millis(18))
         );
     }
@@ -1898,15 +1877,10 @@ mod tests {
         let tracker = ConnectionTracker::new();
 
         let query = tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
-        assert!(query.dns_response_time.is_none());
+        assert!(tracker.connection(query.key).dns_response_time.is_none());
 
         let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 0), capture_time(35));
-        assert_eq!(
-            response.dns_response_time,
-            Some(Duration::from_millis(35)),
-            "the response time is the gap between the two capture timestamps"
-        );
-        let conn = tracker.connections().get(&response.key).unwrap().clone();
+        let conn = tracker.connection(response.key);
         assert_eq!(conn.dns_response_time, Some(Duration::from_millis(35)));
         let analytics = tracker.dns_analytics_snapshot_at(capture_time(35));
         assert_eq!(analytics.lookups, 1);
@@ -1926,14 +1900,7 @@ mod tests {
         let tracker = ConnectionTracker::new();
         tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
         let response = tracker.ingest_at(&dns_packet(0x9999, false, true, 0), capture_time(20));
-        assert!(response.dns_response_time.is_none());
-        assert!(
-            tracker
-                .connections()
-                .get(&response.key)
-                .and_then(|conn| conn.dns_response_time)
-                .is_none()
-        );
+        assert!(tracker.connection(response.key).dns_response_time.is_none());
     }
 
     /// Stub resolvers reuse one socket for many queries, so each completed
@@ -1946,12 +1913,8 @@ mod tests {
         tracker.ingest_at(&dns_packet(1, false, true, 0), capture_time(35));
         tracker.ingest_at(&dns_packet(2, true, false, 0), capture_time(1_000));
         let second = tracker.ingest_at(&dns_packet(2, false, true, 0), capture_time(1_012));
-        assert_eq!(second.dns_response_time, Some(Duration::from_millis(12)));
         assert_eq!(
-            tracker
-                .connections()
-                .get(&second.key)
-                .and_then(|conn| conn.dns_response_time),
+            tracker.connection(second.key).dns_response_time,
             Some(Duration::from_millis(12))
         );
     }
@@ -1964,7 +1927,7 @@ mod tests {
         let tracker = ConnectionTracker::new();
         tracker.ingest_at(&dns_packet(0x1234, false, false, 0), capture_time(0));
         let reply = tracker.ingest_at(&dns_packet(0x1234, true, true, 0), capture_time(1));
-        assert!(reply.dns_response_time.is_none());
+        assert!(tracker.connection(reply.key).dns_response_time.is_none());
     }
 
     /// A re-sent query restarts the timer from the most recent send, so the
@@ -1975,12 +1938,19 @@ mod tests {
         let query = tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
         tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(1_000));
         let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 0), capture_time(1_018));
-        assert_eq!(response.dns_response_time, Some(Duration::from_millis(18)));
+        assert_eq!(
+            tracker.connection(response.key).dns_response_time,
+            Some(Duration::from_millis(18))
+        );
 
-        let conn = tracker.connections().get(&query.key).unwrap().clone();
+        let conn = tracker.connection(query.key);
         assert!(conn.protocol_health.request_observed);
         assert_eq!(conn.protocol_health.request_retry_count, 1);
         assert_eq!(conn.protocol_health.request_timeout_count, 0);
+        let analytics = tracker.dns_analytics_snapshot_at(capture_time(1_018));
+        assert_eq!(analytics.lookups, 1);
+        assert_eq!(analytics.resolvers[0].retries, 1);
+        assert_eq!(analytics.latency_p95, Some(Duration::from_millis(1_018)));
     }
 
     #[test]
@@ -1990,7 +1960,7 @@ mod tests {
 
         tracker.cleanup(capture_time(10_001));
 
-        let conn = tracker.connections().get(&query.key).unwrap().clone();
+        let conn = tracker.connection(query.key);
         assert!(conn.protocol_health.request_observed);
         assert_eq!(conn.protocol_health.request_retry_count, 0);
         assert_eq!(conn.protocol_health.request_timeout_count, 1);
@@ -2003,7 +1973,10 @@ mod tests {
         let tracker = ConnectionTracker::new();
         tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
         let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 2), capture_time(40));
-        assert_eq!(response.dns_response_time, Some(Duration::from_millis(40)));
+        assert_eq!(
+            tracker.connection(response.key).dns_response_time,
+            Some(Duration::from_millis(40))
+        );
     }
 
     /// LLMNR sends a query to the link-local multicast group, then each
@@ -2017,26 +1990,22 @@ mod tests {
             &llmnr_packet(0x1234, true, false, [224, 0, 0, 252]),
             capture_time(0),
         );
-        assert!(query.llmnr_response_time.is_none());
+        assert!(tracker.connection(query.key).llmnr_response_time.is_none());
 
         let response = tracker.ingest_at(
             &llmnr_packet(0x1234, false, true, [192, 168, 0, 20]),
             capture_time(27),
         );
         assert_ne!(query.key, response.key);
-        assert_eq!(
-            response.llmnr_response_time,
-            Some(Duration::from_millis(27))
-        );
 
-        let response_conn = tracker.connections().get(&response.key).unwrap().clone();
+        let response_conn = tracker.connection(response.key);
         assert_eq!(
             response_conn.llmnr_response_time,
             Some(Duration::from_millis(27))
         );
         assert!(response_conn.initial_rtt.is_none());
 
-        let query_conn = tracker.connections().get(&query.key).unwrap().clone();
+        let query_conn = tracker.connection(query.key);
         assert_eq!(
             query_conn.llmnr_response_time,
             Some(Duration::from_millis(27))
@@ -2046,12 +2015,10 @@ mod tests {
             &llmnr_packet(0x1234, false, true, [192, 168, 0, 21]),
             capture_time(35),
         );
-        assert!(second_response.llmnr_response_time.is_none());
         assert!(
             tracker
-                .connections()
-                .get(&second_response.key)
-                .and_then(|conn| conn.llmnr_response_time)
+                .connection(second_response.key)
+                .llmnr_response_time
                 .is_none()
         );
     }
@@ -2067,7 +2034,12 @@ mod tests {
             &llmnr_packet(0x9999, false, true, [192, 168, 0, 20]),
             capture_time(27),
         );
-        assert!(response.llmnr_response_time.is_none());
+        assert!(
+            tracker
+                .connection(response.key)
+                .llmnr_response_time
+                .is_none()
+        );
     }
 
     /// Name Service requests are normally broadcast, then answered from a
@@ -2086,7 +2058,12 @@ mod tests {
             ),
             capture_time(0),
         );
-        assert!(query.netbios_response_time.is_none());
+        assert!(
+            tracker
+                .connection(query.key)
+                .netbios_response_time
+                .is_none()
+        );
 
         let response = tracker.ingest_at(
             &netbios_packet(
@@ -2099,17 +2076,13 @@ mod tests {
             capture_time(27),
         );
         assert_ne!(query.key, response.key);
-        assert_eq!(
-            response.netbios_response_time,
-            Some(Duration::from_millis(27))
-        );
-        let conn = tracker.connections().get(&response.key).unwrap().clone();
+        let conn = tracker.connection(response.key);
         assert_eq!(conn.netbios_response_time, Some(Duration::from_millis(27)));
         assert!(conn.initial_rtt.is_none());
 
         // The broadcast row is the one a user naturally inspects, so the
         // round trip must land there as well, not only on the responder.
-        let query_conn = tracker.connections().get(&query.key).unwrap().clone();
+        let query_conn = tracker.connection(query.key);
         assert_eq!(
             query_conn.netbios_response_time,
             Some(Duration::from_millis(27))
@@ -2139,7 +2112,12 @@ mod tests {
             ),
             capture_time(27),
         );
-        assert!(response.netbios_response_time.is_none());
+        assert!(
+            tracker
+                .connection(response.key)
+                .netbios_response_time
+                .is_none()
+        );
     }
 
     /// A WACK extends an NBNS transaction and must not consume its pending
@@ -2161,7 +2139,7 @@ mod tests {
             &netbios_packet(0x1234, false, NetBiosOpcode::Wack, false, [192, 168, 0, 2]),
             capture_time(10),
         );
-        assert!(wack.netbios_response_time.is_none());
+        assert!(tracker.connection(wack.key).netbios_response_time.is_none());
 
         let response = tracker.ingest_at(
             &netbios_packet(
@@ -2174,7 +2152,7 @@ mod tests {
             capture_time(40),
         );
         assert_eq!(
-            response.netbios_response_time,
+            tracker.connection(response.key).netbios_response_time,
             Some(Duration::from_millis(40))
         );
     }
@@ -2190,21 +2168,21 @@ mod tests {
         tracker.ingest_at(&icmp_echo_packet(0x1234, 2, true, false), capture_time(200));
         let second_reply =
             tracker.ingest_at(&icmp_echo_packet(0x1234, 2, false, true), capture_time(225));
+        assert_eq!(
+            tracker.connection(second_reply.key).icmp_echo_rtt,
+            Some(Duration::from_millis(25))
+        );
         let first_reply =
             tracker.ingest_at(&icmp_echo_packet(0x1234, 1, false, true), capture_time(350));
-
-        assert_eq!(second_reply.icmp_echo_rtt, Some(Duration::from_millis(25)));
-        assert_eq!(first_reply.icmp_echo_rtt, Some(Duration::from_millis(350)));
+        assert_eq!(
+            tracker.connection(first_reply.key).icmp_echo_rtt,
+            Some(Duration::from_millis(350))
+        );
 
         tracker.ingest_at(&icmp_echo_packet(0x1234, 3, true, false), capture_time(400));
         let third_reply =
             tracker.ingest_at(&icmp_echo_packet(0x1234, 3, false, true), capture_time(418));
-        let conn = tracker
-            .connections()
-            .get(&third_reply.key)
-            .expect("ping connection should exist")
-            .clone();
-        assert_eq!(third_reply.icmp_echo_rtt, Some(Duration::from_millis(18)));
+        let conn = tracker.connection(third_reply.key);
         assert_eq!(conn.icmp_echo_rtt, Some(Duration::from_millis(18)));
         assert_eq!(conn.current_rtt(), Some(Duration::from_millis(18)));
     }
@@ -2215,14 +2193,7 @@ mod tests {
         tracker.ingest_at(&icmp_echo_packet(7, 10, true, false), capture_time(0));
         let reply = tracker.ingest_at(&icmp_echo_packet(7, 11, false, true), capture_time(12));
 
-        assert!(reply.icmp_echo_rtt.is_none());
-        assert!(
-            tracker
-                .connections()
-                .get(&reply.key)
-                .and_then(|conn| conn.icmp_echo_rtt)
-                .is_none()
-        );
+        assert!(tracker.connection(reply.key).icmp_echo_rtt.is_none());
     }
 
     #[test]
@@ -2231,7 +2202,7 @@ mod tests {
         tracker.ingest_at(&icmp_echo_packet(7, 1, false, false), capture_time(0));
         let reply = tracker.ingest_at(&icmp_echo_packet(7, 1, true, true), capture_time(1));
 
-        assert!(reply.icmp_echo_rtt.is_none());
+        assert!(tracker.connection(reply.key).icmp_echo_rtt.is_none());
     }
 
     fn loopback_echo_packet(identifier: u16, sequence: u16, is_reply: bool) -> ParsedPacket {
@@ -2252,7 +2223,10 @@ mod tests {
         tracker.ingest_at(&loopback_echo_packet(9, 1, false), capture_time(0));
         let reply = tracker.ingest_at(&loopback_echo_packet(9, 1, true), capture_time(1));
 
-        assert_eq!(reply.icmp_echo_rtt, Some(Duration::from_millis(1)));
+        assert_eq!(
+            tracker.connection(reply.key).icmp_echo_rtt,
+            Some(Duration::from_millis(1))
+        );
     }
 
     /// Echo requests reveal who initiated the flow; the Details tab uses the
@@ -2261,19 +2235,13 @@ mod tests {
     fn echo_request_sets_connection_direction() {
         let tracker = ConnectionTracker::new();
         let outgoing = tracker.ingest_at(&icmp_echo_packet(7, 1, true, false), capture_time(0));
-        let direction = tracker
-            .connections()
-            .get(&outgoing.key)
-            .and_then(|conn| conn.connection_direction);
+        let direction = tracker.connection(outgoing.key).connection_direction;
         assert_eq!(direction, Some(true));
 
         let tracker = ConnectionTracker::new();
         let inbound = tracker.ingest_at(&icmp_echo_packet(7, 1, false, false), capture_time(0));
         tracker.ingest_at(&icmp_echo_packet(7, 1, true, true), capture_time(1));
-        let direction = tracker
-            .connections()
-            .get(&inbound.key)
-            .and_then(|conn| conn.connection_direction);
+        let direction = tracker.connection(inbound.key).connection_direction;
         assert_eq!(direction, Some(false), "our reply must not flip it");
     }
 
@@ -2317,12 +2285,7 @@ mod tests {
             capture_time(31),
         );
 
-        assert_eq!(response.stun_rtt, Some(Duration::from_millis(31)));
-        let conn = tracker
-            .connections()
-            .get(&response.key)
-            .expect("STUN connection should exist")
-            .clone();
+        let conn = tracker.connection(response.key);
         assert_eq!(conn.stun_rtt, Some(Duration::from_millis(31)));
     }
 
@@ -2367,12 +2330,7 @@ mod tests {
             capture_time(21),
         );
 
-        assert_eq!(response.ntp_rtt, Some(Duration::from_millis(21)));
-        let conn = tracker
-            .connections()
-            .get(&response.key)
-            .expect("NTP connection should exist")
-            .clone();
+        let conn = tracker.connection(response.key);
         assert_eq!(conn.ntp_rtt, Some(Duration::from_millis(21)));
     }
 
@@ -2390,7 +2348,7 @@ mod tests {
             capture_time(31),
         );
 
-        assert!(response.stun_rtt.is_none());
+        assert!(tracker.connection(response.key).stun_rtt.is_none());
     }
 
     /// 1-RTT packets carry a short header with nothing timeable in the clear.
@@ -2402,7 +2360,7 @@ mod tests {
             &quic_packet(QuicPacketType::OneRtt, false),
             capture_time(18),
         );
-        assert!(inbound.measured_rtt.is_none());
+        assert!(tracker.connection(inbound.key).initial_rtt.is_none());
     }
 
     /// The TCP handshake is timed from capture timestamps for the same reason
@@ -2419,7 +2377,10 @@ mod tests {
             &tcp_packet(true, true, false, false, false),
             capture_time(12),
         );
-        assert_eq!(syn_ack.measured_rtt, Some(Duration::from_millis(12)));
+        assert_eq!(
+            tracker.connection(syn_ack.key).initial_rtt,
+            Some(Duration::from_millis(12))
+        );
     }
 
     #[test]
@@ -2540,6 +2501,51 @@ mod tests {
         assert_eq!(retransmit.retransmits, 1);
         let conn = tracker.connections.get(&sent.key).unwrap();
         assert_eq!(conn.packets_sent + conn.packets_received, 4);
+    }
+
+    #[test]
+    fn ingest_reports_ownership_at_the_time_of_each_packet() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            max_connections: 1,
+            ..TrackerConfig::default()
+        });
+        let now = SystemTime::now();
+        let mut packet = parse(&udp_frame(40000, 9999));
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(false)
+        );
+        packet.process_id = Some(42);
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(true)
+        );
+        let ordinary = tracker.ingest_at(&packet, now);
+        assert_eq!(
+            tracker.connections().get(&ordinary.key).unwrap().pid,
+            Some(42)
+        );
+        packet.process_id = None;
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(true)
+        );
+        let mut dropped = parse(&udp_frame(40001, 9999));
+        dropped.process_id = Some(43);
+        let (outcome, attributed) = tracker.ingest_at_with_accounting(&dropped, now);
+        assert!(outcome.dropped);
+        assert_eq!(attributed, None);
+        tracker.clear();
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(false)
+        );
+        tracker.clear();
+        packet.process_id = Some(44);
+        assert_eq!(
+            tracker.ingest_at_with_accounting(&packet, now).1,
+            Some(true)
+        );
     }
 
     #[test]

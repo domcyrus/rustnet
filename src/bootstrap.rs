@@ -16,6 +16,20 @@ use std::time::Duration;
 /// Parse CLI options and initialize the selected frontend.
 pub fn run() -> Result<()> {
     let matches = cli::build_cli().get_matches();
+    if matches.get_flag("list-interfaces") {
+        #[cfg(target_os = "windows")]
+        initialize_windows_npcap()?;
+        let interfaces: Vec<_> = pcap::Device::list()?
+            .into_iter()
+            .map(|device| serde_json::json!({
+                "name": device.name,
+                "description": device.desc,
+                "addresses": device.addresses.iter().map(|address| address.addr.to_string()).collect::<Vec<_>>()
+            }))
+            .collect();
+        serde_json::to_writer(io::stdout().lock(), &interfaces)?;
+        return Ok(());
+    }
     let headless = matches.get_flag("headless");
 
     // Never start terminal control or privileged capture accidentally from a
@@ -27,6 +41,7 @@ pub fn run() -> Result<()> {
     }
 
     let mut config = app::Config {
+        capture_accounting: matches.get_flag("capture-accounting"),
         json_log_file: matches.get_one::<String>("json-log").cloned(),
         pcap_export_file: matches.get_one::<String>("pcap-export").cloned(),
         pcapng_export_file: matches.get_one::<String>("pcapng-export").cloned(),
@@ -371,6 +386,17 @@ pub fn run() -> Result<()> {
     // a compromise in a DPI parser is contained even when running as root.
     app.start_workers(worker_startup_permit)?;
 
+    if matches.get_flag("stop-on-stdin-close") {
+        // Created after the sandbox transition so this thread inherits the
+        // same restrictions as the capture workers. EOF also covers a crashed
+        // supervising process, including when no packets are arriving.
+        std::thread::Builder::new()
+            .name("stdin-shutdown".into())
+            .spawn(|| {
+                request_shutdown_on_eof(io::stdin().lock(), &SHUTDOWN_REQUESTED);
+            })?;
+    }
+
     if headless {
         return run_headless(&matches, &mut app);
     }
@@ -399,11 +425,15 @@ fn run_headless(matches: &clap::ArgMatches, app: &mut app::App) -> Result<()> {
         .map_err(anyhow::Error::msg)?
         .unwrap_or_default();
     let options = crate::headless::HeadlessOptions {
+        full_details: matches
+            .get_one::<String>("headless-details")
+            .is_some_and(|level| level == "full"),
         format,
         duration: matches
             .get_one::<u64>("duration")
             .map(|seconds| Duration::from_secs(*seconds)),
         filter_query: matches.get_one::<String>("filter").cloned(),
+        include_historic: matches.get_flag("include-historic"),
     };
     let stop_report = match crate::headless::run(app, io::stdout(), &options, &SHUTDOWN_REQUESTED) {
         Ok(outcome) => outcome,
@@ -660,4 +690,32 @@ fn initialize_windows_npcap() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Consume the controller pipe without interpreting any commands or buffering
+/// its contents. Closing it requests the ordinary flushing shutdown path.
+fn request_shutdown_on_eof(mut reader: impl io::Read, shutdown: &std::sync::atomic::AtomicBool) {
+    let mut buffer = [0_u8; 256];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod stdin_shutdown_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn controller_eof_requests_shutdown_after_consuming_input() {
+        let shutdown = AtomicBool::new(false);
+        request_shutdown_on_eof(io::Cursor::new(vec![42; 1024]), &shutdown);
+        assert!(shutdown.load(Ordering::Relaxed));
+    }
 }

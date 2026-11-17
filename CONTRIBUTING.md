@@ -1,4 +1,4 @@
-<p align="center"> <strong>English</strong> | <a href="CONTRIBUTING.zh-CN.md">简体中文</a></p>
+<p align="center"><strong>English</strong> | <a href="CONTRIBUTING.zh-CN.md">简体中文</a> | <a href="CONTRIBUTING.ja.md">日本語</a></p>
 
 # Contributing to RustNet
 
@@ -14,31 +14,31 @@ For Deep Packet Inspection in particular, we lean toward protocols that:
 - Produce visible, useful information (the plaintext window is wide enough to extract real metadata, not just to confirm the protocol exists before everything goes TLS).
 - Fit the existing architecture without disproportionate maintenance cost.
 
-If a protocol is rarely seen in modern traffic, almost always TLS-wrapped, or niche to a single user base, we may still close the PR with thanks even if the code is correct. Please open an issue first for any new protocol so we can sanity-check fit before you invest implementation time.
+If a protocol is rarely seen in modern traffic, almost always TLS-wrapped, or niche to a single user base, we may still close the PR with thanks even if the code is correct. For new protocols, we recommend discussing fit in an issue before investing substantial implementation time.
 
 ## Performance & Optimizations
 
-If a PR is motivated by performance, it must show that the code is on a real hot path. A microbenchmark alone is **not** enough: it only proves a function got faster in isolation, not that the function matters to overall runtime.
+Performance improvements are welcome, including small changes that keep the code clear and maintainable. Explain what improves and provide evidence appropriate to the claim.
 
-- **Profile first.** Capture a flamegraph under real traffic (see [PROFILING.md](PROFILING.md)) and confirm the code shows up as meaningful CPU time.
-- **A bench is supporting evidence, not proof.** A `cargo bench` / criterion comparison showing your change is faster is welcome, but it does not establish that the code is hot.
-- **Cold-path micro-optimizations may be closed with thanks.** Optimizing code that runs rarely (connection setup, one-time parsing, error handling) adds review and maintenance cost without a meaningful gain.
+- **Keep claims specific.** A focused benchmark, allocation measurement, or clear explanation of avoided work can support a small optimization. A microbenchmark measures that operation, not overall application performance.
+- **Measure broader claims.** For claims about CPU usage, memory use, throughput, or responsiveness, include reproducible before/after measurements under a representative workload. Profiling (see [PROFILING.md](PROFILING.md)) can help identify bottlenecks; a flamegraph is not required for every PR.
+- **Balance benefit and complexity.** Small simplifications do not need to be on a hot path. Changes that add complexity should demonstrate enough benefit to justify their maintenance cost.
 
 ## Development Workflow
 
 We use the standard open-source fork and feature branch approach:
 
-1. **Open an issue first** to discuss your proposed changes. For features and non-trivial refactors, please wait for a maintainer response before writing code. Typo fixes, small bug fixes, and documentation corrections do not need a prior issue.
+1. **Check existing issues and PRs.** Small, focused changes can go straight to a PR. For substantial features, new protocols, or architectural refactors, we recommend discussing the approach in an issue first to avoid work that may not fit the project.
 2. Fork the repository
 3. Clone your fork locally
 4. Create a feature branch from `main` (`git checkout -b feature/your-feature`)
 5. Make your changes
 6. Push to your fork (`git push origin feature/your-feature`)
-7. Open a Pull Request against `main` and reference the related issue
+7. Open a Pull Request against `main` and link any related issues
 
 ## Code Quality Requirements
 
-Before submitting a PR, please ensure:
+For code changes, please ensure:
 
 - **Unit tests**: Add tests for complex or critical code paths
 - **No dead code**: Remove unused code, imports, and dependencies
@@ -56,7 +56,7 @@ Before submitting a PR, please ensure:
   ```bash
   cargo test --locked --workspace --all-features
   ```
-- **Security audit**: Check for known vulnerabilities in dependencies
+- **Security audit**: When changing dependencies, check for known vulnerabilities
   ```bash
   cargo audit
   ```
@@ -70,7 +70,7 @@ When you open a PR, our CI pipeline will automatically run checks including:
 - Build on multiple platforms
 - Test suite
 
-Please ensure all CI checks pass before requesting a review.
+Please address failures in applicable CI checks before merging. You can open a PR for feedback while checks are pending.
 
 ## Dependency Policy
 
@@ -96,7 +96,8 @@ Security is important for a network monitoring tool:
 - Link any related issues
 - Keep PRs focused - one feature or fix per PR
 - Be responsive to review feedback
-- Verify locally before opening the PR. The PR template lists the exact commands.
+- Review and understand the changes you submit, and make sure the description matches the diff.
+- Run checks relevant to your changes. The PR template lists the standard commands for code changes. Report what you ran and any checks you could not run, with the reason. For documentation-only changes, check the wording, links, and translations; Rust builds and tests are not required.
 - Add user-visible changes to the `## [Unreleased]` section of `CHANGELOG.md` in the same PR
 
 ## Documentation
@@ -109,21 +110,11 @@ Security is important for a network monitoring tool:
 
 If two or more PRs address the same issue, the maintainers will evaluate them on their merits (code quality, test coverage, architectural fit) rather than submission order. The PR that best fits the project will be merged; others will be closed with thanks. If your PR is closed in favor of another, useful pieces from your work (documentation, tests, edge cases) may be ported over and credited.
 
-To avoid duplicate work, please comment on the linked issue stating that you intend to work on it before you start writing code.
+Checking existing PRs and sharing your plans on a related issue can help avoid duplicate work.
 
 ## AI-Assisted Contributions
 
-AI-assisted contributions are welcome, provided you treat the output as your own work and take responsibility for it.
-
-If you use an AI assistant (Copilot, Claude, ChatGPT, Cursor, or similar) to help write code or documentation:
-
-- **Read every line** you are submitting. You are accountable for it.
-- **Run the verification commands** listed in the PR template yourself. Do not submit code with a note that tests "could not be run locally" and ask the reviewer to verify.
-- **Make sure the PR description matches the code.** If the model wrote the PR body, confirm it describes what the diff actually does.
-- **Do not split a single change into many cosmetic per-file commits** to make the work look incremental. One logical change, one commit, with a real commit message.
-- **Do not open a PR seconds after filing the issue that motivates it.** Allow time for the maintainers and other contributors to weigh in on the proposed approach.
-
-PRs that show signs of unreviewed AI output (failing tests, fabricated APIs, unrelated bundled changes, mismatched descriptions) will be closed.
+AI-assisted contributions are welcome and follow the same standards as any other contribution. You are responsible for understanding and reviewing the changes, verifying them as described above, and responding to feedback. Use whatever tools help you produce a clear, correct, and maintainable contribution.
 
 ## Questions?
 

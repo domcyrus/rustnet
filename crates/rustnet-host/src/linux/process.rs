@@ -1,6 +1,6 @@
 //! Linux procfs-based process lookup.
 
-use crate::procfs::{parse_proc_net_addr, read_comm, read_comm_in};
+use crate::procfs::{extract_socket_inode, parse_proc_net_line, read_comm, read_comm_in};
 use crate::{
     ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
     ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketSnapshot,
@@ -267,6 +267,8 @@ struct SnapshotOwner {
     pid: u32,
     name: String,
     inode: u64,
+    /// Path observed before the sandbox can restrict procfs access.
+    executable: Option<PathBuf>,
     /// Process start time in clock ticks, when it was readable at startup.
     /// `comm` alone cannot survive PID reuse because any process may rename
     /// itself with `prctl(PR_SET_NAME)`; the start time cannot be forged.
@@ -324,6 +326,7 @@ fn build_startup_snapshot(
                 name: owner.name.clone(),
                 inode,
                 start_ticks: process_start_ticks(owner.pid),
+                executable: resolve_executable(owner.pid),
             },
         );
     }
@@ -574,8 +577,8 @@ impl LinuxProcessLookup {
         tgid: u32,
         name: String,
         quality: MatchQuality,
+        executable: Option<PathBuf>,
     ) -> ProcessAttribution {
-        let executable = resolve_executable(tgid);
         let name = refine_truncated_name(name, executable.as_deref());
         let mut attribution =
             ProcessAttribution::new(tgid, name, quality).with_executable(executable);
@@ -589,6 +592,33 @@ impl LinuxProcessLookup {
             Some((uid, gid)) => attribution.with_credentials(uid, gid),
             None => attribution,
         }
+    }
+
+    fn executable_for(
+        &self,
+        conn: &Connection,
+        tgid: u32,
+        quality: MatchQuality,
+        live: Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        live.or_else(|| {
+            if quality != MatchQuality::StartupSnapshot {
+                return None;
+            }
+            let key = ConnectionKey::from_connection(conn);
+            let owner = self.startup_snapshot.get(&key)?;
+            // Cached paths require verifiable process identity, even when the
+            // less detailed startup attribution had no readable start time.
+            if owner.pid == tgid
+                && owner.start_ticks.is_some()
+                && snapshot_owner_still_matches(owner)
+                && self.snapshot_socket_unchanged(&key, owner.inode)
+            {
+                owner.executable.clone()
+            } else {
+                None
+            }
+        })
     }
 
     /// Build the connection map and socket inventory.
@@ -642,7 +672,7 @@ impl LinuxProcessLookup {
                     for fd_entry in fd_entries.flatten() {
                         if let Ok(link) = fs::read_link(fd_entry.path())
                             && let Some(link_str) = link.to_str()
-                            && let Some(inode) = Self::extract_socket_inode(link_str)
+                            && let Some(inode) = extract_socket_inode(link_str)
                         {
                             startup_owners.insert(
                                 inode,
@@ -687,33 +717,23 @@ impl LinuxProcessLookup {
         result: &mut ConnectionProcessMap,
         sockets: &mut Vec<HostSocket>,
     ) {
-        for (i, line) in content.lines().enumerate() {
-            if i == 0 {
+        for line in content.lines().skip(1) {
+            let Some(row) = parse_proc_net_line(line) else {
                 continue;
-            }
-
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 10 {
+            };
+            let (Some(state), Some(inode)) = (row.state, row.inode) else {
                 continue;
-            }
-
-            let local_addr = match parse_proc_net_addr(parts[1]) {
-                Some(addr) => addr,
-                None => continue,
             };
-
-            let remote_addr = match parse_proc_net_addr(parts[2]) {
-                Some(addr) => addr,
-                None => continue,
-            };
+            let local_addr = row.local_addr;
+            let remote_addr = row.remote_addr;
             if protocol == Protocol::Udp && local_addr.port() == 0 {
                 continue;
             }
 
-            let inode = parts[9].parse::<u64>().ok();
+            let inode = inode.parse::<u64>().ok();
             let owner = inode.and_then(|inode| inode_map.get(&inode)).cloned();
             let state = match protocol {
-                Protocol::Tcp => HostSocketState::Tcp(parse_proc_tcp_state(parts[3])),
+                Protocol::Tcp => HostSocketState::Tcp(parse_proc_tcp_state(state)),
                 Protocol::Udp => HostSocketState::UdpBound,
                 _ => continue,
             };
@@ -735,15 +755,6 @@ impl LinuxProcessLookup {
                 owner,
                 native_id: inode,
             });
-        }
-    }
-
-    fn extract_socket_inode(link: &str) -> Option<u64> {
-        if link.starts_with("socket:[") && link.ends_with(']') {
-            let inode_str = &link[8..link.len() - 1];
-            inode_str.parse().ok()
-        } else {
-            None
         }
     }
 }
@@ -782,7 +793,8 @@ fn matching_socket_inode(
 impl ProcessLookup for LinuxProcessLookup {
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (tgid, name, quality) = self.lookup_match(conn)?;
-        let mut attribution = self.build_attribution(tgid, name, quality);
+        let executable = self.executable_for(conn, tgid, quality, resolve_executable(tgid));
+        let mut attribution = self.build_attribution(tgid, name, quality, executable);
         // A cached tuple/PID alone cannot establish a process generation.
         // Verify that this incarnation still owns the observed socket.
         let before = process_start_ticks(tgid);
@@ -1052,6 +1064,7 @@ mod tests {
                 name,
                 inode,
                 start_ticks: process_start_ticks(pid),
+                executable: resolve_executable(pid),
             },
         );
         LinuxProcessLookup {
@@ -1285,6 +1298,79 @@ mod tests {
     }
 
     #[test]
+    fn startup_executable_survives_later_procfs_denial_with_identity_guards() {
+        let local = "192.168.1.10:44444";
+        let remote = "203.0.113.5:22";
+        let sockets = SocketSnapshot::new(vec![owned_socket(
+            local,
+            remote,
+            777,
+            own_pid(),
+            &own_comm(),
+        )]);
+        let mut lookup = snapshot_lookup(
+            (local, remote, own_pid(), own_comm(), 777),
+            vec![host_socket(local, remote, 777)],
+        );
+        lookup.startup_snapshot = build_startup_snapshot(&sockets, &HashSet::new());
+        let conn = tcp_connection(local, remote);
+        let expected = std::env::current_exe().unwrap();
+        let quality = MatchQuality::StartupSnapshot;
+        // None represents a post-sandbox read_link permission failure.
+        let executable = lookup.executable_for(&conn, own_pid(), quality, None);
+        assert_eq!(executable, Some(expected.clone()));
+        assert_eq!(
+            lookup
+                .build_attribution(own_pid(), own_comm(), quality, executable)
+                .executable,
+            Some(expected)
+        );
+        assert!(
+            lookup
+                .executable_for(&conn, own_pid(), MatchQuality::ProcfsExact, None)
+                .is_none()
+        );
+        let live = PathBuf::from("/new/executable");
+        assert_eq!(
+            lookup.executable_for(&conn, own_pid(), quality, Some(live.clone())),
+            Some(live)
+        );
+
+        let owner = lookup
+            .startup_snapshot
+            .get_mut(&key(local, remote))
+            .unwrap();
+        owner.start_ticks = owner.start_ticks.map(|ticks| ticks + 1);
+        assert!(
+            lookup
+                .executable_for(&conn, own_pid(), quality, None)
+                .is_none()
+        );
+        lookup
+            .startup_snapshot
+            .get_mut(&key(local, remote))
+            .unwrap()
+            .start_ticks = None;
+        assert!(
+            lookup
+                .executable_for(&conn, own_pid(), quality, None)
+                .is_none()
+        );
+        lookup
+            .startup_snapshot
+            .get_mut(&key(local, remote))
+            .unwrap()
+            .start_ticks = process_start_ticks(own_pid());
+        *lookup.socket_snapshot.write().unwrap() =
+            SocketSnapshot::new(vec![host_socket(local, remote, 888)]);
+        assert!(
+            lookup
+                .executable_for(&conn, own_pid(), quality, None)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn startup_snapshot_rejects_a_reused_tuple() {
         // The startup socket closed and another (owner-invisible) socket
         // reuses the exact tuple: the inventory shows a different inode,
@@ -1354,6 +1440,7 @@ mod tests {
                 name: own_comm(),
                 inode: 777,
                 start_ticks: process_start_ticks(own_pid()).map(|ticks| ticks + 1),
+                executable: None,
             },
         );
         let lookup = LinuxProcessLookup {
@@ -1398,6 +1485,7 @@ mod tests {
                 name: "old-owner".to_string(),
                 inode: 777,
                 start_ticks: None,
+                executable: None,
             },
         );
         let mut live = ConnectionProcessMap::new();

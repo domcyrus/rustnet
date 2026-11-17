@@ -58,6 +58,42 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("list-interfaces")
+                .long("list-interfaces")
+                .help("List capture interfaces as JSON and exit without starting capture")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("stop-on-stdin-close")
+                .long("stop-on-stdin-close")
+                .help("Stop headless capture when the controlling stdin pipe closes")
+                .requires("headless")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("include-historic")
+                .long("include-historic")
+                .help("Include retained closed connections in headless snapshots")
+                .requires("headless")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("headless-details")
+                .long("headless-details")
+                .value_name("LEVEL")
+                .help("Headless detail level: basic or full protocol, health and network metadata")
+                .value_parser(["basic", "full"])
+                .default_value("basic")
+                .requires("headless"),
+        )
+        .arg(
+            Arg::new("capture-accounting")
+                .long("capture-accounting")
+                .help("Collect lifetime capture and process-attribution coverage in headless output")
+                .requires("headless")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("duration")
                 .long("duration")
                 .value_name("SECONDS")
@@ -71,9 +107,9 @@ pub fn build_cli() -> Command {
                 .long("output")
                 .value_name("FORMAT")
                 .help(
-                    "Headless output format: jsonl (stream snapshots) or json (final snapshot)",
+                    "Headless output format: jsonl (snapshots), jsonl-delta (incremental), or json (final snapshot)",
                 )
-                .value_parser(["jsonl", "json"])
+                .value_parser(["jsonl", "jsonl-delta", "json"])
                 .requires("headless")
                 .required(false),
         )
@@ -316,9 +352,38 @@ mod tests {
             .expect("default CLI arguments should parse");
 
         assert!(!matches.get_flag("headless"));
+        assert!(!matches.get_flag("include-historic"));
         assert_eq!(matches.get_one::<u64>("duration"), None);
         assert_eq!(matches.get_one::<String>("output"), None);
         assert_eq!(matches.get_one::<String>("filter"), None);
+    }
+
+    #[test]
+    fn extended_headless_options_are_explicit_and_independent() {
+        let defaults = build_cli().try_get_matches_from(["rustnet"]).unwrap();
+        assert!(!defaults.get_flag("capture-accounting"));
+        assert_eq!(
+            defaults.get_one::<String>("headless-details").unwrap(),
+            "basic"
+        );
+        for args in [
+            vec!["--capture-accounting"],
+            vec!["--headless-details", "full"],
+            vec!["--headless-details", "basic"],
+        ] {
+            let error = build_cli()
+                .try_get_matches_from(std::iter::once("rustnet").chain(args.iter().copied()))
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+            build_cli()
+                .try_get_matches_from(["rustnet", "--headless"].into_iter().chain(args))
+                .unwrap();
+        }
+        assert!(
+            build_cli()
+                .try_get_matches_from(["rustnet", "--headless", "--headless-details", "verbose"])
+                .is_err()
+        );
     }
 
     #[test]
@@ -327,6 +392,7 @@ mod tests {
             .try_get_matches_from([
                 "rustnet",
                 "--headless",
+                "--include-historic",
                 "--duration",
                 "30",
                 "--output",
@@ -337,6 +403,7 @@ mod tests {
             .expect("valid headless arguments should parse");
 
         assert!(matches.get_flag("headless"));
+        assert!(matches.get_flag("include-historic"));
         assert_eq!(matches.get_one::<u64>("duration"), Some(&30));
         assert_eq!(
             matches.get_one::<String>("output").map(String::as_str),
@@ -350,7 +417,7 @@ mod tests {
 
     #[test]
     fn headless_output_accepts_each_supported_format() {
-        for format in ["jsonl", "json"] {
+        for format in ["jsonl", "jsonl-delta", "json"] {
             let matches = build_cli()
                 .try_get_matches_from(["rustnet", "--headless", "--output", format])
                 .unwrap_or_else(|e| panic!("--output {format} should parse: {e}"));
@@ -360,6 +427,14 @@ mod tests {
                 Some(format)
             );
         }
+    }
+
+    #[test]
+    fn history_output_requires_headless() {
+        let error = build_cli()
+            .try_get_matches_from(["rustnet", "--include-historic"])
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
 
     #[test]

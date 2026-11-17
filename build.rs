@@ -81,6 +81,23 @@ fn setup_windows_npcap_delay_load() {
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
     if target_os == "windows" && target_env == "msvc" {
+        // pcap's windows-sys 0.36 import library also exports WaitOnAddress and
+        // WakeByAddress* from the enclave-only vertdll.dll. Resolve those
+        // symbols before scanning dependencies, including callers that are
+        // only pulled in later from the test harness or standard library.
+        println!("cargo:rustc-link-lib=synchronization");
+        let x86 = env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|arch| arch == "x86");
+        for (symbol, stack_bytes) in [
+            ("WaitOnAddress", 16),
+            ("WakeByAddressAll", 4),
+            ("WakeByAddressSingle", 4),
+        ] {
+            if x86 {
+                println!("cargo:rustc-link-arg=/INCLUDE:__imp__{symbol}@{stack_bytes}");
+            } else {
+                println!("cargo:rustc-link-arg=/INCLUDE:__imp_{symbol}");
+            }
+        }
         println!("cargo:rustc-link-arg=/DELAYLOAD:Packet.dll");
         println!("cargo:rustc-link-arg=/DELAYLOAD:wpcap.dll");
         println!("cargo:rustc-link-arg=/DEFAULTLIB:delayimp.lib");

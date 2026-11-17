@@ -17,13 +17,17 @@ mod output;
 mod schema;
 
 use output::AsyncOutput;
-use schema::{RuntimePhase, SnapshotEnvelope};
+use schema::incremental::IncrementalEncoder;
+use schema::{ConnectionCache, RuntimePhase, SnapshotEnvelope};
 
 #[cfg(test)]
 mod tests;
 
-/// Current headless output schema.
+/// Default full-snapshot output schema.
 pub const SCHEMA_VERSION: u8 = 1;
+
+/// Opt-in incremental headless output schema.
+pub const INCREMENTAL_SCHEMA_VERSION: u8 = 2;
 
 const MAX_STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const OUTPUT_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
@@ -36,6 +40,9 @@ pub enum HeadlessFormat {
     /// gaps because stale queued snapshots are replaced under backpressure.
     #[default]
     JsonLines,
+    /// Emit an initial full snapshot, batched connection changes, periodic full
+    /// snapshots for resynchronization, and a full terminal snapshot.
+    JsonLinesDelta,
     /// Emit exactly one snapshot after the shutdown attempt.
     Json,
 }
@@ -45,6 +52,7 @@ impl HeadlessFormat {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::JsonLines => "jsonl",
+            Self::JsonLinesDelta => "jsonl-delta",
             Self::Json => "json",
         }
     }
@@ -62,8 +70,9 @@ impl std::str::FromStr for HeadlessFormat {
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
             "jsonl" => Ok(Self::JsonLines),
+            "jsonl-delta" => Ok(Self::JsonLinesDelta),
             "json" => Ok(Self::Json),
-            _ => Err("expected jsonl or json"),
+            _ => Err("expected jsonl, jsonl-delta or json"),
         }
     }
 }
@@ -71,6 +80,8 @@ impl std::str::FromStr for HeadlessFormat {
 /// Settings used by [`run`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HeadlessOptions {
+    /// Include protocol, health, network and lifecycle details.
+    pub full_details: bool,
     pub format: HeadlessFormat,
     /// Stop after this much wall-clock time. `None` waits for a shutdown
     /// signal in JSON mode. JSONL can also stop when its consumer closes the
@@ -78,6 +89,8 @@ pub struct HeadlessOptions {
     pub duration: Option<Duration>,
     /// Optional connection filter using the same syntax as the TUI.
     pub filter_query: Option<String>,
+    /// Include retained closed connections in snapshots.
+    pub include_historic: bool,
 }
 
 /// Why a headless run ended.
@@ -150,7 +163,17 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
     shutdown_requested: &AtomicBool,
     writer_deadline: Duration,
 ) -> Result<StopReport> {
-    let mut output = match AsyncOutput::spawn(writer) {
+    app.set_show_historic(options.include_historic);
+    let mut cache = ConnectionCache::default();
+    let mut incremental = IncrementalEncoder::default();
+    let format = options.format;
+    let mut output = match AsyncOutput::spawn_with_serializer(writer, move |value| {
+        if format == HeadlessFormat::JsonLinesDelta {
+            incremental.serialize(value)
+        } else {
+            cache.serialize(value)
+        }
+    }) {
         Ok(output) => output,
         Err(error) => {
             let _ = app.stop();
@@ -164,7 +187,7 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
         .max(Duration::from_millis(1));
 
     let monitor_result = match options.format {
-        HeadlessFormat::JsonLines => stream_json_lines(
+        HeadlessFormat::JsonLines | HeadlessFormat::JsonLinesDelta => stream_json_lines(
             app,
             &mut output,
             options,
@@ -206,6 +229,7 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
         phase,
         termination_reason,
         Some(stop_report),
+        options.full_details,
     );
 
     let terminal_result = output.finish(snapshot, writer_deadline);
@@ -247,8 +271,14 @@ fn stream_json_lines(
             } else {
                 RuntimePhase::Running
             };
-            let (generation, snapshot) =
-                SnapshotEnvelope::new(app, options.filter_query.as_deref(), phase, None, None);
+            let (generation, snapshot) = SnapshotEnvelope::new(
+                app,
+                options.filter_query.as_deref(),
+                phase,
+                None,
+                None,
+                options.full_details,
+            );
             if last_generation != Some(generation) {
                 output.offer_latest(snapshot);
                 last_generation = Some(generation);

@@ -31,7 +31,16 @@ pub(super) struct AsyncOutput<T> {
 }
 
 impl<T: Serialize + Send + 'static> AsyncOutput<T> {
-    pub(super) fn spawn<W: Write + Send + 'static>(mut writer: W) -> io::Result<Self> {
+    #[cfg(test)]
+    pub(super) fn spawn<W: Write + Send + 'static>(writer: W) -> io::Result<Self> {
+        Self::spawn_with_serializer(writer, |value| serialize_record(&value))
+    }
+
+    pub(super) fn spawn_with_serializer<W, S>(mut writer: W, mut serialize: S) -> io::Result<Self>
+    where
+        W: Write + Send + 'static,
+        S: FnMut(T) -> Result<Vec<u8>> + Send + 'static,
+    {
         let (records_tx, records_rx) = bounded::<OutputRecord<T>>(1);
         let pending_rx = records_rx.clone();
         let (status_tx, status_rx) = bounded(1);
@@ -43,13 +52,12 @@ impl<T: Serialize + Send + 'static> AsyncOutput<T> {
                         Ok(record) => record,
                         Err(_) => break WriterStatus::Finished,
                     };
-                    let bytes = match serialize_record(&value) {
+                    let bytes = match serialize(value) {
                         Ok(bytes) => bytes,
                         Err(error) => break WriterStatus::Failed(format!("{error:#}")),
                     };
-                    // Release the projected value before a potentially blocked
-                    // write, retaining only this record's serialized bytes.
-                    drop(value);
+                    // Serialization consumes the projected value before a
+                    // potentially blocked write. Any serializer cache is bounded.
                     if let Err(error) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
                         break if error.kind() == io::ErrorKind::BrokenPipe {
                             WriterStatus::BrokenPipe

@@ -614,13 +614,13 @@ fn connections_title<'a>(
     filtered_count: Option<usize>,
 ) -> Line<'a> {
     let base = match (grouped, ui_state.show_historic) {
-        (true, true) => "Process Aggregate · active + historic",
-        (true, false) => "Process Aggregate",
-        (false, true) => "Live + Historic Connections",
-        (false, false) => "Live Connections",
+        (true, true) => " Process Aggregate · active + historic",
+        (true, false) => " Process Aggregate",
+        (false, true) => " Live + Historic Connections",
+        (false, false) => " Live Connections",
     };
     let mut spans = vec![Span::styled(
-        format!(" {base}"),
+        base,
         Style::default().add_modifier(Modifier::BOLD),
     )];
     if let Some(shown) = filtered_count {
@@ -712,7 +712,7 @@ fn draw_grouped_connections_list(
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
                 let process_cell = Line::from(vec![
-                    Span::styled(connector.to_string(), theme::fg(theme::muted())),
+                    Span::styled(connector, theme::fg(theme::muted())),
                     Span::raw(pid),
                 ]);
                 connection_row(
@@ -1649,6 +1649,7 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
 
 #[cfg(test)]
 mod tests {
+    use crate::test_support::{local_tcp, test_app};
     use std::collections::HashSet;
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -1661,7 +1662,7 @@ mod tests {
     use crate::network::dns_analytics::{DnsAnalyticsSnapshot, DnsHealth};
     use crate::ui::{
         ClickableRegions, Component, Effect, HandlerContext, UiState, compute_grouped_rows,
-        test_support::{empty_ctx, line_text, local_tcp, test_app},
+        test_support::{empty_ctx, line_text},
         theme,
     };
     use std::time::Duration;

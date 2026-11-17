@@ -1259,8 +1259,8 @@ pub fn compute_grouped_rows<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::local_tcp;
     use crate::ui::TAB_COUNT;
-    use crate::ui::test_support::local_tcp;
 
     #[test]
     fn configured_grouping_applies_at_startup_and_reset() {

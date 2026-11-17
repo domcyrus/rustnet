@@ -30,6 +30,40 @@ pub fn parse_proc_net_addr(field: &str) -> Option<SocketAddr> {
     Some(SocketAddr::new(ip, port))
 }
 
+/// Address columns and optional metadata from a procfs socket row.
+/// Callers decide whether a missing or malformed inode invalidates their scan.
+pub struct ProcNetRow<'a> {
+    pub local_addr: SocketAddr,
+    pub remote_addr: SocketAddr,
+    pub state: Option<&'a str>,
+    pub inode: Option<&'a str>,
+}
+
+/// Decode endpoints once, leaving metadata validation to the caller.
+/// Kubernetes needs only endpoints; lifecycle scans require a valid inode.
+pub fn parse_proc_net_line(line: &str) -> Option<ProcNetRow<'_>> {
+    let mut fields = line.split_whitespace();
+    fields.next()?; // Row number.
+    let local_addr = parse_proc_net_addr(fields.next()?)?;
+    let remote_addr = parse_proc_net_addr(fields.next()?)?;
+    let state = fields.next();
+    let inode = fields.nth(5);
+    Some(ProcNetRow {
+        local_addr,
+        remote_addr,
+        state,
+        inode,
+    })
+}
+
+/// Decode the target of a `/proc/<pid>/fd` socket symlink.
+pub fn extract_socket_inode(link: &str) -> Option<u64> {
+    link.strip_prefix("socket:[")?
+        .strip_suffix(']')?
+        .parse()
+        .ok()
+}
+
 fn parse_ipv4_hex(s: &str) -> Option<Ipv4Addr> {
     if s.len() != 8 {
         return None;
@@ -143,6 +177,36 @@ mod tests {
         assert_eq!(parse_proc_net_addr("0100:0050"), None);
         assert_eq!(parse_proc_net_addr("0100007F:zz"), None);
         assert_eq!(parse_proc_net_addr("0100007G:0050"), None);
+    }
+
+    #[test]
+    fn socket_rows_retain_metadata_for_caller_validation() {
+        let prefix = "0: 0100007F:0050 00000000:0000";
+        let short = parse_proc_net_line(prefix).unwrap();
+        assert_eq!(short.local_addr, "127.0.0.1:80".parse().unwrap());
+        assert!(short.state.is_none());
+        assert!(short.inode.is_none());
+        for inode in ["0", "12345", "invalid"] {
+            let line = format!("{prefix} 0A 0:0 00:0 0 1000 0 {inode} extra");
+            let row = parse_proc_net_line(&line).unwrap();
+            assert_eq!(row.state, Some("0A"));
+            assert_eq!(row.inode, Some(inode));
+        }
+        assert!(parse_proc_net_line("sl local_address rem_address").is_none());
+    }
+
+    #[test]
+    fn socket_inode_requires_a_complete_socket_link() {
+        for (link, expected) in [
+            ("socket:[12345]", Some(12345)),
+            ("socket:[0]", Some(0)),
+            ("socket:[bad]", None),
+            ("socket:[12345", None),
+            ("pipe:[12345]", None),
+            ("socket:[12345]suffix", None),
+        ] {
+            assert_eq!(extract_socket_inode(link), expected, "{link}");
+        }
     }
 
     #[cfg(target_os = "linux")]

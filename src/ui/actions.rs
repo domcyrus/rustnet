@@ -132,10 +132,8 @@ pub fn clear_all_with_confirmation(ui_state: &mut UiState, app: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{
-        ClickableRegions, GroupedRow, compute_grouped_rows,
-        test_support::{local_tcp, test_app},
-    };
+    use crate::test_support::{local_tcp, test_app};
+    use crate::ui::{ClickableRegions, GroupedRow, compute_grouped_rows};
 
     #[test]
     fn grouped_boundary_navigation_uses_visible_rows() {

@@ -181,19 +181,19 @@ Trade-off: process attribution uses `sockstat`, which as a non-root user only se
 
 ## Privilege Drop and Job Object Sandboxing (Windows)
 
-On Windows, RustNet removes dangerous privileges from the process token and applies a Job Object to prevent child process creation after initialization.
+In unreleased builds on Windows, RustNet permanently removes every token privilege except ordinary directory traversal (`SeChangeNotifyPrivilege`) after initialization and applies a Job Object to prevent child process creation.
 
 ### What Gets Restricted
 
 | Restriction | Description |
 |-------------|-------------|
-| Privilege removal | SeDebugPrivilege, SeTakeOwnershipPrivilege, SeBackupPrivilege, SeRestorePrivilege, and other dangerous privileges permanently removed |
+| Privilege removal | All privileges except SeChangeNotifyPrivilege permanently removed, including disabled privileges |
 | Child processes | Job Object blocks creation of child processes (reverse shell, exec-based exfiltration) |
 
 ### How It Works
 
 1. **Initialization phase**: RustNet opens Npcap handles and creates log files
-2. **Privilege removal**: `AdjustTokenPrivileges` with `SE_PRIVILEGE_REMOVED` permanently strips dangerous privileges from the process token
+2. **Privilege removal**: `AdjustTokenPrivileges` with `SE_PRIVILEGE_REMOVED` permanently strips every privilege except SeChangeNotifyPrivilege from the process token
 3. **Job Object**: A Job Object with `JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 1` is applied, preventing any child process creation
 
 ### Security Benefits
@@ -212,6 +212,7 @@ Linux Landlock or macOS Seatbelt. FreeBSD currently has no comparable sandbox:
 - No filesystem restriction — Windows lacks a process-wide filesystem sandbox equivalent to Landlock or Seatbelt
 - No network restriction; outbound connections remain possible
 - Privilege removal only affects privileges the elevated process held
+- Token groups and integrity level are unchanged. An elevated process retains Administrator ACL access; this is not a standard-user token.
 
 ### CLI Options
 

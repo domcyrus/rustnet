@@ -14,10 +14,6 @@ mod runtime;
 mod sampling;
 mod state;
 mod types;
-#[cfg(unix)]
-mod unix_output;
-#[cfg(target_os = "windows")]
-mod windows_output;
 
 #[cfg(unix)]
 pub(crate) use output::create_private_diagnostic_file;
@@ -28,7 +24,7 @@ pub use output::{
 pub use runtime::{InitStatus, StopReport, WorkerStartupPermit};
 pub use state::App;
 pub(crate) use types::ConnectionCounts;
-pub use types::{AppOutputHandles, AppStats, Config};
+pub use types::{AppOutputHandles, AppStats, CaptureAccounting, Config};
 
 use std::time::Duration;
 

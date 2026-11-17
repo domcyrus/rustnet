@@ -18,6 +18,10 @@ on:
         description: 'Version string for archive naming (e.g., v0.3.0)'
         type: string
         default: ''
+      artifact-retention-days:
+        description: 'Artifact retention in days; 0 uses the repository default'
+        type: number
+        default: 0
 
 env:
   RUST_BACKTRACE: 1
@@ -30,6 +34,7 @@ jobs:
       contents: read
     name: build-${{ matrix.build }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -100,6 +105,7 @@ jobs:
         if: contains(matrix.target, 'linux-gnu')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: deb-${{ matrix.target }}
           path: rustnet.deb
           if-no-files-found: error
@@ -113,6 +119,7 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-${{ matrix.build }}
           path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
           if-no-files-found: error
@@ -132,6 +139,7 @@ jobs:
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
@@ -141,6 +149,7 @@ jobs:
       contents: read
     name: build-${{ matrix.build }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -152,11 +161,11 @@ jobs:
         include:
           - cargo: cargo
           - build: macos-aarch64
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
             run-tests: true
           - build: macos-x64
-            os: macos-14
+            os: macos-15
             target: x86_64-apple-darwin
           - build: windows-x64-msvc
             os: windows-latest
@@ -188,6 +197,15 @@ jobs:
           default-features: ${{ (contains(matrix.target, 'linux') || contains(matrix.target, 'apple')) && 'true' || 'false' }}
           strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
 
+      - name: Test Windows executable startup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & './target/${{ matrix.target }}/release/rustnet.exe' --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & './target/${{ matrix.target }}/release/rustnet.exe' --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run workspace tests
         if: matrix.run-tests
         run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
@@ -208,6 +226,7 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-${{ matrix.build }}
           path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
           if-no-files-found: error
@@ -227,6 +246,7 @@ jobs:
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
@@ -237,6 +257,7 @@ jobs:
       contents: read
     name: test-${{ matrix.build }}
     runs-on: windows-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -274,6 +295,7 @@ jobs:
       contents: read
     name: build-linux-static-${{ matrix.arch }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -394,6 +416,7 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-linux-static-${{ matrix.arch }}
           path: ${{ matrix.bin }}
           if-no-files-found: error
@@ -412,6 +435,7 @@ jobs:
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
@@ -425,6 +449,7 @@ jobs:
       contents: read
     name: build-linux-static-${{ matrix.arch }}
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -487,6 +512,7 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: rustnet-linux-static-${{ matrix.arch }}
           path: target/release/rustnet
           if-no-files-found: error
@@ -505,6 +531,7 @@ jobs:
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
+          retention-days: ${{ inputs.artifact-retention-days }}
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error

@@ -120,9 +120,8 @@ fn protected_socket_present_at_startup_enrolls_without_reading_owner_fds() {
         .lines()
         .skip(1)
         .find_map(|line| {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            (parse_proc_net_addr(fields[1]) == Some(addr))
-                .then(|| fields[9].parse::<u64>().unwrap())
+            let row = parse_proc_net_line(line)?;
+            (row.local_addr == addr).then(|| row.inode.unwrap().parse::<u64>().unwrap())
         })
         .unwrap();
     // The startup BPF iterator observes ownership without opening /proc/PID/fd.

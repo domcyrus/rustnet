@@ -191,6 +191,14 @@ pub(crate) fn analyze_udp_packet(
         return None;
     }
 
+    // Recognize STUN by its header and cookie before port-based protocols.
+    // ICE connectivity checks can use DNS port 53 too.
+    if let Some(stun_result) = stun::analyze_stun(payload) {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Stun(stun_result),
+        });
+    }
+
     // 1. DNS (port 53)
     if (local_port == PORT_DNS || remote_port == PORT_DNS)
         && let Some(dns_result) = dns::analyze_dns(payload)
@@ -297,21 +305,14 @@ pub(crate) fn analyze_udp_packet(
         });
     }
 
-    // 11. STUN (header and magic cookie detection on any port)
-    if let Some(stun_result) = stun::analyze_stun(payload) {
-        return Some(DpiResult {
-            application: ApplicationProtocol::Stun(stun_result),
-        });
-    }
-
-    // 12. WireGuard (fixed message types, reserved bytes, and lengths)
+    // 11. WireGuard (fixed message types, reserved bytes, and lengths)
     if let Some(wireguard_result) = wireguard::analyze_wireguard(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::WireGuard(wireguard_result),
         });
     }
 
-    // 13. OpenVPN. The registered port permits all structurally plausible
+    // 12. OpenVPN. The registered port permits all structurally plausible
     // opcodes; alternate ports require a distinctive hard-reset exchange.
     if let Some(openvpn_result) = openvpn::analyze_openvpn_udp(
         payload,
@@ -322,7 +323,7 @@ pub(crate) fn analyze_udp_packet(
         });
     }
 
-    // 14. BitTorrent DHT / uTP (no port gating, signature-based)
+    // 13. BitTorrent DHT / uTP (no port gating, signature-based)
     if let Some(bt_result) = bittorrent::analyze_udp_bittorrent(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::BitTorrent(bt_result),
@@ -378,7 +379,7 @@ mod tests {
         let mut payload = [0; 20];
         payload[1] = 1; // Binding request
         payload[4..8].copy_from_slice(&0x2112_A442u32.to_be_bytes());
-        for port in [3478, 5349, 50_001] {
+        for port in [53, 3478, 5349, 50_001] {
             for (local, remote) in [(50_000, port), (port, 50_000)] {
                 let result = analyze_udp_packet(&payload, local, remote, true)
                     .expect("STUN header should be classified");
@@ -387,6 +388,21 @@ mod tests {
                 let mut invalid = payload;
                 invalid[4] = 0;
                 assert!(analyze_udp_packet(&invalid, local, remote, true).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn stun_responses_on_dns_port_remain_stun() {
+        for message_type in [0x0101u16, 0x0111] {
+            let mut payload = [0; 20];
+            payload[..2].copy_from_slice(&message_type.to_be_bytes());
+            payload[4..8].copy_from_slice(&0x2112_A442u32.to_be_bytes());
+            for (local, remote) in [(50_000, 53), (53, 50_000)] {
+                for outgoing in [false, true] {
+                    let result = analyze_udp_packet(&payload, local, remote, outgoing).unwrap();
+                    assert!(matches!(result.application, ApplicationProtocol::Stun(_)));
+                }
             }
         }
     }

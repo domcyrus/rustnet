@@ -812,7 +812,8 @@ mod tests {
     #[test]
     fn missing_counters_leave_connection_lifecycle_visible() {
         use crate::network::types::ConnectionLifecycleSample;
-        use crate::ui::test_support::{render, test_app};
+        use crate::test_support::test_app;
+        use crate::ui::test_support::render;
         let app = test_app();
         let mut history = TrafficHistory::default();
         for _ in 0..2 {
@@ -839,7 +840,8 @@ mod tests {
 
     #[test]
     fn traffic_heading_matches_capture_scope() {
-        use crate::ui::test_support::{render, test_app};
+        use crate::test_support::test_app;
+        use crate::ui::test_support::render;
         let app = test_app();
         for (interface, expected) in [(Some("lo0"), "lo0"), (Some("any"), "all interfaces")] {
             app.set_current_interface_for_test(interface.map(str::to_owned));

@@ -4,16 +4,14 @@
 //! by the binary are re-exported here to keep its `crate::network::*` paths
 //! concise.
 //!
-//! The host-tied binary modules are the `rustnet-host` process-lookup wiring
-//! ([`platform`]) and the [`privileges`] preflight check. libpcap-based packet
-//! capture lives in the [`rustnet_capture`] crate and is re-exported here as
-//! [`capture`]; sandboxing and the root uid drop live in `rustnet-sandbox`.
+//! Process lookup lives in [`rustnet_host`]; [`privileges`] holds the preflight
+//! check. libpcap-based capture lives in [`rustnet_capture`] and is re-exported
+//! here as [`capture`]; sandboxing and the root uid drop live in `rustnet-sandbox`.
 
 pub mod containers;
 
 #[cfg(feature = "kubernetes")]
 pub mod kubernetes;
-pub mod platform;
 pub mod privileges;
 
 // Re-exported under the historical path.

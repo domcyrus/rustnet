@@ -106,6 +106,25 @@ The `dpi_overhead` benchmark includes deterministic Ethernet/TCP fixtures for or
 
 For before/after comparisons, use the same benchmark source, capture, compiler, build settings, and machine on both revisions. Build both versions before timing them, then alternate repeated runs without other heavy jobs. Database recognition adds work that the base revision did not perform, so report that cost separately from ordinary traffic. These measurements cover parsing and tracking CPU time, not live capture loss or UI responsiveness.
 
+## Headless snapshots
+
+The ignored release tests measure snapshot building, wire projection, serialization, and payload size, checking cached output against full serialization. The matrix varies active/history counts and metadata size; PCAP replay samples every 500 ms of trace time with five-second cleanup, without sleeping.
+
+```bash
+RUSTNET_PROFILE_CSV=/tmp/matrix.csv cargo test --locked --release --lib \
+  profile_headless_matrix -- --ignored --nocapture --test-threads=1
+python3 scripts/summarize-headless-profile.py /tmp/matrix.csv
+
+RUSTNET_PROFILE_PCAP=/path/to/capture.pcap RUSTNET_PROFILE_CSV=/tmp/replay.csv \
+  cargo test --locked --release --lib profile_headless_pcap \
+  -- --ignored --nocapture --test-threads=1
+python3 scripts/summarize-headless-profile.py /tmp/replay.csv
+```
+
+Use fresh CSV filenames; existing files are not overwritten. For a synthetic 30-minute trace, run `python3 scripts/generate-headless-profile.py /tmp/churn.pcap` (add `--active 1000 --churn 0` for steady traffic).
+
+Timings exclude packet capture, parsing/tracking, host enrichment, and output I/O. Replay uses the replay host's addresses and has no concurrent workers. The uncached reference runs first and warms memory, so its ratio is not an unbiased speedup measurement. **Representative live-capture validation is still pending**; synthetic replay results are not production CPU or memory measurements.
+
 ## Ad-hoc Benchmarking
 
 For consistent benchmarks:

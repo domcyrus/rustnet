@@ -3,30 +3,32 @@
 //! panel, interface table, activity tab, and graph tab. Binary units use
 //! IEC labels. Observed idle rates render as zero; callers handle missing data.
 
-pub(super) fn format_rate(bytes_per_second: f64) -> String {
+use std::borrow::Cow;
+
+pub(super) fn format_rate(bytes_per_second: f64) -> Cow<'static, str> {
     const KIB_PER_SEC: f64 = 1024.0;
     const MIB_PER_SEC: f64 = KIB_PER_SEC * 1024.0;
     const GIB_PER_SEC: f64 = MIB_PER_SEC * 1024.0;
 
     if bytes_per_second >= GIB_PER_SEC {
-        format!("{:.2} GiB/s", bytes_per_second / GIB_PER_SEC)
+        Cow::Owned(format!("{:.2} GiB/s", bytes_per_second / GIB_PER_SEC))
     } else if bytes_per_second >= MIB_PER_SEC {
-        format!("{:.2} MiB/s", bytes_per_second / MIB_PER_SEC)
+        Cow::Owned(format!("{:.2} MiB/s", bytes_per_second / MIB_PER_SEC))
     } else if bytes_per_second >= KIB_PER_SEC {
-        format!("{:.2} KiB/s", bytes_per_second / KIB_PER_SEC)
+        Cow::Owned(format!("{:.2} KiB/s", bytes_per_second / KIB_PER_SEC))
     } else if bytes_per_second > 0.0 {
-        format!("{:.0} B/s", bytes_per_second)
+        Cow::Owned(format!("{:.0} B/s", bytes_per_second))
     } else {
-        "0 B/s".to_string()
+        Cow::Borrowed("0 B/s")
     }
 }
 
 /// Format rate to compact form for tight spaces. `zero` is what a
 /// zero/absent rate renders as: the "-" placeholder in tables, "0B"
 /// in the activity bars.
-pub(super) fn format_rate_compact(bytes_per_second: f64, zero: &str) -> String {
+pub(super) fn format_rate_compact(bytes_per_second: f64, zero: &str) -> Cow<'_, str> {
     if bytes_per_second <= 0.0 || !bytes_per_second.is_finite() {
-        return zero.to_string();
+        return Cow::Borrowed(zero);
     }
     // Each half of the 11-cell RX/TX column has five cells. Promote before
     // rounding would produce a four-digit value with a two-cell unit.
@@ -36,9 +38,9 @@ pub(super) fn format_rate_compact(bytes_per_second: f64, zero: &str) -> String {
         let limit = if index == 0 { 1023.5 } else { 999.5 };
         if value < limit || index == units.len() - 1 {
             return if index >= 2 && value < 9.95 {
-                format!("{value:.1}{unit}")
+                Cow::Owned(format!("{value:.1}{unit}"))
             } else {
-                format!("{value:.0}{unit}")
+                Cow::Owned(format!("{value:.0}{unit}"))
             };
         }
         value /= 1024.0;
@@ -151,7 +153,40 @@ pub(super) fn ellipsize_left(s: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{ellipsize_left, format_countdown};
+    use std::borrow::Cow;
     use std::time::Duration;
+
+    #[test]
+    fn idle_rates_borrow_display_text() {
+        for value in [0.0, -1.0, f64::NEG_INFINITY, f64::NAN] {
+            assert!(matches!(super::format_rate(value), Cow::Borrowed("0 B/s")));
+        }
+        let custom_zero = String::from("idle");
+        for zero in ["-", "0B", custom_zero.as_str()] {
+            for value in [0.0, -1.0, f64::NEG_INFINITY, f64::INFINITY, f64::NAN] {
+                let formatted = super::format_rate_compact(value, zero);
+                assert!(matches!(formatted, Cow::Borrowed(_)));
+                assert_eq!(formatted, zero);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_live_rates_preserve_units_and_rounding() {
+        for (value, expected) in [
+            (1.0, "1B"),
+            (1023.0, "1023B"),
+            (1023.5, "1Ki"),
+            (999.0 * 1024.0, "999Ki"),
+            (999.5 * 1024.0, "1.0Mi"),
+            (1048576.0, "1.0Mi"),
+            (1073741824.0, "1.0Gi"),
+        ] {
+            let formatted = super::format_rate_compact(value, "-");
+            assert!(matches!(formatted, Cow::Owned(_)));
+            assert_eq!(formatted, expected);
+        }
+    }
 
     #[test]
     fn observed_rates_use_binary_units_and_explicit_zero() {

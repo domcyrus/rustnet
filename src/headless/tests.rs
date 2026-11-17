@@ -7,6 +7,7 @@ use serde::{Serialize, Serializer};
 use serde_json::Value;
 use std::io;
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::SystemTime;
 
 #[derive(Clone, Default)]
 struct SharedWriter(Arc<Mutex<Vec<u8>>>);
@@ -96,6 +97,131 @@ pub(super) fn object_keys(value: &Value) -> Vec<&str> {
 }
 
 #[test]
+fn extended_output_is_independent_and_applies_to_live_and_terminal_records() {
+    for full_details in [false, true] {
+        for capture_accounting in [false, true] {
+            for format in [
+                HeadlessFormat::Json,
+                HeadlessFormat::JsonLines,
+                HeadlessFormat::JsonLinesDelta,
+            ] {
+                let mut app = App::new(Config {
+                    capture_accounting,
+                    resolve_dns: false,
+                    disable_geoip: true,
+                    ..Config::default()
+                })
+                .unwrap();
+                let mut packet = ParsedPacket::new(
+                    Protocol::Tcp,
+                    "127.0.0.1:40000".parse().unwrap(),
+                    "192.0.2.1:443".parse().unwrap(),
+                    ProtocolState::Tcp(TcpState::Established),
+                    true,
+                    100,
+                    Some("fixture".into()),
+                    Some(42),
+                );
+                app.ingest_packet_for_test(&packet);
+                packet.process_id = None;
+                app.ingest_packet_for_test(&packet);
+                app.set_connections_snapshot_for_test(app_with_connections().get_connections());
+                let writer = SharedWriter::default();
+                let report = run(
+                    &mut app,
+                    writer.clone(),
+                    &HeadlessOptions {
+                        full_details,
+                        format,
+                        duration: Some(Duration::ZERO),
+                        ..HeadlessOptions::default()
+                    },
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+                assert_eq!(report.panicked_workers, 0);
+                assert_eq!(report.timed_out_workers, 0);
+                let records = writer.bytes();
+                for line in records
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                {
+                    let value: Value = serde_json::from_slice(line).unwrap();
+                    assert_eq!(
+                        value["stats"].get("capture_accounting").is_some(),
+                        capture_accounting
+                    );
+                    for connection in value["connections"].as_array().unwrap() {
+                        for field in [
+                            "protocol_details",
+                            "health_details",
+                            "tcp_health",
+                            "request_health",
+                            "network_context",
+                            "remote_scope",
+                            "attributed_hostname",
+                            "lifecycle",
+                        ] {
+                            assert_eq!(connection.get(field).is_some(), full_details, "{field}");
+                        }
+                        if connection["process"].is_object() {
+                            assert_eq!(
+                                connection["process"].get("user_group").is_some(),
+                                full_details
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn retained_history_is_exported_only_when_requested() {
+    for include_historic in [false, true] {
+        for format in [
+            HeadlessFormat::Json,
+            HeadlessFormat::JsonLines,
+            HeadlessFormat::JsonLinesDelta,
+        ] {
+            let mut app = app_with_connections();
+            app.cleanup_connections_for_test(SystemTime::now() + Duration::from_secs(86400));
+            let output = SharedWriter::default();
+            let outcome = run(
+                &mut app,
+                output.clone(),
+                &HeadlessOptions {
+                    full_details: false,
+                    format,
+                    duration: Some(Duration::ZERO),
+                    filter_query: Some("proto:tcp".into()),
+                    include_historic,
+                },
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(outcome.output_errors, 0);
+            let records = output.bytes();
+            let final_record = records
+                .split(|byte| *byte == b'\n')
+                .rfind(|line| !line.is_empty())
+                .unwrap();
+            let value: Value = serde_json::from_slice(final_record).unwrap();
+            assert_eq!(value["runtime"]["termination_reason"], "duration_elapsed");
+            let connections = value["connections"].as_array().unwrap();
+            assert_eq!(connections.len(), usize::from(include_historic));
+            if include_historic {
+                assert_eq!(connections[0]["historic"], true);
+                assert_eq!(connections[0]["protocol"], "TCP");
+                assert!(connections[0]["closed_at"].is_string());
+                assert_eq!(connections[0]["traffic"]["incoming_bytes_per_second"], 0.0);
+            }
+        }
+    }
+}
+
+#[test]
 fn json_writes_one_final_versioned_snapshot() {
     let mut app = app_with_connections();
     let output = SharedWriter::default();
@@ -103,6 +229,8 @@ fn json_writes_one_final_versioned_snapshot() {
         &mut app,
         output.clone(),
         &HeadlessOptions {
+            full_details: false,
+            include_historic: false,
             format: HeadlessFormat::Json,
             duration: Some(Duration::ZERO),
             filter_query: None,
@@ -136,81 +264,83 @@ fn json_writes_one_final_versioned_snapshot() {
 
 #[test]
 fn jsonl_emits_an_initial_snapshot_and_applies_filter() {
-    let mut app = app_with_connections();
-    let output = SharedWriter::default();
-    let stop_report = run(
-        &mut app,
-        output.clone(),
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: Some(Duration::ZERO),
-            filter_query: Some("proto:tcp".to_string()),
-        },
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+    for format in [HeadlessFormat::JsonLines, HeadlessFormat::JsonLinesDelta] {
+        let mut app = app_with_connections();
+        let output = SharedWriter::default();
+        let stop_report = run(
+            &mut app,
+            output.clone(),
+            &HeadlessOptions {
+                format,
+                duration: Some(Duration::ZERO),
+                filter_query: Some("proto:tcp".to_string()),
+                ..HeadlessOptions::default()
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
-    assert_eq!(stop_report.timed_out_workers, 0);
-    let output = output.bytes();
-    let records: Vec<Value> = output
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice(line).unwrap())
-        .collect();
-    assert!((1..=2).contains(&records.len()));
+        assert_eq!(stop_report.timed_out_workers, 0);
+        let output = output.bytes();
+        let records: Vec<Value> = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert!((1..=2).contains(&records.len()));
 
-    let value = records.last().unwrap();
-    assert_eq!(value["filter"], "proto:tcp");
-    assert_eq!(value["connection_count"], 1);
-    assert_eq!(value["connections"][0]["protocol"], "TCP");
-    assert_eq!(value["connections"][0]["process"]["name"], "curl");
+        let value = records.last().unwrap();
+        assert_eq!(value["filter"], "proto:tcp");
+        assert_eq!(value["connection_count"], 1);
+        assert_eq!(value["connections"][0]["protocol"], "TCP");
+        assert_eq!(value["connections"][0]["process"]["name"], "curl");
 
-    assert_eq!(value["runtime"]["status"], "stopped");
-    assert_eq!(value["runtime"]["termination_reason"], "duration_elapsed");
-    assert!(value["runtime"]["shutdown"].is_object());
+        assert_eq!(value["runtime"]["status"], "stopped");
+        assert_eq!(value["runtime"]["termination_reason"], "duration_elapsed");
+        assert!(value["runtime"]["shutdown"].is_object());
+    }
 }
 
-#[derive(Default)]
-struct BrokenPipeWriter;
+enum FailingWriter {
+    Write(io::ErrorKind),
+    Flush,
+    Panic,
+}
 
-impl Write for BrokenPipeWriter {
-    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-        Err(io::Error::new(io::ErrorKind::BrokenPipe, "reader closed"))
+impl Write for FailingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Write(kind) => Err(io::Error::new(*kind, "injected output failure")),
+            Self::Flush => Ok(buffer.len()),
+            // Exercise unwinding without panic-hook backtrace latency.
+            Self::Panic => std::panic::resume_unwind(Box::new("injected writer panic")),
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        match self {
+            Self::Flush => Err(io::Error::new(io::ErrorKind::BrokenPipe, "reader closed")),
+            _ => Ok(()),
+        }
     }
 }
 
 #[test]
 fn broken_pipe_is_a_clean_exit() {
-    let mut app = app_with_connections();
-    let stop_report = run(
-        &mut app,
-        BrokenPipeWriter,
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+    for format in [HeadlessFormat::JsonLines, HeadlessFormat::JsonLinesDelta] {
+        let mut app = app_with_connections();
+        let stop_report = run(
+            &mut app,
+            FailingWriter::Write(io::ErrorKind::BrokenPipe),
+            &HeadlessOptions {
+                format,
+                ..HeadlessOptions::default()
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
 
-    assert_eq!(stop_report.timed_out_workers, 0);
-}
-
-struct FlushBrokenPipeWriter(Vec<u8>);
-
-impl Write for FlushBrokenPipeWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.0.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Err(io::Error::new(io::ErrorKind::BrokenPipe, "reader closed"))
+        assert_eq!(stop_report.timed_out_workers, 0);
     }
 }
 
@@ -219,12 +349,8 @@ fn broken_pipe_while_flushing_is_a_clean_exit() {
     let mut app = app_with_connections();
     let stop_report = run(
         &mut app,
-        FlushBrokenPipeWriter(Vec::new()),
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
+        FailingWriter::Flush,
+        &HeadlessOptions::default(),
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -232,30 +358,13 @@ fn broken_pipe_while_flushing_is_a_clean_exit() {
     assert_eq!(stop_report.timed_out_workers, 0);
 }
 
-#[derive(Default)]
-struct FailedWriter;
-
-impl Write for FailedWriter {
-    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-        Err(io::Error::other("injected output failure"))
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn non_pipe_writer_failure_is_an_error() {
     let mut app = app_with_connections();
     let error = run(
         &mut app,
-        FailedWriter,
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
+        FailingWriter::Write(io::ErrorKind::Other),
+        &HeadlessOptions::default(),
         &AtomicBool::new(false),
     )
     .unwrap_err();
@@ -263,30 +372,13 @@ fn non_pipe_writer_failure_is_an_error() {
     assert!(error.to_string().contains("headless output"));
 }
 
-struct PanicWriter;
-
-impl Write for PanicWriter {
-    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-        // Exercise unwinding without panic-hook backtrace latency.
-        std::panic::resume_unwind(Box::new("injected writer panic"));
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn writer_panic_is_joined_and_reported() {
     let mut app = app_with_connections();
     let error = run(
         &mut app,
-        PanicWriter,
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
+        FailingWriter::Panic,
+        &HeadlessOptions::default(),
         &AtomicBool::new(false),
     )
     .unwrap_err();
@@ -299,55 +391,39 @@ fn writer_panic_is_joined_and_reported() {
 }
 
 struct StallOnceWriter {
+    on_flush: bool,
     output: SharedWriter,
     entered: Option<mpsc::Sender<()>>,
     release: mpsc::Receiver<()>,
     finished: Option<mpsc::Sender<()>>,
 }
 
-impl Write for StallOnceWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+impl StallOnceWriter {
+    fn stall(&mut self) {
         if let Some(entered) = self.entered.take() {
             let _ = entered.send(());
             let _ = self.release.recv();
+        }
+    }
+}
+
+impl Write for StallOnceWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if !self.on_flush {
+            self.stall();
         }
         self.output.write(buffer)
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if self.on_flush {
+            self.stall();
+        }
         self.output.flush()
     }
 }
 
 impl Drop for StallOnceWriter {
-    fn drop(&mut self) {
-        if let Some(finished) = self.finished.take() {
-            let _ = finished.send(());
-        }
-    }
-}
-
-struct StallFlushWriter {
-    entered: Option<mpsc::Sender<()>>,
-    release: mpsc::Receiver<()>,
-    finished: Option<mpsc::Sender<()>>,
-}
-
-impl Write for StallFlushWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        if let Some(entered) = self.entered.take() {
-            let _ = entered.send(());
-            let _ = self.release.recv();
-        }
-        Ok(())
-    }
-}
-
-impl Drop for StallFlushWriter {
     fn drop(&mut self) {
         if let Some(finished) = self.finished.take() {
             let _ = finished.send(());
@@ -368,6 +444,7 @@ fn stalled_writer() -> (
     let (finished_tx, finished_rx) = mpsc::channel();
     (
         StallOnceWriter {
+            on_flush: false,
             output: output.clone(),
             entered: Some(entered_tx),
             release: release_rx,
@@ -440,49 +517,132 @@ fn superseded_snapshots_are_dropped_without_serialization_and_terminal_is_writte
 }
 
 #[test]
-fn stalled_writer_cannot_block_duration_shutdown() {
-    let (writer, _output, entered, release, finished) = stalled_writer();
-    let mut app = app_with_connections();
-    let started = Instant::now();
-    let error = run_with_writer_deadline(
-        &mut app,
-        writer,
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: Some(Duration::from_millis(20)),
-            filter_query: None,
-        },
-        &AtomicBool::new(false),
-        Duration::from_millis(30),
-    )
-    .unwrap_err();
+fn incremental_baseline_tracks_written_records_after_queue_replacement() {
+    for full_details in [false, true] {
+        let app = app_with_connections();
+        let snapshot =
+            || SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, full_details).1;
+        let initial = snapshot();
+        let expected = serde_json::to_value(&initial).unwrap();
+        let (writer, output, entered, release, finished) = stalled_writer();
+        let mut encoder = IncrementalEncoder::default();
+        let (encoded_tx, encoded_rx) = mpsc::channel();
+        let mut sink = AsyncOutput::spawn_with_serializer(writer, move |record| {
+            let bytes = encoder.serialize(record)?;
+            encoded_tx.send(()).unwrap();
+            Ok(bytes)
+        })
+        .unwrap();
+        sink.offer_latest(initial);
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        encoded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        for _ in 0..20 {
+            let filtered = SnapshotEnvelope::new(
+                &app,
+                Some("proto:tcp"),
+                RuntimePhase::Running,
+                None,
+                None,
+                full_details,
+            )
+            .1;
+            sink.offer_latest(filtered);
+        }
+        // Every filtered snapshot is superseded while the first write is blocked.
+        // Diffing on the producer would incorrectly reinsert the UDP connection.
+        let next = snapshot();
+        let next_expected = serde_json::to_value(&next).unwrap();
+        // Full metadata includes a countdown. Compare the exact queued projections,
+        // allowing real metadata changes without diffing against discarded offers.
+        let expected_updates: Vec<_> = next_expected["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|connection| {
+                !expected["connections"]
+                    .as_array()
+                    .unwrap()
+                    .contains(connection)
+            })
+            .cloned()
+            .collect();
+        sink.offer_latest(next);
+        release.send(()).unwrap();
+        encoded_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let terminal = SnapshotEnvelope::new(
+            &app,
+            None,
+            RuntimePhase::Stopped,
+            Some(TerminationReason::DurationElapsed),
+            Some(StopReport::default()),
+            full_details,
+        )
+        .1;
+        let terminal_expected = serde_json::to_value(&terminal).unwrap();
+        sink.finish(terminal, Duration::from_secs(1)).unwrap();
+        finished.recv_timeout(Duration::from_secs(1)).unwrap();
+        let records: Vec<Value> = output
+            .bytes()
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0]["connections"], expected["connections"]);
+        assert_eq!(records[1]["type"], "delta");
+        assert_eq!(records[1]["sequence"], 2);
+        assert_eq!(records[1]["base_sequence"], 1);
+        assert_eq!(
+            records[1]["connections"],
+            serde_json::json!(expected_updates)
+        );
+        assert_eq!(records[1]["removed_connection_ids"], serde_json::json!([]));
+        assert_eq!(records[2]["type"], "snapshot");
+        assert_eq!(records[2]["sequence"], 3);
+        assert_eq!(records[2]["connections"], terminal_expected["connections"]);
+        assert_eq!(records[2]["runtime"]["status"], "stopped");
+    }
+}
 
-    assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(error.to_string().contains("did not finish within 30ms"));
-    entered.recv_timeout(Duration::from_secs(1)).unwrap();
-    release.send(()).unwrap();
-    finished.recv_timeout(Duration::from_secs(1)).unwrap();
+#[test]
+fn stalled_writer_cannot_block_duration_shutdown() {
+    for format in [HeadlessFormat::JsonLines, HeadlessFormat::JsonLinesDelta] {
+        let (writer, _output, entered, release, finished) = stalled_writer();
+        let mut app = app_with_connections();
+        let started = Instant::now();
+        let error = run_with_writer_deadline(
+            &mut app,
+            writer,
+            &HeadlessOptions {
+                format,
+                duration: Some(Duration::from_millis(20)),
+                ..HeadlessOptions::default()
+            },
+            &AtomicBool::new(false),
+            Duration::from_millis(30),
+        )
+        .unwrap_err();
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(error.to_string().contains("did not finish within 30ms"));
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
 }
 
 #[test]
 fn stalled_flush_cannot_block_duration_shutdown() {
-    let (entered_tx, entered_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
-    let (finished_tx, finished_rx) = mpsc::channel();
-    let writer = StallFlushWriter {
-        entered: Some(entered_tx),
-        release: release_rx,
-        finished: Some(finished_tx),
-    };
+    let (mut writer, _output, entered_rx, release_tx, finished_rx) = stalled_writer();
+    writer.on_flush = true;
     let mut app = app_with_connections();
     let started = Instant::now();
     let error = run_with_writer_deadline(
         &mut app,
         writer,
         &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
             duration: Some(Duration::from_millis(20)),
-            filter_query: None,
+            ..HeadlessOptions::default()
         },
         &AtomicBool::new(false),
         Duration::from_millis(30),
@@ -514,11 +674,7 @@ fn stalled_writer_cannot_block_signal_shutdown() {
     let result = run_with_writer_deadline(
         &mut app,
         writer,
-        &HeadlessOptions {
-            format: HeadlessFormat::JsonLines,
-            duration: None,
-            filter_query: None,
-        },
+        &HeadlessOptions::default(),
         &shutdown,
         Duration::from_millis(30),
     );
@@ -682,9 +838,10 @@ fn capture_failure_stops_an_indefinite_run() {
         &mut app,
         output.clone(),
         &HeadlessOptions {
+            full_details: false,
+            include_historic: false,
             format: HeadlessFormat::Json,
-            duration: None,
-            filter_query: None,
+            ..HeadlessOptions::default()
         },
         &AtomicBool::new(false),
     )
@@ -705,7 +862,11 @@ fn capture_failure_stops_an_indefinite_run() {
 
 #[test]
 fn capture_failure_wins_a_simultaneous_normal_exit() {
-    for format in [HeadlessFormat::JsonLines, HeadlessFormat::Json] {
+    for format in [
+        HeadlessFormat::JsonLines,
+        HeadlessFormat::JsonLinesDelta,
+        HeadlessFormat::Json,
+    ] {
         let mut app = app_with_connections();
         app.set_capture_error_for_test(Some("injected device failure"));
         let output = SharedWriter::default();
@@ -713,6 +874,8 @@ fn capture_failure_wins_a_simultaneous_normal_exit() {
             &mut app,
             output.clone(),
             &HeadlessOptions {
+                full_details: false,
+                include_historic: false,
                 format,
                 duration: Some(Duration::ZERO),
                 filter_query: None,
@@ -745,9 +908,10 @@ fn unexpected_critical_worker_exit_stops_an_indefinite_run() {
         &mut app,
         output.clone(),
         &HeadlessOptions {
+            full_details: false,
+            include_historic: false,
             format: HeadlessFormat::Json,
-            duration: None,
-            filter_query: None,
+            ..HeadlessOptions::default()
         },
         &AtomicBool::new(false),
     )
@@ -768,9 +932,10 @@ fn shared_shutdown_condition_ends_json_mode() {
         &mut app,
         output.clone(),
         &HeadlessOptions {
+            full_details: false,
+            include_historic: false,
             format: HeadlessFormat::Json,
-            duration: None,
-            filter_query: None,
+            ..HeadlessOptions::default()
         },
         &AtomicBool::new(true),
     )
@@ -788,6 +953,8 @@ fn format_tokens_are_stable() {
     assert_eq!(HeadlessFormat::JsonLines.as_str(), "jsonl");
     assert_eq!(HeadlessFormat::Json.as_str(), "json");
     assert_eq!("jsonl".parse(), Ok(HeadlessFormat::JsonLines));
+    assert_eq!(HeadlessFormat::JsonLinesDelta.as_str(), "jsonl-delta");
+    assert_eq!("jsonl-delta".parse(), Ok(HeadlessFormat::JsonLinesDelta));
     assert_eq!("json".parse(), Ok(HeadlessFormat::Json));
     assert!("yaml".parse::<HeadlessFormat>().is_err());
 }

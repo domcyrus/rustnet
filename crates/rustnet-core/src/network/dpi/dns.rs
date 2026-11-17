@@ -16,8 +16,8 @@ const MAX_ANSWERS_TO_PARSE: usize = 64;
 /// beyond this is noise we'd rather drop than allocate for.
 const MAX_RESPONSE_IPS_PER_PACKET: usize = 16;
 
-/// Cap on how many pointer indirections we follow while skipping a name in
-/// the answer section. Per RFC 1035 these must not form cycles; this cap
+/// Cap on how many pointer indirections we follow in a DNS name.
+/// Per RFC 1035 these must not form cycles; this cap
 /// keeps a crafted packet from looping forever.
 const MAX_NAME_POINTER_HOPS: usize = 16;
 
@@ -62,74 +62,65 @@ fn skip_dns_name(payload: &[u8], start: usize) -> Option<usize> {
     }
 }
 
-/// Parse a single question section and return `(query_name, query_type,
-/// offset_after_question)`. The offset advances past QNAME + QTYPE (2) +
-/// QCLASS (2); if QTYPE / QCLASS run off the end the offset still moves to
-/// keep skip-only callers (qdcount > 1) bounds-safe.
-fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQueryType>, usize) {
+/// Parse a complete question, validating compressed names before exposing
+/// metadata. Pointer targets must precede the pointer and stay outside the
+/// header; the hop and expanded-name limits bound malformed inputs.
+fn parse_question(payload: &[u8], start: usize) -> Option<(Option<String>, DnsQueryType, usize)> {
     let mut offset = start;
+    let mut end = None;
     let mut name = String::new();
-    let mut name_over_limit = false;
+    let mut name_is_utf8 = true;
+    let mut wire_len = 1; // Root terminator
+    let mut hops = 0;
 
-    // Parse domain name (label-by-label, with light pointer handling; we
-    // only need to terminate the walk, not fully resolve compressed labels).
-    while offset < payload.len() {
-        let label_len = payload[offset] as usize;
+    loop {
+        let label_len = usize::from(*payload.get(offset)?);
         if label_len == 0 {
-            offset += 1;
+            end.get_or_insert(offset + 1);
             break;
         }
-
         if label_len & 0xC0 == 0xC0 {
-            // Compressed name: skip for simplicity.
-            offset += 2;
-            break;
+            let low = usize::from(*payload.get(offset + 1)?);
+            let target = ((label_len & 0x3F) << 8) | low;
+            hops += 1;
+            if target < 12 || target >= offset || hops > MAX_NAME_POINTER_HOPS {
+                return None;
+            }
+            end.get_or_insert(offset + 2);
+            offset = target;
+            continue;
         }
-
-        // Reject reserved length-octet top bits (0x40 / 0x80), neither a
-        // standard label nor a pointer (RFC 1035 §3.3). Stop the walk so the
-        // invalid bytes are not pulled into the name, matching skip_dns_name.
         if label_len & 0xC0 != 0 {
-            break;
+            return None;
         }
-
-        if offset + 1 + label_len > payload.len() {
-            break;
+        let next = offset.checked_add(1 + label_len)?;
+        let label = payload.get(offset + 1..next)?;
+        wire_len += 1 + label_len;
+        if wire_len > MAX_DNS_NAME_LEN + 2 {
+            return None;
         }
-
-        if !name_over_limit {
+        if let Ok(label) = std::str::from_utf8(label) {
             if !name.is_empty() {
                 name.push('.');
             }
-
-            if let Ok(label) = std::str::from_utf8(&payload[offset + 1..offset + 1 + label_len]) {
-                name.push_str(label);
-            }
-
-            // Enforce RFC 1035 maximum name length: stop accumulating, but
-            // keep walking the remaining labels so `offset` ends up past the
-            // whole QNAME; otherwise QTYPE/QCLASS would be read from name
-            // bytes and report a fabricated query type.
-            if name.len() > MAX_DNS_NAME_LEN {
-                name_over_limit = true;
-            }
+            name.push_str(label);
+        } else {
+            // Binary DNS labels are legal, but a partial display name would
+            // incorrectly attribute the question to a different hostname.
+            name_is_utf8 = false;
         }
-
-        offset += 1 + label_len;
+        offset = next;
     }
 
-    let query_name = if name.is_empty() { None } else { Some(name) };
-
-    let mut query_type = None;
-    if offset + 2 <= payload.len() {
-        let qtype = u16::from_be_bytes([payload[offset], payload[offset + 1]]);
-        query_type = Some(DnsQueryType::from_wire(qtype));
+    let end = end?;
+    let fields = payload.get(end..end.checked_add(4)?)?;
+    let qtype = u16::from_be_bytes([fields[0], fields[1]]);
+    let qclass = u16::from_be_bytes([fields[2], fields[3]]);
+    if qtype == 0 || qclass == 0 {
+        return None;
     }
-    // Advance past QTYPE (2) and QCLASS (2). If they run past the payload,
-    // downstream walks' bounds checks will short-circuit cleanly.
-    offset = offset.saturating_add(4);
-
-    (query_name, query_type, offset)
+    let query_name = (name_is_utf8 && !name.is_empty()).then_some(name);
+    Some((query_name, DnsQueryType::from_wire(qtype), end + 4))
 }
 
 /// Walk `count` resource records starting at `offset`, pushing A / AAAA
@@ -284,34 +275,36 @@ pub(super) fn dns_header_counts(payload: &[u8]) -> Option<DnsHeaderCounts> {
 /// Walk `qdcount` question sections starting at offset 12 and return the
 /// `(query_name, query_type, offset_after_all_questions)` triple. The name
 /// and type are taken from the **first** question (the DNS / mDNS / LLMNR
-/// convention is one question per packet); subsequent questions are skipped
-/// only so the answer-walk starts at the correct offset, since a misaligned
+/// convention is one question per packet); subsequent questions are validated
+/// so the answer-walk starts at the correct offset, since a misaligned
 /// offset can surface bogus IPs from the answer walk.
-pub(super) fn parse_questions_starting_at_header(
+fn parse_questions_starting_at_header(
     payload: &[u8],
     qdcount: u16,
-) -> (Option<String>, Option<DnsQueryType>, usize) {
+) -> Option<(Option<String>, Option<DnsQueryType>, usize)> {
+    // Even a root-name question needs five bytes. Reject impossible counts
+    // before walking, including a STUN cookie interpreted as DNS counts.
+    if usize::from(qdcount) > payload.len().saturating_sub(12) / 5 {
+        return None;
+    }
     let mut offset = 12;
     let mut query_name = None;
     let mut query_type = None;
     for i in 0..qdcount {
-        let (name, qtype, next) = parse_question(payload, offset);
+        let (name, qtype, next) = parse_question(payload, offset)?;
         if i == 0 {
             query_name = name;
-            query_type = qtype;
+            query_type = Some(qtype);
         }
         offset = next;
-        if offset > payload.len() {
-            break;
-        }
     }
-    (query_name, query_type, offset)
+    Some((query_name, query_type, offset))
 }
 
 fn parse_dns_base(payload: &[u8]) -> Option<(DnsHeaderCounts, DnsInfo, usize)> {
     let header = dns_header_counts(payload)?;
     let (query_name, query_type, offset) =
-        parse_questions_starting_at_header(payload, header.qdcount);
+        parse_questions_starting_at_header(payload, header.qdcount)?;
     let info = DnsInfo {
         query_name,
         query_type,
@@ -326,6 +319,16 @@ fn parse_dns_base(payload: &[u8]) -> Option<(DnsHeaderCounts, DnsInfo, usize)> {
 
 pub(super) fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
     let (header, mut info, mut offset) = parse_dns_base(payload)?;
+    let flags = u16::from_be_bytes([payload[2], payload[3]]);
+    // AD and CD are valid DNSSEC flags; only the remaining Z bit is reserved.
+    // A query needs a question. Error or truncated replies may omit it and
+    // can still finish a transaction whose question was captured earlier.
+    if flags & 0x0040 != 0
+        || (!header.is_response && (header.qdcount == 0 || header.rcode != 0))
+        || (header.is_response && header.qdcount == 0 && header.rcode == 0 && !header.truncated)
+    {
+        return None;
+    }
 
     // Answer-section walk for A / AAAA records. Only runs on responses
     // (QR bit set), since `DnsInfo.response_ips` is only meaningful for
@@ -371,7 +374,7 @@ pub(super) fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
 /// walks the **additional records** (ARCOUNT) and tolerates packets with
 /// `qdcount == 0` (RFC 6762 §6: typical mDNS announcements carry only
 /// answers / additionals, no questions). The DNS / LLMNR path keeps the
-/// stricter behaviour because their responses always echo the question.
+/// stricter behaviour for queries and successful, non-truncated replies.
 pub(super) fn analyze_dns_for_mdns(payload: &[u8]) -> Option<DnsInfo> {
     let (header, mut info, mut offset) = parse_dns_base(payload)?;
 
@@ -517,26 +520,118 @@ mod tests {
     }
 
     #[test]
-    fn test_dns_name_length_limit() {
-        // Build a DNS packet with many 63-byte labels (exceeding 253 chars)
-        let mut payload = vec![0u8; 12]; // DNS header
-        payload[5] = 1; // qdcount
-        // 10 labels of 63 bytes each (630+ chars total, exceeds 253)
-        for _ in 0..10 {
-            payload.push(63); // label length
-            payload.extend_from_slice(&[b'a'; 63]);
-        }
-        payload.push(0); // null terminator
-        payload.extend_from_slice(&[0, 1, 0, 1]); // QTYPE A, QCLASS IN
+    fn rejects_questionless_queries_and_invalid_question_counts() {
+        assert!(analyze_dns(&[0; 12]).is_none());
+        assert!(analyze_dns(&build_dns_header(1, 0x0100, 1, 0, 0, 0)).is_none());
+        let mut payload = build_dns_packet(1, 0x0100, "example.com", 1);
+        payload[4..6].copy_from_slice(&2u16.to_be_bytes());
+        assert!(analyze_dns(&payload).is_none());
+    }
 
-        let info = analyze_dns(&payload).unwrap();
-        if let Some(name) = &info.query_name {
-            // Name should be truncated near the RFC limit, not the full 630+ chars
-            assert!(name.len() <= MAX_DNS_NAME_LEN + 63 + 1);
+    #[test]
+    fn rejects_incomplete_questions() {
+        let payload = build_dns_packet(1, 0x0100, "example.com", 1);
+        for end in 12..payload.len() {
+            assert!(analyze_dns(&payload[..end]).is_none(), "length {end}");
         }
-        // The walk must still consume the whole QNAME so QTYPE is read from
-        // the right offset, not fabricated from mid-name bytes.
+    }
+
+    #[test]
+    fn rejects_invalid_question_pointers_and_reserved_labels() {
+        for name in [
+            &b"\xc0"[..],
+            &b"\xc0\x0c"[..], // Self reference
+            &b"\xc0\x0e"[..], // Forward reference
+            &b"\xc0\xff"[..], // Outside the packet
+            &b"\xc0\x00"[..], // Inside the header
+            &b"\x40"[..],
+            &b"\x80"[..],
+        ] {
+            let mut payload = build_dns_header(1, 0x0100, 1, 0, 0, 0);
+            payload.extend(name);
+            payload.extend([0, 1, 0, 1]);
+            assert!(analyze_dns(&payload).is_none(), "name {name:?}");
+        }
+    }
+
+    #[test]
+    fn accepts_root_questions_and_compressed_later_questions() {
+        let mut payload = build_dns_header(1, 0x0100, 2, 0, 0, 0);
+        push_question(&mut payload, "example.com", 1);
+        payload.extend([0xc0, 12, 0, 28, 0, 1]);
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.query_name.as_deref(), Some("example.com"));
         assert_eq!(info.query_type, Some(DnsQueryType::A));
+
+        let mut root = build_dns_header(1, 0x0100, 1, 0, 0, 0);
+        root.extend([0, 0, 2, 0, 1]);
+        let info = analyze_dns(&root).unwrap();
+        assert_eq!(info.query_type, Some(DnsQueryType::NS));
+    }
+
+    #[test]
+    fn rejects_zero_question_type_or_class() {
+        for fields in [[0, 0, 0, 1], [0, 1, 0, 0]] {
+            let mut payload = build_dns_packet(1, 0x0100, "example.com", 1);
+            let end = payload.len();
+            payload[end - 4..].copy_from_slice(&fields);
+            assert!(analyze_dns(&payload).is_none());
+        }
+    }
+
+    #[test]
+    fn questionless_error_responses_are_still_observed() {
+        for rcode in [1, 2, 5] {
+            let payload = build_dns_header(1, 0x8000 | rcode, 0, 0, 0, 0);
+            let info = analyze_dns(&payload).unwrap();
+            assert!(info.is_response);
+            assert_eq!(info.rcode, Some(rcode as u8));
+        }
+    }
+
+    #[test]
+    fn validates_header_flags_without_rejecting_dnssec_or_edns() {
+        let mut payload = build_dns_header(1, 0x0130, 1, 0, 0, 1);
+        push_question(&mut payload, "example.com", 65);
+        // OPT pseudo-record, UDP payload size 1232, DNSSEC OK, no options.
+        payload.extend([0, 0, 41, 4, 208, 0, 0, 128, 0, 0, 0]);
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.query_type, Some(DnsQueryType::HTTPS));
+
+        for flags in [0x0140u16, 0x0101] {
+            payload[2..4].copy_from_slice(&flags.to_be_bytes());
+            assert!(analyze_dns(&payload).is_none());
+        }
+        assert!(analyze_dns(&build_dns_header(1, 0x8000, 0, 0, 0, 0)).is_none());
+        assert!(analyze_dns(&build_dns_header(1, 0x8200, 0, 0, 0, 0)).is_some());
+    }
+
+    #[test]
+    fn binary_labels_do_not_produce_partial_hostnames() {
+        let mut payload = build_dns_header(1, 0x0100, 1, 0, 0, 0);
+        payload.extend(b"\x01\xff\x07example\0\0\x01\0\x01");
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.query_name, None);
+        assert_eq!(info.query_type, Some(DnsQueryType::A));
+    }
+
+    #[test]
+    fn test_dns_name_length_limit() {
+        for last_len in [61, 62] {
+            let labels = [
+                "a".repeat(63),
+                "b".repeat(63),
+                "c".repeat(63),
+                "d".repeat(last_len),
+            ];
+            let name = labels.join(".");
+            let payload = build_dns_packet(1, 0x0100, &name, 1);
+            if last_len == 61 {
+                assert_eq!(analyze_dns(&payload).unwrap().query_name, Some(name));
+            } else {
+                assert!(analyze_dns(&payload).is_none());
+            }
+        }
     }
 
     #[test]
@@ -591,9 +686,7 @@ mod tests {
     fn test_question_rejects_reserved_label_bits() {
         // A label octet whose top two bits are 01 (0x40) or 10 (0x80) is neither
         // a standard label nor a compression pointer (RFC 1035 §3.3). The name
-        // walk must stop at it instead of reading it as a 64+ byte label and
-        // pulling the following bytes into query_name. skip_dns_name already
-        // rejects these; parse_question must be consistent.
+        // walk must reject it instead of exposing partial question metadata.
         let mut payload = vec![0u8; 12];
         payload[5] = 1; // qdcount = 1
         // valid "abc" label
@@ -607,9 +700,7 @@ mod tests {
         payload.push(0);
         payload.extend_from_slice(&[0, 1, 0, 1]);
 
-        let info = analyze_dns(&payload).unwrap();
-        // Only the valid label before the reserved octet is kept.
-        assert_eq!(info.query_name, Some("abc".to_string()));
+        assert!(analyze_dns(&payload).is_none());
     }
 
     /// Helper: build a baseline question-section payload for `example.com / A`

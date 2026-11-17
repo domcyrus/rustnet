@@ -4,54 +4,45 @@ opening the PR, then fill in the sections below.
 
 CONTRIBUTING.md: https://github.com/domcyrus/rustnet/blob/main/CONTRIBUTING.md
 
-PRs that ship without the checklist completed will usually be asked to
-update before review.
+Fill in the sections that apply to your change; remove the rest.
 -->
 
 ## Summary
 
-<!-- What does this PR do, and why? One or two paragraphs. -->
+<!-- What does this PR do, and why? A few sentences are enough.
+For performance changes, explain the benefit and include evidence
+appropriate to the claim (see CONTRIBUTING.md#performance--optimizations). -->
 
 ## Linked issue
 
-<!-- For features and non-trivial changes, link the issue where the
-approach was discussed. If there is no issue, please open one first
-(see CONTRIBUTING.md: https://github.com/domcyrus/rustnet/blob/main/CONTRIBUTING.md#development-workflow).
-Bug fixes and typo corrections do not need a prior issue. -->
-
-Closes #
+<!-- Optional: link related issues or use "Closes #123" when appropriate.
+Small, focused changes do not need a prior issue. For substantial features,
+new protocols, or architectural refactors, discussion first is recommended. -->
 
 ## Verification
 
-Per [CONTRIBUTING.md > Code Quality Requirements](https://github.com/domcyrus/rustnet/blob/main/CONTRIBUTING.md#code-quality-requirements),
-I ran the following locally and they all pass:
+<!-- Describe the checks you ran and their results. The commands below are
+the standard checks for code changes. Remove checks that do not apply;
+explain any relevant checks you could not run and why. For documentation-only
+changes, check wording, links, and translations; Rust builds and tests are
+not required. -->
 
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
 - [ ] `cargo test --locked --workspace --all-features`
 - [ ] `cargo build --locked --workspace --all-targets --release`
-
-<!-- If any of these did not run, say which and why. CI will also run
-them, but local verification catches issues faster. -->
+- [ ] `cargo audit` (dependency changes)
 
 ## Scope
 
 - [ ] One feature or fix per PR (no unrelated cleanups bundled in)
+- [ ] I reviewed the changes and the description matches the diff
 - [ ] No new dependencies, or rationale provided in the summary above
 - [ ] No `#[allow(clippy::...)]` suppressions, or rationale provided
   (see [CONTRIBUTING.md](https://github.com/domcyrus/rustnet/blob/main/CONTRIBUTING.md#code-quality-requirements))
 - [ ] User-visible changes are added to the `## [Unreleased]` section of
   `CHANGELOG.md` in this PR, or this change is not user-visible
   (see [CONTRIBUTING.md](https://github.com/domcyrus/rustnet/blob/main/CONTRIBUTING.md#pr-guidelines))
-
-## AI-assisted contributions
-
-If you used an AI assistant (Copilot, Claude, ChatGPT, Cursor, etc.) to
-write any of this code, that is fine, but please confirm:
-
-- [ ] I have read every line I am submitting
-- [ ] I ran the verification commands above myself
-- [ ] The PR description reflects what the code actually does
 
 ## Notes for the reviewer
 

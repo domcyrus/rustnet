@@ -158,11 +158,8 @@ mod tests {
         let link = std::fs::read_link(format!("/proc/self/fd/{}", listener.as_raw_fd()))
             .expect("listener fd must resolve");
         let link = link.to_str().expect("socket link must be UTF-8");
-        let inode = link
-            .strip_prefix("socket:[")
-            .and_then(|value| value.strip_suffix(']'))
-            .and_then(|value| value.parse::<u64>().ok())
-            .expect("socket link must contain an inode");
+        let inode =
+            crate::procfs::extract_socket_inode(link).expect("socket link must contain an inode");
 
         let owners = snapshot_task_file_owners().expect("task-file iterator must load");
         let owner = owners.get(inode).expect("listener owner must be present");

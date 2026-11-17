@@ -6,7 +6,7 @@
 //! # Security Model
 //!
 //! After sandboxing is applied:
-//! - Dangerous privileges removed (SeDebugPrivilege, SeTakeOwnershipPrivilege, etc.)
+//! - All token privileges except SeChangeNotifyPrivilege permanently removed
 //! - Child process creation blocked via Job Object
 //!
 //! # Limitations
@@ -15,6 +15,8 @@
 //! - No filesystem restriction (Windows ACLs are per-object, not process-wide)
 //! - No network restriction (would break Npcap packet capture)
 //! - Privilege removal only affects privileges the process held
+//! - Group membership and integrity level are unchanged; an elevated engine
+//!   still has Administrator ACL access. This is not a standard-user token.
 
 mod restricted;
 
@@ -37,7 +39,7 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     let mut privileges_succeeded = false;
     let mut job_object_applied = false;
 
-    match restricted::remove_dangerous_privileges() {
+    match restricted::retain_required_privileges() {
         Ok(result) => {
             privileges_removed = result.privileges_removed;
             privileges_removed_count = result.privileges_removed_count;

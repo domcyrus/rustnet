@@ -52,7 +52,7 @@ flowchart TD
 
 ### 重导出门面
 
-为了将拆分对二进制内部保持透明，`src/network/mod.rs` 重导出 `rustnet_core::network::*` 和 `rustnet_capture`（作为 `capture`），因此现有的 `crate::network::*` 路径、集成测试和基准测试无需改动即可编译。`src/network/platform` 模块如今只是接入 `rustnet-host` 进程与套接字查找的一层薄壳；各平台的接口统计提供者位于 `rustnet-core`（入口 `interface_stats::create_stats_provider`），沙箱与 root uid 降级位于 `rustnet-sandbox`，二进制直接使用这些 crate。
+为了将拆分对二进制内部保持透明，`src/network/mod.rs` 重导出 `rustnet_core::network::*` 和 `rustnet_capture`（作为 `capture`），因此现有的 `crate::network::*` 路径、集成测试和基准测试无需改动即可编译。进程与套接字查找直接从 `rustnet-host` 导入。各平台的接口统计提供者位于 `rustnet-core`（入口 `interface_stats::create_stats_provider`）；沙箱与 root uid 降级位于 `rustnet-sandbox`。
 
 ### 前端模块
 
