@@ -1,6 +1,6 @@
 //! Synthetic, opt-in release benchmarks. No capture or network access.
-use super::parser::{ParsedPacket, TcpFlags};
-use super::protocol::tcp::TcpHeaderInfo;
+use super::parser::ParsedPacket;
+use super::protocol::tcp::{TcpHeaderInfo, parse_tcp_flags};
 use super::tracker::ConnectionTracker;
 use std::hint::black_box;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -17,12 +17,7 @@ pub(super) fn packet(index: u16, destination: u16, flags: u8, seq: u32, ack: u32
             seq,
             ack,
             window: 65535,
-            flags: TcpFlags {
-                syn: flags & 2 != 0,
-                ack: flags & 16 != 0,
-                rst: flags & 4 != 0,
-                fin: false,
-            },
+            flags: parse_tcp_flags(flags),
             payload_len: 0,
             window_scale: None,
         },
@@ -67,53 +62,29 @@ fn benchmark_tcp_ingestion() {
         }
         report("established_packets", sample, 2_000_000, start.elapsed());
 
-        let packets: Vec<_> = (0..8192)
-            .flat_map(|i| {
-                [
-                    packet(i, i % 64, 2, 10, 0),
-                    packet(i, i % 64, 18, 20, 11),
-                    packet(i, i % 64, 16, 11, 21),
-                ]
-            })
-            .collect();
-        let mut elapsed = Duration::ZERO;
-        for _ in 0..8 {
-            let tracker = ConnectionTracker::new();
-            let start = Instant::now();
-            for p in &packets {
-                black_box(tracker.ingest_at(black_box(p), now));
+        for (name, burst_size) in [
+            ("handshake_packets", 1),
+            ("overlapping_handshake_packets", 256),
+        ] {
+            let mut packets = Vec::with_capacity(8192 * 3);
+            for first in (0..8192).step_by(burst_size) {
+                for (flags, seq, ack) in [(2, 10, 0), (18, 20, 11), (16, 11, 21)] {
+                    for i in first..first + burst_size as u16 {
+                        packets.push(packet(i, i % 64, flags, seq, ack));
+                    }
+                }
             }
-            elapsed += start.elapsed();
-        }
-        report("handshake_packets", sample, packets.len() * 8, elapsed);
-
-        let packets: Vec<_> = (0..32)
-            .flat_map(|burst| {
-                [(2, 10, 0), (18, 20, 11), (16, 11, 21)]
-                    .into_iter()
-                    .flat_map(move |(flags, seq, ack)| {
-                        (0..256).map(move |offset| {
-                            let i = burst * 256 + offset;
-                            packet(i, i % 64, flags, seq, ack)
-                        })
-                    })
-            })
-            .collect();
-        let mut elapsed = Duration::ZERO;
-        for _ in 0..8 {
-            let tracker = ConnectionTracker::new();
-            let start = Instant::now();
-            for p in &packets {
-                black_box(tracker.ingest_at(black_box(p), now));
+            let mut elapsed = Duration::ZERO;
+            for _ in 0..8 {
+                let tracker = ConnectionTracker::new();
+                let start = Instant::now();
+                for p in &packets {
+                    black_box(tracker.ingest_at(black_box(p), now));
+                }
+                elapsed += start.elapsed();
             }
-            elapsed += start.elapsed();
+            report(name, sample, packets.len() * 8, elapsed);
         }
-        report(
-            "overlapping_handshake_packets",
-            sample,
-            packets.len() * 8,
-            elapsed,
-        );
 
         let packets: Vec<_> = (0..16_384).map(|i| packet(i, i % 64, 2, 10, 0)).collect();
         let tracker = ConnectionTracker::new();

@@ -3,6 +3,8 @@
 //! traffic), the section separator helper, and the per-interface
 //! sparkline used inside the stats sidebar.
 
+use std::sync::atomic::Ordering::Relaxed;
+
 use anyhow::Result;
 use ratatui::{
     Frame,
@@ -1178,9 +1180,7 @@ fn draw_stats_panel(
     // counters cannot be clipped when their combinations change.
     let pcap_export_enabled = app.is_pcap_export_enabled();
     let pcapng_export_enabled = app.is_pcapng_export_enabled();
-    let pre_attribution_packets = stats
-        .pre_attribution_packets
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let pre_attribution_packets = stats.pre_attribution_packets.load(Relaxed);
     let stats_height: u16 = 11
         + capture_lines.len() as u16
         + u16::from(connection_counts.historic > 0)
@@ -1254,43 +1254,31 @@ fn draw_stats_panel(
             theme::fg(theme::muted()),
         )));
     }
+    let queue_drops = stats.packets_dropped.load(Relaxed);
+    let capture_drops = stats
+        .capture_packets_dropped
+        .load(Relaxed)
+        .saturating_add(stats.interface_packets_dropped.load(Relaxed));
     conn_stats_text.extend([
         Line::from(""),
         Line::from(format!(
             "Packets Processed: {}",
-            stats
-                .packets_processed
-                .load(std::sync::atomic::Ordering::Relaxed)
+            stats.packets_processed.load(Relaxed)
         )),
         Line::from(format!(
             "Packets/sec: {}",
             app.get_traffic_history().get_latest_packets_per_sec()
         )),
-        {
-            let dropped = stats
-                .packets_dropped
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if dropped > 0 {
-                Line::from(vec![
-                    Span::raw("Queue Drops: "),
-                    Span::styled(format!("{}", dropped), theme::fg(theme::warn())),
-                    Span::styled(" (backpressure)", theme::fg(theme::muted())),
-                ])
-            } else {
-                Line::from(format!("Queue Drops: {}", dropped))
-            }
+        if queue_drops > 0 {
+            Line::from(vec![
+                Span::raw("Queue Drops: "),
+                Span::styled(queue_drops.to_string(), theme::fg(theme::warn())),
+                Span::styled(" (backpressure)", theme::fg(theme::muted())),
+            ])
+        } else {
+            Line::from("Queue Drops: 0")
         },
-        {
-            let dropped = stats
-                .capture_packets_dropped
-                .load(std::sync::atomic::Ordering::Relaxed)
-                .saturating_add(
-                    stats
-                        .interface_packets_dropped
-                        .load(std::sync::atomic::Ordering::Relaxed),
-                );
-            counter_line("Capture Drops", dropped, theme::warn())
-        },
+        counter_line("Capture Drops", capture_drops, theme::warn()),
     ]);
     if pre_attribution_packets > 0 {
         conn_stats_text.push(counter_line(
@@ -1301,12 +1289,8 @@ fn draw_stats_panel(
     }
 
     if pcap_export_enabled {
-        let written = stats
-            .pcap_records_written
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let errors = stats
-            .pcap_export_errors
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let written = stats.pcap_records_written.load(Relaxed);
+        let errors = stats.pcap_export_errors.load(Relaxed);
         conn_stats_text.extend([
             Line::from(""),
             Line::from(Span::styled("PCAP Export", theme::fg(theme::heading()))),
@@ -1316,24 +1300,12 @@ fn draw_stats_panel(
     }
 
     if pcapng_export_enabled {
-        let queued = stats
-            .pcapng_records_queued
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let written = stats
-            .pcapng_records_written
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let annotated = stats
-            .pcapng_records_annotated
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let unannotated = stats
-            .pcapng_records_unannotated
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let dropped = stats
-            .pcapng_records_dropped
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let errors = stats
-            .pcapng_export_errors
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let queued = stats.pcapng_records_queued.load(Relaxed);
+        let written = stats.pcapng_records_written.load(Relaxed);
+        let annotated = stats.pcapng_records_annotated.load(Relaxed);
+        let unannotated = stats.pcapng_records_unannotated.load(Relaxed);
+        let dropped = stats.pcapng_records_dropped.load(Relaxed);
+        let errors = stats.pcapng_export_errors.load(Relaxed);
 
         conn_stats_text.extend([
             Line::from(""),
@@ -1346,25 +1318,17 @@ fn draw_stats_panel(
         ]);
     }
 
-    let total_retransmits = stats
-        .total_tcp_retransmits
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let total_out_of_order = stats
-        .total_tcp_out_of_order
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let total_fast_retransmits = stats
-        .total_tcp_fast_retransmits
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let total_retransmits = stats.total_tcp_retransmits.load(Relaxed);
+    let total_out_of_order = stats.total_tcp_out_of_order.load(Relaxed);
+    let total_fast_retransmits = stats.total_tcp_fast_retransmits.load(Relaxed);
 
+    let capture_failed = app.capture_error().is_some();
     let mut network_stats_text: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("Network Stats ", theme::bold_fg(theme::heading())),
             Span::styled("(active / total)", theme::fg(theme::muted())),
         ]),
-        dns_health_line(
-            &app.get_dns_analytics_snapshot(),
-            app.capture_error().is_some(),
-        ),
+        dns_health_line(&app.get_dns_analytics_snapshot(), capture_failed),
         Line::from(format!(
             "TCP Retransmits: {} / {}",
             connection_counts.tcp_retransmits, total_retransmits
@@ -1383,19 +1347,7 @@ fn draw_stats_panel(
         )),
     ];
 
-    let capture_incomplete = app.capture_error().is_some()
-        || stats
-            .packets_dropped
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0
-        || stats
-            .capture_packets_dropped
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0
-        || stats
-            .interface_packets_dropped
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0;
+    let capture_incomplete = capture_failed || queue_drops > 0 || capture_drops > 0;
     network_stats_text.splice(
         2..2,
         tcp_handshake_lines(&app.get_tcp_attempt_snapshot(), capture_incomplete),

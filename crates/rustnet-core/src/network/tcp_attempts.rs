@@ -4,7 +4,7 @@
 //! cancellation and asymmetric capture can all prevent observed completion;
 //! a timeout is evidence of an incomplete handshake, not proof of packet loss.
 use rustc_hash::FxBuildHasher;
-use std::collections::{BTreeMap, HashMap, VecDeque, hash_map::Entry};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::Entry};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -129,8 +129,9 @@ impl PendingAttempt {
 pub(super) struct TcpAttemptTracker {
     pending: HashMap<ConnectionKey, PendingAttempt, FxBuildHasher>,
     retained: VecDeque<TcpAttempt>,
-    finished_syns: HashMap<(ConnectionKey, u32), SystemTime, FxBuildHasher>,
-    next_expiration: Option<SystemTime>,
+    finished_syns: HashSet<(ConnectionKey, u32), FxBuildHasher>,
+    pending_deadline: Option<SystemTime>,
+    retained_deadline: Option<SystemTime>,
     last_sweep: Option<SystemTime>,
     cached_snapshot: Option<Arc<TcpAttemptSnapshot>>,
     snapshot_dirty: bool,
@@ -145,44 +146,58 @@ impl TcpAttemptTracker {
         now
     }
 
-    fn schedule_expiration(&mut self, deadline: SystemTime) {
-        self.next_expiration = Some(
-            self.next_expiration
-                .map_or(deadline, |old| old.min(deadline)),
-        );
-    }
-
     fn retain(&mut self, attempt: TcpAttempt) {
         self.snapshot_dirty = true;
-        if self
-            .clock
-            .is_some_and(|now| now >= attempt.finished_at + WINDOW)
-        {
-            return;
+        let deadline = attempt.finished_at + WINDOW;
+        if let Some(now) = self.clock {
+            if now >= deadline {
+                return;
+            }
+            if self.retained.len() == MAX_RETAINED {
+                self.expire_retained(now);
+            }
         }
-        self.schedule_expiration(attempt.finished_at + WINDOW);
         if self.retained.len() == MAX_RETAINED
             && let Some(old) = self.retained.pop_front()
         {
             self.finished_syns.remove(&(old.key, old.initial_sequence));
-            // A throttled sweep can leave expired entries until the next packet.
-            if self.clock.is_none_or(|now| now < old.finished_at + WINDOW) {
-                self.omitted = self.omitted.saturating_add(1);
-            }
+            self.omitted = self.omitted.saturating_add(1);
         }
+        self.retained_deadline = Some(
+            self.retained_deadline
+                .map_or(deadline, |old| old.min(deadline)),
+        );
         self.finished_syns
-            .insert((attempt.key, attempt.initial_sequence), attempt.finished_at);
+            .insert((attempt.key, attempt.initial_sequence));
         self.retained.push_back(attempt);
     }
 
-    fn expire(&mut self, now: SystemTime, exact: bool) {
-        // A removed attempt may leave an earlier deadline behind. That costs
-        // one extra scan, but never postpones a live attempt's expiration.
-        if self.next_expiration.is_none_or(|deadline| now < deadline) {
+    fn expire_retained(&mut self, now: SystemTime) {
+        if self.retained_deadline.is_none_or(|deadline| now < deadline) {
             return;
         }
-        // Packet ingestion sweeps at most once a second. Snapshots honor exact
-        // deadlines, but must not turn staggered timeouts into per-packet scans.
+        // A timeout can be appended after a newer completion. Check the whole deque.
+        self.retained_deadline = None;
+        self.retained.retain(|a| {
+            let deadline = a.finished_at + WINDOW;
+            if now >= deadline {
+                self.finished_syns.remove(&(a.key, a.initial_sequence));
+                self.snapshot_dirty = true;
+                return false;
+            }
+            self.retained_deadline = Some(
+                self.retained_deadline
+                    .map_or(deadline, |old| old.min(deadline)),
+            );
+            true
+        });
+    }
+
+    fn expire_pending(&mut self, now: SystemTime, exact: bool) {
+        if self.pending_deadline.is_none_or(|deadline| now < deadline) {
+            return;
+        }
+        // Snapshots and admission at capacity need all available slots immediately.
         if !exact
             && self.last_sweep.is_some_and(|last| {
                 now.duration_since(last).unwrap_or_default() < Duration::from_secs(1)
@@ -191,30 +206,18 @@ impl TcpAttemptTracker {
             return;
         }
         self.last_sweep = Some(now);
-        // Free expired capacity before retaining timeouts. Retention is not time ordered.
-        self.finished_syns
-            .retain(|_, at| now.duration_since(*at).unwrap_or_default() < WINDOW);
-        let previous_len = self.retained.len();
-        self.retained
-            .retain(|a| now.duration_since(a.finished_at).unwrap_or_default() < WINDOW);
-        if self.retained.len() != previous_len {
-            self.snapshot_dirty = true;
-        }
         let expired: Vec<_> = self
             .pending
-            .extract_if(|_, p| {
-                now.duration_since(p.attempt.started_at).unwrap_or_default() >= ATTEMPT_TIMEOUT
-            })
+            .extract_if(|_, p| now >= p.attempt.started_at + ATTEMPT_TIMEOUT)
             .map(|(_, p)| p)
             .collect();
         for pending in expired {
             self.finish_timeout(pending);
         }
-        self.next_expiration = self
+        self.pending_deadline = self
             .pending
             .values()
             .map(|p| p.attempt.started_at + ATTEMPT_TIMEOUT)
-            .chain(self.retained.iter().map(|a| a.finished_at + WINDOW))
             .min();
     }
 
@@ -232,17 +235,22 @@ impl TcpAttemptTracker {
         now: SystemTime,
     ) {
         let now = self.advance(now);
-        self.expire(now, false);
         let flags = tcp.flags;
-        if outgoing && flags.syn && !flags.ack && !flags.rst && !flags.fin {
+        let initial_syn = outgoing && flags.syn && !flags.ack && !flags.rst && !flags.fin;
+        self.expire_pending(now, initial_syn && self.pending.len() == MAX_PENDING);
+        if initial_syn {
             if self.pending.get(&key).is_some_and(|p| {
                 now.duration_since(p.attempt.started_at).unwrap_or_default() >= ATTEMPT_TIMEOUT
             }) {
                 let expired = self.pending.remove(&key).expect("expired attempt exists");
                 self.finish_timeout(expired);
             }
-            if self.finished_syns.contains_key(&(key, tcp.seq)) {
-                return;
+            let syn = (key, tcp.seq);
+            if self.finished_syns.contains(&syn) {
+                self.expire_retained(now);
+                if self.finished_syns.contains(&syn) {
+                    return;
+                }
             }
             let has_capacity = self.pending.len() < MAX_PENDING;
             let previous = match self.pending.entry(key) {
@@ -269,7 +277,7 @@ impl TcpAttemptTracker {
                 self.retain(previous.attempt);
             }
             self.snapshot_dirty = true;
-            self.schedule_expiration(now + ATTEMPT_TIMEOUT);
+            self.pending_deadline.get_or_insert(now + ATTEMPT_TIMEOUT);
             return;
         }
         // Avoid hashing unrelated established packets when no attempts await replies.
@@ -334,7 +342,8 @@ impl TcpAttemptTracker {
 
     pub fn snapshot(&mut self, now: SystemTime) -> Arc<TcpAttemptSnapshot> {
         let now = self.advance(now);
-        self.expire(now, true);
+        self.expire_retained(now);
+        self.expire_pending(now, true);
         if !self.snapshot_dirty
             && let Some(snapshot) = &self.cached_snapshot
         {
@@ -382,7 +391,8 @@ impl TcpAttemptTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::parser::{ParsedPacket, TcpFlags};
+    use crate::network::parser::ParsedPacket;
+    use crate::network::protocol::tcp::parse_tcp_flags;
     use crate::network::tracker::ConnectionTracker;
     use crate::network::types::Protocol;
 
@@ -413,12 +423,7 @@ mod tests {
             seq,
             ack,
             window: 65535,
-            flags: TcpFlags {
-                syn: flags & 2 != 0,
-                ack: flags & 16 != 0,
-                rst: flags & 4 != 0,
-                fin: flags & 1 != 0,
-            },
+            flags: parse_tcp_flags(flags),
             payload_len: 0,
             window_scale: None,
         }
@@ -457,6 +462,23 @@ mod tests {
         let s = t.snapshot(at(5));
         assert_eq!(s.pending, MAX_PENDING - 1);
         assert_eq!(s.total.established, 1);
+    }
+
+    #[test]
+    fn full_pending_table_reclaims_due_slots_between_sweeps() {
+        let mut t = TcpAttemptTracker::default();
+        let mut k = key(false);
+        for port in 1..=MAX_PENDING {
+            k.local_addr.set_port(port as u16);
+            send(&mut t, k, u64::from(port > 1), true, header(2, 10, 0));
+        }
+        for ms in [10_000, 10_001] {
+            k.local_addr.set_port(ms as u16);
+            send(&mut t, k, ms, true, header(2, 20, 0));
+        }
+        let s = t.snapshot(at(10_001));
+        assert_eq!(s.total.no_handshake, MAX_PENDING as u64);
+        assert_eq!((s.pending, s.omitted), (2, 0));
     }
 
     #[test]
@@ -827,6 +849,27 @@ mod tests {
         let s = t.snapshot(at(400_000));
         assert_eq!(s.pending, 0);
         assert_eq!(s.total.completed, 0);
+    }
+
+    #[test]
+    fn full_history_reclaims_a_late_timeout_behind_live_resets() {
+        let mut t = TcpAttemptTracker::default();
+        let k = key(false);
+        send(&mut t, k, 0, true, header(2, 10, 0));
+        send(&mut t, key(true), 1, true, header(2, 10, 0));
+        t.snapshot(at(10_000)); // The second timeout is still pending during this sweep.
+        for seq in 100..100 + MAX_RETAINED as u32 - 2 {
+            send(&mut t, k, 10_002, true, header(2, seq, 0));
+            send(&mut t, k, 10_002, false, header(20, 0, seq + 1));
+        }
+        t.snapshot(at(10_002)); // Append that timeout behind the younger resets.
+        for ms in [310_000, 310_001] {
+            send(&mut t, k, ms, true, header(2, ms as u32, 0));
+            send(&mut t, k, ms, false, header(20, 0, ms as u32 + 1));
+        }
+        let s = t.snapshot(at(310_001));
+        assert_eq!(s.total.reset, MAX_RETAINED as u64);
+        assert_eq!(s.omitted, 0);
     }
 
     #[test]
