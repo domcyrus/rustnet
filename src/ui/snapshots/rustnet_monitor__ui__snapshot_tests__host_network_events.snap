@@ -7,9 +7,9 @@ expression: output
 Findings   Sockets   Interfaces   DNS resolvers                                                                                             
 ━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Findings ────────────────────────────────────── ▎ ▌ Resets and ICMP (60s) ────────────────────────────────────────────────────────────────
-  › TCP handshakes (5m)  not observed             60s / total (since startup) · captured packets                                            
-▌ › Resets and ICMP (60s)  RST 1 sent / 0         TCP reset                                                                                 
-received · 0 ICMP                                   Sent 1 / 1   Received 0 / 0                                                             
+▌ › Resets and ICMP (60s)  RST 1 sent / 0         60s / total (since startup) · captured packets                                            
+received · 0 ICMP                                 TCP reset                                                                                 
+  › TCP handshakes (5m)  not observed               Sent 1 / 1   Received 0 / 0                                                             
   › Interface drops (60s)  Waiting for            ICMP port unreachable                                                                     
 interface statistics                                Sent 0 / 0   Received 0 / 1                                                             
   › DNS replies (60s)  not observed · 0 replies   ICMP destination unreachable                                                              

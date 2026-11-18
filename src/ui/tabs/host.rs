@@ -214,8 +214,8 @@ pub(super) fn dns_evidence_lines(
     // Keep both live resolver evidence and retained failures visible on a
     // standard terminal. Explicit counts disclose rows omitted for space.
     for resolver in snapshot.resolvers.iter().take(resolver_limit) {
-        let (health, color) = if capture_failed {
-            ("unknown", theme::warn())
+        let (health, level) = if capture_failed {
+            ("unknown", super::HealthLevel::Warning)
         } else {
             super::dns_health_status(resolver.health, false)
         };
@@ -241,7 +241,7 @@ pub(super) fn dns_evidence_lines(
         };
         lines.push(Line::from(vec![
             Span::styled(format!("{} ", resolver.address), theme::fg(theme::text())),
-            Span::styled(health, theme::fg(color)),
+            Span::styled(health, theme::fg(level.color())),
             label(format!(
                 "  fail {}/{}  wait {}  retry {}  {}",
                 failures,
@@ -321,10 +321,10 @@ fn draw_dns_outcomes(
         return;
     }
 
-    let (health, health_color) = super::dns_health_status(snapshot.health, capture_failed);
+    let (health, level) = super::dns_health_status(snapshot.health, capture_failed);
     let mut status = vec![
         label("Status "),
-        Span::styled(health, theme::bold_fg(health_color)),
+        Span::styled(health, theme::bold_fg(level.color())),
     ];
     if snapshot.details_truncated {
         status.push(Span::styled("   details limited", theme::fg(theme::warn())));

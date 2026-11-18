@@ -801,11 +801,11 @@ fn section_separator(width: u16) -> Line<'static> {
 }
 
 fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Line<'static> {
-    let (status, color) = super::dns_health_status(snapshot.health, capture_failed);
+    let (status, level) = super::dns_health_status(snapshot.health, capture_failed);
     if capture_failed {
         return Line::from(vec![
             Span::raw("DNS: "),
-            Span::styled("unknown · capture stopped", theme::fg(color)),
+            Span::styled("unknown · capture stopped", theme::fg(level.color())),
         ]);
     }
 
@@ -848,7 +848,7 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
     };
     Line::from(vec![
         Span::raw("DNS: "),
-        Span::styled(text, theme::fg(color)),
+        Span::styled(text, theme::fg(level.color())),
     ])
 }
 
@@ -859,14 +859,14 @@ fn tcp_handshake_lines(
 ) -> Vec<Line<'static>> {
     let c = &snapshot.total;
     let failed = c.reset + c.no_handshake;
-    let (status, color) = super::tcp_handshake_status(snapshot, capture_incomplete);
+    let (status, level) = super::tcp_handshake_status(snapshot, capture_incomplete);
     // Highest observed failure fraction first; ties favor more evidence.
     // Successful IPv6 destinations cannot dilute a failing IPv4 destination.
     let worst = super::worst_tcp_destination(snapshot);
     let mut lines = vec![
         Line::from(vec![
             Span::raw("TCP (5m): "),
-            Span::styled(status, theme::fg(color)),
+            Span::styled(status, theme::fg(level.color())),
         ]),
         Line::from(format!("{}/{} reset/incomplete", failed, c.completed)),
         Line::from(format!(

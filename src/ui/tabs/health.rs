@@ -1,7 +1,7 @@
 //! Expandable network health findings from the existing capture and OS counters.
 use std::{net::SocketAddr, sync::atomic::Ordering::Relaxed, time::SystemTime};
 
-use super::{count_span, dns_health_status, tcp_handshake_status};
+use super::{HealthLevel, count_span, dns_health_status, tcp_handshake_status};
 use crate::network::{
     process_activity::process_group_label,
     tcp_attempts::{AttemptCounts, AttemptOutcome},
@@ -21,9 +21,8 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::ui) enum Finding {
-    #[default]
     Tcp,
     Events,
     Interfaces,
@@ -87,8 +86,7 @@ impl HealthTarget {
 }
 
 fn select_finding(state: &mut UiState, finding: Finding) {
-    if state.finding != finding {
-        state.finding = finding;
+    if state.finding.replace(Some(finding)) != Some(finding) {
         state.health_focus.set(None);
         state.health_scroll.reset();
     }
@@ -111,7 +109,7 @@ fn health_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>
     let focus = if inspecting {
         state.health_focus.get()
     } else {
-        Some(HealthTarget::Finding(state.finding))
+        state.finding.get().map(HealthTarget::Finding)
     };
     let selected = rows.iter().position(|(t, _)| Some(*t) == focus);
     match key.code {
@@ -120,7 +118,7 @@ fn health_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>
             state.health_reveal.set(true);
         }
         KeyCode::Down | KeyCode::Char('j') | KeyCode::Up | KeyCode::Char('k') => {
-            if inspecting && state.finding != Finding::Tcp {
+            if inspecting && state.finding.get() != Some(Finding::Tcp) {
                 return None;
             }
             let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
@@ -334,10 +332,10 @@ impl Component for HealthTab {
             .sum();
         let reported = capture.saturating_add(iface);
         let c = &tcp.total;
-        let (tcp_status, tcp_color) =
+        let (tcp_status, tcp_level) =
             tcp_handshake_status(&tcp, capture_error.is_some() || reported > 0 || queue > 0);
-        let (dns_status, dns_color) = dns_health_status(dns.health, capture_error.is_some());
-        let mut tcp_summary = Line::from(Span::styled(tcp_status, theme::fg(tcp_color)));
+        let (dns_status, dns_level) = dns_health_status(dns.health, capture_error.is_some());
+        let mut tcp_summary = Line::from(Span::styled(tcp_status, theme::fg(tcp_level.color())));
         if c.completed > 0 {
             tcp_summary.push_span(format!(
                 " · {}/{} reset or incomplete · {} anomalous",
@@ -368,8 +366,23 @@ impl Component for HealthTab {
                 Span::raw(" errors"),
             ]);
         }
-        let summaries = [
-            (Finding::Tcp, "TCP handshakes", tcp_summary, "5m"),
+        let mut dns_summary = Line::from(vec![
+            Span::styled(dns_status, theme::fg(dns_level.color())),
+            Span::raw(format!(" · {} replies · ", dns.answered)),
+            count_span(dns.timeouts as u64, theme::err()),
+            Span::raw(" timeouts"),
+        ]);
+        let error_replies = dns.failures.saturating_sub(dns.timeouts);
+        if error_replies > 0 {
+            dns_summary.extend([
+                Span::raw(" · "),
+                count_span(error_replies as u64, theme::err()),
+                Span::raw(" error replies"),
+            ]);
+        }
+        // Stable ties follow the familiar category order, independent of count and theme.
+        let mut summaries = [
+            (Finding::Tcp, "TCP handshakes", tcp_summary, "5m", tcp_level),
             (
                 Finding::Events,
                 "Resets and ICMP",
@@ -383,23 +396,25 @@ impl Component for HealthTab {
                     Span::raw(" ICMP"),
                 ]),
                 window.label_since_clear(events.since_clear),
+                HealthLevel::observed(false, resets.sent > 0 || resets.received > 0 || icmp > 0),
             ),
             (
                 Finding::Interfaces,
                 "Interface drops",
                 interface_summary,
                 window.label_since_clear(since_clear),
+                HealthLevel::observed(errors > 0, drops > 0),
             ),
             (
                 Finding::Dns,
                 "DNS replies",
-                Line::from(vec![
-                    Span::styled(dns_status, theme::fg(dns_color)),
-                    Span::raw(format!(" · {} replies · ", dns.answered)),
-                    count_span(dns.timeouts as u64, theme::err()),
-                    Span::raw(" timeouts"),
-                ]),
+                dns_summary,
                 dns.window_label(),
+                if dns.failures > 0 {
+                    HealthLevel::Error
+                } else {
+                    dns_level
+                },
             ),
             (
                 Finding::Capture,
@@ -419,10 +434,16 @@ impl Component for HealthTab {
                 } else {
                     "since startup"
                 },
+                HealthLevel::observed(capture_error.is_some(), reported > 0 || queue > 0),
             ),
         ];
+        summaries.sort_by_key(|(_, _, _, _, level)| level.attention_order());
+        let &(selected, evidence_name, _, evidence_window, _) = summaries
+            .iter()
+            .find(|row| Some(row.0) == state.finding.get())
+            .unwrap_or(&summaries[0]);
+        state.finding.set(Some(selected));
         let reveal = state.health_reveal.take();
-        let (_, evidence_name, _, evidence_window) = summaries[state.finding as usize];
         if !list.is_empty() {
             let inner = section_header(
                 f,
@@ -435,17 +456,17 @@ impl Component for HealthTab {
             );
             let mut lines = Vec::new();
             let mut targets = Vec::new();
-            for (finding, name, summary, window) in summaries {
+            for (finding, name, summary, window, _) in summaries {
                 targets.push((lines.len(), HealthTarget::Finding(finding)));
-                let selected = finding == state.finding;
-                let marker = if selected { "▌" } else { " " };
+                let is_selected = finding == selected;
+                let marker = if is_selected { "▌" } else { " " };
                 let mut line = Line::from(vec![
                     Span::styled(marker, theme::fg(theme::accent())),
                     Span::raw(format!(" › {name} ")),
                     Span::styled(format!("({window})  "), theme::fg(theme::muted())),
                 ]);
                 line.extend(summary.spans);
-                if selected && !state.inspecting_finding {
+                if is_selected && !state.inspecting_finding {
                     highlight_line(&mut line);
                 }
                 lines.push(line);
@@ -456,8 +477,13 @@ impl Component for HealthTab {
                 lines,
                 targets,
                 &state.finding_list_scroll,
-                (reveal && !state.inspecting_finding)
-                    .then_some(HealthTarget::Finding(state.finding)),
+                |target, row| {
+                    if target != HealthTarget::Finding(selected) {
+                        return false;
+                    }
+                    let moved = state.finding_list_row.replace(Some(row)) != Some(row);
+                    moved || (reveal && !state.inspecting_finding)
+                },
                 regions,
             );
         }
@@ -470,7 +496,7 @@ impl Component for HealthTab {
             );
             let mut targets = Vec::new();
             let mut lines = Vec::new();
-            match state.finding {
+            match selected {
                 Finding::Tcp => {
                     lines = tcp_attempt_lines(&tcp, state, ctx.connections, &mut targets)
                 }
@@ -540,7 +566,7 @@ impl Component for HealthTab {
                 lines,
                 targets,
                 &state.health_scroll,
-                focus.filter(|_| reveal_focus),
+                |target, _| reveal_focus && Some(target) == focus,
                 regions,
             );
         }
@@ -554,7 +580,7 @@ fn draw_rows(
     lines: Vec<Line<'_>>,
     targets: Vec<(usize, HealthTarget)>,
     scroll: &PaneScroll,
-    reveal: Option<HealthTarget>,
+    mut should_reveal: impl FnMut(HealthTarget, u16) -> bool,
     regions: &mut ClickableRegions,
 ) {
     // Map logical rows to terminal lines using the scrolled pane's gutter.
@@ -572,7 +598,7 @@ fn draw_rows(
             row += lines[previous..index].iter().map(height).sum::<u16>();
             previous = index;
             let height = height(&lines[index]);
-            if Some(target) == reveal {
+            if should_reveal(target, row) {
                 scroll.reveal(row, row + height, inner.height);
             }
             (target, row, height)

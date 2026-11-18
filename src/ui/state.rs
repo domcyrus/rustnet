@@ -621,7 +621,9 @@ pub struct UiState {
     pub host_sockets_scroll: PaneScroll,
     pub(super) health_scroll: PaneScroll,
     pub(super) health_focus: Cell<Option<super::tabs::health::HealthTarget>>,
-    pub(super) finding: super::tabs::health::Finding,
+    pub(super) finding: Cell<Option<super::tabs::health::Finding>>,
+    /// Wrapped start of the selected finding in the last rendered list.
+    pub(super) finding_list_row: Cell<Option<u16>>,
     pub(super) inspecting_finding: bool,
     pub(super) finding_list_scroll: PaneScroll,
     pub(super) return_to_finding: bool,
@@ -701,7 +703,8 @@ impl Default for UiState {
             host_sockets_scroll: PaneScroll::default(),
             health_scroll: PaneScroll::default(),
             health_focus: Cell::default(),
-            finding: Default::default(),
+            finding: Cell::default(),
+            finding_list_row: Cell::default(),
             inspecting_finding: false,
             finding_list_scroll: Default::default(),
             return_to_finding: false,
@@ -964,7 +967,8 @@ impl UiState {
     pub(super) fn reset_findings(&mut self) {
         self.health_scroll.reset();
         self.health_focus.set(None);
-        self.finding = Default::default();
+        self.finding.set(None);
+        self.finding_list_row.set(None);
         self.inspecting_finding = false;
         self.finding_list_scroll.reset();
         self.return_to_finding = false;

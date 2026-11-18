@@ -683,6 +683,14 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
                 &mut lines,
                 "Finding colors (default theme)",
                 &[
+                    (
+                        "Order",
+                        "Errors first, then warnings. Ties keep their category order.",
+                    ),
+                    (
+                        "Selection",
+                        "Your selected finding stays open when its position changes.",
+                    ),
                     ("Green", "Healthy TCP handshakes or responsive DNS"),
                     (
                         "Yellow",

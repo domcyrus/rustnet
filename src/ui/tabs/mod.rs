@@ -45,40 +45,77 @@ fn compare_tcp_destinations(
         .then_with(|| addr_b.cmp(addr_a))
 }
 
+#[derive(Clone, Copy)]
+enum HealthLevel {
+    Error,
+    Warning,
+    Healthy,
+    Muted,
+}
+
+impl HealthLevel {
+    fn color(self) -> Color {
+        match self {
+            Self::Error => theme::err(),
+            Self::Warning => theme::warn(),
+            Self::Healthy => theme::ok(),
+            Self::Muted => theme::muted(),
+        }
+    }
+
+    fn attention_order(self) -> u8 {
+        match self {
+            Self::Error => 0,
+            Self::Warning => 1,
+            Self::Healthy | Self::Muted => 2,
+        }
+    }
+
+    fn observed(error: bool, warning: bool) -> Self {
+        if error {
+            Self::Error
+        } else if warning {
+            Self::Warning
+        } else {
+            Self::Muted
+        }
+    }
+}
+
 /// Use the same evidence and palette in Findings and the Overview sidebar.
 fn tcp_handshake_status(
     snapshot: &TcpAttemptSnapshot,
     capture_incomplete: bool,
-) -> (&'static str, Color) {
+) -> (&'static str, HealthLevel) {
     let c = &snapshot.total;
     if capture_incomplete || snapshot.omitted > 0 {
-        ("incomplete evidence", theme::warn())
+        ("incomplete evidence", HealthLevel::Warning)
     } else if c.reset + c.no_handshake > 0 {
-        ("degraded", theme::warn())
+        ("degraded", HealthLevel::Warning)
     } else if c.recovered_anomalies > 0 {
-        ("recovered anomalies", theme::warn())
+        ("recovered anomalies", HealthLevel::Warning)
     } else if c.superseded > 0 {
-        ("incomplete evidence", theme::warn())
+        ("incomplete evidence", HealthLevel::Warning)
     } else if snapshot.pending > 0 {
-        ("checking", theme::muted())
+        ("checking", HealthLevel::Muted)
     } else if c.established > 0 {
-        ("healthy", theme::ok())
+        ("healthy", HealthLevel::Healthy)
     } else {
-        ("not observed", theme::muted())
+        ("not observed", HealthLevel::Muted)
     }
 }
 
-fn dns_health_status(health: DnsHealth, capture_failed: bool) -> (&'static str, Color) {
+fn dns_health_status(health: DnsHealth, capture_failed: bool) -> (&'static str, HealthLevel) {
     if capture_failed {
-        return ("unknown (capture stopped)", theme::warn());
+        return ("unknown (capture stopped)", HealthLevel::Warning);
     }
     match health {
-        DnsHealth::NotObserved => ("not observed", theme::muted()),
-        DnsHealth::Checking => ("checking", theme::muted()),
-        DnsHealth::Responsive => ("responsive", theme::ok()),
-        DnsHealth::Degraded => ("degraded", theme::warn()),
-        DnsHealth::Failing => ("failing", theme::err()),
-        DnsHealth::NoReplies => ("no replies", theme::err()),
+        DnsHealth::NotObserved => ("not observed", HealthLevel::Muted),
+        DnsHealth::Checking => ("checking", HealthLevel::Muted),
+        DnsHealth::Responsive => ("responsive", HealthLevel::Healthy),
+        DnsHealth::Degraded => ("degraded", HealthLevel::Warning),
+        DnsHealth::Failing => ("failing", HealthLevel::Error),
+        DnsHealth::NoReplies => ("no replies", HealthLevel::Error),
     }
 }
 
