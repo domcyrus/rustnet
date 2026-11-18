@@ -241,6 +241,7 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             // table actually outgrew its pane.
             let scroll = match ui_state.host_view {
                 HostView::Sockets => &ui_state.host_sockets_scroll,
+                HostView::TcpAttempts => &ui_state.tcp_attempts_scroll,
                 HostView::Interfaces => &ui_state.interfaces_scroll,
                 HostView::Dns => &ui_state.dns_questions_scroll,
             };
@@ -248,16 +249,21 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             if scroll.can_scroll() {
                 hints.push(Hint::action("j/k", "scroll"));
             }
-            hints.push(Hint::action("w", "window"));
+            if ui_state.host_view == HostView::Sockets {
+                hints.push(Hint::action("enter", "attempts"));
+            }
+            if ui_state.host_view != HostView::TcpAttempts {
+                hints.push(Hint::action("w", "window"));
+            }
             if ui_state.host_view == HostView::Dns {
                 hints.push(Hint::action("o", "sort"));
             }
-            let close_evidence =
-                ui_state.host_view == HostView::Sockets && ui_state.tcp_expanded.is_some();
-            hints.push(Hint::action(
-                "esc",
-                if close_evidence { "close" } else { "back" },
-            ));
+            let back = match ui_state.host_view {
+                HostView::TcpAttempts if ui_state.tcp_expanded.is_some() => "close",
+                HostView::TcpAttempts => "sockets",
+                _ => "back",
+            };
+            hints.push(Hint::action("esc", back));
             hints
         }
         _ => vec![Hint::action("esc", "back")],

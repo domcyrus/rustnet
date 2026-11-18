@@ -67,6 +67,10 @@ pub struct AttemptCounts {
 }
 
 impl AttemptCounts {
+    pub fn is_affected(&self) -> bool {
+        self.reset > 0 || self.no_handshake > 0 || self.anomalous > 0
+    }
+
     fn record(&mut self, attempt: &TcpAttempt) {
         self.completed += 1;
         match attempt.outcome {

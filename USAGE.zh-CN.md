@@ -1030,7 +1030,7 @@ Activity 按完全相同的进程名汇总，与 Overview 的进程分组一致�
 ### 紧凑终端布局<a id="compact-terminals"></a>
 
 完整仪表板放不下时，按 `v` / Shift+`v` 或点击区块名称切换视图。
-Host 始终使用这些操作切换 Sockets、Interfaces 和 DNS。
+Host 始终使用这些操作切换 Sockets、TCP attempts、Interfaces 和 DNS。
 在 Details 中，这些操作也用于长区块翻页；`j` / `k` 和鼠标滚轮切换连接。
 调整大小或切换连接时保留所选区块。
 
@@ -1090,7 +1090,7 @@ Linux 在沙箱启用后为未变化的套接字保留启动时缓存的进程�
 | FreeBSD | 使用 `sockstat -s` 获取原生 TCP 状态及 UDP 套接字行 |
 | Windows | IP Helper 的 `GetExtendedTcpTable` 和 `GetExtendedUdpTable` owner 表 |
 
-使用 `v` / Shift+`v` 或点击 Sockets / Interfaces / DNS 选择区块。底部显示切换快捷键。Tab / Shift+Tab 和 1-5 切换主标签页。
+使用 `v` / Shift+`v` 或点击 Sockets / TCP attempts / Interfaces / DNS 选择区块。底部显示切换快捷键。Tab / Shift+Tab 和 1-5 切换主标签页。
 
 ### 观测到的网络事件（尚未发布）<a id="observed-network-events-unreleased"></a>
 
@@ -1106,7 +1106,7 @@ Details > Health 显示计数和最近错误的类型/代码、报告地址、�
 
 ### Host 时间范围（开发版本）
 
-在任意 Host 区块按 `w`，循环选择 **60s / 5m / 1h / since startup**。Sockets、Interfaces 和 DNS 共用选择；套接字清单和接口速率仍显示实时值。
+在 Sockets、Interfaces 或 DNS 中按 `w`，循环选择 **60s / 5m / 1h / since startup**。Sockets、Interfaces 和 DNS 共用选择；套接字清单和接口速率仍显示实时值。
 
 - **网络事件：** 发送和接收计数同时显示所选时间范围与 Rustnet 启动或清空以来的累计值，包括所选范围内计数已归零的事件类型。
 - **接口：** 错误、丢包和碰撞显示为 `所选范围/OS 总计`。只有首次采样之后观察到的增量计入所选范围；已有 OS 错误不计为新错误。OS 总计和数据包总计仍显示，高亮依据所选范围。
@@ -1639,17 +1639,19 @@ cat capture.pcap.connections.jsonl | jq -r '[.protocol, .local_addr, .remote_add
 
 ### TCP 连接尝试健康状态（未发布）
 
-Host > Sockets 显示固定五分钟窗口内观测到的出站 TCP 连接尝试，不受 Host 时间范围或连接筛选条件影响。初始出站 SYN 开始一次尝试，相同 SYN 重传合并计数。只有匹配的 SYN-ACK 和最终出站 ACK 都被观测到，才算成功，包括本机端点之间的连接，以及 SYN 数据未被接受时的 TCP Fast Open 回退。匹配的对端重置（包括 TCP Fast Open 回退）、十秒内未观测到完整握手，以及新的初始序列号替代旧尝试分别统计。仅入站或从连接中途开始捕获的流量不计入尝试。异常 ACK 和确认号不匹配的 SYN-ACK 即使后来恢复成功也会保留；本地纠正性 RST 不会立即结束尝试。
+Host > TCP attempts 显示固定五分钟窗口内观测到的出站 TCP 连接尝试，不受 Host 时间范围或连接筛选条件影响。初始出站 SYN 开始一次尝试，相同 SYN 重传合并计数。只有匹配的 SYN-ACK 和最终出站 ACK 都被观测到，才算成功，包括本机端点之间的连接，以及 SYN 数据未被接受时的 TCP Fast Open 回退。匹配的对端重置（包括 TCP Fast Open 回退）、十秒内未观测到完整握手，以及新的初始序列号替代旧尝试分别统计。仅入站或从连接中途开始捕获的流量不计入尝试。异常 ACK 和确认号不匹配的 SYN-ACK 即使后来恢复成功也会保留；本地纠正性 RST 不会立即结束尝试。
 
 无界面 `json`、`jsonl`、`jsonl-delta` 输出新增 `tcp_attempts` 对象，包括 `window_seconds`、`timeout_seconds`、`pending`、`omitted_since_clear`、`total`、`destinations` 和 `recent_issues`。增量记录中的此对象必须整体替换。已完成结果按远端套接字地址和 `ip_version` 分组，以完成时间计算窗口。计数包含 `completed`、`established`、`reset`、`no_handshake_observed`、`superseded`、`syn_retries` 和 `anomalous`（包括已恢复尝试的异常响应）。待完成尝试不是失败；滚动计数不能跨快照累加。
 
 最多保留 4,096 个待完成和 8,192 个已完成尝试，每次快照最多导出 32 条近期问题。统计容量遗漏前会先回收已过期的条目。容量遗漏计入 `omitted_since_clear`，不算网络失败；清除连接历史会重置状态。如果仍有捕获的数据包等待处理，处理到期限内的完整握手后，超时记录会更新为已建立。十秒是观测期限，不是系统连接超时；已完成记录保留期间，相同的迟到 SYN 重传不会重复计数。捕获丢包、单向可见性、本地取消和捕获停止都可能导致无法观测到完整握手。解读前请检查捕获状态和丢包计数。这些观测无法定位故障路由器、NAT 或远端主机；DNS 传输与 IPv4/IPv6 应用成功率是不同指标。
 
-在 **TCP attempts (5m)** 中，默认选中第一个受影响的目标地址。按 `Enter` 或点击 **[Expand]** 可查看各结果的计数，以及所有目标最近 32 条问题记录中与该目标匹配的尝试。用 `↑` / `↓` 选择其他行。如果对应的连接仍在列表中，可选择 **[Open Details]** 查看详情。按 `e` 跳回第一行，按 `Esc` 收起。
+Sockets 中的 **[View attempts]** 显示受影响的目标数量。按 `Enter` 或点击即可打开 **TCP attempts**。两个区块分别保留各自的滚动位置。
+
+在 **TCP attempts** 中，默认选中第一个受影响的目标地址。按 `Enter` 或点击 **[Expand]** 可查看各结果的计数，以及所有目标最近 32 条问题记录中与该目标匹配的尝试。用 `↑` / `↓` 选择其他行。如果对应的连接仍在列表中，可选择 **[Open Details]** 查看详情。按 `e` 跳回第一行，按 `Esc` 收起，再按一次返回 Sockets。
 
 每次尝试从完成时起计入统计，保留五分钟。已展开的目标即使跌出前三名也会继续显示。当最后一次有问题的尝试移出时间窗口时，该行会说明原因，点击 **[Dismiss]** 即可关闭。
 
-在 Host > Sockets 中按 `h` 打开 TCP Attempt Health 帮助，查看计数含义、固定窗口、已恢复的异常、导出证据及诊断限制。
+在 Host > TCP attempts 中按 `h` 打开 TCP Attempt Health 帮助，查看计数含义、固定窗口、已恢复的异常、导出证据及诊断限制。
 
 Overview > Network Stats 也显示同一固定五分钟窗口的 TCP 握手健康状态，区分未观测、检查中、健康、异常后恢复、降级和证据不完整。捕获错误、报告的丢包或跟踪容量遗漏会覆盖健康标签。仅被替代的尝试不能确定故障。Overview 和 Host 均按重置或握手不完整比例对受影响目标排序，再比较失败次数、异常比例和异常次数；完全相同时按地址稳定排序。显示样本数量，因为小样本不能证明持续故障。健康的 IPv6 流量不会稀释 IPv4 目标的问题。侧栏可能缩短长地址，Host 和 JSON 保留完整地址。在 Overview 按 `h` 查看解释与限制。JSON 计数新增 `recovered_anomalies`，直接统计异常后成功建立连接的尝试，不从数量受限的近期问题列表推算。
 

@@ -4,8 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────────────────────────────────────────────
-Sockets   Interfaces   DNS                                                                                                                  
+Sockets   TCP attempts   Interfaces   DNS                                                                                                   
 ━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[View attempts]  0 affected destinations (5m)                                                                                               
 ▎ Host Socket States ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 TCP 0   LISTEN 0   ESTAB 0   OPENING 0   CLOSING 0   TIME_WAIT 0   OTHER 0   UDP BOUND 0                                                    
 Observed RTT  no samples                                                                                                                    
@@ -21,14 +22,13 @@ ICMP packet too big / frag needed                              0 / 0            
 ICMP time exceeded                                             0 / 0                     0 / 1                                              
 ICMP parameter problem                                         0 / 0                     0 / 1                                              
                                                                                                                                             
-▎ TCP attempts (5m) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-0 completed, 0 pending                                                                                                                      
-  0 established, 0 reset, 0 no handshake, 0 superseded                                                                                      
-No affected destinations in the last 5 min                                                                                                  
-                                                                                                                                            
 ▎ Listening and Bound Endpoints  0 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
 Proto   State      Local endpoint                        Peer                                 Service             PID Process               
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- v/V section  w window  esc back                                                                                             h help  q quit
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ v/V section  enter attempts  w window  esc back                                                                             h help  q quit

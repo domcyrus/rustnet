@@ -18,7 +18,8 @@ use crate::network::dns_analytics::{
     DnsAnalyticsSnapshot, DnsHealth, DnsIssue, DnsIssueKind, DnsQuestionStats,
 };
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, DnsSort, Effect, HandlerContext, HostView,
+    ClickAction, ClickableRegions, Component, ComponentContext, DnsSort, Effect, HandlerContext,
+    HostView,
     format::format_rtt_compact,
     section_header, section_title, theme, try_handle_pane_scroll, try_handle_pane_wheel,
     widgets::{
@@ -85,10 +86,14 @@ fn tcp_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
         .position(|(target, rect, _)| Some(*target) == focused && rect.height > 0);
     let next = match (key.code, index) {
         (KeyCode::Esc, _) => {
-            let addr = ctx.ui_state.tcp_expanded.take()?;
-            ctx.ui_state
-                .tcp_focus
-                .set(Some(TcpTarget::Destination(addr)));
+            if let Some(addr) = ctx.ui_state.tcp_expanded.take() {
+                ctx.ui_state.tcp_reveal.set(true);
+                ctx.ui_state
+                    .tcp_focus
+                    .set(Some(TcpTarget::Destination(addr)));
+            } else {
+                ctx.ui_state.host_view = HostView::Sockets;
+            }
             return Some(Vec::new());
         }
         (KeyCode::Enter, Some(i)) => return Some(rows[i].0.activate(ctx)),
@@ -100,8 +105,8 @@ fn tcp_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
     let (target, rect, offset) = rows[next];
     ctx.ui_state.tcp_focus.set(Some(target));
     if rect.height == 0 {
-        ctx.ui_state.host_sockets_scroll.scroll_to_top();
-        ctx.ui_state.host_sockets_scroll.scroll_down(offset);
+        ctx.ui_state.tcp_attempts_scroll.scroll_to_top();
+        ctx.ui_state.tcp_attempts_scroll.scroll_down(offset);
     }
     Some(Vec::new())
 }
@@ -119,6 +124,7 @@ impl Component for HostTab {
         let content = area;
         match ctx.ui_state.host_view {
             HostView::Sockets => draw_sockets(f, content, ctx, click_regions),
+            HostView::TcpAttempts => draw_tcp_attempts(f, content, ctx, click_regions),
             HostView::Interfaces => draw_interface_stats(f, ctx.app, ctx.ui_state, content),
             HostView::Dns => draw_dns_analytics(f, content, ctx),
         }
@@ -126,11 +132,21 @@ impl Component for HostTab {
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
         if ctx.ui_state.host_view == HostView::Sockets
+            && key.code == KeyCode::Enter
+            && key.modifiers == KeyModifiers::NONE
+        {
+            ctx.ui_state.select_section(HostView::TcpAttempts as usize);
+            return Some(Vec::new());
+        }
+        if ctx.ui_state.host_view == HostView::TcpAttempts
             && let Some(effects) = tcp_key(key, ctx)
         {
             return Some(effects);
         }
-        if key.code == KeyCode::Char('w') && key.modifiers == KeyModifiers::NONE {
+        if ctx.ui_state.host_view != HostView::TcpAttempts
+            && key.code == KeyCode::Char('w')
+            && key.modifiers == KeyModifiers::NONE
+        {
             ctx.ui_state.host_window = ctx.ui_state.host_window.next();
             ctx.ui_state.dns_questions_scroll.reset();
             return Some(Vec::new());
@@ -143,23 +159,8 @@ impl Component for HostTab {
             ctx.ui_state.dns_questions_scroll.reset();
             return Some(Vec::new());
         }
-        match ctx.ui_state.host_view {
-            HostView::Sockets => try_handle_pane_scroll(
-                key,
-                usize::from(ctx.ui_state.host_sockets_scroll.viewport_rows()),
-                &mut ctx.ui_state.host_sockets_scroll,
-            ),
-            HostView::Interfaces => try_handle_pane_scroll(
-                key,
-                usize::from(ctx.ui_state.interfaces_scroll.viewport_rows()),
-                &mut ctx.ui_state.interfaces_scroll,
-            ),
-            HostView::Dns => try_handle_pane_scroll(
-                key,
-                usize::from(ctx.ui_state.dns_questions_scroll.viewport_rows()),
-                &mut ctx.ui_state.dns_questions_scroll,
-            ),
-        }
+        let scroll = ctx.ui_state.host_scroll_mut();
+        try_handle_pane_scroll(key, usize::from(scroll.viewport_rows()), scroll)
     }
 
     fn handle_mouse(
@@ -167,26 +168,19 @@ impl Component for HostTab {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
-        match ctx.ui_state.host_view {
-            HostView::Sockets => {
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                    && let Some(&(target, _, _)) = ctx
-                        .click_regions
-                        .tcp_rows
-                        .iter()
-                        .find(|(_, rect, _)| rect.contains((mouse.column, mouse.row).into()))
-                {
-                    ctx.ui_state.quit_confirmation = false;
-                    ctx.ui_state.clear_confirmation = false;
-                    return Some(target.activate(ctx));
-                }
-                try_handle_pane_wheel(mouse, &mut ctx.ui_state.host_sockets_scroll)
-            }
-            HostView::Interfaces => {
-                try_handle_pane_wheel(mouse, &mut ctx.ui_state.interfaces_scroll)
-            }
-            HostView::Dns => try_handle_pane_wheel(mouse, &mut ctx.ui_state.dns_questions_scroll),
+        if ctx.ui_state.host_view == HostView::TcpAttempts
+            && mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(&(target, _, _)) = ctx
+                .click_regions
+                .tcp_rows
+                .iter()
+                .find(|(_, rect, _)| rect.contains((mouse.column, mouse.row).into()))
+        {
+            ctx.ui_state.quit_confirmation = false;
+            ctx.ui_state.clear_confirmation = false;
+            return Some(target.activate(ctx));
         }
+        try_handle_pane_wheel(mouse, ctx.ui_state.host_scroll_mut())
     }
 }
 
@@ -732,20 +726,34 @@ fn draw_sockets(
     ctx: &ComponentContext<'_>,
     regions: &mut ClickableRegions,
 ) -> Result<()> {
-    let reveal = ctx.ui_state.tcp_reveal.take();
-    let focus = ctx.ui_state.tcp_focus.get();
     let snapshot = ctx.app.get_socket_snapshot();
     let events = ctx.app.get_network_event_snapshot(ctx.ui_state.host_window);
     let event_lines = network_event_lines(&events, ctx.ui_state.host_window, area.width < 100);
-    let mut targets = Vec::new();
-    let tcp_lines = tcp_attempt_lines(
-        &ctx.app.get_tcp_attempt_snapshot(),
-        ctx.ui_state,
-        ctx.connections,
-        &mut targets,
-    );
     let event_height = event_lines.len() as u16 + 1;
-    let tcp_height = tcp_lines.len() as u16 + 1;
+    let [shortcut, area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let attempts = ctx.app.get_tcp_attempt_snapshot();
+    let count = attempts
+        .destinations
+        .values()
+        .filter(|c| c.is_affected())
+        .count();
+    let noun = if count == 1 {
+        "destination"
+    } else {
+        "destinations"
+    };
+    f.render_widget(
+        Line::from(vec![
+            Span::styled("[View attempts]", theme::bold_fg(theme::accent())),
+            Span::raw(format!("  {count} affected {noun} (5m)")),
+        ]),
+        shortcut,
+    );
+    regions.register(
+        shortcut,
+        ClickAction::SelectSection(HostView::TcpAttempts as usize),
+    );
     let mut endpoints: Vec<&HostSocket> = snapshot
         .sockets
         .iter()
@@ -799,10 +807,7 @@ fn draw_sockets(
     let required_width =
         7 + 10 + endpoint_width + peer_width + service_width + pid_width + process_width + 8;
     if area.width < 120
-        || area.height < 11 + event_height + tcp_height
-        || tcp_lines
-            .iter()
-            .any(|line| line.width() > usize::from(area.width))
+        || area.height < 10 + event_height
         || usize::from(area.width) < required_width
     {
         let inner = section_header(f, area, section_title("Host Socket States and Endpoints"));
@@ -810,10 +815,6 @@ fn draw_sockets(
         lines.push(Line::default());
         lines.push(Line::from(section_title("Resets and ICMP errors")));
         lines.extend(event_lines);
-        lines.push(Line::default());
-        lines.push(Line::from(section_title("TCP attempts (5m)")));
-        let tcp_start = lines.len();
-        lines.extend(tcp_lines);
         lines.push(Line::default());
         lines.push(Line::from(section_title(format!(
             "Listening and Bound Endpoints · {} rows",
@@ -850,39 +851,12 @@ fn draw_sockets(
         if lines.last().is_some_and(|line| line.width() == 0) {
             lines.pop();
         }
-        // Map logical rows to terminal lines using the scrolled pane's gutter.
-        let width = inner.width.saturating_sub(2).max(1);
-        let height = |line: &Line<'_>| {
-            Paragraph::new(line.clone())
-                .wrap(Wrap { trim: false })
-                .line_count(width) as u16
-        };
-        let mut previous = 0;
-        let mut row = 0;
-        let wrapped_targets: Vec<_> = targets
-            .into_iter()
-            .map(|(index, target)| {
-                let index = tcp_start + index;
-                row += lines[previous..index].iter().map(height).sum::<u16>();
-                previous = index;
-                let height = height(&lines[index]);
-                if reveal && Some(target) == focus {
-                    ctx.ui_state
-                        .host_sockets_scroll
-                        .reveal(row, row + height, inner.height);
-                }
-                (target, row, height)
-            })
-            .collect();
-        let (text_area, offset) = draw_scrolled_text(
+        draw_scrolled_text(
             f,
             inner,
             Paragraph::new(lines).wrap(Wrap { trim: false }),
             &ctx.ui_state.host_sockets_scroll,
         );
-        for (target, row, height) in wrapped_targets {
-            register_tcp_row(regions, target, row, height, text_area, offset);
-        }
         return Ok(());
     }
 
@@ -892,18 +866,12 @@ fn draw_sockets(
         .constraints([
             Constraint::Length(3),
             Constraint::Length(event_height),
-            Constraint::Length(tcp_height),
             Constraint::Min(5),
         ])
         .split(area);
     draw_socket_summary(f, chunks[0], &snapshot.sockets, ctx.connections);
     let event_area = section_header(f, chunks[1], section_title(" Resets and ICMP errors"));
     f.render_widget(Paragraph::new(event_lines), event_area);
-    let tcp_area = section_header(f, chunks[2], section_title(" TCP attempts (5m)"));
-    f.render_widget(Paragraph::new(tcp_lines), tcp_area);
-    for (index, target) in targets {
-        register_tcp_row(regions, target, index as u16, 1, tcp_area, 0);
-    }
     let widths = [
         Constraint::Length(7),
         Constraint::Length(10),
@@ -913,7 +881,7 @@ fn draw_sockets(
         Constraint::Length(pid_width as u16),
         Constraint::Length(process_width as u16),
     ];
-    draw_endpoint_table(f, chunks[3], ctx, &endpoints, &widths);
+    draw_endpoint_table(f, chunks[2], ctx, &endpoints, &widths);
     Ok(())
 }
 
@@ -1126,6 +1094,57 @@ fn draw_endpoint_table(
     );
 }
 
+fn draw_tcp_attempts(
+    f: &mut Frame,
+    area: Rect,
+    ctx: &ComponentContext<'_>,
+    regions: &mut ClickableRegions,
+) -> Result<()> {
+    let inner = section_header(f, area, section_title("TCP attempts (5m)"));
+    let reveal = ctx.ui_state.tcp_reveal.take();
+    let focus = ctx.ui_state.tcp_focus.get();
+    let mut targets = Vec::new();
+    let lines = tcp_attempt_lines(
+        &ctx.app.get_tcp_attempt_snapshot(),
+        ctx.ui_state,
+        ctx.connections,
+        &mut targets,
+    );
+    // Map logical rows to terminal lines using the scrolled pane's gutter.
+    let width = inner.width.saturating_sub(2).max(1);
+    let height = |line: &Line<'_>| {
+        Paragraph::new(line.clone())
+            .wrap(Wrap { trim: false })
+            .line_count(width) as u16
+    };
+    let mut previous = 0;
+    let mut row = 0;
+    let wrapped_targets: Vec<_> = targets
+        .into_iter()
+        .map(|(index, target)| {
+            row += lines[previous..index].iter().map(height).sum::<u16>();
+            previous = index;
+            let height = height(&lines[index]);
+            if reveal && Some(target) == focus {
+                ctx.ui_state
+                    .tcp_attempts_scroll
+                    .reveal(row, row + height, inner.height);
+            }
+            (target, row, height)
+        })
+        .collect();
+    let (text_area, offset) = draw_scrolled_text(
+        f,
+        inner,
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        &ctx.ui_state.tcp_attempts_scroll,
+    );
+    for (target, row, height) in wrapped_targets {
+        register_tcp_row(regions, target, row, height, text_area, offset);
+    }
+    Ok(())
+}
+
 fn register_tcp_row(
     regions: &mut ClickableRegions,
     target: TcpTarget,
@@ -1160,7 +1179,7 @@ pub(super) fn tcp_attempt_lines(
     let mut destinations: Vec<_> = snapshot
         .destinations
         .iter()
-        .filter(|(_, c)| c.reset + c.no_handshake + c.anomalous > 0)
+        .filter(|(_, c)| c.is_affected())
         .collect();
     destinations.sort_by(|a, b| super::compare_tcp_destinations(*b, *a));
     let inspecting = state.tcp_expanded;

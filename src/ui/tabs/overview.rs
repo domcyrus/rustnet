@@ -888,7 +888,7 @@ fn tcp_handshake_lines(
     let worst = snapshot
         .destinations
         .iter()
-        .filter(|(_, c)| c.reset + c.no_handshake + c.anomalous > 0)
+        .filter(|(_, c)| c.is_affected())
         .max_by(|a, b| super::compare_tcp_destinations(*a, *b));
     let mut lines = vec![
         Line::from(vec![
@@ -914,7 +914,7 @@ fn tcp_handshake_lines(
         )));
     } else {
         lines.push(Line::from("Worst: none observed"));
-        lines.push(Line::from("Details: Host > Sockets"));
+        lines.push(Line::from("Details: Host > TCP attempts"));
     }
 
     lines

@@ -2210,7 +2210,7 @@ fn host_interface_windows_preserve_os_totals_and_clear_observed_counts() {
 }
 
 #[test]
-fn every_host_section_cycles_the_shared_window() {
+fn host_sections_with_a_selectable_window_cycle_it() {
     use crate::network::time_window::TimeWindow;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let app = test_app();
@@ -2380,6 +2380,7 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
     for width in [48, 140] {
         let mut state = UiState {
             selected_tab: 4,
+            host_view: HostView::TcpAttempts,
             grouping_enabled: true,
             ..Default::default()
         };
@@ -2467,6 +2468,7 @@ fn host_tcp_details_opens_each_same_timestamp_generation() {
     assert!(connections[0].is_historic && connections[0].created_at < connections[1].created_at);
     let mut state = UiState {
         selected_tab: 4,
+        host_view: HostView::TcpAttempts,
         tcp_expanded: Some(conn.remote_addr),
         ..Default::default()
     };
@@ -2491,14 +2493,14 @@ fn host_tcp_details_opens_each_same_timestamp_generation() {
 }
 
 #[test]
-fn host_tcp_expansion_keeps_evidence_visible_when_layout_changes() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+fn host_attempts_and_endpoints_scroll_independently() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     let app = test_app();
     let captured = SystemTime::now() - Duration::from_secs(20);
     let sockets = (1..=100)
         .map(|port| {
             let conn = local_tcp(port, "client");
-            if port <= 12 {
+            if port <= 32 {
                 app.ingest_packet_at_for_test(&evidence_syn(&conn, 17), captured);
             }
             HostSocket {
@@ -2512,22 +2514,76 @@ fn host_tcp_expansion_keeps_evidence_visible_when_layout_changes() {
         })
         .collect();
     app.set_socket_snapshot_for_test(SocketSnapshot::new(sockets));
-    let mut state = UiState {
-        selected_tab: 4,
-        ..Default::default()
-    };
-    let (closed, regions) = render_app_frame(&app, &mut state, &[], None, 140, 30);
-    assert!(closed.contains("Local endpoint")); // Wide endpoint table.
-    let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-    for code in [KeyCode::Char('G'), KeyCode::Char('e'), KeyCode::Enter] {
-        dispatch_key(4, KeyEvent::new(code, KeyModifiers::NONE), &mut ctx).unwrap();
+    for (width, height) in [(48, 18), (140, 30)] {
+        let mut state = UiState {
+            selected_tab: 4,
+            ..Default::default()
+        };
+        let key = |code, state: &mut UiState, regions: &ClickableRegions| {
+            dispatch_key(
+                4,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut test_support::empty_ctx(&app, state, regions),
+            )
+            .unwrap();
+        };
+        let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, width, height);
+        let (top, regions) = frame(&mut state);
+        assert_eq!(top.contains("Local endpoint"), width == 140);
+        key(KeyCode::End, &mut state, &regions);
+        let (bottom, regions) = frame(&mut state);
+        key(KeyCode::Up, &mut state, &regions);
+        let (endpoints, regions) = frame(&mut state);
+        assert_ne!(endpoints, bottom);
+        assert!(endpoints.contains("1 affected destination"));
+        assert!(regions.tcp_rows.is_empty());
+        if width == 48 {
+            key(KeyCode::Enter, &mut state, &regions);
+        } else {
+            let row = endpoints
+                .lines()
+                .position(|l| l.contains("[View attempts]"))
+                .unwrap();
+            let Some(ClickAction::SelectSection(section)) = regions.hit_test(2, row as u16) else {
+                panic!("missing attempts shortcut");
+            };
+            state.select_section(*section);
+        }
+        let (closed, regions) = frame(&mut state);
+        assert_eq!(state.host_view, HostView::TcpAttempts);
+        assert!(closed.contains("▌ [Expand]"));
+        key(KeyCode::Enter, &mut state, &regions);
+        let (open, regions) = frame(&mut state);
+        assert!(open.contains("no handshake observed"), "{open}");
+        assert!(state.tcp_attempts_scroll.can_scroll());
+        key(KeyCode::End, &mut state, &regions);
+        let (last, regions) = frame(&mut state);
+        assert_ne!(last, open);
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 3,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        };
+        dispatch_mouse(
+            4,
+            wheel,
+            &mut test_support::empty_ctx(&app, &mut state, &regions),
+        )
+        .unwrap();
+        let (scrolled, regions) = frame(&mut state);
+        assert_ne!(scrolled, last);
+        state.select_section(HostView::Sockets as usize);
+        assert_eq!(frame(&mut state).0, endpoints);
+        state.select_section(HostView::TcpAttempts as usize);
+        assert_eq!(frame(&mut state).0, scrolled);
+        key(KeyCode::Esc, &mut state, &regions);
+        let (collapsed, regions) = frame(&mut state);
+        assert!(collapsed.contains("▌ [Expand]"));
+        key(KeyCode::Esc, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Sockets);
+        assert_eq!(frame(&mut state).0, endpoints);
     }
-    let (opened, regions) = render_app_frame(&app, &mut state, &[], None, 140, 30);
-    assert!(opened.contains("Host Socket States and Endpoints")); // Compact document.
-    assert!(
-        regions.tcp_rows[0].1.height > 0 && opened.contains("no handshake observed"),
-        "{opened}"
-    );
 }
 
 #[test]
@@ -2769,7 +2825,7 @@ fn host_dns_window_switch_recovers_old_queries_and_preserves_live_health() {
     assert!(output.contains("earlier-outage.example"), "{output}");
     assert_eq!(app.get_dns_analytics_snapshot().lookups, 0);
     state.select_section(0);
-    state.select_section(2);
+    state.select_section(HostView::Dns as usize);
     render_app(&app, &mut state, &[], None, 80, 24);
     assert_eq!(state.host_window, TimeWindow::FiveMinutes);
     {
@@ -2941,7 +2997,7 @@ fn host_dns_navigation_preserves_scroll_and_sort_across_sections() {
     assert_ne!(scrolled, output);
     state.select_section(0);
     render_app(&app, &mut state, &[], None, 80, 24);
-    state.select_section(2);
+    state.select_section(HostView::Dns as usize);
     assert_eq!(render_app(&app, &mut state, &[], None, 80, 24), scrolled);
     {
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);

@@ -28,6 +28,7 @@ enum HelpContext {
     Activity,
     Graph,
     HostSockets,
+    HostTcpAttempts,
     HostInterfaces,
     HostDns,
 }
@@ -41,6 +42,7 @@ impl HelpContext {
             3 => Self::Graph,
             4 => match ui_state.host_view {
                 HostView::Sockets => Self::HostSockets,
+                HostView::TcpAttempts => Self::HostTcpAttempts,
                 HostView::Interfaces => Self::HostInterfaces,
                 HostView::Dns => Self::HostDns,
             },
@@ -57,6 +59,7 @@ impl HelpContext {
             Self::Activity => TAB_TITLES[2],
             Self::Graph => TAB_TITLES[3],
             Self::HostSockets => "Host · Sockets",
+            Self::HostTcpAttempts => "Host · TCP attempts",
             Self::HostInterfaces => "Host · Interfaces",
             Self::HostDns => "Host · DNS",
         }
@@ -84,6 +87,9 @@ impl HelpContext {
             Self::HostSockets => &[
                 "Host shows the operating system's sockets, even without captured packets.",
                 "Sockets lists TCP listeners and UDP bound endpoints, plus TCP state totals.",
+            ],
+            Self::HostTcpAttempts => &[
+                "TCP attempts shows observed outbound handshakes over the last five minutes.",
                 "The first affected TCP destination is selected. Issues age out five minutes after completion.",
             ],
             Self::HostInterfaces => &[
@@ -360,13 +366,21 @@ const HOST_WINDOW_KEY: HelpRow = ("w", "Cycle Host window: 60s / 5m / 1h / since
 
 const HOST_SOCKET_KEYS: &[HelpRow] = &[
     HOST_WINDOW_KEY,
+    (
+        "Enter / click",
+        "Open TCP attempts and keep your endpoint scroll position",
+    ),
+    ("Esc", "Return to Overview"),
+];
+
+const TCP_ATTEMPT_KEYS: &[HelpRow] = &[
     ("↑/↓", "Select an affected destination or Details link"),
     ("e", "Jump to the first affected destination"),
     (
         "Enter / click",
         "Expand, collapse, dismiss, or open the selected link",
     ),
-    ("Esc", "Close open evidence. Return to Overview when closed"),
+    ("Esc", "Close open evidence, then return to Sockets"),
 ];
 
 const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
@@ -456,7 +470,7 @@ const TCP_HEALTH_CONCEPTS: &[HelpRow] = &[
     ),
     (
         "Details",
-        "Full endpoints: Host > Sockets; recent ACK evidence: tcp_attempts JSON",
+        "Full endpoints: Host > TCP attempts; recent ACK evidence: tcp_attempts JSON",
     ),
 ];
 
@@ -649,6 +663,20 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
             );
             push_section(&mut lines, "Socket Actions", &rows);
             push_section(&mut lines, "Socket Concepts", HOST_SOCKET_CONCEPTS);
+        }
+        HelpContext::HostTcpAttempts => {
+            push_section(&mut lines, "Attempt Actions", TCP_ATTEMPT_KEYS);
+            if ui_state.tcp_attempts_scroll.can_scroll() {
+                push_section(
+                    &mut lines,
+                    "Scrolling",
+                    &[
+                        ("j/k, wheel", "Scroll evidence one line"),
+                        ("Page Up/Down", "Scroll evidence one page"),
+                        ("g, G", "Jump to the top or bottom"),
+                    ],
+                );
+            }
             push_section(&mut lines, "TCP Attempt Health", TCP_HEALTH_CONCEPTS);
         }
         HelpContext::HostInterfaces => {
@@ -828,7 +856,7 @@ mod tests {
     #[test]
     fn host_help_lists_scroll_keys_only_when_the_pane_scrolls() {
         for host_view in [HostView::Sockets, HostView::Interfaces, HostView::Dns] {
-            let state = UiState {
+            let mut state = UiState {
                 selected_tab: 4,
                 host_view,
                 section_navigation: true,
@@ -846,12 +874,7 @@ mod tests {
                 host_view == HostView::Dns
             );
 
-            let scroll = match host_view {
-                HostView::Sockets => &state.host_sockets_scroll,
-                HostView::Interfaces => &state.interfaces_scroll,
-                HostView::Dns => &state.dns_questions_scroll,
-            };
-            scroll.clamp_for_render(3);
+            state.host_scroll_mut().clamp_for_render(3);
             let outgrown = plain_text(&state);
             assert!(outgrown.contains("Scroll one line"));
             assert!(outgrown.contains("Scroll wheel"));
@@ -913,6 +936,13 @@ mod tests {
         };
         let text = plain_text(&sockets);
         assert!(text.contains("Socket Actions"));
+        assert!(text.contains("Open TCP attempts"));
+        assert!(!text.contains("Attempt Actions"));
+        let text = plain_text(&UiState {
+            host_view: HostView::TcpAttempts,
+            ..sockets
+        });
+        assert!(text.contains("Attempt Actions"));
         assert!(text.contains("TCP Attempt Health"));
         assert!(text.contains("may still recover"));
         assert!(text.contains("not proof of loss"));

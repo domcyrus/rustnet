@@ -1,11 +1,11 @@
 ---
-source: src/ui/mod.rs
+source: src/ui/snapshot_tests.rs
 expression: "render_app(&app, &mut state, &[], None, 80, 24)"
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
 ────────────────────────────────────────────────────────────━━━━━━──────────────
-Sockets   Interfaces   DNS                                                      
-───────────────────────━━━──────────────────────────────────────────────────────
+Sockets   TCP attempts   Interfaces   DNS                                       
+──────────────────────────────────────━━━───────────────────────────────────────
 ▎ DNS Outcomes (1h) ────────────────────────────────────────────────────────────
 Status failing                                                                  
 Lookups 3   answered 3   pending 0   timeout 0                                  

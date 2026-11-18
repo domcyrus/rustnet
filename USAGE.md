@@ -534,7 +534,7 @@ click anywhere dismisses it.
 ### Compact terminals
 
 When the dashboard does not fit, use `v` / Shift+`v` or click a section name to
-switch views. Host always uses these controls for Sockets, Interfaces, and DNS.
+switch views. Host always uses these controls for Sockets, TCP attempts, Interfaces, and DNS.
 In Details they also page through long sections; `j` / `k` and the mouse wheel
 switch connections. The selected section survives resizing and connection changes.
 
@@ -1160,7 +1160,7 @@ permissions can leave ownership unknown. Newly created sockets still require pro
 | FreeBSD | `sockstat -s` for native TCP states plus UDP socket rows |
 | Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |
 
-Use `v` / Shift+`v` or click Sockets / Interfaces / DNS to select a section. The footer shows the shortcut. Tab / Shift+Tab and 1-5 switch main tabs.
+Use `v` / Shift+`v` or click Sockets / TCP attempts / Interfaces / DNS to select a section. The footer shows the shortcut. Tab / Shift+Tab and 1-5 switch main tabs.
 
 ### Observed network events (unreleased)
 
@@ -1178,7 +1178,7 @@ Unmatched errors still count in Host; individual error records are not retained.
 
 ### Host timeframes (development version)
 
-Press `w` in any Host section to cycle **60s / 5m / 1h / since startup**. The selection is shared by Sockets, Interfaces, and DNS. Socket inventory and interface rates remain live.
+Press `w` in Sockets, Interfaces, or DNS to cycle **60s / 5m / 1h / since startup**. These sections share the selection. Socket inventory and interface rates remain live.
 
 - **Network events:** sent and received counts show the selected window alongside the cumulative Rustnet total since startup or clear, including event types whose selected-window count is zero.
 - **Interfaces:** errors, drops, and collisions show `window/OS total`. Only increases observed after the first interface sample enter the selected window. OS totals and packet totals remain visible; existing OS errors are not counted as new errors. Highlighting follows the selected window.
@@ -1734,17 +1734,19 @@ cat capture.pcap.connections.jsonl | jq -r '[.protocol, .local_addr, .remote_add
 
 ### TCP attempt health (unreleased)
 
-Host > Sockets shows a fixed five-minute summary of observed outbound TCP attempts, independently of the selected Host timeframe and connection filters. An initial outbound SYN starts an attempt; identical SYN retries share that attempt. A matching SYN-ACK and final outbound ACK establish observed success, including local-to-local connections and TCP Fast Open fallback when SYN data is not accepted. A matching peer reset (including Fast Open fallback), no complete handshake observed within ten seconds, and replacement by a new initial sequence number are separate outcomes. Incoming-only or midstream flows do not count as attempts. Unexpected ACKs and invalid SYN-ACK acknowledgments remain evidence even when an attempt subsequently succeeds. Corrective local resets do not immediately close an attempt.
+Host > TCP attempts shows a fixed five-minute summary of observed outbound TCP attempts, independently of the selected Host timeframe and connection filters. An initial outbound SYN starts an attempt; identical SYN retries share that attempt. A matching SYN-ACK and final outbound ACK establish observed success, including local-to-local connections and TCP Fast Open fallback when SYN data is not accepted. A matching peer reset (including Fast Open fallback), no complete handshake observed within ten seconds, and replacement by a new initial sequence number are separate outcomes. Incoming-only or midstream flows do not count as attempts. Unexpected ACKs and invalid SYN-ACK acknowledgments remain evidence even when an attempt subsequently succeeds. Corrective local resets do not immediately close an attempt.
 
 Headless `json`, `jsonl`, and `jsonl-delta` records include an additive `tcp_attempts` object: `window_seconds`, `timeout_seconds`, `pending`, `omitted_since_clear`, `total`, `destinations`, and `recent_issues`. Replace this entire object on every incremental record. Completed outcomes are grouped by remote socket address and `ip_version`; the window uses completion time. Counts include `completed`, `established`, `reset`, `no_handshake_observed`, `superseded`, `syn_retries`, and `anomalous` (attempts with unexpected replies, including recovered attempts). Pending attempts are not failures. These are rolling counts, not cumulative counters to sum across snapshots.
 
 The tracker retains at most 4,096 pending and 8,192 completed attempts, plus 32 recent issue records in each exported snapshot. The tracker reclaims expired slots before counting a capacity omission. Capacity omissions increment `omitted_since_clear`, never network failures. State clears with the connection history. A timeout shown while capture packets are queued can change to established when an on-time handshake is processed. Ten seconds is an observation deadline, not an operating-system connection timeout; identical late SYN retries are suppressed while their completed record is retained. Capture loss, asymmetric visibility, local cancellation and capture shutdown can prevent observed completion. Check capture status and drop counters before interpreting failures. These observations cannot locate a faulty router, NAT or remote host. DNS transport and IPv4/IPv6 application success remain separate measurements.
 
-Under **TCP attempts (5m)**, the first affected destination is already selected. Press `Enter` or click **[Expand]** to see outcome counts and matching attempts from the 32 most recent issues across all destinations. Use `↑`/`↓` to select another row or **[Open Details]** for a connection still in the list. Press `e` to jump back to the first row and `Esc` to close the evidence.
+In Sockets, the **[View attempts]** shortcut shows the number of affected destinations. Press `Enter` or click it to open **TCP attempts**. Each section keeps its own scroll position.
+
+In **TCP attempts**, the first affected destination is already selected. Press `Enter` or click **[Expand]** to see outcome counts and matching attempts from the 32 most recent issues across all destinations. Use `↑`/`↓` to select another row or **[Open Details]** for a connection still in the list. Press `e` to jump back to the first row and `Esc` to close the evidence. Press `Esc` again to return to Sockets.
 
 Each completed attempt counts for five minutes. An open destination stays visible if its rank drops below the top three. When its last affected attempt leaves the window, the row explains why and offers **[Dismiss]**.
 
-In Host > Sockets, press `h` to open the TCP Attempt Health help for counter meanings, the fixed window, recovered anomalies, export evidence and diagnostic limits.
+In Host > TCP attempts, press `h` to open the TCP Attempt Health help for counter meanings, the fixed window, recovered anomalies, export evidence and diagnostic limits.
 
 Overview > Network Stats also shows TCP handshake health for the same fixed five-minute window. Statuses distinguish not observed, checking, healthy, recovered anomalies, degraded, and incomplete evidence. Capture errors, reported drops or tracking omissions override a healthy label. Superseded attempts alone are inconclusive. Overview and Host rank affected destinations by reset/incomplete fraction, then failure count, anomaly fraction and anomaly count; ties use a stable address order. Counts are shown because small samples are not proof of a persistent fault. Healthy IPv6 traffic cannot dilute an affected IPv4 destination. Long endpoints may be shortened in the sidebar; Host and JSON retain full addresses. Press `h` in Overview for interpretation and limitations. JSON counts now include `recovered_anomalies`, counting anomalous attempts that established successfully; this is not inferred from the limited recent-issue list.
 

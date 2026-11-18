@@ -177,6 +177,7 @@ impl ActivityTableState {
 pub enum HostView {
     #[default]
     Sockets,
+    TcpAttempts,
     Interfaces,
     Dns,
 }
@@ -614,6 +615,7 @@ pub struct UiState {
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
+    pub(super) tcp_attempts_scroll: PaneScroll,
     pub(super) tcp_focus: Cell<Option<super::tabs::host::TcpTarget>>,
     pub(super) tcp_expanded: Option<std::net::SocketAddr>,
     pub(super) tcp_reveal: Cell<bool>,
@@ -689,6 +691,7 @@ impl Default for UiState {
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
+            tcp_attempts_scroll: PaneScroll::default(),
             tcp_focus: Cell::default(),
             tcp_expanded: None,
             tcp_reveal: Cell::default(),
@@ -740,6 +743,15 @@ pub fn compute_scroll_offset(
 }
 
 impl UiState {
+    pub(super) fn host_scroll_mut(&mut self) -> &mut PaneScroll {
+        match self.host_view {
+            HostView::Sockets => &mut self.host_sockets_scroll,
+            HostView::TcpAttempts => &mut self.tcp_attempts_scroll,
+            HostView::Interfaces => &mut self.interfaces_scroll,
+            HostView::Dns => &mut self.dns_questions_scroll,
+        }
+    }
+
     pub(crate) fn from_config(config: &crate::config::UserConfig) -> Self {
         Self {
             grouping_enabled: config.group_by_process,
@@ -1034,6 +1046,7 @@ impl UiState {
         self.activity_direction = ActivityDirection::default();
         self.dns_sort = DnsSort::default();
         self.host_window = TimeWindow::default();
+        self.tcp_attempts_scroll.reset();
         self.tcp_focus.set(None);
         self.tcp_expanded = None;
         self.dns_questions_scroll.reset();
