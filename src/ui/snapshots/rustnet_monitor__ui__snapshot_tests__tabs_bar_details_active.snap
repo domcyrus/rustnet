@@ -2,5 +2,5 @@
 source: src/ui/snapshot_tests.rs
 expression: tabs_bar_output(&ui_state)
 ---
- rustnet  1 Overview 2 Details 3 Activity 4 Graph 5 Health 6 Host               
+ rustnet  1 Overview 2 Details 3 Activity 4 Graph 5 Health & Host               
 ─────────────────────━━━━━━━━━──────────────────────────────────────────────────

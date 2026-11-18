@@ -2,7 +2,7 @@
 source: src/ui/snapshot_tests.rs
 expression: output
 ---
- rustnet  1 Overview 2 Details 3 Activity 4 Graph 5 Health 6 Host         ● eth0
+ rustnet  1 Overview 2 Details 3 Activity 4 Graph 5 Health & Host         ● eth0
 ─────────────────────━━━━━━━━━──────────────────────────────────────────────────
 Connection   Network   Process   Application   Health   Traffic                 
 ─────────────━━━━━━━────────────────────────────────────────────────────────────

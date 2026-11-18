@@ -235,30 +235,43 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             hints.push(Hint::action("esc", "back"));
             hints
         }
-        4 => {
-            let mut hints = vec![
-                Hint::action("↑/↓", "select"),
-                Hint::action("enter", "inspect"),
-                Hint::action("w", "window"),
-            ];
-            if ui_state.health_scroll.can_scroll() {
-                hints.push(Hint::action("j/k", "scroll"));
+        4 if ui_state.host_view == HostView::Findings => {
+            let mut hints = Vec::new();
+            if ui_state.inspecting_finding {
+                use crate::ui::tabs::health::HealthTarget;
+                match ui_state.health_focus.get() {
+                    Some(HealthTarget::Destination(addr)) => {
+                        hints.push(Hint::action("↑/↓", "select"));
+                        hints.push(Hint::action(
+                            "space",
+                            if ui_state.tcp_expanded == Some(addr) {
+                                "collapse"
+                            } else {
+                                "expand"
+                            },
+                        ));
+                    }
+                    Some(HealthTarget::Details(..)) => {
+                        hints.push(Hint::action("↑/↓", "select"));
+                        hints.push(Hint::action("enter", "details"));
+                    }
+                    Some(HealthTarget::Section(_)) => hints.push(Hint::action("enter", "open")),
+                    _ => {}
+                }
+                if ui_state.health_scroll.can_scroll() {
+                    hints.push(Hint::action("pgup/dn", "scroll"));
+                }
+            } else {
+                hints.push(Hint::action("↑/↓", "select"));
+                hints.push(Hint::action("enter", "inspect"));
             }
-            hints.push(Hint::action(
-                "esc",
-                if ui_state.open_finding.is_some() {
-                    "close"
-                } else {
-                    "back"
-                },
-            ));
+            hints.push(Hint::action("w", "window"));
+            hints.push(Hint::action("esc", "back"));
             hints
         }
-        // Host
-        5 => {
-            // Only advertise scrolling when the
-            // table actually outgrew its pane.
+        4 => {
             let scroll = match ui_state.host_view {
+                HostView::Findings => &ui_state.health_scroll,
                 HostView::Sockets => &ui_state.host_sockets_scroll,
                 HostView::Interfaces => &ui_state.interfaces_scroll,
                 HostView::Dns => &ui_state.dns_questions_scroll,
@@ -500,7 +513,7 @@ mod tests {
         assert_eq!(hints.first().map(|hint| hint.key), Some("\u{2191}\u{2193}"));
         assert!(advertises(&hints, "/"));
         // Tab navigation is advertised by the numbered tab bar itself.
-        assert!(!advertises(&hints, "1-6"));
+        assert!(!advertises(&hints, "1-5"));
         assert!(!advertises(&hints, "tab"));
     }
 

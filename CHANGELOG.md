@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Reduce TCP attempt lookups and reclaim expired entries before counting capacity omissions (#734)
 - Reuse unchanged TCP health snapshots, preserve exact expiry deadlines, and select recent issues without sorting all retained attempts (#734)
-- Share TCP destination ranking and health help between Overview and Health (#734)
+- Share TCP destination ranking and health help between Overview and Findings (#734)
 - Skip process ownership accounting work on the default packet ingestion path (#721)
 - Speed up executable-path conversion in headless snapshots while preserving path encoding (#721)
 - Retain only directory traversal privileges in the Windows sandbox while preserving token groups and integrity level (#721)
@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
-- Add 5 Health for expandable TCP, reset/ICMP, interface, DNS and capture findings. Move Host inventory to 6 and preserve endpoint scrolling across tabs (#734)
+- Combine Findings, Sockets, Interfaces and DNS resolvers in 5 Health & Host, with a responsive evidence inspector and return navigation (#734)
 - Track outbound TCP attempts with inline destination evidence, matching connection Details and a five-minute headless JSON summary (#734)
 - Show inline TCP handshake health and the worst affected destination in Overview, with recovered-anomaly counts and contextual help (#734)
 - Add headless automation controls, opt-in full metadata and capture accounting, and guarded Linux executable retention (#721)

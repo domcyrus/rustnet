@@ -2,24 +2,26 @@
 source: src/ui/snapshot_tests.rs
 expression: output
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Health   6 Host                                                         ● eth0
-────────────────────────────────────────────────────────────━━━━━━━━────────────────────────────────────────────────────────────────────────
-▎ Network health ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-    Signal            Observed                                 Window                                                                       
-▌ ▸ TCP handshakes    No attempts observed                     5m                                                                           
-  ▾ Resets and ICMP   RST 1 sent / 0 received · 0 ICMP         60s                                                                          
-60s / total (since startup) · captured packets                                                                                              
-                                                Sent: window / total  Received: window / total                                              
-TCP reset                                                      1 / 1                     0 / 0                                              
-ICMP port unreachable                                          0 / 0                     0 / 1                                              
-ICMP destination unreachable                                   0 / 0                     0 / 1                                              
-ICMP administratively prohibited                               0 / 0                     0 / 1                                              
-ICMP packet too big / frag needed                              0 / 0                     0 / 1                                              
-ICMP time exceeded                                             0 / 0                     0 / 1                                              
-ICMP parameter problem                                         0 / 0                     0 / 1                                              
-  ▸ Interface drops   Waiting for interface statistics         60s                                                                          
-  ▸ DNS replies       0 replies · 0 timeouts                   60s                                                                          
-  ▸ Capture quality   0 reported drops · 0 queue drops         since startup                                                                
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Health & Host                                                           ● eth0
+────────────────────────────────────────────────────────────━━━━━━━━━━━━━━━─────────────────────────────────────────────────────────────────
+Findings   Sockets   Interfaces   DNS resolvers                                                                                             
+━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▎ Findings ────────────────────────────────────── ▎ ▌ Resets and ICMP (60s) ────────────────────────────────────────────────────────────────
+  › TCP handshakes (5m)  No attempts observed     60s / total (since startup) · captured packets                                            
+▌ › Resets and ICMP (60s)  RST 1 sent / 0         TCP reset                                                                                 
+received · 0 ICMP                                   Sent 1 / 1   Received 0 / 0                                                             
+  › Interface drops (60s)  Waiting for            ICMP port unreachable                                                                     
+interface statistics                                Sent 0 / 0   Received 0 / 1                                                             
+  › DNS replies (60s)  0 replies · 0 timeouts     ICMP destination unreachable                                                              
+  › Capture quality (since startup)  0 reported     Sent 0 / 0   Received 0 / 1                                                             
+drops · 0 queue drops                             ICMP administratively prohibited                                                          
+                                                    Sent 0 / 0   Received 0 / 1                                                             
+                                                  ICMP packet too big / frag needed                                                         
+                                                    Sent 0 / 0   Received 0 / 1                                                             
+                                                  ICMP time exceeded                                                                        
+                                                    Sent 0 / 0   Received 0 / 1                                                             
+                                                  ICMP parameter problem                                                                    
+                                                    Sent 0 / 0   Received 0 / 1                                                             
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -29,6 +31,4 @@ ICMP parameter problem                                         0 / 0            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-                                                                                                                                            
-                                                                                                                                            
- ↑/↓ select  enter inspect  w window  esc close                                                                              h help  q quit
+ v/V section  w window  esc back                                                                                             h help  q quit

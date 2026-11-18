@@ -84,7 +84,7 @@ fn help_overlay_activity() {
 fn help_overlay_host_dns() {
     use crate::ui::tabs::help::draw_help_overlay;
     let ui_state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Dns,
         show_help: true,
         ..UiState::default()
@@ -1026,7 +1026,7 @@ fn host_interface_columns_expand_and_keep_large_values_aligned() {
         },
     );
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Interfaces,
         ..Default::default()
     };
@@ -1979,7 +1979,8 @@ fn host_compact_records_preserve_ipv6_and_unicode_owners() {
     }]));
     for width in [50, 80, 100, 140] {
         let mut state = UiState {
-            selected_tab: 5,
+            selected_tab: 4,
+            host_view: HostView::Sockets,
             ..Default::default()
         };
         let output = render_app(&app, &mut state, &[], None, width, 30);
@@ -2021,7 +2022,7 @@ fn host_interfaces_keep_rate_digits_and_scroll_every_record() {
     }
     for width in [50, 80, 100, 140] {
         let mut state = UiState {
-            selected_tab: 5,
+            selected_tab: 4,
             host_view: HostView::Interfaces,
             ..Default::default()
         };
@@ -2041,7 +2042,7 @@ fn host_interfaces_keep_rate_digits_and_scroll_every_record() {
         let regions = ClickableRegions::default();
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
         dispatch_key(
-            5,
+            4,
             crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char('G'),
                 crossterm::event::KeyModifiers::NONE,
@@ -2138,7 +2139,8 @@ fn host_socket_inventory() {
     ]));
 
     let mut ui_state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
+        host_view: HostView::Sockets,
         ..Default::default()
     };
     let connections = app.get_connections();
@@ -2182,7 +2184,7 @@ fn host_interface_windows_preserve_os_totals_and_clear_observed_counts() {
     stat.timestamp = now - Duration::from_secs(90);
     app.set_interface_stats_for_test("test0", stat.clone());
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Interfaces,
         ..Default::default()
     };
@@ -2216,10 +2218,11 @@ fn host_sections_with_a_selectable_window_cycle_it() {
     let app = test_app();
     let regions = ClickableRegions::default();
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
+        host_view: HostView::Sockets,
         ..Default::default()
     };
-    for host_view in [HostView::Interfaces, HostView::Dns] {
+    for host_view in [HostView::Findings, HostView::Interfaces, HostView::Dns] {
         state.host_view = host_view;
         state.host_window = TimeWindow::OneMinute;
         for expected in [
@@ -2230,7 +2233,7 @@ fn host_sections_with_a_selectable_window_cycle_it() {
         ] {
             let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
             dispatch_key(
-                5,
+                4,
                 KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
                 &mut ctx,
             )
@@ -2291,7 +2294,8 @@ fn host_network_events() {
     app.ingest_packet_at_for_test(&packet, SystemTime::now());
     let mut state = UiState {
         selected_tab: 4,
-        open_finding: Some(tabs::health::Finding::Events),
+        finding: tabs::health::Finding::Events,
+        inspecting_finding: true,
         ..Default::default()
     };
     let output = render_app(&app, &mut state, &[], None, 140, 30);
@@ -2317,7 +2321,10 @@ fn host_network_events() {
         )
         .unwrap();
         let bottom = render_app(&app, &mut state, &[], None, width, 12);
-        assert!(bottom.contains("Capture quality"), "{bottom}");
+        assert!(
+            bottom.contains("Received") || bottom.contains(" / "),
+            "{bottom}"
+        );
     }
 }
 
@@ -2364,12 +2371,12 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
     let key = |code, ctx: &mut HandlerContext<'_>| {
         dispatch_key(4, KeyEvent::new(code, KeyModifiers::NONE), ctx).unwrap()
     };
-    let click = |row, ctx: &mut HandlerContext<'_>| {
+    let click = |column, row, ctx: &mut HandlerContext<'_>| {
         dispatch_mouse(
             4,
             MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
-                column: 3,
+                column,
                 row,
                 modifiers: KeyModifiers::NONE,
             },
@@ -2385,39 +2392,60 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             ..Default::default()
         };
         let (closed, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
-        assert!(closed.contains("▌ ▸ TCP handshakes"));
+        assert!(closed.contains("▌ › TCP handshakes"));
         assert!(!closed.contains("Open Details"));
         let mut ctx = HandlerContext {
             connections: &connections,
             ..test_support::empty_ctx(&app, &mut state, &regions)
         };
         if width == 48 {
-            let last_row = regions.health_rows[0].1.bottom() - 1;
-            assert!(regions.health_rows[0].1.height > 1);
-            click(last_row, &mut ctx);
+            let rect = regions.health_rows[0].1;
+            assert!(rect.height > 1);
+            click(rect.x + 2, rect.bottom() - 1, &mut ctx);
         } else {
             key(KeyCode::Enter, &mut ctx);
         }
+        let (_, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
+        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+        key(KeyCode::Right, &mut ctx);
+        key(KeyCode::Right, &mut ctx);
         assert_eq!(ctx.ui_state.tcp_expanded, Some(syn.remote_addr));
         let (open, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
         assert!(open.contains("no handshake observed"), "{open}");
-        assert_eq!(regions.health_rows.len(), 7);
+        let link = regions
+            .health_rows
+            .iter()
+            .find(|(target, _)| matches!(target, tabs::health::HealthTarget::Details(..)))
+            .unwrap()
+            .1;
         let mut ctx = HandlerContext {
             connections: &connections,
             ..test_support::empty_ctx(&app, &mut state, &regions)
         };
         let effects = if width == 48 {
-            click(regions.health_rows[2].1.bottom() - 1, &mut ctx)
+            click(link.x + 2, link.bottom() - 1, &mut ctx)
         } else {
-            key(KeyCode::Down, &mut ctx);
-            key(KeyCode::Down, &mut ctx);
+            key(KeyCode::Char('j'), &mut ctx);
             key(KeyCode::Enter, &mut ctx)
         };
         assert!(matches!(effects.as_slice(), [Effect::Regroup]));
         assert_eq!(state.selected_tab, 1);
         let grouped = compute_grouped_rows(&connections, &state.expanded_groups);
-        render_app(&app, &mut state, &connections, Some(&grouped), width, 50);
+        let (_, detail_regions) =
+            render_app_frame(&app, &mut state, &connections, Some(&grouped), width, 50);
         assert_eq!(state.get_selected_index(&connections), Some(1));
+        dispatch_key(
+            1,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut test_support::empty_ctx(&app, &mut state, &detail_regions),
+        )
+        .unwrap();
+        assert_eq!(state.selected_tab, 4);
+        assert!(state.inspecting_finding);
+        assert!(matches!(
+            state.health_focus.get(),
+            Some(tabs::health::HealthTarget::Details(..))
+        ));
 
         // The same ports now belong to a different connection. Even an old hit region is harmless.
         connections[1].created_at += Duration::from_secs(1);
@@ -2426,22 +2454,22 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             connections: &connections,
             ..test_support::empty_ctx(&app, &mut state, &regions)
         };
-        click(regions.health_rows[2].1.bottom() - 1, &mut ctx);
+        click(link.x + 2, link.bottom() - 1, &mut ctx);
         assert_eq!(state.selected_tab, 4);
         let (expired, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
         assert!(!expired.contains("Open Details"));
-        assert_eq!(regions.health_rows.len(), 6);
+        assert!(
+            regions
+                .health_rows
+                .iter()
+                .all(|(t, _)| !matches!(t, tabs::health::HealthTarget::Details(..)))
+        );
         key(
             KeyCode::Esc,
             &mut test_support::empty_ctx(&app, &mut state, &regions),
         );
-        assert!(state.tcp_expanded.is_none());
-        assert!(matches!(
-            state.health_focus.get(),
-            Some(tabs::health::HealthTarget::Finding(
-                tabs::health::Finding::Tcp
-            ))
-        ));
+        assert!(!state.inspecting_finding);
+        assert_eq!(state.finding, tabs::health::Finding::Tcp);
         connections[1].created_at -= Duration::from_secs(1);
     }
 }
@@ -2472,13 +2500,18 @@ fn host_tcp_details_opens_each_same_timestamp_generation() {
     assert!(connections[0].is_historic && connections[0].created_at < connections[1].created_at);
     let mut state = UiState {
         selected_tab: 4,
-        open_finding: Some(tabs::health::Finding::Tcp),
+        inspecting_finding: true,
         tcp_expanded: Some(conn.remote_addr),
         ..Default::default()
     };
     let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 50);
-    assert_eq!(regions.health_rows.len(), 8);
-    for (i, (target, _, _)) in regions.health_rows[2..4].iter().enumerate() {
+    let links: Vec<_> = regions
+        .health_rows
+        .iter()
+        .filter(|(t, _)| matches!(t, tabs::health::HealthTarget::Details(..)))
+        .collect();
+    assert_eq!(links.len(), 2);
+    for (i, (target, _)) in links.into_iter().enumerate() {
         state.jump_to_tab(4);
         state.health_focus.set(Some(*target));
         let mut ctx = HandlerContext {
@@ -2505,7 +2538,7 @@ fn health_findings_expand_individually_and_report_capture_failure() {
         selected_tab: 4,
         ..Default::default()
     };
-    let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, 120, 24);
+    let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, 80, 50);
     let key = |code, state: &mut UiState, regions: &ClickableRegions| {
         dispatch_key(
             4,
@@ -2518,11 +2551,11 @@ fn health_findings_expand_individually_and_report_capture_failure() {
         ("TCP handshakes", "No affected destinations"),
         ("Resets and ICMP", "No resets or ICMP errors observed"),
         ("Interface drops", "No interface samples available"),
-        ("DNS replies", "5 lookups"),
-        ("Capture quality", "processing queue drops"),
+        ("DNS replies", "registry.example.com"),
+        ("Capture quality", "Capture backend drops"),
     ] {
         let (closed, regions) = frame(&mut state);
-        assert!(closed.contains(&format!("▌ ▸ {name}")), "{closed}");
+        assert!(closed.contains(&format!("▌ › {name}")), "{closed}");
         assert!(closed.contains("Capture failed"));
         key(KeyCode::Enter, &mut state, &regions);
         let (open, regions) = frame(&mut state);
@@ -2531,6 +2564,64 @@ fn health_findings_expand_individually_and_report_capture_failure() {
         let (closed, regions) = frame(&mut state);
         assert!(!closed.contains(evidence));
         key(KeyCode::Down, &mut state, &regions);
+    }
+}
+
+#[test]
+fn dns_timeout_preview_and_inventory_links_keep_the_source_finding() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tabs::health::Finding;
+    let app = test_app();
+    app.ingest_packet_at_for_test(
+        &dns_test_packet(42, "build.example", DnsQueryType::A, false, None),
+        SystemTime::now() - Duration::from_secs(20),
+    );
+    for width in [60, 140] {
+        let mut state = UiState {
+            selected_tab: 4,
+            finding: Finding::Interfaces,
+            ..Default::default()
+        };
+        let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, width, 32);
+        let key = |code, state: &mut UiState, regions: &ClickableRegions| {
+            dispatch_key(
+                4,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut test_support::empty_ctx(&app, state, regions),
+            )
+            .unwrap();
+        };
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char('j'), &mut state, &regions);
+        let (index, regions) = frame(&mut state);
+        assert_eq!(state.finding, Finding::Dns);
+        assert_eq!(index.contains("build.example"), width >= 100);
+        key(KeyCode::Enter, &mut state, &regions);
+        let (reader, regions) = frame(&mut state);
+        for text in ["1.1.1.1:53", "build.example", "Recent issues (15m"] {
+            assert!(reader.contains(text), "{reader}");
+        }
+        key(KeyCode::Enter, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Dns);
+        let (inventory, regions) = frame(&mut state);
+        assert!(inventory.contains("DNS Outcomes (60s)"), "{inventory}");
+        key(KeyCode::Esc, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Findings);
+        assert!(state.inspecting_finding);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Esc, &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Up, &mut state, &regions);
+        assert_eq!(state.finding, Finding::Interfaces);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Enter, &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Enter, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Interfaces);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Esc, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Findings);
+        assert_eq!(state.finding, Finding::Interfaces);
     }
 }
 
@@ -2558,7 +2649,8 @@ fn host_attempts_and_endpoints_scroll_independently() {
     app.set_socket_snapshot_for_test(SocketSnapshot::new(sockets));
     for (width, height) in [(48, 18), (140, 30)] {
         let mut state = UiState {
-            selected_tab: 5,
+            selected_tab: 4,
+            host_view: HostView::Sockets,
             ..Default::default()
         };
         let key = |code, state: &mut UiState, regions: &ClickableRegions| {
@@ -2580,16 +2672,18 @@ fn host_attempts_and_endpoints_scroll_independently() {
         assert!(regions.health_rows.is_empty());
         assert!(
             dispatch_key(
-                5,
+                4,
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 &mut test_support::empty_ctx(&app, &mut state, &regions)
             )
             .is_none()
         );
-        key(KeyCode::Char('5'), &mut state, &regions);
+        key(KeyCode::Char('V'), &mut state, &regions);
         let (closed, regions) = frame(&mut state);
-        assert!(closed.contains("▌ ▸ TCP handshakes"));
+        assert!(closed.contains("▌ › TCP handshakes"));
         key(KeyCode::Enter, &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char(' '), &mut state, &regions);
         let (open, regions) = frame(&mut state);
         assert!(open.contains("no handshake observed"), "{open}");
         assert!(state.health_scroll.can_scroll());
@@ -2598,8 +2692,8 @@ fn host_attempts_and_endpoints_scroll_independently() {
         assert_ne!(last, open);
         let wheel = MouseEvent {
             kind: MouseEventKind::ScrollUp,
-            column: 3,
-            row: 8,
+            column: regions.evidence_area.x + 1,
+            row: regions.evidence_area.y + 2,
             modifiers: KeyModifiers::NONE,
         };
         dispatch_mouse(
@@ -2610,15 +2704,15 @@ fn host_attempts_and_endpoints_scroll_independently() {
         .unwrap();
         let (scrolled, regions) = frame(&mut state);
         assert_ne!(scrolled, last);
-        key(KeyCode::Char('6'), &mut state, &regions);
+        key(KeyCode::Char('v'), &mut state, &regions);
         assert_eq!(frame(&mut state).0, endpoints);
-        key(KeyCode::Char('5'), &mut state, &regions);
+        key(KeyCode::Char('V'), &mut state, &regions);
         assert_eq!(frame(&mut state).0, scrolled);
         key(KeyCode::Esc, &mut state, &regions);
         let (collapsed, regions) = frame(&mut state);
-        assert!(collapsed.contains("▌ ▸ TCP handshakes"));
-        key(KeyCode::Char('6'), &mut state, &regions);
-        assert_eq!(state.selected_tab, 5);
+        assert!(collapsed.contains("▌ › TCP handshakes"));
+        key(KeyCode::Char('v'), &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Sockets);
         assert_eq!(frame(&mut state).0, endpoints);
     }
 }
@@ -2697,7 +2791,7 @@ fn host_interface_details() {
     );
 
     let mut ui_state = UiState {
-        selected_tab: 5, // Host
+        selected_tab: 4, // Host
         host_view: HostView::Interfaces,
         ..Default::default()
     };
@@ -2761,7 +2855,7 @@ fn seeded_dns_app() -> App {
 fn render_host_dns(width: u16, height: u16) -> String {
     let app = seeded_dns_app();
     let mut ui_state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Dns,
         ..Default::default()
     };
@@ -2793,7 +2887,7 @@ fn host_dns_retains_old_failure_without_claiming_a_current_outage() {
     );
     for (width, height) in [(60, 20), (80, 24), (140, 32)] {
         let mut state = UiState {
-            selected_tab: 5,
+            selected_tab: 4,
             host_view: HostView::Dns,
             ..Default::default()
         };
@@ -2809,7 +2903,7 @@ fn host_dns_capture_failure_overrides_old_responsive_health() {
     let app = seeded_dns_app();
     app.set_capture_error_for_test(Some("test capture failure"));
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Dns,
         ..Default::default()
     };
@@ -2839,7 +2933,7 @@ fn host_dns_window_switch_recovers_old_queries_and_preserves_live_health() {
         );
     }
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Dns,
         ..Default::default()
     };
@@ -2847,7 +2941,7 @@ fn host_dns_window_switch_recovers_old_queries_and_preserves_live_health() {
     {
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
         dispatch_key(
-            5,
+            4,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
             &mut ctx,
         )
@@ -2868,7 +2962,7 @@ fn host_dns_window_switch_recovers_old_queries_and_preserves_live_health() {
     {
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
         dispatch_key(
-            5,
+            4,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
             &mut ctx,
         )
@@ -2881,7 +2975,7 @@ fn host_dns_window_switch_recovers_old_queries_and_preserves_live_health() {
     {
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
         dispatch_key(
-            5,
+            4,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
             &mut ctx,
         )
@@ -2894,7 +2988,7 @@ fn host_dns_window_switch_recovers_old_queries_and_preserves_live_health() {
     {
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
         dispatch_key(
-            5,
+            4,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
             &mut ctx,
         )
@@ -2912,7 +3006,7 @@ fn host_dns_window_switch_recovers_old_queries_and_preserves_live_health() {
 fn host_dns_five_minute_window() {
     let app = seeded_dns_app();
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Dns,
         host_window: crate::network::time_window::TimeWindow::FiveMinutes,
         ..Default::default()
@@ -2935,7 +3029,7 @@ fn host_dns_one_hour_window() {
         );
     }
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Dns,
         host_window: crate::network::time_window::TimeWindow::OneHour,
         ..Default::default()
@@ -2959,7 +3053,7 @@ fn host_dns_since_startup_and_clear() {
         );
     }
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Dns,
         host_window: TimeWindow::SinceStartup,
         ..Default::default()
@@ -2996,7 +3090,7 @@ fn host_dns_navigation_preserves_scroll_and_sort_across_sections() {
         );
     }
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
         host_view: HostView::Dns,
         ..Default::default()
     };
@@ -3007,7 +3101,7 @@ fn host_dns_navigation_preserves_scroll_and_sort_across_sections() {
     {
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
         dispatch_key(
-            5,
+            4,
             KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
             &mut ctx,
         )
@@ -3019,7 +3113,7 @@ fn host_dns_navigation_preserves_scroll_and_sort_across_sections() {
     {
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
         dispatch_mouse(
-            5,
+            4,
             MouseEvent {
                 kind: MouseEventKind::ScrollDown,
                 column: 10,
@@ -3039,7 +3133,7 @@ fn host_dns_navigation_preserves_scroll_and_sort_across_sections() {
     {
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
         dispatch_key(
-            5,
+            4,
             KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
             &mut ctx,
         )
@@ -3551,7 +3645,7 @@ fn capture_bars_animate_while_numbers_update_and_stop_after_leaving() {
     assert!(state.bar_animations.is_active());
     assert!(output.contains("Interface: 16.00 MiB"));
     assert!(output.contains("TX 36.6%"));
-    state.selected_tab = 5;
+    state.selected_tab = 4;
     render_app(&app, &mut state, &connections, None, 80, 24);
     assert!(!state.bar_animations.is_active());
 }
@@ -3609,11 +3703,12 @@ fn activity_tab_empty_terminal() {
 }
 
 #[test]
-fn narrow_tabs_keep_all_six_shortcuts_visible_and_clickable() {
+fn narrow_tabs_keep_all_five_shortcuts_visible_and_clickable() {
     for width in [24, 40, 50, 60] {
         let mut regions = ClickableRegions::default();
         let ui_state = UiState {
-            selected_tab: 5,
+            selected_tab: 4,
+            host_view: HostView::Sockets,
             ..Default::default()
         };
         let output = render(width, 2, |f| {
@@ -3626,11 +3721,11 @@ fn narrow_tabs_keep_all_six_shortcuts_visible_and_clickable() {
             )
         });
         assert!(
-            output.lines().next().unwrap().contains('6'),
+            output.lines().next().unwrap().contains('5'),
             "width {width}"
         );
         assert!(
-            (0..width).any(|x| matches!(regions.hit_test(x, 0), Some(ClickAction::SwitchTab(5)))),
+            (0..width).any(|x| matches!(regions.hit_test(x, 0), Some(ClickAction::SwitchTab(4)))),
             "width {width}"
         );
     }
@@ -3671,7 +3766,7 @@ fn animation_visibility_follows_rendered_graphs_across_tabs_and_sizes() {
         render_app(&app, &mut state, &connections, None, width, height);
         assert_eq!(state.graph_animation_visible.get(), visible);
     }
-    for tab in [0, 1, 2, 4, 5] {
+    for tab in [0, 1, 2, 4] {
         state.graph_animation_visible.set(true);
         state.selected_tab = tab;
         render_app(&app, &mut state, &connections, None, 140, 40);
@@ -4606,9 +4701,9 @@ fn shared_section_navigation_and_click_targets_work_at_every_size() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let app = test_app();
     let connections = overview_connections();
-    for tab in [0, 1, 2, 3, 5] {
+    for tab in [0, 1, 2, 3, 4] {
         for (width, height) in [(50, 12), (80, 24), (140, 50)] {
-            if tab != 5 && width == 140 {
+            if tab != 4 && width == 140 {
                 continue;
             }
             let mut state = UiState {
@@ -4732,7 +4827,7 @@ fn section_hints_follow_the_layout_while_help_stays_open() {
         }
     }
     // Host keeps its selectable sections on a wide terminal.
-    state.selected_tab = 5;
+    state.selected_tab = 4;
     let output = render_app(&app, &mut state, &connections, None, 140, 50);
     assert!(output.contains(sections::SECTION_KEYS));
 }
@@ -4743,7 +4838,8 @@ fn host_section_keys_are_consumed_while_help_is_open() {
     let app = test_app();
     let regions = ClickableRegions::default();
     let mut state = UiState {
-        selected_tab: 5,
+        selected_tab: 4,
+        host_view: HostView::Sockets,
         show_help: true,
         section_navigation: true,
         ..Default::default()
@@ -4752,7 +4848,7 @@ fn host_section_keys_are_consumed_while_help_is_open() {
     for key in ['v', 'V'] {
         assert!(
             dispatch_key(
-                5,
+                4,
                 KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
                 &mut ctx
             )
@@ -4761,7 +4857,7 @@ fn host_section_keys_are_consumed_while_help_is_open() {
         assert_eq!(ctx.ui_state.host_view, HostView::Sockets);
     }
     for code in [KeyCode::Tab, KeyCode::Char('['), KeyCode::Char(']')] {
-        assert!(dispatch_key(5, KeyEvent::new(code, KeyModifiers::NONE), &mut ctx).is_none());
+        assert!(dispatch_key(4, KeyEvent::new(code, KeyModifiers::NONE), &mut ctx).is_none());
     }
 }
 
@@ -4813,7 +4909,7 @@ fn compact_sections_leave_brackets_for_main_tabs_and_accept_shift_v() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let app = test_app();
     let connections = overview_connections();
-    for tab in [0, 1, 2, 3, 5] {
+    for tab in [0, 1, 2, 3, 4] {
         let mut state = UiState {
             selected_tab: tab,
             ..Default::default()

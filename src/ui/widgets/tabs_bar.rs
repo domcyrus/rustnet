@@ -13,8 +13,8 @@ use ratatui::{Frame, layout::Rect, text::Span};
 
 use crate::ui::{ClickAction, ClickableRegions, UiState, theme};
 
-pub(crate) const TAB_TITLES: [&str; 6] =
-    ["Overview", "Details", "Activity", "Graph", "Health", "Host"];
+pub(crate) const TAB_TITLES: [&str; 5] =
+    ["Overview", "Details", "Activity", "Graph", "Health & Host"];
 /// Total number of tabs (kept in sync with `TAB_TITLES`).
 pub(crate) const TAB_COUNT: usize = TAB_TITLES.len();
 /// Index of the Overview tab, the only tab with an activity dot so far.
@@ -103,11 +103,11 @@ pub(in crate::ui) fn draw_tabs(
     let short_labels = area.width < 68;
     let numbers_only = area.width < 54;
     for (i, title) in TAB_TITLES.iter().enumerate() {
-        // Numbered titles: the 1-6 jump shortcut becomes discoverable.
+        // Numbered titles: the 1-5 jump shortcut becomes discoverable.
         let title = if numbers_only {
             ""
         } else if short_labels {
-            ["Ovr", "Dtl", "Act", "Graph", "Health", "Host"][i]
+            ["Ovr", "Dtl", "Act", "Graph", "Health & Host"][i]
         } else {
             title
         };

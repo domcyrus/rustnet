@@ -2,10 +2,10 @@
 source: src/ui/snapshot_tests.rs
 expression: output
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Health   6 Host                                                         ● eth0
-───────────────────────────────────────────────────────────────────────━━━━━━───────────────────────────────────────────────────────────────
-Sockets   Interfaces   DNS                                                                                                                  
-──────────━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Health & Host                                                           ● eth0
+────────────────────────────────────────────────────────────━━━━━━━━━━━━━━━─────────────────────────────────────────────────────────────────
+Findings   Sockets   Interfaces   DNS resolvers                                                                                             
+─────────────────────━━━━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Interface Statistics · 60s ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Errors/drops/collisions: window / OS total · packets: OS total · rates: live                                                                
 Interface                                  RX Rate      TX Rate RX Packets TX Packets    RX Err    TX Err    RX Drop    TX Drop Collisions  

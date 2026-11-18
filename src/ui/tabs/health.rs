@@ -7,21 +7,22 @@ use crate::network::{
     types::{Connection, ConnectionKey, NetworkEventKind},
 };
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, section_header,
-    section_title, theme, try_handle_pane_scroll, try_handle_pane_wheel,
+    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, HostView, PaneScroll,
+    UiState, section_header, section_title, theme, try_handle_pane_scroll, try_handle_pane_wheel,
     widgets::scrollbar::draw_scrolled_text,
 };
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(in crate::ui) enum Finding {
+    #[default]
     Tcp,
     Events,
     Interfaces,
@@ -32,6 +33,7 @@ pub(in crate::ui) enum Finding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::ui) enum HealthTarget {
     Finding(Finding),
+    Section(HostView),
     Destination(SocketAddr),
     Details(ConnectionKey, SystemTime, u32),
 }
@@ -48,26 +50,27 @@ impl HealthTarget {
 
     fn activate(self, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
         let state = &mut ctx.ui_state;
-        state.health_focus.set(Some(self));
         match self {
             Self::Finding(finding) => {
-                state.open_finding = (state.open_finding != Some(finding)).then_some(finding);
-                state.tcp_expanded = None;
-                if state.open_finding == Some(Finding::Tcp) {
-                    state.tcp_expanded =
-                        super::worst_tcp_destination(&ctx.app.get_tcp_attempt_snapshot())
-                            .map(|(a, _)| *a);
-                }
+                select_finding(state, finding);
+                state.inspecting_finding = true;
                 state.health_reveal.set(true);
             }
+            Self::Section(view) => {
+                state.select_section(view as usize);
+                state.return_to_finding = true;
+            }
             Self::Destination(addr) => {
+                state.health_focus.set(Some(self));
                 state.tcp_expanded = (state.tcp_expanded != Some(addr)).then_some(addr);
                 state.health_reveal.set(true);
             }
             Self::Details(..) => {
                 if let Some(i) = self.connection(ctx.connections) {
+                    state.health_focus.set(Some(self));
                     state.set_selected_by_index(ctx.connections, i);
                     state.jump_to_tab(1);
+                    state.return_to_finding = true;
                     if state.grouping_enabled
                         && state
                             .expanded_groups
@@ -82,38 +85,94 @@ impl HealthTarget {
     }
 }
 
+fn select_finding(state: &mut UiState, finding: Finding) {
+    if state.finding != finding {
+        state.finding = finding;
+        state.health_focus.set(None);
+        state.health_scroll.reset();
+    }
+}
+
 fn health_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
     if key.modifiers != KeyModifiers::NONE {
         return None;
     }
+    let state = &mut ctx.ui_state;
+    let inspecting = state.inspecting_finding;
     let rows = &ctx.click_regions.health_rows;
-    let focused = ctx.ui_state.health_focus.get();
-    let index = rows
-        .iter()
-        .position(|(target, _, _)| Some(*target) == focused);
-    let next = match (key.code, index) {
-        (KeyCode::Esc, _) => {
-            let finding = ctx.ui_state.open_finding.take()?;
-            ctx.ui_state.tcp_expanded = None;
-            ctx.ui_state
-                .health_focus
-                .set(Some(HealthTarget::Finding(finding)));
-            ctx.ui_state.health_reveal.set(true);
-            return Some(Vec::new());
-        }
-        (KeyCode::Enter, Some(i)) if rows[i].1.height > 0 => return Some(rows[i].0.activate(ctx)),
-        (KeyCode::Char('e'), _) => rows
-            .iter()
-            .position(|(t, _, _)| matches!(t, HealthTarget::Destination(_)))?,
-        (KeyCode::Up, Some(i)) => i.saturating_sub(1),
-        (KeyCode::Down, Some(i)) => (i + 1).min(rows.len() - 1),
-        _ => return None,
+    // The index is drawn first, followed by the selected finding's links.
+    let boundary = rows.partition_point(|(t, _)| matches!(t, HealthTarget::Finding(_)));
+    let rows = if inspecting {
+        &rows[boundary..]
+    } else {
+        &rows[..boundary]
     };
-    let (target, rect, offset) = rows[next];
-    ctx.ui_state.health_focus.set(Some(target));
-    if rect.height == 0 {
-        ctx.ui_state.health_scroll.scroll_to_top();
-        ctx.ui_state.health_scroll.scroll_down(offset);
+    let focus = if inspecting {
+        state.health_focus.get()
+    } else {
+        Some(HealthTarget::Finding(state.finding))
+    };
+    let selected = rows.iter().position(|(t, _)| Some(*t) == focus);
+    match key.code {
+        KeyCode::Esc if inspecting => {
+            state.inspecting_finding = false;
+            state.health_reveal.set(true);
+        }
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Up | KeyCode::Char('k') => {
+            if inspecting && state.finding != Finding::Tcp {
+                return None;
+            }
+            let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
+            let i = selected?;
+            let next = rows[if down {
+                (i + 1).min(rows.len() - 1)
+            } else {
+                i.saturating_sub(1)
+            }]
+            .0;
+            if let HealthTarget::Finding(finding) = next {
+                select_finding(state, finding);
+            } else {
+                state.health_focus.set(Some(next));
+            }
+            state.health_reveal.set(true);
+        }
+        KeyCode::Enter => {
+            let (target, rect) = rows[selected?];
+            if rect.height == 0 {
+                state.health_reveal.set(true);
+            } else if !matches!(target, HealthTarget::Destination(_)) {
+                return Some(target.activate(ctx));
+            }
+        }
+        KeyCode::Left | KeyCode::Right | KeyCode::Char('l' | ' ') if inspecting => {
+            let (target, rect) = rows[selected?];
+            if rect.height == 0 {
+                state.health_reveal.set(true);
+                return Some(Vec::new());
+            }
+            match target {
+                HealthTarget::Destination(addr) => {
+                    let expanded = state.tcp_expanded == Some(addr);
+                    let expand = match key.code {
+                        KeyCode::Left => false,
+                        KeyCode::Char(' ') => !expanded,
+                        _ => true,
+                    };
+                    if expanded != expand {
+                        return Some(target.activate(ctx));
+                    }
+                }
+                HealthTarget::Details(..) if key.code == KeyCode::Left => {
+                    state
+                        .health_focus
+                        .set(state.tcp_expanded.map(HealthTarget::Destination));
+                    state.health_reveal.set(true);
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
     }
     Some(Vec::new())
 }
@@ -171,13 +230,12 @@ pub(in crate::ui) struct HealthTab;
 
 impl Component for HealthTab {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        if key.code == KeyCode::Char('w') && key.modifiers == KeyModifiers::NONE {
-            ctx.ui_state.host_window = ctx.ui_state.host_window.next();
-            ctx.ui_state.dns_questions_scroll.reset();
-            return Some(Vec::new());
-        }
         health_key(key, ctx).or_else(|| {
-            let scroll = &mut ctx.ui_state.health_scroll;
+            let scroll = if ctx.ui_state.inspecting_finding {
+                &mut ctx.ui_state.health_scroll
+            } else {
+                &mut ctx.ui_state.finding_list_scroll
+            };
             try_handle_pane_scroll(key, usize::from(scroll.viewport_rows()), scroll)
         })
     }
@@ -187,18 +245,41 @@ impl Component for HealthTab {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
-        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-            && let Some(&(target, _, _)) = ctx
-                .click_regions
-                .health_rows
-                .iter()
-                .find(|(_, rect, _)| rect.contains((mouse.column, mouse.row).into()))
-        {
-            ctx.ui_state.quit_confirmation = false;
-            ctx.ui_state.clear_confirmation = false;
-            return Some(target.activate(ctx));
+        let point = (mouse.column, mouse.row).into();
+        let regions = ctx.click_regions;
+        let in_evidence = regions.evidence_area.contains(point);
+        let in_list = regions.findings_area.contains(point);
+        if !in_evidence && !in_list {
+            return None;
         }
-        try_handle_pane_wheel(mouse, &mut ctx.ui_state.health_scroll)
+        let state = &mut ctx.ui_state;
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            state.quit_confirmation = false;
+            state.clear_confirmation = false;
+            state.inspecting_finding = in_evidence;
+            if let Some(&(target, rect)) =
+                regions.health_rows.iter().find(|(_, r)| r.contains(point))
+            {
+                match target {
+                    HealthTarget::Finding(finding)
+                        if regions.evidence_area.width > 0 && mouse.column >= rect.x + 3 =>
+                    {
+                        select_finding(state, finding);
+                    }
+                    HealthTarget::Destination(_) if mouse.column >= rect.x + 3 => {
+                        state.health_focus.set(Some(target));
+                    }
+                    _ => return Some(target.activate(ctx)),
+                }
+            }
+            return Some(Vec::new());
+        }
+        let scroll = if in_evidence {
+            &mut state.health_scroll
+        } else {
+            &mut state.finding_list_scroll
+        };
+        try_handle_pane_wheel(mouse, scroll)
     }
 
     fn draw(
@@ -208,7 +289,18 @@ impl Component for HealthTab {
         ctx: &ComponentContext<'_>,
         regions: &mut ClickableRegions,
     ) -> Result<()> {
-        let inner = section_header(f, area, section_title("Network health"));
+        let split = area.width >= 100;
+        let [list, evidence] = if split {
+            Layout::horizontal([Constraint::Percentage(35), Constraint::Fill(1)])
+                .spacing(1)
+                .areas(area)
+        } else if ctx.ui_state.inspecting_finding {
+            [Rect::default(), area]
+        } else {
+            [area, Rect::default()]
+        };
+        regions.findings_area = list;
+        regions.evidence_area = evidence;
         let state = ctx.ui_state;
         let window = state.host_window;
         let tcp = ctx.app.get_tcp_attempt_snapshot();
@@ -291,39 +383,63 @@ impl Component for HealthTab {
             ),
         ];
         let reveal = state.health_reveal.take();
-        let mut targets = Vec::new();
-        let wide = inner.width >= 80;
-        let mut lines = Vec::new();
-        if wide {
-            lines.push(Line::styled(
-                format!("    {:<17} {:<40} {}", "Signal", "Observed", "Window"),
-                theme::fg(theme::muted()),
-            ));
-        }
-        for (finding, name, summary, label) in summaries {
-            let open = state.open_finding == Some(finding);
-            let marker = if open { "▾" } else { "▸" };
-            targets.push((lines.len(), HealthTarget::Finding(finding)));
-            let text = if wide {
-                format!("{marker} {name:<17} {summary:<40} {label}")
-            } else {
-                format!("{marker} {name} ({label})  {summary}")
-            };
-            lines.push(Line::from(text));
-            if !open {
-                continue;
+        if !list.is_empty() {
+            let inner = section_header(
+                f,
+                list,
+                section_title(if state.inspecting_finding {
+                    "Findings"
+                } else {
+                    "▌ Findings"
+                }),
+            );
+            let mut lines = Vec::new();
+            let mut targets = Vec::new();
+            for (finding, name, summary, window) in &summaries {
+                targets.push((lines.len(), HealthTarget::Finding(*finding)));
+                let selected = *finding == state.finding;
+                let marker = if selected { "▌" } else { " " };
+                let style = if selected && !state.inspecting_finding {
+                    theme::row_highlight()
+                } else {
+                    Default::default()
+                };
+                lines.push(Line::styled(
+                    format!("{marker} › {name} ({window})  {summary}"),
+                    style,
+                ));
             }
-            match finding {
+            draw_rows(
+                f,
+                inner,
+                lines,
+                targets,
+                &state.finding_list_scroll,
+                (reveal && !state.inspecting_finding)
+                    .then_some(HealthTarget::Finding(state.finding)),
+                regions,
+            );
+        }
+        if !evidence.is_empty() {
+            let (_, name, _, label) = &summaries[state.finding as usize];
+            let marker = if state.inspecting_finding { "▌ " } else { "" };
+            let inner = section_header(
+                f,
+                evidence,
+                section_title(format!("{marker}{name} ({label})")),
+            );
+            let mut targets = Vec::new();
+            let mut lines = Vec::new();
+            match state.finding {
                 Finding::Tcp => {
-                    let mut nested = Vec::new();
-                    let evidence = tcp_attempt_lines(&tcp, state, ctx.connections, &mut nested);
-                    targets.extend(nested.into_iter().map(|(i, t)| (lines.len() + i, t)));
-                    lines.extend(evidence);
+                    lines = tcp_attempt_lines(&tcp, state, ctx.connections, &mut targets)
                 }
                 Finding::Events => {
                     lines.extend(network_event_lines(&events, window, inner.width < 100))
                 }
                 Finding::Interfaces => {
+                    targets.push((lines.len(), HealthTarget::Section(HostView::Interfaces)));
+                    lines.push(Line::from("[Open interface counters]"));
                     let mut rows: Vec<_> = interfaces.iter().collect();
                     rows.sort_unstable_by_key(|(name, _)| *name);
                     for (name, c) in rows {
@@ -337,16 +453,13 @@ impl Component for HealthTab {
                     }
                 }
                 Finding::Dns => {
-                    lines.push(Line::from(format!(
-                        "    {} lookups · {} pending · {} SERVFAIL · {} refused",
-                        dns.lookups, dns.pending, dns.servfail, dns.refused
-                    )));
-                    if let Some(rtt) = dns.latency_p50 {
-                        lines.push(Line::from(format!(
-                            "    Median response {}",
-                            crate::ui::format::format_rtt_compact(rtt)
-                        )));
-                    }
+                    targets.push((lines.len(), HealthTarget::Section(HostView::Dns)));
+                    lines.push(Line::from("[Open DNS resolvers]"));
+                    lines.extend(super::host::dns_evidence_lines(
+                        &dns,
+                        capture_error.is_some(),
+                        None,
+                    ));
                     if dns.truncated {
                         lines.push(Line::from("    Incomplete DNS evidence"));
                     }
@@ -358,42 +471,62 @@ impl Component for HealthTab {
                     lines.push(Line::from(format!("    Capture backend drops {capture} · interface-reported drops {iface} · processing queue drops {queue}")));
                 }
             }
-        }
-        highlight(&mut lines, &targets, state);
-        let focus = state.health_focus.get();
-        // Map logical rows to terminal lines using the scrolled pane's gutter.
-        let width = inner.width.saturating_sub(2).max(1);
-        let height = |line: &Line<'_>| {
-            Paragraph::new(line.clone())
-                .wrap(Wrap { trim: false })
-                .line_count(width) as u16
-        };
-        let mut previous = 0;
-        let mut row = 0;
-        let wrapped_targets: Vec<_> = targets
-            .into_iter()
-            .map(|(index, target)| {
-                row += lines[previous..index].iter().map(height).sum::<u16>();
-                previous = index;
-                let height = height(&lines[index]);
-                if reveal && Some(target) == focus {
-                    ctx.ui_state
-                        .health_scroll
-                        .reveal(row, row + height, inner.height);
-                }
-                (target, row, height)
-            })
-            .collect();
-        let (text_area, offset) = draw_scrolled_text(
-            f,
-            inner,
-            Paragraph::new(lines).wrap(Wrap { trim: false }),
-            &ctx.ui_state.health_scroll,
-        );
-        for (target, row, height) in wrapped_targets {
-            register_health_row(regions, target, row, height, text_area, offset);
+            let old_focus = state.health_focus.get();
+            highlight(&mut lines, &targets, state);
+            let focus = state.health_focus.get();
+            let reveal_focus = state.inspecting_finding && (reveal || old_focus != focus);
+            draw_rows(
+                f,
+                inner,
+                lines,
+                targets,
+                &state.health_scroll,
+                focus.filter(|_| reveal_focus),
+                regions,
+            );
         }
         Ok(())
+    }
+}
+
+fn draw_rows(
+    f: &mut Frame,
+    inner: Rect,
+    lines: Vec<Line<'_>>,
+    targets: Vec<(usize, HealthTarget)>,
+    scroll: &PaneScroll,
+    reveal: Option<HealthTarget>,
+    regions: &mut ClickableRegions,
+) {
+    // Map logical rows to terminal lines using the scrolled pane's gutter.
+    let width = inner.width.saturating_sub(2).max(1);
+    let height = |line: &Line<'_>| {
+        Paragraph::new(line.clone())
+            .wrap(Wrap { trim: false })
+            .line_count(width) as u16
+    };
+    let mut previous = 0;
+    let mut row = 0;
+    let wrapped_targets: Vec<_> = targets
+        .into_iter()
+        .map(|(index, target)| {
+            row += lines[previous..index].iter().map(height).sum::<u16>();
+            previous = index;
+            let height = height(&lines[index]);
+            if Some(target) == reveal {
+                scroll.reveal(row, row + height, inner.height);
+            }
+            (target, row, height)
+        })
+        .collect();
+    let (text_area, offset) = draw_scrolled_text(
+        f,
+        inner,
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        scroll,
+    );
+    for (target, row, height) in wrapped_targets {
+        register_health_row(regions, target, row, height, text_area, offset);
     }
 }
 
@@ -414,7 +547,9 @@ fn highlight(
     state.health_focus.set(selected.map(|(_, target)| *target));
     for &(index, target) in targets {
         let marker = if Some(target) == state.health_focus.get() {
-            lines[index].style = theme::row_highlight();
+            if state.inspecting_finding {
+                lines[index].style = theme::row_highlight();
+            }
             "▌ "
         } else {
             "  "
@@ -434,7 +569,7 @@ fn register_health_row(
     let top = row.saturating_sub(offset).min(area.height);
     let bottom = (row + height).saturating_sub(offset).min(area.height);
     let rect = Rect::new(area.x, area.y + top, area.width, bottom - top);
-    regions.health_rows.push((target, rect, row));
+    regions.health_rows.push((target, rect));
 }
 
 pub(super) fn tcp_attempt_lines(
@@ -465,7 +600,7 @@ pub(super) fn tcp_attempt_lines(
     let extra = rank.filter(|&index| index >= 3).map(|i| &destinations[i]);
     if !destinations.is_empty() || inspecting.is_some() {
         lines.push(Line::from(
-            "Affected destinations · Enter or click · ↑/↓ select · issues age out after 5 min",
+            "Affected destinations · Space or ▸ to expand · issues expire after 5 min",
         ));
     } else {
         lines.push(Line::from("No affected destinations in the last 5 min"));
@@ -474,7 +609,7 @@ pub(super) fn tcp_attempt_lines(
         let target = HealthTarget::Destination(*address);
         targets.push((lines.len(), target));
         let expanded = state.tcp_expanded == Some(*address);
-        let marker = if expanded { "[Collapse]" } else { "[Expand]" };
+        let marker = if expanded { "▾" } else { "▸" };
         lines.push(Line::from(format!(
             "{marker} {address}  {}/{} reset or incomplete, {} anomalous, {} SYN retries",
             c.reset + c.no_handshake,
@@ -537,7 +672,7 @@ pub(super) fn tcp_attempt_lines(
     if let Some(addr) = inspecting.filter(|_| rank.is_none()) {
         targets.push((lines.len(), HealthTarget::Destination(addr)));
         lines.push(Line::from(format!(
-            "[Dismiss] {addr}  No affected attempts remain in the last 5 min"
+            "▾ {addr}  No affected attempts remain in the last 5 min · ← dismiss"
         )));
     }
     let hidden = destinations
@@ -597,11 +732,11 @@ mod tcp_attempt_tests {
                 .join("\n")
         };
         let live = render(&snapshot, &state);
-        assert!(live.contains(&format!("▌ [Collapse] {addr}")));
+        assert!(live.contains(&format!("▌ ▾ {addr}")));
         assert!(!live.contains("more affected destinations"));
         snapshot.destinations.clear();
         let expired = render(&snapshot, &state);
-        assert!(expired.contains(&format!("▌ [Dismiss] {addr}  No affected attempts remain")));
+        assert!(expired.contains(&format!("▌ ▾ {addr}  No affected attempts remain")));
         state
             .health_focus
             .get()

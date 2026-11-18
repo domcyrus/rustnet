@@ -19,7 +19,7 @@ use crate::ui::{
 // Compile-time tripwire: adding a tab must also add a `HelpContext`
 // variant, `from_state` arm, and key tables, or the new tab would
 // silently render another view's help.
-const _: () = assert!(TAB_COUNT == 6, "update HelpContext for the new tab");
+const _: () = assert!(TAB_COUNT == 5, "update HelpContext for the new tab");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelpContext {
@@ -40,8 +40,8 @@ impl HelpContext {
             1 => Self::Details,
             2 => Self::Activity,
             3 => Self::Graph,
-            4 => Self::Health,
-            5 => match ui_state.host_view {
+            4 => match ui_state.host_view {
+                HostView::Findings => Self::Health,
                 HostView::Sockets => Self::HostSockets,
                 HostView::Interfaces => Self::HostInterfaces,
                 HostView::Dns => Self::HostDns,
@@ -58,10 +58,10 @@ impl HelpContext {
             Self::Details => TAB_TITLES[1],
             Self::Activity => TAB_TITLES[2],
             Self::Graph => TAB_TITLES[3],
-            Self::HostSockets => "Host · Sockets",
-            Self::Health => TAB_TITLES[4],
-            Self::HostInterfaces => "Host · Interfaces",
-            Self::HostDns => "Host · DNS",
+            Self::HostSockets => "Health & Host · Sockets",
+            Self::Health => "Health & Host · Findings",
+            Self::HostInterfaces => "Health & Host · Interfaces",
+            Self::HostDns => "Health & Host · DNS resolvers",
         }
     }
 
@@ -90,7 +90,7 @@ impl HelpContext {
             ],
             Self::Health => &[
                 "Health brings together TCP handshakes, resets and ICMP errors, interface drops, DNS replies, and capture quality.",
-                "Enter or click to inspect evidence. Switching to 6 Host preserves the open finding and endpoint scroll position.",
+                "Enter focuses the evidence preview. On narrow terminals it opens a full-width reader. v/V switches sections and preserves your place.",
                 "TCP attempts cover five minutes. Capture drops are session totals. Other findings use the selected window.",
             ],
             Self::HostInterfaces => &[
@@ -138,7 +138,7 @@ impl Component for HelpOverlay {
             | (KeyCode::Tab, _)
             | (KeyCode::BackTab, _)
             | (KeyCode::Char('[' | ']'), KeyModifiers::NONE)
-            | (KeyCode::Char('1'..='6'), KeyModifiers::NONE) => None,
+            | (KeyCode::Char('1'..='5'), KeyModifiers::NONE) => None,
             _ => {
                 let page = ctx.ui_state.help_scroll.viewport_rows() as usize;
                 try_handle_pane_scroll(key, page, &mut ctx.ui_state.help_scroll)
@@ -179,8 +179,8 @@ const GLOBAL_KEYS: &[HelpRow] = &[
     ("Tab, ]", "Next tab"),
     ("Shift+Tab, [", "Previous tab"),
     (
-        "1-6",
-        "Jump to Overview, Details, Activity, Graph, Health, or Host",
+        "1-5",
+        "Jump to Overview, Details, Activity, Graph, or Health & Host",
     ),
     ("x", "Clear all connections (press twice)"),
     ("h, Esc", "Close this help overlay"),
@@ -267,7 +267,7 @@ const DETAILS_KEYS: &[HelpRow] = &[
     ("Page Up/Down", "Move through connections by one page"),
     ("Ctrl+B/F", "Move through connections by one page"),
     ("c", "Copy the remote address"),
-    ("Esc", "Return to Overview"),
+    ("Esc", "Return to the source finding or Overview"),
 ];
 
 const DETAILS_CONCEPTS: &[HelpRow] = &[
@@ -338,7 +338,10 @@ const ACTIVITY_CONCEPTS: &[HelpRow] = &[
         "Mapped share of retained traffic, not the 60s window",
     ),
     ("Conns", "Active connections / retained connections"),
-    ("Interfaces", "Browse interface counters in Host (5)"),
+    (
+        "Interfaces",
+        "Browse counters in Health & Host > Interfaces",
+    ),
     (
         "60s coverage",
         "Captured connection traffic divided by interface traffic",
@@ -375,13 +378,20 @@ const HOST_SOCKET_KEYS: &[HelpRow] = &[("Esc", "Return to Overview")];
 
 const TCP_ATTEMPT_KEYS: &[HelpRow] = &[
     HOST_WINDOW_KEY,
-    ("↑/↓", "Select a finding, destination, or Details link"),
-    ("e", "Jump to the first affected destination"),
     (
-        "Enter / click",
-        "Expand, collapse, dismiss, or open the selected link",
+        "↑/k, ↓/j",
+        "Select a finding or TCP evidence row; scroll text evidence",
     ),
-    ("Esc", "Close the open finding, then return to Overview"),
+    ("Enter", "Inspect a finding or follow a labeled link"),
+    (
+        "Space, ←/→",
+        "Toggle, collapse, or expand a TCP destination",
+    ),
+    (
+        "Click",
+        "Select a finding; click › to inspect or ▸/▾ to fold",
+    ),
+    ("Esc", "Return from a link or evidence to its source"),
 ];
 
 const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
@@ -467,11 +477,14 @@ const TCP_HEALTH_CONCEPTS: &[HelpRow] = &[
     ),
     (
         "Details",
-        "Full endpoints: Health > TCP handshakes; recent ACK evidence: tcp_attempts JSON",
+        "Full endpoints: Findings > TCP handshakes; recent ACK evidence: tcp_attempts JSON",
     ),
 ];
 
-const INTERFACE_KEYS: &[HelpRow] = &[HOST_WINDOW_KEY, ("Esc", "Return to Overview")];
+const INTERFACE_KEYS: &[HelpRow] = &[
+    HOST_WINDOW_KEY,
+    ("Esc", "Return to the source finding or Overview"),
+];
 
 const INTERFACE_CONCEPTS: &[HelpRow] = &[
     (
@@ -495,7 +508,7 @@ const DNS_KEYS: &[HelpRow] = &[
         "Cycle observation window: 60s / 5m / 1h / since startup",
     ),
     ("o", "Cycle question sort metric"),
-    ("Esc", "Return to Overview"),
+    ("Esc", "Return to the source finding or Overview"),
 ];
 
 const DNS_CONCEPTS: &[HelpRow] = &[
@@ -671,7 +684,7 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
                     &mut lines,
                     "Scrolling",
                     &[
-                        ("j/k, wheel", "Scroll evidence one line"),
+                        ("wheel", "Scroll the pane under the pointer"),
                         ("Page Up/Down", "Scroll evidence one page"),
                         ("g, G", "Jump to the top or bottom"),
                     ],
@@ -857,7 +870,7 @@ mod tests {
     fn host_help_lists_scroll_keys_only_when_the_pane_scrolls() {
         for host_view in [HostView::Sockets, HostView::Interfaces, HostView::Dns] {
             let mut state = UiState {
-                selected_tab: 5,
+                selected_tab: 4,
                 host_view,
                 section_navigation: true,
                 ..UiState::default()
@@ -866,7 +879,10 @@ mod tests {
             assert!(!fits.contains("Scroll one line"));
             assert!(!fits.contains("Scroll wheel"));
             assert!(fits.contains(crate::ui::sections::SECTION_KEYS));
-            assert!(fits.contains("Return to Overview"));
+            assert!(
+                fits.contains("Return to Overview")
+                    || fits.contains("Return to the source finding or Overview")
+            );
             assert!(!fits.contains("Switch Host view"));
             assert!(!fits.contains("Show interface details"));
             assert_eq!(
@@ -932,7 +948,8 @@ mod tests {
     #[test]
     fn host_subviews_have_distinct_help() {
         let sockets = UiState {
-            selected_tab: 5,
+            selected_tab: 4,
+            host_view: HostView::Sockets,
             ..UiState::default()
         };
         let text = plain_text(&sockets);
@@ -940,7 +957,7 @@ mod tests {
         assert!(!text.contains("TCP Attempt Health"));
         assert!(!text.contains("Health Actions"));
         let text = plain_text(&UiState {
-            selected_tab: 4,
+            host_view: HostView::Findings,
             ..sockets
         });
         assert!(text.contains("Health Actions"));
@@ -955,7 +972,7 @@ mod tests {
         assert!(!text.contains("Interface Actions"));
 
         let interfaces = UiState {
-            selected_tab: 5,
+            selected_tab: 4,
             host_view: HostView::Interfaces,
             ..UiState::default()
         };

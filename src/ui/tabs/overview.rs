@@ -837,7 +837,7 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
                     )
                 })
             {
-                "resolver issue (Host)".to_string()
+                "resolver issue (DNS resolvers)".to_string()
             } else {
                 snapshot.latency_p95.map_or_else(
                     || "limited evidence".to_string(),
@@ -910,7 +910,7 @@ fn tcp_handshake_lines(
         )));
     } else {
         lines.push(Line::from("Worst: none observed"));
-        lines.push(Line::from("Details: 5 Health"));
+        lines.push(Line::from("5 Health & Host: Findings"));
     }
 
     lines
@@ -1857,7 +1857,7 @@ mod tests {
         };
         assert_eq!(
             line_text(&dns_health_line(&mixed, false)),
-            "DNS: degraded · resolver issue (Host)"
+            "DNS: degraded · resolver issue (DNS resolvers)"
         );
         assert_eq!(
             line_text(&dns_health_line(&responsive, true)),

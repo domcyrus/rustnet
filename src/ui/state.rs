@@ -176,6 +176,7 @@ impl ActivityTableState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HostView {
     #[default]
+    Findings,
     Sockets,
     Interfaces,
     Dns,
@@ -519,7 +520,9 @@ pub enum ClickAction {
 #[derive(Debug, Default)]
 pub struct ClickableRegions {
     regions: Vec<(Rect, ClickAction)>,
-    pub(super) health_rows: Vec<(super::tabs::health::HealthTarget, Rect, u16)>,
+    pub(super) findings_area: Rect,
+    pub(super) evidence_area: Rect,
+    pub(super) health_rows: Vec<(super::tabs::health::HealthTarget, Rect)>,
     /// The area of the connections table, used for scroll event targeting
     pub scroll_area: Option<Rect>,
 }
@@ -528,6 +531,8 @@ impl ClickableRegions {
     pub fn clear(&mut self) {
         self.regions.clear();
         self.health_rows.clear();
+        self.findings_area = Rect::default();
+        self.evidence_area = Rect::default();
         self.scroll_area = None;
     }
 
@@ -616,7 +621,10 @@ pub struct UiState {
     pub host_sockets_scroll: PaneScroll,
     pub(super) health_scroll: PaneScroll,
     pub(super) health_focus: Cell<Option<super::tabs::health::HealthTarget>>,
-    pub(super) open_finding: Option<super::tabs::health::Finding>,
+    pub(super) finding: super::tabs::health::Finding,
+    pub(super) inspecting_finding: bool,
+    pub(super) finding_list_scroll: PaneScroll,
+    pub(super) return_to_finding: bool,
     pub(super) tcp_expanded: Option<std::net::SocketAddr>,
     pub(super) health_reveal: Cell<bool>,
     /// Selected Graph section, preserved across terminal resizes.
@@ -693,7 +701,10 @@ impl Default for UiState {
             host_sockets_scroll: PaneScroll::default(),
             health_scroll: PaneScroll::default(),
             health_focus: Cell::default(),
-            open_finding: None,
+            finding: Default::default(),
+            inspecting_finding: false,
+            finding_list_scroll: Default::default(),
+            return_to_finding: false,
             tcp_expanded: None,
             health_reveal: Cell::default(),
             graph_section: GraphSection::default(),
@@ -746,6 +757,7 @@ pub fn compute_scroll_offset(
 impl UiState {
     pub(super) fn host_scroll_mut(&mut self) -> &mut PaneScroll {
         match self.host_view {
+            HostView::Findings => &mut self.health_scroll,
             HostView::Sockets => &mut self.host_sockets_scroll,
             HostView::Interfaces => &mut self.interfaces_scroll,
             HostView::Dns => &mut self.dns_questions_scroll,
@@ -949,6 +961,17 @@ impl UiState {
         }
     }
 
+    pub(super) fn reset_findings(&mut self) {
+        self.health_scroll.reset();
+        self.health_focus.set(None);
+        self.finding = Default::default();
+        self.inspecting_finding = false;
+        self.finding_list_scroll.reset();
+        self.return_to_finding = false;
+        self.tcp_expanded = None;
+        self.health_reveal.set(false);
+    }
+
     /// Jump directly to a tab by index (0 = Overview, 4 = Host).
     /// Out-of-range indices are ignored.
     pub fn jump_to_tab(&mut self, target: usize) {
@@ -957,33 +980,22 @@ impl UiState {
             return;
         }
         self.selected_tab = target;
-        self.rewind_help_for_new_view();
+        self.return_to_finding = false;
+        if self.show_help {
+            self.help_scroll.reset();
+        }
     }
 
     /// Cycle to the next tab, wrapping back to Overview after Host.
     pub fn next_tab(&mut self) {
         use crate::ui::TAB_COUNT;
-        self.selected_tab = (self.selected_tab + 1) % TAB_COUNT;
-        self.rewind_help_for_new_view();
+        self.jump_to_tab((self.selected_tab + 1) % TAB_COUNT);
     }
 
     /// Cycle to the previous tab, wrapping from Overview back to Host.
     pub fn prev_tab(&mut self) {
         use crate::ui::TAB_COUNT;
-        self.selected_tab = if self.selected_tab == 0 {
-            TAB_COUNT - 1
-        } else {
-            self.selected_tab - 1
-        };
-        self.rewind_help_for_new_view();
-    }
-
-    /// Help content is per-view, so an open overlay restarts from its top
-    /// when tab navigation changes the view underneath it.
-    fn rewind_help_for_new_view(&mut self) {
-        if self.show_help {
-            self.help_scroll.reset();
-        }
+        self.jump_to_tab((self.selected_tab + TAB_COUNT - 1) % TAB_COUNT);
     }
 
     pub fn cycle_sort_column(&mut self) {
@@ -1046,10 +1058,7 @@ impl UiState {
         self.activity_direction = ActivityDirection::default();
         self.dns_sort = DnsSort::default();
         self.host_window = TimeWindow::default();
-        self.health_scroll.reset();
-        self.health_focus.set(None);
-        self.open_finding = None;
-        self.tcp_expanded = None;
+        self.reset_findings();
         self.dns_questions_scroll.reset();
         self.grouped_scroll_offset = 0;
     }

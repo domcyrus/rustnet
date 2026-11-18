@@ -36,10 +36,11 @@ impl Component for HostTab {
         f: &mut Frame,
         area: Rect,
         ctx: &ComponentContext<'_>,
-        _click_regions: &mut ClickableRegions,
+        regions: &mut ClickableRegions,
     ) -> Result<()> {
         let content = area;
         match ctx.ui_state.host_view {
+            HostView::Findings => super::health::HealthTab.draw(f, content, ctx, regions),
             HostView::Sockets => draw_sockets(f, content, ctx),
             HostView::Interfaces => draw_interface_stats(f, ctx.app, ctx.ui_state, content),
             HostView::Dns => draw_dns_analytics(f, content, ctx),
@@ -54,6 +55,9 @@ impl Component for HostTab {
             ctx.ui_state.host_window = ctx.ui_state.host_window.next();
             ctx.ui_state.dns_questions_scroll.reset();
             return Some(Vec::new());
+        }
+        if ctx.ui_state.host_view == HostView::Findings {
+            return super::health::HealthTab.handle_key(key, ctx);
         }
         if key.code == KeyCode::Char('o')
             && key.modifiers == KeyModifiers::NONE
@@ -72,6 +76,9 @@ impl Component for HostTab {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
+        if ctx.ui_state.host_view == HostView::Findings {
+            return super::health::HealthTab.handle_mouse(mouse, ctx);
+        }
         try_handle_pane_wheel(mouse, ctx.ui_state.host_scroll_mut())
     }
 }
@@ -132,7 +139,7 @@ fn dns_guidance(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> &'stat
     if capture_failed {
         "Capture stopped: restore capture before judging DNS health."
     } else if snapshot.timeouts > 0 {
-        "Missing replies: check resolver reachability, capture loss, and Health > Resets and ICMP."
+        "Missing replies: check resolver reachability, capture loss, and Findings > Resets and ICMP."
     } else if snapshot.servfail > 0 {
         "SERVFAIL: resolver could not answer; check its upstream path and DNSSEC."
     } else if snapshot.refused > 0 {
@@ -186,13 +193,27 @@ fn draw_dns_evidence(
         area,
         section_title(format!(" Resolver Evidence ({})", snapshot.window_label())),
     );
+    let lines = dns_evidence_lines(snapshot, capture_failed, Some(usize::from(inner.height)));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Inventory reserves space for questions. The findings inspector can scroll through every row.
+pub(super) fn dns_evidence_lines(
+    snapshot: &DnsAnalyticsSnapshot,
+    capture_failed: bool,
+    height: Option<usize>,
+) -> Vec<Line<'static>> {
+    let resolver_limit = match height {
+        Some(0..7) => 2,
+        Some(_) => 3,
+        None => snapshot.resolvers.len(),
+    };
     let mut lines = vec![Line::styled(
         dns_guidance(snapshot, capture_failed),
         theme::fg(theme::muted()),
     )];
     // Keep both live resolver evidence and retained failures visible on a
     // standard terminal. Explicit counts disclose rows omitted for space.
-    let resolver_limit = if inner.height >= 7 { 3 } else { 2 };
     for resolver in snapshot.resolvers.iter().take(resolver_limit) {
         let (health, color) = if capture_failed {
             ("unknown", theme::warn())
@@ -242,7 +263,7 @@ fn draw_dns_evidence(
         ));
     }
     let groups = dns_issue_groups(&snapshot.recent_issues);
-    let available = usize::from(inner.height).saturating_sub(lines.len() + 1);
+    let available = height.map_or(groups.len(), |rows| rows.saturating_sub(lines.len() + 1));
     lines.push(Line::styled(
         format!(
             "Recent issues (15m, {}/{} groups, {} retained)",
@@ -282,7 +303,7 @@ fn draw_dns_evidence(
             )),
         ]));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    lines
 }
 
 fn dns_health_style(health: DnsHealth) -> (&'static str, Color) {
