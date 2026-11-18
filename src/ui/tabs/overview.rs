@@ -885,11 +885,7 @@ fn tcp_handshake_lines(
     };
     // Highest observed failure fraction first; ties favor more evidence.
     // Successful IPv6 destinations cannot dilute a failing IPv4 destination.
-    let worst = snapshot
-        .destinations
-        .iter()
-        .filter(|(_, c)| c.is_affected())
-        .max_by(|a, b| super::compare_tcp_destinations(*a, *b));
+    let worst = super::worst_tcp_destination(snapshot);
     let mut lines = vec![
         Line::from(vec![
             Span::raw("TCP (5m): "),
@@ -914,7 +910,7 @@ fn tcp_handshake_lines(
         )));
     } else {
         lines.push(Line::from("Worst: none observed"));
-        lines.push(Line::from("Details: Host > TCP attempts"));
+        lines.push(Line::from("Details: 5 Health"));
     }
 
     lines
@@ -2123,7 +2119,7 @@ mod tcp_handshake_tests {
         }
         assert!(text(&s, false).contains("Worst: 192.0.2.3:443"));
         let host =
-            super::super::host::tcp_attempt_lines(&s, &Default::default(), &[], &mut Vec::new());
+            super::super::health::tcp_attempt_lines(&s, &Default::default(), &[], &mut Vec::new());
         for (line, address) in host[3..6].iter().zip([3, 2, 1]) {
             assert!(line.to_string().contains(&format!("192.0.2.{address}:443")));
         }

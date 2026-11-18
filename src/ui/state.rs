@@ -177,7 +177,6 @@ impl ActivityTableState {
 pub enum HostView {
     #[default]
     Sockets,
-    TcpAttempts,
     Interfaces,
     Dns,
 }
@@ -499,7 +498,7 @@ pub enum GroupedRow<'a> {
 /// Represents an action that can be triggered by clicking a screen region.
 #[derive(Debug, Clone)]
 pub enum ClickAction {
-    /// Switch to a specific tab (index 0-4).
+    /// Switch to a specific tab (index 0-5).
     SwitchTab(usize),
     /// Select a section in the current tab.
     SelectSection(usize),
@@ -520,7 +519,7 @@ pub enum ClickAction {
 #[derive(Debug, Default)]
 pub struct ClickableRegions {
     regions: Vec<(Rect, ClickAction)>,
-    pub(super) tcp_rows: Vec<(super::tabs::host::TcpTarget, Rect, u16)>,
+    pub(super) health_rows: Vec<(super::tabs::health::HealthTarget, Rect, u16)>,
     /// The area of the connections table, used for scroll event targeting
     pub scroll_area: Option<Rect>,
 }
@@ -528,7 +527,7 @@ pub struct ClickableRegions {
 impl ClickableRegions {
     pub fn clear(&mut self) {
         self.regions.clear();
-        self.tcp_rows.clear();
+        self.health_rows.clear();
         self.scroll_area = None;
     }
 
@@ -615,10 +614,11 @@ pub struct UiState {
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
-    pub(super) tcp_attempts_scroll: PaneScroll,
-    pub(super) tcp_focus: Cell<Option<super::tabs::host::TcpTarget>>,
+    pub(super) health_scroll: PaneScroll,
+    pub(super) health_focus: Cell<Option<super::tabs::health::HealthTarget>>,
+    pub(super) open_finding: Option<super::tabs::health::Finding>,
     pub(super) tcp_expanded: Option<std::net::SocketAddr>,
-    pub(super) tcp_reveal: Cell<bool>,
+    pub(super) health_reveal: Cell<bool>,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
     pub graph_states_scroll: PaneScroll,
@@ -691,10 +691,11 @@ impl Default for UiState {
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
-            tcp_attempts_scroll: PaneScroll::default(),
-            tcp_focus: Cell::default(),
+            health_scroll: PaneScroll::default(),
+            health_focus: Cell::default(),
+            open_finding: None,
             tcp_expanded: None,
-            tcp_reveal: Cell::default(),
+            health_reveal: Cell::default(),
             graph_section: GraphSection::default(),
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),
@@ -746,7 +747,6 @@ impl UiState {
     pub(super) fn host_scroll_mut(&mut self) -> &mut PaneScroll {
         match self.host_view {
             HostView::Sockets => &mut self.host_sockets_scroll,
-            HostView::TcpAttempts => &mut self.tcp_attempts_scroll,
             HostView::Interfaces => &mut self.interfaces_scroll,
             HostView::Dns => &mut self.dns_questions_scroll,
         }
@@ -1046,8 +1046,9 @@ impl UiState {
         self.activity_direction = ActivityDirection::default();
         self.dns_sort = DnsSort::default();
         self.host_window = TimeWindow::default();
-        self.tcp_attempts_scroll.reset();
-        self.tcp_focus.set(None);
+        self.health_scroll.reset();
+        self.health_focus.set(None);
+        self.open_finding = None;
         self.tcp_expanded = None;
         self.dns_questions_scroll.reset();
         self.grouped_scroll_offset = 0;

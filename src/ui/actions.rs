@@ -117,8 +117,9 @@ pub fn clear_all_with_confirmation(ui_state: &mut UiState, app: &App) -> bool {
         info!("User confirmed clear all connections");
         app.clear_all_connections();
         ui_state.clear_confirmation = false;
-        ui_state.tcp_attempts_scroll.reset();
-        ui_state.tcp_focus.set(None);
+        ui_state.health_scroll.reset();
+        ui_state.health_focus.set(None);
+        ui_state.open_finding = None;
         ui_state.tcp_expanded = None;
         ui_state.show_historic = false;
         ui_state.set_connection_key(None);

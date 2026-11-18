@@ -2,10 +2,10 @@
 source: src/ui/snapshot_tests.rs
 expression: "render_app(&app, &mut state, &[], None, 80, 24)"
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
-────────────────────────────────────────────────────────────━━━━━━──────────────
-Sockets   TCP attempts   Interfaces   DNS                                       
-──────────────────────────────────────━━━───────────────────────────────────────
+ rustnet  1 Overview 2 Details 3 Activity 4 Graph 5 Health 6 Host         ● eth0
+───────────────────────────────────────────────────────────━━━━━━───────────────
+Sockets   Interfaces   DNS                                                      
+───────────────────────━━━──────────────────────────────────────────────────────
 ▎ DNS Outcomes (5m) ────────────────────────────────────────────────────────────
 Status degraded                                                                 
 Lookups 5   answered 5   pending 0   timeout 0                                  

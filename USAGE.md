@@ -521,20 +521,20 @@ rustnet --kubernetes on
 
 - `Tab` - Next tab
 - `Shift+Tab` - Previous tab
-- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Host
+- `1` / `2` / `3` / `4` / `5` / `6` - Jump directly to Overview / Details / Activity / Graph / Health / Host
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
 - `h` - Toggle a help overlay containing controls for the active tab
 
 The help overlay keeps the active tab visible underneath it and only lists
 controls and concepts that apply to that tab. Tab navigation (`Tab`,
-`Shift+Tab`, `1`-`5`) stays available while the overlay is open, and a mouse
+`Shift+Tab`, `1`-`6`) stays available while the overlay is open, and a mouse
 click anywhere dismisses it.
 
 ### Compact terminals
 
 When the dashboard does not fit, use `v` / Shift+`v` or click a section name to
-switch views. Host always uses these controls for Sockets, TCP attempts, Interfaces, and DNS.
+switch views. Host always uses these controls for Sockets, Interfaces, and DNS.
 In Details they also page through long sections; `j` / `k` and the mouse wheel
 switch connections. The selected section survives resizing and connection changes.
 
@@ -1128,7 +1128,7 @@ including mapped, unknown, and total bytes. Interface inventory and rate tables
 live in Host. Activity only retains the interface basis needed to explain coverage.
 Share bars use the theme's traffic colours and appear inline when space permits.
 
-Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `5`, then select Interfaces with `v` / Shift+`v`).
+Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `6`, then select Interfaces with `v` / Shift+`v`).
 
 For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
 
@@ -1136,7 +1136,7 @@ For a quick security review, sort Egress by the rolling or retained byte count, 
 
 > **Available since v1.7.0.**
 
-Press `5` to open the Host tab. Unlike the Overview connection list, this view reads the operating system's socket table and does not require a packet to have been captured for a row to appear.
+Press `6` to open the Host tab. Unlike the Overview connection list, this view reads the operating system's socket table and does not require a packet to have been captured for a row to appear.
 
 The Sockets view includes:
 
@@ -1160,11 +1160,11 @@ permissions can leave ownership unknown. Newly created sockets still require pro
 | FreeBSD | `sockstat -s` for native TCP states plus UDP socket rows |
 | Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |
 
-Use `v` / Shift+`v` or click Sockets / TCP attempts / Interfaces / DNS to select a section. The footer shows the shortcut. Tab / Shift+Tab and 1-5 switch main tabs.
+Use `v` / Shift+`v` or click Sockets / Interfaces / DNS to select a section. The footer shows the shortcut. Tab / Shift+Tab and 1-6 switch main tabs.
 
 ### Observed network events (unreleased)
 
-Host > Sockets counts sent/received TCP resets and ICMPv4/v6 errors: unreachable,
+Health > Resets and ICMP counts sent/received TCP resets and ICMPv4/v6 errors: unreachable,
 prohibited, packet too big/fragmentation needed, time exceeded, and parameter problems.
 Counts cover captured traffic since startup or clear, independent of display filters
 and connection retention. They are observations, not firewall verdicts or OS-wide
@@ -1174,11 +1174,11 @@ Details > Health shows counts and the latest error's type/code, reporter, direct
 age, and advertised MTU when available. TCP/UDP correlation uses quoted endpoints
 without changing connection state or traffic totals. Truncated quotes, fragments,
 IPv6 extensions, NAT, or missing/reused connections can prevent or confuse matching.
-Unmatched errors still count in Host; individual error records are not retained.
+Unmatched errors still count in Health; individual error records are not retained.
 
 ### Host timeframes (development version)
 
-Press `w` in Sockets, Interfaces, or DNS to cycle **60s / 5m / 1h / since startup**. These sections share the selection. Socket inventory and interface rates remain live.
+Press `w` in Health, Host > Interfaces, or Host > DNS to cycle **60s / 5m / 1h / since startup**. These sections share the selection. Socket inventory and interface rates remain live.
 
 - **Network events:** sent and received counts show the selected window alongside the cumulative Rustnet total since startup or clear, including event types whose selected-window count is zero.
 - **Interfaces:** errors, drops, and collisions show `window/OS total`. Only increases observed after the first interface sample enter the selected window. OS totals and packet totals remain visible; existing OS errors are not counted as new errors. Highlighting follows the selected window.
@@ -1188,7 +1188,7 @@ Event and interface histories use bounded one-second buckets. Counts near a roll
 
 ## Passive DNS Analytics
 
-Press `5` for Host, then select DNS with `v` / Shift+`v` or click its name. The view summarizes captured unicast UDP DNS traffic over a rolling 60-second window. **Development version:** press `w` to cycle through 60 seconds, 5 minutes, 1 hour, and since startup. Outcomes, latency, resolver evidence, and question names use the selected window; Overview always keeps its 60-second health window:
+Press `6` for Host, then select DNS with `v` / Shift+`v` or click its name. The view summarizes captured unicast UDP DNS traffic over a rolling 60-second window. **Development version:** press `w` to cycle through 60 seconds, 5 minutes, 1 hour, and since startup. Outcomes, latency, resolver evidence, and question names use the selected window; Overview always keeps its 60-second health window:
 
 - **Outcomes**: lookup, answer, pending, timeout, NOERROR, NXDOMAIN, NODATA, SERVFAIL, REFUSED, and other response-code counts
 - **Response time**: p50, p95, maximum, and latency buckets for responses paired by connection and transaction ID
@@ -1221,7 +1221,7 @@ The three rolling windows share a bounded buffer of up to 8,192 completed transa
 
 The view retains up to 64 individual timeout, SERVFAIL, REFUSED, other error, or slow-reply (at least 500 ms) observations for 15 minutes. Recent issues group those retained observations by resolver and cause, newest first, with a count, last-seen age, and the latest question name. Counts cover only retained observations, and the heading shows how many groups fit. This history survives the 60-second health window and does not imply an outage is still ongoing. `x` clears it together with the live aggregates.
 
-Guidance distinguishes missing replies, resolver errors, refused queries, retries, and slow replies. Missing packets cannot prove a resolver outage: inspect Host > Sockets for ICMP errors and Host > Interfaces for errors/drops, and check capture scope. When capture fails, Host displays `unknown` rather than continuing to claim live resolver health.
+Guidance distinguishes missing replies, resolver errors, refused queries, retries, and slow replies. Missing packets cannot prove a resolver outage: inspect Health > Resets and ICMP for ICMP errors and Host > Interfaces for errors/drops, and check capture scope. When capture fails, Host displays `unknown` rather than continuing to claim live resolver health.
 
 On Linux, `sudo rustnet -i any --no-resolve-dns` includes loopback DNS stubs as well as upstream traffic. `127.0.0.53:53` is commonly a local systemd-resolved stub; loopback resolvers such as `127.0.0.1:53` and `[::1]:53` are supported. Capturing only a physical interface misses local stub exchanges. If both stub and upstream traffic are visible, they are separate wire transactions, not unique application lookups. `resolvectl status` can identify configured per-link servers when systemd-resolved is in use; RustNet's list contains only observed endpoints. The host configuration is not changed and no active probes are sent.
 
@@ -1241,7 +1241,7 @@ RustNet provides real-time network interface statistics across all supported pla
 - Shows cumulative totals: `Errors (Total): N  Drops (Total): M`
 
 **Host Tab (Detailed View):**
-- Press `5` for Host, then select Interfaces with `v` / Shift+`v` or click its name
+- Press `6` for Host, then select Interfaces with `v` / Shift+`v` or click its name
 - Shows a detailed table of all network interfaces
 - Displays comprehensive metrics for each interface
 
@@ -1734,21 +1734,21 @@ cat capture.pcap.connections.jsonl | jq -r '[.protocol, .local_addr, .remote_add
 
 ### TCP attempt health (unreleased)
 
-Host > TCP attempts shows a fixed five-minute summary of observed outbound TCP attempts, independently of the selected Host timeframe and connection filters. An initial outbound SYN starts an attempt; identical SYN retries share that attempt. A matching SYN-ACK and final outbound ACK establish observed success, including local-to-local connections and TCP Fast Open fallback when SYN data is not accepted. A matching peer reset (including Fast Open fallback), no complete handshake observed within ten seconds, and replacement by a new initial sequence number are separate outcomes. Incoming-only or midstream flows do not count as attempts. Unexpected ACKs and invalid SYN-ACK acknowledgments remain evidence even when an attempt subsequently succeeds. Corrective local resets do not immediately close an attempt.
+Health > TCP handshakes shows a fixed five-minute summary of observed outbound TCP attempts, independently of the selected Host timeframe and connection filters. An initial outbound SYN starts an attempt; identical SYN retries share that attempt. A matching SYN-ACK and final outbound ACK establish observed success, including local-to-local connections and TCP Fast Open fallback when SYN data is not accepted. A matching peer reset (including Fast Open fallback), no complete handshake observed within ten seconds, and replacement by a new initial sequence number are separate outcomes. Incoming-only or midstream flows do not count as attempts. Unexpected ACKs and invalid SYN-ACK acknowledgments remain evidence even when an attempt subsequently succeeds. Corrective local resets do not immediately close an attempt.
 
 Headless `json`, `jsonl`, and `jsonl-delta` records include an additive `tcp_attempts` object: `window_seconds`, `timeout_seconds`, `pending`, `omitted_since_clear`, `total`, `destinations`, and `recent_issues`. Replace this entire object on every incremental record. Completed outcomes are grouped by remote socket address and `ip_version`; the window uses completion time. Counts include `completed`, `established`, `reset`, `no_handshake_observed`, `superseded`, `syn_retries`, and `anomalous` (attempts with unexpected replies, including recovered attempts). Pending attempts are not failures. These are rolling counts, not cumulative counters to sum across snapshots.
 
 The tracker retains at most 4,096 pending and 8,192 completed attempts, plus 32 recent issue records in each exported snapshot. The tracker reclaims expired slots before counting a capacity omission. Capacity omissions increment `omitted_since_clear`, never network failures. State clears with the connection history. A timeout shown while capture packets are queued can change to established when an on-time handshake is processed. Ten seconds is an observation deadline, not an operating-system connection timeout; identical late SYN retries are suppressed while their completed record is retained. Capture loss, asymmetric visibility, local cancellation and capture shutdown can prevent observed completion. Check capture status and drop counters before interpreting failures. These observations cannot locate a faulty router, NAT or remote host. DNS transport and IPv4/IPv6 application success remain separate measurements.
 
-In Sockets, the **[View attempts]** shortcut shows the number of affected destinations. Press `Enter` or click it to open **TCP attempts**. Each section keeps its own scroll position.
+Press `5` for **Health**. Use `↑`/`↓` to select TCP handshakes, resets and ICMP errors, interface drops, DNS replies, or capture quality. Press `Enter` or click a row to expand its evidence. Press `Esc` to collapse it. Capture drops are session counters. Each finding shows its own time window.
 
-In **TCP attempts**, the first affected destination is already selected. Press `Enter` or click **[Expand]** to see outcome counts and matching attempts from the 32 most recent issues across all destinations. Use `↑`/`↓` to select another row or **[Open Details]** for a connection still in the list. Press `e` to jump back to the first row and `Esc` to close the evidence. Press `Esc` again to return to Sockets.
+Opening **TCP handshakes** also opens the highest-ranked affected destination when one exists. Select another destination to inspect its outcomes and matching attempts from the 32 most recent issues across all destinations. **[Open Details]** opens a matching connection still in the list. Press `6` for **Host** to scroll listening and bound endpoints. Switching tabs preserves the expanded finding and the endpoint scroll position.
 
 Each completed attempt counts for five minutes. An open destination stays visible if its rank drops below the top three. When its last affected attempt leaves the window, the row explains why and offers **[Dismiss]**.
 
-In Host > TCP attempts, press `h` to open the TCP Attempt Health help for counter meanings, the fixed window, recovered anomalies, export evidence and diagnostic limits.
+In Health, press `h` to open the TCP Attempt Health help for counter meanings, the fixed window, recovered anomalies, export evidence and diagnostic limits.
 
-Overview > Network Stats also shows TCP handshake health for the same fixed five-minute window. Statuses distinguish not observed, checking, healthy, recovered anomalies, degraded, and incomplete evidence. Capture errors, reported drops or tracking omissions override a healthy label. Superseded attempts alone are inconclusive. Overview and Host rank affected destinations by reset/incomplete fraction, then failure count, anomaly fraction and anomaly count; ties use a stable address order. Counts are shown because small samples are not proof of a persistent fault. Healthy IPv6 traffic cannot dilute an affected IPv4 destination. Long endpoints may be shortened in the sidebar; Host and JSON retain full addresses. Press `h` in Overview for interpretation and limitations. JSON counts now include `recovered_anomalies`, counting anomalous attempts that established successfully; this is not inferred from the limited recent-issue list.
+Overview > Network Stats also shows TCP handshake health for the same fixed five-minute window. Statuses distinguish not observed, checking, healthy, recovered anomalies, degraded, and incomplete evidence. Capture errors, reported drops or tracking omissions override a healthy label. Superseded attempts alone are inconclusive. Overview and Health rank affected destinations by reset/incomplete fraction, then failure count, anomaly fraction and anomaly count; ties use a stable address order. Counts are shown because small samples are not proof of a persistent fault. Healthy IPv6 traffic cannot dilute an affected IPv4 destination. Long endpoints may be shortened in the sidebar; Health and JSON retain full addresses. Press `h` in Overview for interpretation and limitations. JSON counts now include `recovered_anomalies`, counting anomalous attempts that established successfully; this is not inferred from the limited recent-issue list.
 
 #### TCP health performance measurements
 

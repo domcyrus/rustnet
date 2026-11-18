@@ -235,13 +235,31 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             hints.push(Hint::action("esc", "back"));
             hints
         }
-        // Host
         4 => {
+            let mut hints = vec![
+                Hint::action("↑/↓", "select"),
+                Hint::action("enter", "inspect"),
+                Hint::action("w", "window"),
+            ];
+            if ui_state.health_scroll.can_scroll() {
+                hints.push(Hint::action("j/k", "scroll"));
+            }
+            hints.push(Hint::action(
+                "esc",
+                if ui_state.open_finding.is_some() {
+                    "close"
+                } else {
+                    "back"
+                },
+            ));
+            hints
+        }
+        // Host
+        5 => {
             // Only advertise scrolling when the
             // table actually outgrew its pane.
             let scroll = match ui_state.host_view {
                 HostView::Sockets => &ui_state.host_sockets_scroll,
-                HostView::TcpAttempts => &ui_state.tcp_attempts_scroll,
                 HostView::Interfaces => &ui_state.interfaces_scroll,
                 HostView::Dns => &ui_state.dns_questions_scroll,
             };
@@ -249,21 +267,13 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             if scroll.can_scroll() {
                 hints.push(Hint::action("j/k", "scroll"));
             }
-            if ui_state.host_view == HostView::Sockets {
-                hints.push(Hint::action("enter", "attempts"));
-            }
-            if ui_state.host_view != HostView::TcpAttempts {
+            if ui_state.host_view != HostView::Sockets {
                 hints.push(Hint::action("w", "window"));
             }
             if ui_state.host_view == HostView::Dns {
                 hints.push(Hint::action("o", "sort"));
             }
-            let back = match ui_state.host_view {
-                HostView::TcpAttempts if ui_state.tcp_expanded.is_some() => "close",
-                HostView::TcpAttempts => "sockets",
-                _ => "back",
-            };
-            hints.push(Hint::action("esc", back));
+            hints.push(Hint::action("esc", "back"));
             hints
         }
         _ => vec![Hint::action("esc", "back")],
@@ -490,7 +500,7 @@ mod tests {
         assert_eq!(hints.first().map(|hint| hint.key), Some("\u{2191}\u{2193}"));
         assert!(advertises(&hints, "/"));
         // Tab navigation is advertised by the numbered tab bar itself.
-        assert!(!advertises(&hints, "1-5"));
+        assert!(!advertises(&hints, "1-6"));
         assert!(!advertises(&hints, "tab"));
     }
 

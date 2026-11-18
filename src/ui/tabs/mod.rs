@@ -4,13 +4,22 @@
 pub(super) mod activity;
 pub(super) mod details;
 pub(super) mod graph;
+pub(super) mod health;
 pub(super) mod help;
 pub(super) mod host;
 pub(super) mod interfaces;
 pub(super) mod overview;
 
-use crate::network::tcp_attempts::AttemptCounts;
+use crate::network::tcp_attempts::{AttemptCounts, TcpAttemptSnapshot};
 use std::{cmp::Ordering, net::SocketAddr};
+
+fn worst_tcp_destination(snapshot: &TcpAttemptSnapshot) -> Option<(&SocketAddr, &AttemptCounts)> {
+    snapshot
+        .destinations
+        .iter()
+        .filter(|(_, c)| c.is_affected())
+        .max_by(|a, b| compare_tcp_destinations(*a, *b))
+}
 
 /// Rank failure fraction, evidence count, anomalies, then stable endpoint order.
 fn compare_tcp_destinations(

@@ -1,5 +1,5 @@
 ---
-source: src/ui/mod.rs
+source: src/ui/snapshot_tests.rs
 expression: output
 ---
                                                                                                     
@@ -9,7 +9,7 @@ expression: output
     │ These are passive observations; encrypted DNS and cached answers are not shown.        ▐ │    
     │                                                                                        ▐ │    
     │ ▎ DNS Actions                                                                          ▐ │    
-    │   w    Cycle Host window: 60s / 5m / 1h / since startup                                ▐ │    
+    │   w    Cycle observation window: 60s / 5m / 1h / since startup                         ▐ │    
     │   o    Cycle question sort metric                                                      ▐ │    
     │   Esc  Return to Overview                                                              ▐ │    
     │                                                                                        ▐ │    
@@ -27,7 +27,7 @@ expression: output
     │ ▎ Global                                                                               ▐ │    
     │   Tab, ]        Next tab                                                               ▐ │    
     │   Shift+Tab, [  Previous tab                                                           ▐ │    
-    │   1-5           Jump to Overview, Details, Activity, Graph, or Host                      │    
+    │   1-6           Jump to Overview, Details, Activity, Graph, Health, or Host              │    
     │   x             Clear all connections (press twice)                                      │    
     │   h, Esc        Close this help overlay                                                  │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯

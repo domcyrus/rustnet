@@ -370,17 +370,6 @@ where
                                 ui_state.prev_tab();
                             }
 
-                            // Direct-jump shortcuts to each tab (mirrors the
-                            // numeric-jump convention used by htop, tmux, etc.).
-                            // Tab indices match `TAB_TITLES` in
-                            // `ui::widgets::tabs_bar`: Overview, Details,
-                            // Activity, Graph, Host.
-                            (KeyCode::Char('1'), KeyModifiers::NONE) => ui_state.jump_to_tab(0),
-                            (KeyCode::Char('2'), KeyModifiers::NONE) => ui_state.jump_to_tab(1),
-                            (KeyCode::Char('3'), KeyModifiers::NONE) => ui_state.jump_to_tab(2),
-                            (KeyCode::Char('4'), KeyModifiers::NONE) => ui_state.jump_to_tab(3),
-                            (KeyCode::Char('5'), KeyModifiers::NONE) => ui_state.jump_to_tab(4),
-
                             // Help overlay, kept because `h` is the universal
                             // mnemonic for help across less / man / vim / tmux.
                             (KeyCode::Char('h'), _) => {

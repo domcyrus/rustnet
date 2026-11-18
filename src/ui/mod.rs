@@ -31,8 +31,8 @@ use widgets::{
 
 mod tabs;
 use tabs::{
-    activity::ActivityTab, details::DetailsTab, graph::GraphTab, help::HelpOverlay, host::HostTab,
-    overview::OverviewTab,
+    activity::ActivityTab, details::DetailsTab, graph::GraphTab, health::HealthTab,
+    help::HelpOverlay, host::HostTab, overview::OverviewTab,
 };
 
 /// Route a key event to the active tab's Component. Returns
@@ -51,6 +51,13 @@ pub fn dispatch_key(
     key: crossterm::event::KeyEvent,
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if (!ctx.ui_state.filter_mode || ctx.ui_state.show_help)
+        && let (KeyCode::Char(n @ '1'..='6'), KeyModifiers::NONE) = (key.code, key.modifiers)
+    {
+        ctx.ui_state.jump_to_tab(n as usize - '1' as usize);
+        return Some(Vec::new());
+    }
     if ctx.ui_state.show_help {
         return HelpOverlay.handle_key(key, ctx);
     }
@@ -65,7 +72,8 @@ pub fn dispatch_key(
         1 => DetailsTab.handle_key(key, ctx),
         2 => ActivityTab.handle_key(key, ctx),
         3 => GraphTab.handle_key(key, ctx),
-        4 => HostTab.handle_key(key, ctx),
+        4 => HealthTab.handle_key(key, ctx),
+        5 => HostTab.handle_key(key, ctx),
         _ => None,
     }
 }
@@ -86,7 +94,8 @@ pub fn dispatch_mouse(
         1 => DetailsTab.handle_mouse(mouse, ctx),
         2 => ActivityTab.handle_mouse(mouse, ctx),
         3 => GraphTab.handle_mouse(mouse, ctx),
-        4 => HostTab.handle_mouse(mouse, ctx),
+        4 => HealthTab.handle_mouse(mouse, ctx),
+        5 => HostTab.handle_mouse(mouse, ctx),
         _ => None,
     }
 }
@@ -428,7 +437,7 @@ pub fn draw(
         1 => ui_state.details_compact.get(),
         2 => tabs::activity::compact_layout(chunks[1]),
         3 => tabs::graph::compact_layout(chunks[1]),
-        4 => true,
+        5 => true,
         _ => false,
     };
     let content_area = sections::draw_selector(f, chunks[1], ui_state, click_regions);
@@ -458,7 +467,8 @@ pub fn draw(
         1 => DetailsTab.draw(f, content_area, &comp_ctx, click_regions)?,
         2 => ActivityTab.draw(f, content_area, &comp_ctx, click_regions)?,
         3 => GraphTab.draw(f, content_area, &comp_ctx, click_regions)?,
-        4 => HostTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        4 => HealthTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        5 => HostTab.draw(f, content_area, &comp_ctx, click_regions)?,
         _ => {}
     }
 
