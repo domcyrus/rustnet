@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
-- Track outbound TCP attempts, including local connections and TCP Fast Open fallback, with selectable destinations, inline evidence and generation-matched connection Details in Host, and a five-minute summary in headless JSON, retaining unexpected handshake replies and incomplete attempts independently of flow lifetime (#734)
+- Track outbound TCP attempts, including local connections and TCP Fast Open fallback, with the first affected destination selected, inline evidence with expiry notices and generation-matched connection Details in Host, and a five-minute summary in headless JSON, retaining unexpected handshake replies and incomplete attempts independently of flow lifetime (#734)
 - Show inline TCP handshake health and the worst affected destination in Overview, with recovered-anomaly counts and contextual help (#734)
 - Add headless automation controls, opt-in full metadata and capture accounting, and guarded Linux executable retention (#721)
 - Add opt-in incremental headless JSONL with sequence checks, bounded baselines, and periodic full snapshots for resynchronization (#719)

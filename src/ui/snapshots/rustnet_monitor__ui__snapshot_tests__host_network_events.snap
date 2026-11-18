@@ -24,10 +24,10 @@ ICMP parameter problem                                         0 / 0            
 ▎ TCP attempts (5m) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 0 completed, 0 pending                                                                                                                      
   0 established, 0 reset, 0 no handshake, 0 superseded                                                                                      
+No affected destinations in the last 5 min                                                                                                  
                                                                                                                                             
 ▎ Listening and Bound Endpoints  0 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
 Proto   State      Local endpoint                        Peer                                 Service             PID Process               
-                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

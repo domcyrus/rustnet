@@ -252,7 +252,12 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             if ui_state.host_view == HostView::Dns {
                 hints.push(Hint::action("o", "sort"));
             }
-            hints.push(Hint::action("esc", "back"));
+            let close_evidence =
+                ui_state.host_view == HostView::Sockets && ui_state.tcp_expanded.is_some();
+            hints.push(Hint::action(
+                "esc",
+                if close_evidence { "close" } else { "back" },
+            ));
             hints
         }
         _ => vec![Hint::action("esc", "back")],

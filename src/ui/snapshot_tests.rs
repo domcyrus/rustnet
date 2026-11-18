@@ -2384,6 +2384,7 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             ..Default::default()
         };
         let (closed, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
+        assert!(closed.contains("▌ [Expand]"));
         assert!(!closed.contains("Open Details"));
         let mut ctx = HandlerContext {
             connections: &connections,
@@ -2394,7 +2395,6 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             assert!(regions.tcp_rows[0].1.height > 1);
             click(last_row, &mut ctx);
         } else {
-            key(KeyCode::Char('e'), &mut ctx);
             key(KeyCode::Enter, &mut ctx);
         }
         assert_eq!(ctx.ui_state.tcp_expanded, Some(syn.remote_addr));
@@ -2433,7 +2433,10 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             KeyCode::Esc,
             &mut test_support::empty_ctx(&app, &mut state, &regions),
         );
-        assert!(state.tcp_focus.is_none() && state.tcp_expanded.is_none());
+        assert!(state.tcp_expanded.is_none());
+        assert!(
+            matches!(state.tcp_focus.get(), Some(tabs::host::TcpTarget::Destination(addr)) if addr == syn.remote_addr)
+        );
         connections[1].created_at -= Duration::from_secs(1);
     }
 }
@@ -2471,7 +2474,7 @@ fn host_tcp_details_opens_each_same_timestamp_generation() {
     assert_eq!(regions.tcp_rows.len(), 3);
     for (i, (target, _, _)) in regions.tcp_rows[1..].iter().enumerate() {
         state.jump_to_tab(4);
-        state.tcp_focus = Some(*target);
+        state.tcp_focus.set(Some(*target));
         let mut ctx = HandlerContext {
             connections: &connections,
             ..test_support::empty_ctx(&app, &mut state, &regions)

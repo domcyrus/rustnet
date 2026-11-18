@@ -614,7 +614,7 @@ pub struct UiState {
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
-    pub(super) tcp_focus: Option<super::tabs::host::TcpTarget>,
+    pub(super) tcp_focus: Cell<Option<super::tabs::host::TcpTarget>>,
     pub(super) tcp_expanded: Option<std::net::SocketAddr>,
     pub(super) tcp_reveal: Cell<bool>,
     /// Selected Graph section, preserved across terminal resizes.
@@ -689,7 +689,7 @@ impl Default for UiState {
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
-            tcp_focus: None,
+            tcp_focus: Cell::default(),
             tcp_expanded: None,
             tcp_reveal: Cell::default(),
             graph_section: GraphSection::default(),
@@ -1034,7 +1034,7 @@ impl UiState {
         self.activity_direction = ActivityDirection::default();
         self.dns_sort = DnsSort::default();
         self.host_window = TimeWindow::default();
-        self.tcp_focus = None;
+        self.tcp_focus.set(None);
         self.tcp_expanded = None;
         self.dns_questions_scroll.reset();
         self.grouped_scroll_offset = 0;

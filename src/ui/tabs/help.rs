@@ -84,6 +84,7 @@ impl HelpContext {
             Self::HostSockets => &[
                 "Host shows the operating system's sockets, even without captured packets.",
                 "Sockets lists TCP listeners and UDP bound endpoints, plus TCP state totals.",
+                "The first affected TCP destination is selected. Issues age out five minutes after completion.",
             ],
             Self::HostInterfaces => &[
                 "Host shows the operating system's network interfaces and their counters.",
@@ -355,9 +356,17 @@ const PANE_SCROLL_KEYS: &[HelpRow] = &[
     ("g, G", "Jump to the top or bottom"),
 ];
 
+const HOST_WINDOW_KEY: HelpRow = ("w", "Cycle Host window: 60s / 5m / 1h / since startup");
+
 const HOST_SOCKET_KEYS: &[HelpRow] = &[
-    ("w", "Cycle Host window: 60s / 5m / 1h / since startup"),
-    ("Esc", "Return to Overview"),
+    HOST_WINDOW_KEY,
+    ("↑/↓", "Select an affected destination or Details link"),
+    ("e", "Jump to the first affected destination"),
+    (
+        "Enter / click",
+        "Expand, collapse, dismiss, or open the selected link",
+    ),
+    ("Esc", "Close open evidence. Return to Overview when closed"),
 ];
 
 const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
@@ -451,7 +460,7 @@ const TCP_HEALTH_CONCEPTS: &[HelpRow] = &[
     ),
 ];
 
-const INTERFACE_KEYS: &[HelpRow] = HOST_SOCKET_KEYS;
+const INTERFACE_KEYS: &[HelpRow] = &[HOST_WINDOW_KEY, ("Esc", "Return to Overview")];
 
 const INTERFACE_CONCEPTS: &[HelpRow] = &[
     (
@@ -633,22 +642,11 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
             push_section(&mut lines, "Graph", GRAPH_KEYS);
         }
         HelpContext::HostSockets => {
-            let mut rows = host_pane_rows(
+            let rows = host_pane_rows(
                 HOST_SOCKET_KEYS,
                 ui_state.host_sockets_scroll.can_scroll(),
                 "Scroll the endpoint table",
             );
-            rows.extend([
-                (
-                    "e, ↑/↓",
-                    "Focus and select an affected TCP destination or Details link",
-                ),
-                (
-                    "Enter / click",
-                    "Expand or collapse evidence, or open the matching connection",
-                ),
-                ("Esc", "Leave TCP evidence and resume scrolling"),
-            ]);
             push_section(&mut lines, "Socket Actions", &rows);
             push_section(&mut lines, "Socket Concepts", HOST_SOCKET_CONCEPTS);
             push_section(&mut lines, "TCP Attempt Health", TCP_HEALTH_CONCEPTS);

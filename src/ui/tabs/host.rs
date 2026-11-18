@@ -5,7 +5,6 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::style::Stylize;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -51,7 +50,7 @@ impl TcpTarget {
 
     fn activate(self, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
         let state = &mut ctx.ui_state;
-        state.tcp_focus = Some(self);
+        state.tcp_focus.set(Some(self));
         match self {
             Self::Destination(addr) => {
                 state.tcp_expanded = (state.tcp_expanded != Some(addr)).then_some(addr);
@@ -80,22 +79,26 @@ fn tcp_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
         return None;
     }
     let rows = &ctx.click_regions.tcp_rows;
-    let focused = ctx.ui_state.tcp_focus;
-    let index = rows.iter().position(|(t, _, _)| Some(*t) == focused);
+    let focused = ctx.ui_state.tcp_focus.get();
+    let index = rows
+        .iter()
+        .position(|(target, rect, _)| Some(*target) == focused && rect.height > 0);
     let next = match (key.code, index) {
-        (KeyCode::Esc, _) if focused.is_some() => {
-            ctx.ui_state.tcp_focus = None;
-            ctx.ui_state.tcp_expanded = None;
+        (KeyCode::Esc, _) => {
+            let addr = ctx.ui_state.tcp_expanded.take()?;
+            ctx.ui_state
+                .tcp_focus
+                .set(Some(TcpTarget::Destination(addr)));
             return Some(Vec::new());
         }
         (KeyCode::Enter, Some(i)) => return Some(rows[i].0.activate(ctx)),
         (KeyCode::Char('e'), _) if !rows.is_empty() => 0,
-        (KeyCode::Up, Some(i)) => i.saturating_sub(1),
-        (KeyCode::Down, Some(i)) => (i + 1).min(rows.len() - 1),
+        (KeyCode::Up, Some(i)) if i > 0 => i - 1,
+        (KeyCode::Down, Some(i)) if i + 1 < rows.len() => i + 1,
         _ => return None,
     };
     let (target, rect, offset) = rows[next];
-    ctx.ui_state.tcp_focus = Some(target);
+    ctx.ui_state.tcp_focus.set(Some(target));
     if rect.height == 0 {
         ctx.ui_state.host_sockets_scroll.scroll_to_top();
         ctx.ui_state.host_sockets_scroll.scroll_down(offset);
@@ -730,6 +733,7 @@ fn draw_sockets(
     regions: &mut ClickableRegions,
 ) -> Result<()> {
     let reveal = ctx.ui_state.tcp_reveal.take();
+    let focus = ctx.ui_state.tcp_focus.get();
     let snapshot = ctx.app.get_socket_snapshot();
     let events = ctx.app.get_network_event_snapshot(ctx.ui_state.host_window);
     let event_lines = network_event_lines(&events, ctx.ui_state.host_window, area.width < 100);
@@ -862,7 +866,7 @@ fn draw_sockets(
                 row += lines[previous..index].iter().map(height).sum::<u16>();
                 previous = index;
                 let height = height(&lines[index]);
-                if reveal && Some(target) == ctx.ui_state.tcp_focus {
+                if reveal && Some(target) == focus {
                     ctx.ui_state
                         .host_sockets_scroll
                         .reveal(row, row + height, inner.height);
@@ -1159,16 +1163,21 @@ pub(super) fn tcp_attempt_lines(
         .filter(|(_, c)| c.reset + c.no_handshake + c.anomalous > 0)
         .collect();
     destinations.sort_by(|a, b| super::compare_tcp_destinations(*b, *a));
-    if !destinations.is_empty() {
+    let inspecting = state.tcp_expanded;
+    let rank = inspecting.and_then(|addr| destinations.iter().position(|(a, _)| **a == addr));
+    let extra = rank.filter(|&index| index >= 3).map(|i| &destinations[i]);
+    if !destinations.is_empty() || inspecting.is_some() {
         lines.push(Line::from(
-            "Affected destinations   e focus   ↑/↓ select   Enter open/close   Esc back",
+            "Affected destinations · Enter or click · ↑/↓ select · issues age out after 5 min",
         ));
+    } else {
+        lines.push(Line::from("No affected destinations in the last 5 min"));
     }
-    for &(address, c) in destinations.iter().take(3) {
+    for &(address, c) in destinations.iter().take(3).chain(extra) {
         let target = TcpTarget::Destination(*address);
         targets.push((lines.len(), target));
         let expanded = state.tcp_expanded == Some(*address);
-        let marker = if expanded { "▾" } else { "▸" };
+        let marker = if expanded { "[Collapse]" } else { "[Expand]" };
         lines.push(Line::from(format!(
             "{marker} {address}  {}/{} reset or incomplete, {} anomalous, {} SYN retries",
             c.reset + c.no_handshake,
@@ -1224,10 +1233,19 @@ pub(super) fn tcp_attempt_lines(
             }
         }
     }
-    if destinations.len() > 3 {
+    if let Some(addr) = inspecting.filter(|_| rank.is_none()) {
+        targets.push((lines.len(), TcpTarget::Destination(addr)));
+        lines.push(Line::from(format!(
+            "[Dismiss] {addr}  No affected attempts remain in the last 5 min"
+        )));
+    }
+    let hidden = destinations
+        .len()
+        .saturating_sub(3 + usize::from(extra.is_some()));
+    if hidden > 0 {
         lines.push(Line::from(format!(
             "  {} more affected destinations in JSON",
-            destinations.len() - 3
+            hidden
         )));
     }
     if snapshot.omitted > 0 {
@@ -1241,14 +1259,19 @@ pub(super) fn tcp_attempt_lines(
             "  Missing capture packets or local cancellation can also prevent observed completion.",
         ));
     }
-    if let Some((index, _)) = targets
+    let selected = targets
         .iter()
-        .find(|(_, target)| Some(*target) == state.tcp_focus)
-    {
-        lines[*index] = lines[*index]
-            .clone()
-            .style(theme::bold_fg(theme::accent()))
-            .reversed();
+        .find(|(_, target)| Some(*target) == state.tcp_focus.get())
+        .or_else(|| {
+            targets
+                .iter()
+                .find(|(_, target)| Some(*target) == inspecting.map(TcpTarget::Destination))
+        })
+        .or(targets.first());
+    state.tcp_focus.set(selected.map(|(_, target)| *target));
+    if let Some((index, _)) = selected {
+        lines[*index].spans.insert(0, Span::raw("▌ "));
+        lines[*index].style = theme::row_highlight();
     }
     lines
 }
@@ -1257,6 +1280,50 @@ pub(super) fn tcp_attempt_lines(
 mod tcp_attempt_tests {
     use super::*;
     use crate::network::tcp_attempts::{AttemptCounts, TcpAttemptSnapshot};
+
+    #[test]
+    fn open_destination_survives_reranking_and_explains_expiry_until_dismissed() {
+        let addr = "198.51.100.4:443".parse().unwrap();
+        let mut state = crate::ui::UiState {
+            tcp_expanded: Some(addr),
+            ..Default::default()
+        };
+        let mut snapshot = TcpAttemptSnapshot::default();
+        for ip in 1..=4 {
+            snapshot.destinations.insert(
+                SocketAddr::from(([198, 51, 100, ip], 443)),
+                AttemptCounts {
+                    completed: 1,
+                    reset: 1,
+                    ..Default::default()
+                },
+            );
+        }
+        let render = |snapshot: &TcpAttemptSnapshot, state: &crate::ui::UiState| {
+            tcp_attempt_lines(snapshot, state, &[], &mut Vec::new())
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let live = render(&snapshot, &state);
+        assert!(live.contains(&format!("▌ [Collapse] {addr}")));
+        assert!(!live.contains("more affected destinations"));
+        snapshot.destinations.clear();
+        let expired = render(&snapshot, &state);
+        assert!(expired.contains(&format!("▌ [Dismiss] {addr}  No affected attempts remain")));
+        state
+            .tcp_focus
+            .get()
+            .unwrap()
+            .activate(&mut crate::ui::test_support::empty_ctx(
+                &crate::test_support::test_app(),
+                &mut state,
+                &ClickableRegions::default(),
+            ));
+        assert!(render(&snapshot, &state).contains("No affected destinations in the last 5 min"));
+        assert_eq!(state.tcp_focus.get(), None);
+    }
 
     #[test]
     fn attempt_summary_names_evidence_and_capacity_limits() {
