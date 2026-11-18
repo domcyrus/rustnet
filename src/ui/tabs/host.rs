@@ -7,14 +7,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Color,
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Wrap},
 };
 use rustnet_host::{HostSocket, HostSocketState, HostTcpState};
 
 use crate::network::dns_analytics::{
-    DnsAnalyticsSnapshot, DnsHealth, DnsIssue, DnsIssueKind, DnsQuestionStats,
+    DnsAnalyticsSnapshot, DnsIssue, DnsIssueKind, DnsQuestionStats,
 };
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, DnsSort, Effect, HandlerContext, HostView,
@@ -218,7 +217,7 @@ pub(super) fn dns_evidence_lines(
         let (health, color) = if capture_failed {
             ("unknown", theme::warn())
         } else {
-            dns_health_style(resolver.health)
+            super::dns_health_status(resolver.health, false)
         };
         let failures = resolver
             .timeouts
@@ -306,17 +305,6 @@ pub(super) fn dns_evidence_lines(
     lines
 }
 
-fn dns_health_style(health: DnsHealth) -> (&'static str, Color) {
-    match health {
-        DnsHealth::NotObserved => ("not observed", theme::muted()),
-        DnsHealth::Checking => ("checking", theme::muted()),
-        DnsHealth::Responsive => ("responsive", theme::ok()),
-        DnsHealth::Degraded => ("degraded", theme::warn()),
-        DnsHealth::Failing => ("failing", theme::err()),
-        DnsHealth::NoReplies => ("no replies", theme::err()),
-    }
-}
-
 fn draw_dns_outcomes(
     f: &mut Frame,
     area: Rect,
@@ -333,11 +321,7 @@ fn draw_dns_outcomes(
         return;
     }
 
-    let (health, health_color) = if capture_failed {
-        ("unknown (capture stopped)", theme::warn())
-    } else {
-        dns_health_style(snapshot.health)
-    };
+    let (health, health_color) = super::dns_health_status(snapshot.health, capture_failed);
     let mut status = vec![
         label("Status "),
         Span::styled(health, theme::bold_fg(health_color)),
@@ -362,23 +346,23 @@ fn draw_dns_outcomes(
             label("   pending "),
             value(snapshot.pending),
             label("   timeout "),
-            Span::styled(snapshot.timeouts.to_string(), theme::fg(theme::err())),
+            super::count_span(snapshot.timeouts as u64, theme::err()),
         ]),
         Line::from(vec![
             label("NOERROR "),
-            Span::styled(snapshot.noerror.to_string(), theme::fg(theme::ok())),
+            super::count_span(snapshot.noerror as u64, theme::ok()),
             label("   NXDOMAIN "),
-            Span::styled(snapshot.nxdomain.to_string(), theme::fg(theme::warn())),
+            super::count_span(snapshot.nxdomain as u64, theme::warn()),
             label("   NODATA "),
             value(snapshot.nodata),
         ]),
         Line::from(vec![
             label("SERVFAIL "),
-            Span::styled(snapshot.servfail.to_string(), theme::fg(theme::err())),
+            super::count_span(snapshot.servfail as u64, theme::err()),
             label("   REFUSED "),
-            Span::styled(snapshot.refused.to_string(), theme::fg(theme::err())),
+            super::count_span(snapshot.refused as u64, theme::err()),
             label("   other "),
-            value(snapshot.other_rcodes),
+            super::count_span(snapshot.other_rcodes as u64, theme::err()),
         ]),
     ];
     for (index, line) in lines.into_iter().enumerate() {
@@ -566,21 +550,25 @@ fn draw_dns_questions(
         let latency = question
             .latency_p95
             .map_or_else(|| "-".to_string(), format_rtt_compact);
+        let nxdomain =
+            Line::from(super::count_span(question.nxdomain as u64, theme::warn())).right_aligned();
+        let failures =
+            Line::from(super::count_span(question.failures as u64, theme::err())).right_aligned();
         if show_full {
             Row::new(vec![
                 Cell::from(question.name.clone()),
                 Cell::from(query_type),
                 Cell::from(Line::from(question.lookups.to_string()).right_aligned()),
-                Cell::from(Line::from(question.nxdomain.to_string()).right_aligned()),
-                Cell::from(Line::from(question.failures.to_string()).right_aligned()),
+                Cell::from(nxdomain),
+                Cell::from(failures),
                 Cell::from(Line::from(latency).right_aligned()),
             ])
         } else {
             Row::new(vec![
                 Cell::from(question.name.clone()),
                 Cell::from(Line::from(question.lookups.to_string()).right_aligned()),
-                Cell::from(Line::from(question.nxdomain.to_string()).right_aligned()),
-                Cell::from(Line::from(question.failures.to_string()).right_aligned()),
+                Cell::from(nxdomain),
+                Cell::from(failures),
             ])
         }
     });

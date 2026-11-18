@@ -7,15 +7,15 @@ expression: output
 Findings   Sockets   Interfaces   DNS resolvers                                                                                             
 ━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Findings ────────────────────────────────────── ▎ ▌ Resets and ICMP (60s) ────────────────────────────────────────────────────────────────
-  › TCP handshakes (5m)  No attempts observed     60s / total (since startup) · captured packets                                            
+  › TCP handshakes (5m)  not observed             60s / total (since startup) · captured packets                                            
 ▌ › Resets and ICMP (60s)  RST 1 sent / 0         TCP reset                                                                                 
 received · 0 ICMP                                   Sent 1 / 1   Received 0 / 0                                                             
   › Interface drops (60s)  Waiting for            ICMP port unreachable                                                                     
 interface statistics                                Sent 0 / 0   Received 0 / 1                                                             
-  › DNS replies (60s)  0 replies · 0 timeouts     ICMP destination unreachable                                                              
-  › Capture quality (since startup)  0 reported     Sent 0 / 0   Received 0 / 1                                                             
-drops · 0 queue drops                             ICMP administratively prohibited                                                          
-                                                    Sent 0 / 0   Received 0 / 1                                                             
+  › DNS replies (60s)  not observed · 0 replies   ICMP destination unreachable                                                              
+· 0 timeouts                                        Sent 0 / 0   Received 0 / 1                                                             
+  › Capture quality (since startup)  0 reported   ICMP administratively prohibited                                                          
+drops · 0 queue drops                               Sent 0 / 0   Received 0 / 1                                                             
                                                   ICMP packet too big / frag needed                                                         
                                                     Sent 0 / 0   Received 0 / 1                                                             
                                                   ICMP time exceeded                                                                        

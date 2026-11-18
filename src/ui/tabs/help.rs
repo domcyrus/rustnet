@@ -679,6 +679,22 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
         }
         HelpContext::Health => {
             push_section(&mut lines, "Health Actions", TCP_ATTEMPT_KEYS);
+            push_section(
+                &mut lines,
+                "Finding colors (default theme)",
+                &[
+                    ("Green", "Healthy TCP handshakes or responsive DNS"),
+                    (
+                        "Yellow",
+                        "Degraded health, packet drops or incomplete evidence",
+                    ),
+                    (
+                        "Red",
+                        "Observed failures, such as DNS timeouts or capture failure",
+                    ),
+                    ("Muted", "Checking or no observations yet"),
+                ],
+            );
             if ui_state.health_scroll.can_scroll() {
                 push_section(
                     &mut lines,

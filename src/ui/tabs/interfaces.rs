@@ -4,7 +4,7 @@ use anyhow::Result;
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
-    style::Style,
+    style::Color,
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Wrap},
 };
@@ -12,8 +12,8 @@ use ratatui::{
 use crate::app::App;
 use crate::network::interface_stats::{InterfaceErrorCounts, InterfaceRates, InterfaceStats};
 use crate::ui::{
-    UiState, alert_style,
-    format::{cell_width, format_bytes},
+    UiState,
+    format::format_bytes,
     section_header, section_title, theme,
     widgets::scrollbar::{draw_scrolled_text, render_scrolled_table},
 };
@@ -71,7 +71,7 @@ pub(in crate::ui) fn draw_interface_stats(
     let mut column_widths = [14u16, 12, 12, 10, 10, 9, 9, 10, 10, 10];
     for row in &rows {
         for (width, value) in column_widths.iter_mut().zip(&row.values) {
-            *width = (*width).max(u16::try_from(cell_width(value)).unwrap_or(u16::MAX));
+            *width = (*width).max(u16::try_from(value.width()).unwrap_or(u16::MAX));
         }
     }
     // Include column gaps and the shared scrollbar gutter before choosing records.
@@ -87,7 +87,7 @@ pub(in crate::ui) fn draw_interface_stats(
             .lines()
             .map(|line| Line::from(Span::styled(line, theme::fg(theme::muted()))))
             .collect();
-        for row in &rows {
+        for row in rows {
             let [
                 name,
                 rx,
@@ -98,21 +98,16 @@ pub(in crate::ui) fn draw_interface_stats(
                 tx_errors,
                 rx_dropped,
                 tx_dropped,
-                collisions,
-            ] = &row.values;
+                mut collisions,
+            ] = row.values;
+            collisions.spans.insert(0, Span::raw("Collisions: "));
             lines.extend([
-                Line::from(section_title(name.clone())),
+                Line::from(section_title(name.to_string())),
                 Line::styled(format!("RX {rx}  ·  TX {tx}"), theme::fg(theme::text())),
                 Line::from(format!("Packets: RX {rx_packets}  TX {tx_packets}")),
-                Line::styled(
-                    format!("Errors: RX {rx_errors}  TX {tx_errors}"),
-                    row.error_style,
-                ),
-                Line::styled(
-                    format!("Drops: RX {rx_dropped}  TX {tx_dropped}"),
-                    row.drop_style,
-                ),
-                Line::from(format!("Collisions: {collisions}")),
+                counter_pair("Errors", rx_errors, tx_errors),
+                counter_pair("Drops", rx_dropped, tx_dropped),
+                collisions,
                 Line::default(),
             ]);
         }
@@ -146,15 +141,11 @@ pub(in crate::ui) fn draw_interface_stats(
         .into_iter()
         .map(|row| {
             Row::new(row.values.into_iter().enumerate().map(|(column, value)| {
-                if column == 0 {
-                    return Cell::from(value);
-                }
-                let style = match column {
-                    5 | 6 => row.error_style,
-                    7 | 8 => row.drop_style,
-                    _ => Style::default(),
-                };
-                Cell::from(Line::styled(value, style).right_aligned())
+                Cell::from(if column == 0 {
+                    value
+                } else {
+                    value.right_aligned()
+                })
             }))
         })
         .collect();
@@ -207,11 +198,17 @@ pub(in crate::ui) fn draw_interface_stats(
     Ok(())
 }
 
+fn counter_pair(label: &str, rx: Line<'static>, tx: Line<'static>) -> Line<'static> {
+    let mut line = Line::from(format!("{label}: RX "));
+    line.extend(rx.spans);
+    line.push_span("  TX ");
+    line.extend(tx.spans);
+    line
+}
+
 /// Format once so compact records, table cells and width measurements agree.
 struct InterfaceRow {
-    values: [String; 10],
-    error_style: Style,
-    drop_style: Style,
+    values: [Line<'static>; 10],
 }
 
 impl InterfaceRow {
@@ -220,36 +217,40 @@ impl InterfaceRow {
         rate: Option<&InterfaceRates>,
         selected: Option<&InterfaceErrorCounts>,
     ) -> Self {
-        let pair = |value: Option<u64>, total| {
-            format!(
-                "{}/{total}",
-                value.map_or_else(|| "-".into(), |n| n.to_string())
-            )
+        let pair = |value: Option<u64>, total: u64, color: Color| {
+            Line::from(vec![
+                value.map_or_else(|| Span::raw("-"), |n| super::count_span(n, color)),
+                Span::raw(format!("/{total}")),
+            ])
         };
         let format_rate = |value: Option<u64>| {
-            value.map_or_else(|| "-".into(), |n| format!("{}/s", format_bytes(n)))
+            Line::from(value.map_or_else(|| "-".into(), |n| format!("{}/s", format_bytes(n))))
         };
         Self {
             values: [
-                stat.interface_name.clone(),
+                Line::from(stat.interface_name.clone()),
                 format_rate(rate.map(|r| r.rx_bytes_per_sec)),
                 format_rate(rate.map(|r| r.tx_bytes_per_sec)),
-                stat.rx_packets.to_string(),
-                stat.tx_packets.to_string(),
-                pair(selected.map(|c| c.rx_errors), stat.rx_errors),
-                pair(selected.map(|c| c.tx_errors), stat.tx_errors),
-                pair(selected.map(|c| c.rx_dropped), stat.rx_dropped),
-                pair(selected.map(|c| c.tx_dropped), stat.tx_dropped),
-                pair(selected.map(|c| c.collisions), stat.collisions),
+                Line::from(stat.rx_packets.to_string()),
+                Line::from(stat.tx_packets.to_string()),
+                pair(selected.map(|c| c.rx_errors), stat.rx_errors, theme::err()),
+                pair(selected.map(|c| c.tx_errors), stat.tx_errors, theme::err()),
+                pair(
+                    selected.map(|c| c.rx_dropped),
+                    stat.rx_dropped,
+                    theme::warn(),
+                ),
+                pair(
+                    selected.map(|c| c.tx_dropped),
+                    stat.tx_dropped,
+                    theme::warn(),
+                ),
+                pair(
+                    selected.map(|c| c.collisions),
+                    stat.collisions,
+                    theme::warn(),
+                ),
             ],
-            error_style: alert_style(
-                selected.is_some_and(|c| c.rx_errors > 0 || c.tx_errors > 0),
-                theme::err(),
-            ),
-            drop_style: alert_style(
-                selected.is_some_and(|c| c.rx_dropped > 0 || c.tx_dropped > 0),
-                theme::warn(),
-            ),
         }
     }
 }

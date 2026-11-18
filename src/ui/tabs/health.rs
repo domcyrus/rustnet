@@ -1,9 +1,10 @@
 //! Expandable network health findings from the existing capture and OS counters.
 use std::{net::SocketAddr, sync::atomic::Ordering::Relaxed, time::SystemTime};
 
+use super::{count_span, dns_health_status, tcp_handshake_status};
 use crate::network::{
     process_activity::process_group_label,
-    tcp_attempts::AttemptOutcome,
+    tcp_attempts::{AttemptCounts, AttemptOutcome},
     types::{Connection, ConnectionKey, NetworkEventKind},
 };
 use crate::ui::{
@@ -208,19 +209,28 @@ fn network_event_lines(
     }
     for (kind, total) in observed {
         let selected = events.selected.get(kind);
+        let mut line = Line::from(Span::styled(
+            kind.to_string(),
+            if selected.sent > 0 || selected.received > 0 {
+                theme::fg(theme::warn())
+            } else {
+                theme::fg(theme::muted())
+            },
+        ));
         if compact {
-            lines.push(Line::from(kind.to_string()));
+            lines.push(line);
             lines.push(Line::from(format!(
                 "  Sent {} / {}   Received {} / {}",
                 selected.sent, total.sent, selected.received, total.received
             )));
         } else {
-            lines.push(Line::from(format!(
-                "{:<42}{:>26}{:>26}",
-                kind.as_str(),
+            line.push_span(" ".repeat(42usize.saturating_sub(line.width())));
+            line.push_span(format!(
+                "{:>26}{:>26}",
                 format!("{} / {}", selected.sent, total.sent),
                 format!("{} / {}", selected.received, total.received)
-            )));
+            ));
+            lines.push(line);
         }
     }
     lines
@@ -324,56 +334,85 @@ impl Component for HealthTab {
             .sum();
         let reported = capture.saturating_add(iface);
         let c = &tcp.total;
+        let (tcp_status, tcp_color) =
+            tcp_handshake_status(&tcp, capture_error.is_some() || reported > 0 || queue > 0);
+        let (dns_status, dns_color) = dns_health_status(dns.health, capture_error.is_some());
+        let mut tcp_summary = Line::from(Span::styled(tcp_status, theme::fg(tcp_color)));
+        if c.completed > 0 {
+            tcp_summary.push_span(format!(
+                " · {}/{} reset or incomplete · {} anomalous",
+                c.reset + c.no_handshake,
+                c.completed,
+                c.anomalous
+            ));
+        }
+        if tcp.pending > 0 {
+            tcp_summary.push_span(format!(" · {} pending", tcp.pending));
+        }
+        let errors: u64 = interfaces.values().map(|c| c.rx_errors + c.tx_errors).sum();
+        let mut interface_summary = if interfaces.is_empty() {
+            Line::from(Span::styled(
+                "Waiting for interface statistics",
+                theme::fg(theme::muted()),
+            ))
+        } else {
+            Line::from(vec![
+                count_span(drops, theme::warn()),
+                Span::raw(" drops observed"),
+            ])
+        };
+        if errors > 0 {
+            interface_summary.extend([
+                Span::raw(" · "),
+                count_span(errors, theme::err()),
+                Span::raw(" errors"),
+            ]);
+        }
         let summaries = [
-            (
-                Finding::Tcp,
-                "TCP handshakes",
-                if c.completed > 0 {
-                    format!(
-                        "{}/{} reset or incomplete · {} anomalous",
-                        c.reset + c.no_handshake,
-                        c.completed,
-                        c.anomalous
-                    )
-                } else if tcp.pending > 0 {
-                    format!("{} pending", tcp.pending)
-                } else {
-                    "No attempts observed".into()
-                },
-                "5m",
-            ),
+            (Finding::Tcp, "TCP handshakes", tcp_summary, "5m"),
             (
                 Finding::Events,
                 "Resets and ICMP",
-                format!(
-                    "RST {} sent / {} received · {icmp} ICMP",
-                    resets.sent, resets.received
-                ),
+                Line::from(vec![
+                    Span::raw("RST "),
+                    count_span(resets.sent, theme::warn()),
+                    Span::raw(" sent / "),
+                    count_span(resets.received, theme::warn()),
+                    Span::raw(" received · "),
+                    count_span(icmp, theme::warn()),
+                    Span::raw(" ICMP"),
+                ]),
                 window.label_since_clear(events.since_clear),
             ),
             (
                 Finding::Interfaces,
                 "Interface drops",
-                if interfaces.is_empty() {
-                    "Waiting for interface statistics".to_owned()
-                } else {
-                    format!("{drops} drops observed")
-                },
+                interface_summary,
                 window.label_since_clear(since_clear),
             ),
             (
                 Finding::Dns,
                 "DNS replies",
-                format!("{} replies · {} timeouts", dns.answered, dns.timeouts),
+                Line::from(vec![
+                    Span::styled(dns_status, theme::fg(dns_color)),
+                    Span::raw(format!(" · {} replies · ", dns.answered)),
+                    count_span(dns.timeouts as u64, theme::err()),
+                    Span::raw(" timeouts"),
+                ]),
                 dns.window_label(),
             ),
             (
                 Finding::Capture,
                 "Capture quality",
                 if capture_error.is_some() {
-                    "Capture failed".to_owned()
+                    Line::from(Span::styled("Capture failed", theme::fg(theme::err())))
                 } else {
-                    format!("{reported} reported drops · {queue} queue drops")
+                    Line::from(vec![
+                        count_span(reported, theme::warn()),
+                        Span::raw(" reported drops · "),
+                        count_span(queue, theme::warn()),
+                        Span::raw(" queue drops"),
+                    ])
                 },
                 if events.since_clear {
                     "since clear"
@@ -383,6 +422,7 @@ impl Component for HealthTab {
             ),
         ];
         let reveal = state.health_reveal.take();
+        let (_, evidence_name, _, evidence_window) = summaries[state.finding as usize];
         if !list.is_empty() {
             let inner = section_header(
                 f,
@@ -395,19 +435,20 @@ impl Component for HealthTab {
             );
             let mut lines = Vec::new();
             let mut targets = Vec::new();
-            for (finding, name, summary, window) in &summaries {
-                targets.push((lines.len(), HealthTarget::Finding(*finding)));
-                let selected = *finding == state.finding;
+            for (finding, name, summary, window) in summaries {
+                targets.push((lines.len(), HealthTarget::Finding(finding)));
+                let selected = finding == state.finding;
                 let marker = if selected { "▌" } else { " " };
-                let style = if selected && !state.inspecting_finding {
-                    theme::row_highlight()
-                } else {
-                    Default::default()
-                };
-                lines.push(Line::styled(
-                    format!("{marker} › {name} ({window})  {summary}"),
-                    style,
-                ));
+                let mut line = Line::from(vec![
+                    Span::styled(marker, theme::fg(theme::accent())),
+                    Span::raw(format!(" › {name} ")),
+                    Span::styled(format!("({window})  "), theme::fg(theme::muted())),
+                ]);
+                line.extend(summary.spans);
+                if selected && !state.inspecting_finding {
+                    highlight_line(&mut line);
+                }
+                lines.push(line);
             }
             draw_rows(
                 f,
@@ -421,12 +462,11 @@ impl Component for HealthTab {
             );
         }
         if !evidence.is_empty() {
-            let (_, name, _, label) = &summaries[state.finding as usize];
             let marker = if state.inspecting_finding { "▌ " } else { "" };
             let inner = section_header(
                 f,
                 evidence,
-                section_title(format!("{marker}{name} ({label})")),
+                section_title(format!("{marker}{evidence_name} ({evidence_window})")),
             );
             let mut targets = Vec::new();
             let mut lines = Vec::new();
@@ -443,10 +483,16 @@ impl Component for HealthTab {
                     let mut rows: Vec<_> = interfaces.iter().collect();
                     rows.sort_unstable_by_key(|(name, _)| *name);
                     for (name, c) in rows {
-                        lines.push(Line::from(format!(
-                            "    {name}  RX drops {} · TX drops {} · RX errors {} · TX errors {}",
-                            c.rx_dropped, c.tx_dropped, c.rx_errors, c.tx_errors
-                        )));
+                        lines.push(Line::from(vec![
+                            Span::raw(format!("    {name}  RX drops ")),
+                            count_span(c.rx_dropped, theme::warn()),
+                            Span::raw(" · TX drops "),
+                            count_span(c.tx_dropped, theme::warn()),
+                            Span::raw(" · RX errors "),
+                            count_span(c.rx_errors, theme::err()),
+                            Span::raw(" · TX errors "),
+                            count_span(c.tx_errors, theme::err()),
+                        ]));
                     }
                     if interfaces.is_empty() {
                         lines.push(Line::from("    No interface samples available"));
@@ -461,14 +507,27 @@ impl Component for HealthTab {
                         None,
                     ));
                     if dns.truncated {
-                        lines.push(Line::from("    Incomplete DNS evidence"));
+                        lines.push(Line::styled(
+                            "    Incomplete DNS evidence",
+                            theme::fg(theme::warn()),
+                        ));
                     }
                 }
                 Finding::Capture => {
                     if let Some(error) = &capture_error {
-                        lines.push(Line::from(format!("    {error}")));
+                        lines.push(Line::styled(
+                            format!("    {error}"),
+                            theme::fg(theme::err()),
+                        ));
                     }
-                    lines.push(Line::from(format!("    Capture backend drops {capture} · interface-reported drops {iface} · processing queue drops {queue}")));
+                    lines.push(Line::from(vec![
+                        Span::raw("    Capture backend drops "),
+                        count_span(capture, theme::warn()),
+                        Span::raw(" · interface-reported drops "),
+                        count_span(iface, theme::warn()),
+                        Span::raw(" · processing queue drops "),
+                        count_span(queue, theme::warn()),
+                    ]));
                 }
             }
             let old_focus = state.health_focus.get();
@@ -530,6 +589,17 @@ fn draw_rows(
     }
 }
 
+fn highlight_line(line: &mut Line<'_>) {
+    let selection = theme::row_highlight();
+    line.style = line.style.patch(selection);
+    // An explicit selection foreground in a custom theme takes precedence.
+    if selection.fg.is_some() {
+        for span in &mut line.spans {
+            span.style = span.style.patch(selection);
+        }
+    }
+}
+
 fn highlight(
     lines: &mut [Line<'_>],
     targets: &[(usize, HealthTarget)],
@@ -548,7 +618,7 @@ fn highlight(
     for &(index, target) in targets {
         let marker = if Some(target) == state.health_focus.get() {
             if state.inspecting_finding {
-                lines[index].style = theme::row_highlight();
+                highlight_line(&mut lines[index]);
             }
             "▌ "
         } else {
@@ -572,6 +642,20 @@ fn register_health_row(
     regions.health_rows.push((target, rect));
 }
 
+fn outcome_counts(counts: &AttemptCounts, indent: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(indent),
+        count_span(counts.established, theme::ok()),
+        Span::raw(" established, "),
+        count_span(counts.reset, theme::err()),
+        Span::raw(" reset, "),
+        count_span(counts.no_handshake, theme::warn()),
+        Span::raw(" no handshake, "),
+        count_span(counts.superseded, theme::warn()),
+        Span::raw(" superseded"),
+    ])
+}
+
 pub(super) fn tcp_attempt_lines(
     snapshot: &crate::network::tcp_attempts::TcpAttemptSnapshot,
     state: &crate::ui::UiState,
@@ -584,10 +668,7 @@ pub(super) fn tcp_attempt_lines(
             "{} completed, {} pending",
             c.completed, snapshot.pending
         )),
-        Line::from(format!(
-            "  {} established, {} reset, {} no handshake, {} superseded",
-            c.established, c.reset, c.no_handshake, c.superseded
-        )),
+        outcome_counts(c, "  "),
     ];
     let mut destinations: Vec<_> = snapshot
         .destinations
@@ -610,18 +691,17 @@ pub(super) fn tcp_attempt_lines(
         targets.push((lines.len(), target));
         let expanded = state.tcp_expanded == Some(*address);
         let marker = if expanded { "▾" } else { "▸" };
-        lines.push(Line::from(format!(
-            "{marker} {address}  {}/{} reset or incomplete, {} anomalous, {} SYN retries",
-            c.reset + c.no_handshake,
-            c.completed,
-            c.anomalous,
-            c.syn_retries
-        )));
+        lines.push(Line::from(vec![
+            Span::raw(format!("{marker} {address}  ")),
+            count_span(c.reset + c.no_handshake, theme::warn()),
+            Span::raw(format!("/{} reset or incomplete, ", c.completed)),
+            count_span(c.anomalous, theme::warn()),
+            Span::raw(" anomalous, "),
+            count_span(c.syn_retries, theme::warn()),
+            Span::raw(" SYN retries"),
+        ]));
         if expanded {
-            lines.push(Line::from(format!(
-                "    {} established, {} reset, {} no handshake, {} superseded",
-                c.established, c.reset, c.no_handshake, c.superseded
-            )));
+            lines.push(outcome_counts(c, "    "));
             let mut issues = snapshot
                 .recent_issues
                 .iter()
@@ -644,20 +724,28 @@ pub(super) fn tcp_attempt_lines(
                 } else {
                     "Details unavailable"
                 };
-                lines.push(Line::from(format!(
-                    "    {}  {}  {}  {action} · expires {}",
-                    chrono::DateTime::<chrono::Local>::from(issue.finished_at).format("%H:%M:%S"),
-                    match issue.outcome {
-                        AttemptOutcome::Established => "established after anomaly",
-                        AttemptOutcome::NoHandshake => "no handshake observed",
-                        outcome => outcome.label(),
-                    },
-                    issue.key.local_addr,
-                    chrono::DateTime::<chrono::Local>::from(
-                        issue.finished_at + crate::network::tcp_attempts::WINDOW
-                    )
-                    .format("%H:%M:%S")
-                )));
+                let (outcome, color) = match issue.outcome {
+                    AttemptOutcome::Established => ("established after anomaly", theme::warn()),
+                    AttemptOutcome::NoHandshake => ("no handshake observed", theme::warn()),
+                    AttemptOutcome::Reset => ("reset", theme::err()),
+                    AttemptOutcome::Superseded => ("superseded", theme::warn()),
+                };
+                lines.push(Line::from(vec![
+                    Span::raw(format!(
+                        "    {}  ",
+                        chrono::DateTime::<chrono::Local>::from(issue.finished_at)
+                            .format("%H:%M:%S")
+                    )),
+                    Span::styled(outcome, theme::fg(color)),
+                    Span::raw(format!(
+                        "  {}  {action} · expires {}",
+                        issue.key.local_addr,
+                        chrono::DateTime::<chrono::Local>::from(
+                            issue.finished_at + crate::network::tcp_attempts::WINDOW
+                        )
+                        .format("%H:%M:%S")
+                    )),
+                ]));
                 if issue.unexpected_acks
                     + issue.invalid_syn_acks
                     + issue.local_resets
@@ -685,10 +773,13 @@ pub(super) fn tcp_attempt_lines(
         )));
     }
     if snapshot.omitted > 0 {
-        lines.push(Line::from(format!(
-            "  Incomplete evidence: {} capacity omissions since clear",
-            snapshot.omitted
-        )));
+        lines.push(Line::styled(
+            format!(
+                "  Incomplete evidence: {} capacity omissions since clear",
+                snapshot.omitted
+            ),
+            theme::fg(theme::warn()),
+        ));
     }
     if c.no_handshake + c.anomalous > 0 {
         lines.push(Line::from(

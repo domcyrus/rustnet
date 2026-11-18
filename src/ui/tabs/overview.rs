@@ -23,7 +23,7 @@ use crate::network::dns_analytics::{DEGRADED_FAILURE_PERCENT, DnsAnalyticsSnapsh
 use crate::network::types::Connection;
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER, OverviewSection, PaneScroll, SelectionMove, SortColumn, UiState, alert_style,
+    NONE_PLACEHOLDER, OverviewSection, PaneScroll, SelectionMove, SortColumn, UiState,
     clear_all_with_confirmation,
     connection_table::{
         CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
@@ -801,10 +801,11 @@ fn section_separator(width: u16) -> Line<'static> {
 }
 
 fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Line<'static> {
+    let (status, color) = super::dns_health_status(snapshot.health, capture_failed);
     if capture_failed {
         return Line::from(vec![
             Span::raw("DNS: "),
-            Span::styled("unknown · capture stopped", theme::fg(theme::warn())),
+            Span::styled("unknown · capture stopped", theme::fg(color)),
         ]);
     }
 
@@ -814,15 +815,11 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
         .saturating_mul(100)
         .checked_div(finalized)
         .unwrap_or(0);
-    let (text, color) = match snapshot.health {
-        DnsHealth::NotObserved => ("not observed".to_string(), theme::muted()),
-        DnsHealth::Checking => ("checking".to_string(), theme::muted()),
-        DnsHealth::Responsive => (
-            snapshot.latency_p95.map_or_else(
-                || "responsive".to_string(),
-                |p95| format!("responsive · p95 {}", format_rtt_compact(p95)),
-            ),
-            theme::ok(),
+    let text = match snapshot.health {
+        DnsHealth::NotObserved | DnsHealth::Checking => status.to_owned(),
+        DnsHealth::Responsive => snapshot.latency_p95.map_or_else(
+            || status.to_owned(),
+            |p95| format!("{status} · p95 {}", format_rtt_compact(p95)),
         ),
         DnsHealth::Degraded => {
             let reason = if failure_percent >= DEGRADED_FAILURE_PERCENT {
@@ -844,16 +841,10 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
                     |p95| format!("p95 {}", format_rtt_compact(p95)),
                 )
             };
-            (format!("degraded · {reason}"), theme::warn())
+            format!("{status} · {reason}")
         }
-        DnsHealth::Failing => (
-            format!("failing · {} errors", snapshot.failures),
-            theme::err(),
-        ),
-        DnsHealth::NoReplies => (
-            format!("no replies · {} timeouts", snapshot.timeouts),
-            theme::err(),
-        ),
+        DnsHealth::Failing => format!("{status} · {} errors", snapshot.failures),
+        DnsHealth::NoReplies => format!("{status} · {} timeouts", snapshot.timeouts),
     };
     Line::from(vec![
         Span::raw("DNS: "),
@@ -868,21 +859,7 @@ fn tcp_handshake_lines(
 ) -> Vec<Line<'static>> {
     let c = &snapshot.total;
     let failed = c.reset + c.no_handshake;
-    let (status, color) = if capture_incomplete || snapshot.omitted > 0 {
-        ("incomplete evidence", theme::warn())
-    } else if failed > 0 {
-        ("degraded", theme::warn())
-    } else if c.recovered_anomalies > 0 {
-        ("recovered anomalies", theme::warn())
-    } else if c.superseded > 0 {
-        ("incomplete evidence", theme::warn())
-    } else if snapshot.pending > 0 {
-        ("checking", theme::muted())
-    } else if c.established > 0 {
-        ("healthy", theme::ok())
-    } else {
-        ("not observed", theme::muted())
-    };
+    let (status, color) = super::tcp_handshake_status(snapshot, capture_incomplete);
     // Highest observed failure fraction first; ties favor more evidence.
     // Successful IPv6 destinations cannot dilute a failing IPv4 destination.
     let worst = super::worst_tcp_destination(snapshot);
@@ -969,14 +946,10 @@ fn sandbox_lines<'a, S: AsRef<str>>(
 /// An indented `label: count` statistics line whose count turns `alert`
 /// colored once it is non-zero.
 fn counter_line(label: &str, count: u64, alert: Color) -> Line<'static> {
-    if count > 0 {
-        Line::from(vec![
-            Span::raw(format!("  {label}: ")),
-            Span::styled(count.to_string(), theme::fg(alert)),
-        ])
-    } else {
-        Line::from(format!("  {label}: {count}"))
-    }
+    Line::from(vec![
+        Span::raw(format!("  {label}: ")),
+        super::count_span(count, alert),
+    ])
 }
 
 /// The Security section's lead line: `prefix` followed by the sandbox
@@ -1650,15 +1623,12 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
             let total_errors = stat.rx_errors + stat.tx_errors;
             let total_drops = stat.rx_dropped + stat.tx_dropped;
 
-            let error_style = alert_style(total_errors > 0, theme::err());
-            let drop_style = alert_style(total_drops > 0, theme::warn());
-
             lines.push(Line::from(vec![
                 Span::raw(format!("{}: ", stat.interface_name)),
                 Span::raw("Err: "),
-                Span::styled(format!("{}", total_errors), error_style),
+                super::count_span(total_errors, theme::err()),
                 Span::raw("  Drop: "),
-                Span::styled(format!("{}", total_drops), drop_style),
+                super::count_span(total_drops, theme::warn()),
             ]));
         }
 

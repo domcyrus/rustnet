@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
+- Align health colors across Findings, Overview, Details and host inventory, and leave zero error counts neutral (#734)
 - Combine Findings, Sockets, Interfaces and DNS resolvers in 5 Health & Host, with a responsive evidence inspector and return navigation (#734)
 - Track outbound TCP attempts with inline destination evidence, matching connection Details and a five-minute headless JSON summary (#734)
 - Show inline TCP handshake health and the worst affected destination in Overview, with recovered-anomaly counts and contextual help (#734)

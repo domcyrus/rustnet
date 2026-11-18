@@ -291,12 +291,6 @@ fn fade_at(lines: &mut [Line<'_>], index: usize) {
     }
 }
 
-/// Foreground style for a counter that is fine at zero and alarming
-/// otherwise: `ok` while nothing is wrong, `alert` once `alerting`.
-pub(crate) fn alert_style(alerting: bool, alert: Color) -> ratatui::style::Style {
-    theme::fg(if alerting { alert } else { theme::ok() })
-}
-
 /// Resolve the cell color for a connection's State column.
 /// Maps TCP states to the existing `tcp_*` aliases; falls back to
 /// `field_state()` for non-TCP protocols.

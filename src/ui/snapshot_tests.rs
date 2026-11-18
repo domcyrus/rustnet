@@ -2203,6 +2203,21 @@ fn host_interface_windows_preserve_os_totals_and_clear_observed_counts() {
         assert!(output.contains("2/102"), "{output}");
         assert!(output.contains("3/303"), "{output}");
     }
+    for width in [80, 160] {
+        let buffer = render_host_buffer(&app, &mut state, width);
+        for (text, color) in [
+            ("2/102", theme::err()),
+            ("3/303", theme::warn()),
+            ("0/200", Color::Reset),
+            ("/102", Color::Reset),
+        ] {
+            assert_eq!(
+                style_at_text(&buffer, text).fg,
+                Some(color),
+                "{text} at {width} columns"
+            );
+        }
+    }
     app.clear_all_connections();
     let output = render_app(&app, &mut state, &[], None, 100, 28);
     assert!(output.contains("since clear"), "{output}");
@@ -2565,6 +2580,84 @@ fn health_findings_expand_individually_and_report_capture_failure() {
         assert!(!closed.contains(evidence));
         key(KeyCode::Down, &mut state, &regions);
     }
+}
+
+fn render_host_buffer(app: &App, state: &mut UiState, width: u16) -> ratatui::buffer::Buffer {
+    test_support::render_buffer(width, 32, |f| {
+        draw(
+            f,
+            app,
+            state,
+            &[],
+            None,
+            &app.get_stats(),
+            &mut ClickableRegions::default(),
+        )
+        .unwrap();
+    })
+}
+
+/// Find a rendered ASCII label or value and read the style of its first cell.
+fn style_at_text(buffer: &ratatui::buffer::Buffer, text: &str) -> ratatui::style::Style {
+    for row in buffer.content.chunks(usize::from(buffer.area.width)) {
+        for cells in row.windows(text.len()) {
+            if cells
+                .iter()
+                .flat_map(|cell| cell.symbol().chars())
+                .eq(text.chars())
+            {
+                return cells[0].style();
+            }
+        }
+    }
+    panic!(
+        "missing {text:?} in {}",
+        test_support::buffer_to_string(buffer)
+    );
+}
+
+#[test]
+fn finding_status_and_counts_keep_their_colors_on_the_selected_row() {
+    use tabs::health::Finding;
+    let app = test_app();
+    for txid in 1..=3 {
+        app.ingest_packet_at_for_test(
+            &dns_test_packet(txid, "timeout.example", DnsQueryType::A, false, None),
+            SystemTime::now() - Duration::from_secs(20),
+        );
+    }
+    let mut state = UiState {
+        selected_tab: 4,
+        finding: Finding::Dns,
+        ..Default::default()
+    };
+    let buffer = render_host_buffer(&app, &mut state, 96);
+    let status = style_at_text(&buffer, "no replies");
+    assert_eq!(status.fg, Some(theme::err()));
+    assert!(
+        status
+            .add_modifier
+            .contains(theme::row_highlight().add_modifier)
+    );
+    assert_eq!(style_at_text(&buffer, "3 timeouts").fg, status.fg);
+    assert_eq!(
+        style_at_text(&buffer, "not observed").fg,
+        Some(theme::muted())
+    );
+    assert_eq!(
+        style_at_text(&buffer, "0 reported drops").fg,
+        Some(Color::Reset)
+    );
+
+    app.set_capture_error_for_test(Some("Capture stopped: interface disconnected"));
+    let buffer = render_host_buffer(&app, &mut state, 96);
+    for text in ["incomplete evidence", "unknown (capture stopped)"] {
+        assert_eq!(style_at_text(&buffer, text).fg, Some(theme::warn()));
+    }
+    assert_eq!(
+        style_at_text(&buffer, "Capture failed").fg,
+        Some(theme::err())
+    );
 }
 
 #[test]
