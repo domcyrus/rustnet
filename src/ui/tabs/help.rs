@@ -633,11 +633,22 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
             push_section(&mut lines, "Graph", GRAPH_KEYS);
         }
         HelpContext::HostSockets => {
-            let rows = host_pane_rows(
+            let mut rows = host_pane_rows(
                 HOST_SOCKET_KEYS,
                 ui_state.host_sockets_scroll.can_scroll(),
                 "Scroll the endpoint table",
             );
+            rows.extend([
+                (
+                    "e, ↑/↓",
+                    "Focus and select an affected TCP destination or Details link",
+                ),
+                (
+                    "Enter / click",
+                    "Expand or collapse evidence, or open the matching connection",
+                ),
+                ("Esc", "Leave TCP evidence and resume scrolling"),
+            ]);
             push_section(&mut lines, "Socket Actions", &rows);
             push_section(&mut lines, "Socket Concepts", HOST_SOCKET_CONCEPTS);
             push_section(&mut lines, "TCP Attempt Health", TCP_HEALTH_CONCEPTS);

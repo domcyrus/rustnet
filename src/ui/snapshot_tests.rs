@@ -2321,6 +2321,119 @@ fn host_network_events() {
 }
 
 #[test]
+fn host_tcp_evidence_links_only_to_the_observed_connection() {
+    use crate::network::parser::{TcpFlags, TcpHeaderInfo};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+
+    let app = test_app();
+    let mut conn = local_tcp(50123, "client");
+    conn.created_at = SystemTime::now() - Duration::from_secs(20);
+    let mut syn = ParsedPacket::new(
+        conn.protocol,
+        conn.local_addr,
+        conn.remote_addr,
+        ProtocolState::Tcp(TcpState::SynSent),
+        true,
+        40,
+        None,
+        None,
+    );
+    syn.tcp_header = Some(TcpHeaderInfo {
+        seq: 17,
+        ack: 0,
+        window: 100,
+        payload_len: 0,
+        window_scale: None,
+        flags: TcpFlags {
+            syn: true,
+            fin: false,
+            rst: false,
+            ack: false,
+        },
+    });
+    app.ingest_packet_at_for_test(&syn, conn.created_at);
+    let mut connections = [local_tcp(40000, "other"), conn];
+    let key = |code, ctx: &mut HandlerContext<'_>| {
+        dispatch_key(4, KeyEvent::new(code, KeyModifiers::NONE), ctx).unwrap()
+    };
+    let click = |row, ctx: &mut HandlerContext<'_>| {
+        dispatch_mouse(
+            4,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 3,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+            ctx,
+        )
+        .unwrap()
+    };
+
+    for width in [48, 140] {
+        let mut state = UiState {
+            selected_tab: 4,
+            grouping_enabled: true,
+            ..Default::default()
+        };
+        let (closed, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
+        assert!(!closed.contains("Open Details"));
+        let mut ctx = HandlerContext {
+            connections: &connections,
+            ..test_support::empty_ctx(&app, &mut state, &regions)
+        };
+        if width == 48 {
+            let last_row = regions.tcp_rows[0].1.bottom() - 1;
+            assert!(regions.tcp_rows[0].1.height > 1);
+            click(last_row, &mut ctx);
+        } else {
+            key(KeyCode::Char('e'), &mut ctx);
+            key(KeyCode::Enter, &mut ctx);
+        }
+        assert_eq!(ctx.ui_state.tcp_expanded, Some(syn.remote_addr));
+        let (open, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
+        assert!(open.contains("no handshake observed"), "{open}");
+        assert_eq!(regions.tcp_rows.len(), 2);
+        let mut ctx = HandlerContext {
+            connections: &connections,
+            ..test_support::empty_ctx(&app, &mut state, &regions)
+        };
+        let effects = if width == 48 {
+            click(regions.tcp_rows[1].1.bottom() - 1, &mut ctx)
+        } else {
+            key(KeyCode::Down, &mut ctx);
+            key(KeyCode::Enter, &mut ctx)
+        };
+        assert!(matches!(effects.as_slice(), [Effect::Regroup]));
+        assert_eq!(state.selected_tab, 1);
+        let grouped = compute_grouped_rows(&connections, &state.expanded_groups);
+        render_app(&app, &mut state, &connections, Some(&grouped), width, 50);
+        assert_eq!(state.get_selected_index(&connections), Some(1));
+
+        // The same ports now belong to a different connection. Even an old hit region is harmless.
+        connections[1].created_at += Duration::from_secs(1);
+        state.jump_to_tab(4);
+        let mut ctx = HandlerContext {
+            connections: &connections,
+            ..test_support::empty_ctx(&app, &mut state, &regions)
+        };
+        click(regions.tcp_rows[1].1.bottom() - 1, &mut ctx);
+        assert_eq!(state.selected_tab, 4);
+        let (expired, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
+        assert!(!expired.contains("Open Details"));
+        assert_eq!(regions.tcp_rows.len(), 1);
+        key(
+            KeyCode::Esc,
+            &mut test_support::empty_ctx(&app, &mut state, &regions),
+        );
+        assert!(state.tcp_focus.is_none() && state.tcp_expanded.is_none());
+        connections[1].created_at -= Duration::from_secs(1);
+    }
+}
+
+#[test]
 fn details_network_events() {
     let app = test_app();
     let mut conn = local_tcp(1000, "client");

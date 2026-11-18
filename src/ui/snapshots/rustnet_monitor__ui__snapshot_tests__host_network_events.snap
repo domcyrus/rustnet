@@ -10,7 +10,7 @@ Sockets   Interfaces   DNS
 TCP 0   LISTEN 0   ESTAB 0   OPENING 0   CLOSING 0   TIME_WAIT 0   OTHER 0   UDP BOUND 0                                                    
 Observed RTT  no samples                                                                                                                    
                                                                                                                                             
-▎ Observed network events ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▎ Resets and ICMP errors ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 60s / total (since startup) · captured packets                                                                                              
                                                 Sent: window / total  Received: window / total                                              
 TCP reset                                                      1 / 1                     0 / 0                                              
@@ -20,13 +20,13 @@ ICMP administratively prohibited                               0 / 0            
 ICMP packet too big / frag needed                              0 / 0                     0 / 1                                              
 ICMP time exceeded                                             0 / 0                     0 / 1                                              
 ICMP parameter problem                                         0 / 0                     0 / 1                                              
-TCP attempts (5m): 0 completed, 0 pending                                                                                                   
+                                                                                                                                            
+▎ TCP attempts (5m) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+0 completed, 0 pending                                                                                                                      
   0 established, 0 reset, 0 no handshake, 0 superseded                                                                                      
                                                                                                                                             
 ▎ Listening and Bound Endpoints  0 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
 Proto   State      Local endpoint                        Peer                                 Service             PID Process               
-                                                                                                                                            
-                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

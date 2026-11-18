@@ -2170,10 +2170,11 @@ mod tcp_handshake_tests {
             );
         }
         assert!(text(&s, false).contains("Worst: 192.0.2.3:443"));
-        let host = super::super::host::tcp_attempt_lines(&s);
-        for (line, address) in host[2..5].iter().zip([3, 2, 1]) {
+        let host =
+            super::super::host::tcp_attempt_lines(&s, &Default::default(), &[], &mut Vec::new());
+        for (line, address) in host[3..6].iter().zip([3, 2, 1]) {
             assert!(line.to_string().contains(&format!("192.0.2.{address}:443")));
         }
-        assert!(host[5].to_string().contains("2 more affected destinations"));
+        assert!(host[6].to_string().contains("2 more affected destinations"));
     }
 }

@@ -510,6 +510,7 @@ pub enum ClickAction {
 #[derive(Debug, Default)]
 pub struct ClickableRegions {
     regions: Vec<(Rect, ClickAction)>,
+    pub(super) tcp_rows: Vec<(super::tabs::host::TcpTarget, Rect, u16)>,
     /// The area of the connections table, used for scroll event targeting
     pub scroll_area: Option<Rect>,
 }
@@ -517,6 +518,7 @@ pub struct ClickableRegions {
 impl ClickableRegions {
     pub fn clear(&mut self) {
         self.regions.clear();
+        self.tcp_rows.clear();
         self.scroll_area = None;
     }
 
@@ -603,6 +605,8 @@ pub struct UiState {
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
+    pub(super) tcp_focus: Option<super::tabs::host::TcpTarget>,
+    pub(super) tcp_expanded: Option<std::net::SocketAddr>,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
     pub graph_states_scroll: PaneScroll,
@@ -675,6 +679,8 @@ impl Default for UiState {
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
+            tcp_focus: None,
+            tcp_expanded: None,
             graph_section: GraphSection::default(),
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),
@@ -1017,6 +1023,8 @@ impl UiState {
         self.activity_direction = ActivityDirection::default();
         self.dns_sort = DnsSort::default();
         self.host_window = TimeWindow::default();
+        self.tcp_focus = None;
+        self.tcp_expanded = None;
         self.dns_questions_scroll.reset();
         self.grouped_scroll_offset = 0;
     }

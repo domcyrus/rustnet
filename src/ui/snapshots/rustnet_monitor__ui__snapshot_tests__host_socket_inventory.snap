@@ -10,18 +10,18 @@ Sockets   Interfaces   DNS
 TCP 2   LISTEN 1   ESTAB 1   OPENING 0   CLOSING 0   TIME_WAIT 0   OTHER 0   UDP BOUND 1                                                    
 Observed RTT  1 samples   average 24ms   max 24ms                                                                                           
                                                                                                                                             
-▎ Observed network events ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▎ Resets and ICMP errors ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 60s / total (since startup) · captured packets                                                                                              
-No events observed                                                                                                                          
-TCP attempts (5m): 0 completed, 0 pending                                                                                                   
+No resets or ICMP errors observed                                                                                                           
+                                                                                                                                            
+▎ TCP attempts (5m) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+0 completed, 0 pending                                                                                                                      
   0 established, 0 reset, 0 no handshake, 0 superseded                                                                                      
                                                                                                                                             
 ▎ Listening and Bound Endpoints  2 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
 Proto   State      Local endpoint                        Peer                                 Service             PID Process               
 TCP     LISTEN     0.0.0.0:8080                          -                                    webcache           4242 web-server            
 UDP     BOUND      127.0.0.1:53                          -                                    domain               53 resolver              
-                                                                                                                                            
-                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

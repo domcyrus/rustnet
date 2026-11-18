@@ -1,9 +1,11 @@
 //! Host socket inventory and interface statistics.
 
+use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::style::Stylize;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -27,6 +29,78 @@ use crate::ui::{
 };
 
 use super::interfaces::draw_interface_stats;
+use crate::network::process_activity::process_group_label;
+use crate::network::tcp_attempts::AttemptOutcome;
+use crate::network::types::{Connection, ConnectionKey};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui) enum TcpTarget {
+    Destination(SocketAddr),
+    Details(ConnectionKey, SystemTime),
+}
+
+impl TcpTarget {
+    fn connection(self, connections: &[Connection]) -> Option<usize> {
+        let Self::Details(key, started) = self else {
+            return None;
+        };
+        connections
+            .iter()
+            .position(|c| c.created_at == started && ConnectionKey::from_connection(c) == key)
+    }
+
+    fn activate(self, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
+        let state = &mut ctx.ui_state;
+        state.tcp_focus = Some(self);
+        match self {
+            Self::Destination(addr) => {
+                state.tcp_expanded = (state.tcp_expanded != Some(addr)).then_some(addr);
+            }
+            Self::Details(..) => {
+                if let Some(i) = self.connection(ctx.connections) {
+                    state.set_selected_by_index(ctx.connections, i);
+                    state.jump_to_tab(1);
+                    if state.grouping_enabled
+                        && state
+                            .expanded_groups
+                            .insert(process_group_label(&ctx.connections[i]).to_owned())
+                    {
+                        return vec![Effect::Regroup];
+                    }
+                }
+            }
+        }
+        Vec::new()
+    }
+}
+
+fn tcp_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+    if key.modifiers != KeyModifiers::NONE {
+        return None;
+    }
+    let rows = &ctx.click_regions.tcp_rows;
+    let focused = ctx.ui_state.tcp_focus;
+    let index = rows.iter().position(|(t, _, _)| Some(*t) == focused);
+    let next = match (key.code, index) {
+        (KeyCode::Esc, _) if focused.is_some() => {
+            ctx.ui_state.tcp_focus = None;
+            ctx.ui_state.tcp_expanded = None;
+            return Some(Vec::new());
+        }
+        (KeyCode::Enter, Some(i)) => return Some(rows[i].0.activate(ctx)),
+        (KeyCode::Char('e'), _) if !rows.is_empty() => 0,
+        (KeyCode::Up, Some(i)) => i.saturating_sub(1),
+        (KeyCode::Down, Some(i)) => (i + 1).min(rows.len() - 1),
+        _ => return None,
+    };
+    let (target, rect, offset) = rows[next];
+    ctx.ui_state.tcp_focus = Some(target);
+    if rect.height == 0 {
+        ctx.ui_state.host_sockets_scroll.scroll_to_top();
+        ctx.ui_state.host_sockets_scroll.scroll_down(offset);
+    }
+    Some(Vec::new())
+}
 
 pub(in crate::ui) struct HostTab;
 
@@ -36,17 +110,22 @@ impl Component for HostTab {
         f: &mut Frame,
         area: Rect,
         ctx: &ComponentContext<'_>,
-        _click_regions: &mut ClickableRegions,
+        click_regions: &mut ClickableRegions,
     ) -> Result<()> {
         let content = area;
         match ctx.ui_state.host_view {
-            HostView::Sockets => draw_sockets(f, content, ctx),
+            HostView::Sockets => draw_sockets(f, content, ctx, click_regions),
             HostView::Interfaces => draw_interface_stats(f, ctx.app, ctx.ui_state, content),
             HostView::Dns => draw_dns_analytics(f, content, ctx),
         }
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        if ctx.ui_state.host_view == HostView::Sockets
+            && let Some(effects) = tcp_key(key, ctx)
+        {
+            return Some(effects);
+        }
         if key.code == KeyCode::Char('w') && key.modifiers == KeyModifiers::NONE {
             ctx.ui_state.host_window = ctx.ui_state.host_window.next();
             ctx.ui_state.dns_questions_scroll.reset();
@@ -86,6 +165,17 @@ impl Component for HostTab {
     ) -> Option<Vec<Effect>> {
         match ctx.ui_state.host_view {
             HostView::Sockets => {
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && let Some(&(target, _, _)) = ctx
+                        .click_regions
+                        .tcp_rows
+                        .iter()
+                        .find(|(_, rect, _)| rect.contains((mouse.column, mouse.row).into()))
+                {
+                    ctx.ui_state.quit_confirmation = false;
+                    ctx.ui_state.clear_confirmation = false;
+                    return Some(target.activate(ctx));
+                }
                 try_handle_pane_wheel(mouse, &mut ctx.ui_state.host_sockets_scroll)
             }
             HostView::Interfaces => {
@@ -632,12 +722,24 @@ fn draw_dns_questions(
     );
 }
 
-fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result<()> {
+fn draw_sockets(
+    f: &mut Frame,
+    area: Rect,
+    ctx: &ComponentContext<'_>,
+    regions: &mut ClickableRegions,
+) -> Result<()> {
     let snapshot = ctx.app.get_socket_snapshot();
     let events = ctx.app.get_network_event_snapshot(ctx.ui_state.host_window);
-    let mut event_lines = network_event_lines(&events, ctx.ui_state.host_window, area.width < 100);
-    event_lines.extend(tcp_attempt_lines(&ctx.app.get_tcp_attempt_snapshot()));
+    let event_lines = network_event_lines(&events, ctx.ui_state.host_window, area.width < 100);
+    let mut targets = Vec::new();
+    let tcp_lines = tcp_attempt_lines(
+        &ctx.app.get_tcp_attempt_snapshot(),
+        ctx.ui_state,
+        ctx.connections,
+        &mut targets,
+    );
     let event_height = event_lines.len() as u16 + 1;
+    let tcp_height = tcp_lines.len() as u16 + 1;
     let mut endpoints: Vec<&HostSocket> = snapshot
         .sockets
         .iter()
@@ -691,14 +793,21 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
     let required_width =
         7 + 10 + endpoint_width + peer_width + service_width + pid_width + process_width + 8;
     if area.width < 120
-        || area.height < 10 + event_height
+        || area.height < 11 + event_height + tcp_height
+        || tcp_lines
+            .iter()
+            .any(|line| line.width() > usize::from(area.width))
         || usize::from(area.width) < required_width
     {
         let inner = section_header(f, area, section_title("Host Socket States and Endpoints"));
         let mut lines = socket_summary_lines(&snapshot.sockets, ctx.connections);
         lines.push(Line::default());
-        lines.push(Line::from(section_title("Observed network events")));
+        lines.push(Line::from(section_title("Resets and ICMP errors")));
         lines.extend(event_lines);
+        lines.push(Line::default());
+        lines.push(Line::from(section_title("TCP attempts (5m)")));
+        let tcp_start = lines.len();
+        lines.extend(tcp_lines);
         lines.push(Line::default());
         lines.push(Line::from(section_title(format!(
             "Listening and Bound Endpoints · {} rows",
@@ -735,12 +844,33 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         if lines.last().is_some_and(|line| line.width() == 0) {
             lines.pop();
         }
-        draw_scrolled_text(
+        // Map logical rows to terminal lines using the scrolled pane's gutter.
+        let width = inner.width.saturating_sub(2).max(1);
+        let height = |line: &Line<'_>| {
+            Paragraph::new(line.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(width) as u16
+        };
+        let mut previous = 0;
+        let mut row = 0;
+        let wrapped_targets: Vec<_> = targets
+            .into_iter()
+            .map(|(index, target)| {
+                let index = tcp_start + index;
+                row += lines[previous..index].iter().map(height).sum::<u16>();
+                previous = index;
+                (target, row, height(&lines[index]))
+            })
+            .collect();
+        let (text_area, offset) = draw_scrolled_text(
             f,
             inner,
             Paragraph::new(lines).wrap(Wrap { trim: false }),
             &ctx.ui_state.host_sockets_scroll,
         );
+        for (target, row, height) in wrapped_targets {
+            register_tcp_row(regions, target, row, height, text_area, offset);
+        }
         return Ok(());
     }
 
@@ -750,12 +880,18 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         .constraints([
             Constraint::Length(3),
             Constraint::Length(event_height),
+            Constraint::Length(tcp_height),
             Constraint::Min(5),
         ])
         .split(area);
     draw_socket_summary(f, chunks[0], &snapshot.sockets, ctx.connections);
-    let event_area = section_header(f, chunks[1], section_title(" Observed network events"));
+    let event_area = section_header(f, chunks[1], section_title(" Resets and ICMP errors"));
     f.render_widget(Paragraph::new(event_lines), event_area);
+    let tcp_area = section_header(f, chunks[2], section_title(" TCP attempts (5m)"));
+    f.render_widget(Paragraph::new(tcp_lines), tcp_area);
+    for (index, target) in targets {
+        register_tcp_row(regions, target, index as u16, 1, tcp_area, 0);
+    }
     let widths = [
         Constraint::Length(7),
         Constraint::Length(10),
@@ -765,7 +901,7 @@ fn draw_sockets(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> Result
         Constraint::Length(pid_width as u16),
         Constraint::Length(process_width as u16),
     ];
-    draw_endpoint_table(f, chunks[2], ctx, &endpoints, &widths);
+    draw_endpoint_table(f, chunks[3], ctx, &endpoints, &widths);
     Ok(())
 }
 
@@ -786,7 +922,7 @@ fn network_event_lines(
     ))];
     let mut observed = events.total.observed().peekable();
     if observed.peek().is_none() {
-        lines.push(Line::from("No events observed"));
+        lines.push(Line::from("No resets or ICMP errors observed"));
         return lines;
     }
     if !compact {
@@ -978,13 +1114,30 @@ fn draw_endpoint_table(
     );
 }
 
+fn register_tcp_row(
+    regions: &mut ClickableRegions,
+    target: TcpTarget,
+    row: u16,
+    height: u16,
+    area: Rect,
+    offset: u16,
+) {
+    let top = row.saturating_sub(offset).min(area.height);
+    let bottom = (row + height).saturating_sub(offset).min(area.height);
+    let rect = Rect::new(area.x, area.y + top, area.width, bottom - top);
+    regions.tcp_rows.push((target, rect, row));
+}
+
 pub(super) fn tcp_attempt_lines(
     snapshot: &crate::network::tcp_attempts::TcpAttemptSnapshot,
+    state: &crate::ui::UiState,
+    connections: &[Connection],
+    targets: &mut Vec<(usize, TcpTarget)>,
 ) -> Vec<Line<'static>> {
     let c = &snapshot.total;
     let mut lines = vec![
         Line::from(format!(
-            "TCP attempts (5m): {} completed, {} pending",
+            "{} completed, {} pending",
             c.completed, snapshot.pending
         )),
         Line::from(format!(
@@ -998,14 +1151,66 @@ pub(super) fn tcp_attempt_lines(
         .filter(|(_, c)| c.reset + c.no_handshake + c.anomalous > 0)
         .collect();
     destinations.sort_by(|a, b| super::compare_tcp_destinations(*b, *a));
-    for (address, c) in destinations.iter().take(3) {
+    if !destinations.is_empty() {
+        lines.push(Line::from(
+            "Affected destinations   e focus   ↑/↓ select   Enter open/close   Esc back",
+        ));
+    }
+    for &(address, c) in destinations.iter().take(3) {
+        let target = TcpTarget::Destination(*address);
+        targets.push((lines.len(), target));
+        let expanded = state.tcp_expanded == Some(*address);
+        let marker = if expanded { "▾" } else { "▸" };
         lines.push(Line::from(format!(
-            "  {address}: {}/{} reset or incomplete; {} anomalous, {} SYN retries",
+            "{marker} {address}  {}/{} reset or incomplete, {} anomalous, {} SYN retries",
             c.reset + c.no_handshake,
             c.completed,
             c.anomalous,
             c.syn_retries
         )));
+        if expanded {
+            lines.push(Line::from(format!(
+                "    {} established, {} reset, {} no handshake, {} superseded",
+                c.established, c.reset, c.no_handshake, c.superseded
+            )));
+            let mut issues = snapshot
+                .recent_issues
+                .iter()
+                .filter(|issue| issue.key.remote_addr == *address)
+                .peekable();
+            if issues.peek().is_none() {
+                lines.push(Line::from(
+                    "    No matching attempt in the 32 most recent issues",
+                ));
+            }
+            for issue in issues {
+                let link = TcpTarget::Details(issue.key, issue.started_at);
+                let action = if link.connection(connections).is_some() {
+                    targets.push((lines.len(), link));
+                    "[Open Details]"
+                } else {
+                    "Details unavailable"
+                };
+                lines.push(Line::from(format!(
+                    "    {}  {}  {}  {action}",
+                    chrono::DateTime::<chrono::Local>::from(issue.finished_at).format("%H:%M:%S"),
+                    match issue.outcome {
+                        AttemptOutcome::Established => "established after anomaly",
+                        AttemptOutcome::NoHandshake => "no handshake observed",
+                        outcome => outcome.label(),
+                    },
+                    issue.key.local_addr
+                )));
+                if issue.unexpected_acks
+                    + issue.invalid_syn_acks
+                    + issue.local_resets
+                    + issue.syn_retries
+                    > 0
+                {
+                    lines.push(Line::from(format!("      SYN retries {}  unexpected ACKs {}  invalid SYN-ACKs {}  local resets {}", issue.syn_retries, issue.unexpected_acks, issue.invalid_syn_acks, issue.local_resets)));
+                }
+            }
+        }
     }
     if destinations.len() > 3 {
         lines.push(Line::from(format!(
@@ -1023,6 +1228,15 @@ pub(super) fn tcp_attempt_lines(
         lines.push(Line::from(
             "  Missing capture packets or local cancellation can also prevent observed completion.",
         ));
+    }
+    if let Some((index, _)) = targets
+        .iter()
+        .find(|(_, target)| Some(*target) == state.tcp_focus)
+    {
+        lines[*index] = lines[*index]
+            .clone()
+            .style(theme::bold_fg(theme::accent()))
+            .reversed();
     }
     lines
 }
@@ -1048,14 +1262,14 @@ mod tcp_attempt_tests {
             destinations: [("198.51.100.1:443".parse().unwrap(), counts)].into(),
             ..Default::default()
         };
-        let text = tcp_attempt_lines(&snapshot)
+        let text = tcp_attempt_lines(&snapshot, &Default::default(), &[], &mut Vec::new())
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("TCP attempts (5m)"));
+        assert!(text.contains("3 completed, 2 pending"));
         assert!(text.contains("2 no handshake"));
-        assert!(text.contains("198.51.100.1:443: 2/3"));
+        assert!(text.contains("198.51.100.1:443  2/3"));
         assert!(text.contains("4 capacity omissions"));
         assert!(text.contains("Missing capture packets or local cancellation"));
     }
