@@ -36,17 +36,17 @@ use crate::network::types::{Connection, ConnectionKey};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::ui) enum TcpTarget {
     Destination(SocketAddr),
-    Details(ConnectionKey, SystemTime),
+    Details(ConnectionKey, SystemTime, u32),
 }
 
 impl TcpTarget {
     fn connection(self, connections: &[Connection]) -> Option<usize> {
-        let Self::Details(key, started) = self else {
+        let Self::Details(key, created_at, _) = self else {
             return None;
         };
         connections
             .iter()
-            .position(|c| c.created_at == started && ConnectionKey::from_connection(c) == key)
+            .position(|c| c.created_at == created_at && ConnectionKey::from_connection(c) == key)
     }
 
     fn activate(self, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
@@ -55,6 +55,7 @@ impl TcpTarget {
         match self {
             Self::Destination(addr) => {
                 state.tcp_expanded = (state.tcp_expanded != Some(addr)).then_some(addr);
+                state.tcp_reveal.set(true);
             }
             Self::Details(..) => {
                 if let Some(i) = self.connection(ctx.connections) {
@@ -728,6 +729,7 @@ fn draw_sockets(
     ctx: &ComponentContext<'_>,
     regions: &mut ClickableRegions,
 ) -> Result<()> {
+    let reveal = ctx.ui_state.tcp_reveal.take();
     let snapshot = ctx.app.get_socket_snapshot();
     let events = ctx.app.get_network_event_snapshot(ctx.ui_state.host_window);
     let event_lines = network_event_lines(&events, ctx.ui_state.host_window, area.width < 100);
@@ -859,7 +861,13 @@ fn draw_sockets(
                 let index = tcp_start + index;
                 row += lines[previous..index].iter().map(height).sum::<u16>();
                 previous = index;
-                (target, row, height(&lines[index]))
+                let height = height(&lines[index]);
+                if reveal && Some(target) == ctx.ui_state.tcp_focus {
+                    ctx.ui_state
+                        .host_sockets_scroll
+                        .reveal(row, row + height, inner.height);
+                }
+                (target, row, height)
             })
             .collect();
         let (text_area, offset) = draw_scrolled_text(
@@ -1184,8 +1192,12 @@ pub(super) fn tcp_attempt_lines(
                 ));
             }
             for issue in issues {
-                let link = TcpTarget::Details(issue.key, issue.started_at);
-                let action = if link.connection(connections).is_some() {
+                let link = issue
+                    .connection_created_at
+                    .map(|created| TcpTarget::Details(issue.key, created, issue.initial_sequence));
+                let action = if let Some(link) =
+                    link.filter(|target| target.connection(connections).is_some())
+                {
                     targets.push((lines.len(), link));
                     "[Open Details]"
                 } else {

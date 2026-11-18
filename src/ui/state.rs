@@ -315,34 +315,43 @@ impl ActivitySort {
 /// against what is actually on screen.
 #[derive(Debug, Default)]
 pub struct PaneScroll {
-    offset: u16,
+    offset: Cell<u16>,
     max: Cell<u16>,
     viewport: Cell<u16>,
 }
 
 impl PaneScroll {
     pub fn scroll_up(&mut self, lines: u16) {
-        self.offset = self.offset.saturating_sub(lines);
+        self.offset.set(self.offset.get().saturating_sub(lines));
     }
 
     pub fn scroll_down(&mut self, lines: u16) {
-        self.offset = self.offset.saturating_add(lines).min(self.max.get());
+        self.offset
+            .set(self.offset.get().saturating_add(lines).min(self.max.get()));
     }
 
     pub fn scroll_to_top(&mut self) {
-        self.offset = 0;
+        self.offset.set(0);
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.offset = self.max.get();
+        self.offset.set(self.max.get());
     }
 
     pub fn reset(&mut self) {
-        self.offset = 0;
+        self.offset.set(0);
         // Forget the last render's extent too, so the hint gating does not
         // keep advertising scroll for content that is gone; the next render
         // reports the real extent again.
         self.max.set(0);
+    }
+
+    /// Keep an activated row and its first detail visible after reflow.
+    pub(super) fn reveal(&self, row: u16, last: u16, viewport: u16) {
+        let offset = self.offset.get();
+        if row < offset || last >= offset.saturating_add(viewport) {
+            self.offset.set(row);
+        }
     }
 
     /// Whether the last render had content beyond the viewport. Drives
@@ -355,7 +364,7 @@ impl PaneScroll {
     /// (clamped) offset to draw with.
     pub fn clamp_for_render(&self, max: u16) -> u16 {
         self.max.set(max);
-        self.offset.min(max)
+        self.offset.get().min(max)
     }
 
     /// Record this render's viewport height so page-wise scrolling can
@@ -607,6 +616,7 @@ pub struct UiState {
     pub host_sockets_scroll: PaneScroll,
     pub(super) tcp_focus: Option<super::tabs::host::TcpTarget>,
     pub(super) tcp_expanded: Option<std::net::SocketAddr>,
+    pub(super) tcp_reveal: Cell<bool>,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
     pub graph_states_scroll: PaneScroll,
@@ -681,6 +691,7 @@ impl Default for UiState {
             host_sockets_scroll: PaneScroll::default(),
             tcp_focus: None,
             tcp_expanded: None,
+            tcp_reveal: Cell::default(),
             graph_section: GraphSection::default(),
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),

@@ -2320,16 +2320,8 @@ fn host_network_events() {
     }
 }
 
-#[test]
-fn host_tcp_evidence_links_only_to_the_observed_connection() {
+fn evidence_syn(conn: &Connection, seq: u32) -> ParsedPacket {
     use crate::network::parser::{TcpFlags, TcpHeaderInfo};
-    use crossterm::event::{
-        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-    };
-
-    let app = test_app();
-    let mut conn = local_tcp(50123, "client");
-    conn.created_at = SystemTime::now() - Duration::from_secs(20);
     let mut syn = ParsedPacket::new(
         conn.protocol,
         conn.local_addr,
@@ -2341,7 +2333,7 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
         None,
     );
     syn.tcp_header = Some(TcpHeaderInfo {
-        seq: 17,
+        seq,
         ack: 0,
         window: 100,
         payload_len: 0,
@@ -2353,6 +2345,19 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             ack: false,
         },
     });
+    syn
+}
+
+#[test]
+fn host_tcp_evidence_links_only_to_the_observed_connection() {
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+
+    let app = test_app();
+    let mut conn = local_tcp(50123, "client");
+    conn.created_at = SystemTime::now() - Duration::from_secs(20);
+    let syn = evidence_syn(&conn, 17);
     app.ingest_packet_at_for_test(&syn, conn.created_at);
     let mut connections = [local_tcp(40000, "other"), conn];
     let key = |code, ctx: &mut HandlerContext<'_>| {
@@ -2431,6 +2436,95 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
         assert!(state.tcp_focus.is_none() && state.tcp_expanded.is_none());
         connections[1].created_at -= Duration::from_secs(1);
     }
+}
+
+#[test]
+fn host_tcp_details_opens_each_same_timestamp_generation() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let conn = local_tcp(50123, "client");
+    let captured = SystemTime::now() - Duration::from_secs(2);
+    for seq in [17, 33] {
+        let mut packet = evidence_syn(&conn, seq);
+        app.ingest_packet_at_for_test(&packet, captured);
+        packet.is_outgoing = false;
+        packet.protocol_state = ProtocolState::Tcp(TcpState::Closed);
+        let header = packet.tcp_header.as_mut().unwrap();
+        header.flags.syn = false;
+        header.flags.ack = true;
+        header.flags.rst = true;
+        header.ack = seq + 1;
+        app.ingest_packet_at_for_test(&packet, captured);
+    }
+    app.set_show_historic(true);
+    // Publish both real generations through the final snapshot builder.
+    assert_eq!(app.stop().panicked_workers, 0);
+    let connections = app.get_connections();
+    assert_eq!(connections.len(), 2);
+    assert!(connections[0].is_historic && connections[0].created_at < connections[1].created_at);
+    let mut state = UiState {
+        selected_tab: 4,
+        tcp_expanded: Some(conn.remote_addr),
+        ..Default::default()
+    };
+    let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 50);
+    assert_eq!(regions.tcp_rows.len(), 3);
+    for (i, (target, _, _)) in regions.tcp_rows[1..].iter().enumerate() {
+        state.jump_to_tab(4);
+        state.tcp_focus = Some(*target);
+        let mut ctx = HandlerContext {
+            connections: &connections,
+            ..test_support::empty_ctx(&app, &mut state, &regions)
+        };
+        dispatch_key(
+            4,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut ctx,
+        )
+        .unwrap();
+        assert_eq!(state.selected_tab, 1);
+        assert_eq!(state.get_selected_index(&connections), Some(i));
+    }
+}
+
+#[test]
+fn host_tcp_expansion_keeps_evidence_visible_when_layout_changes() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let app = test_app();
+    let captured = SystemTime::now() - Duration::from_secs(20);
+    let sockets = (1..=100)
+        .map(|port| {
+            let conn = local_tcp(port, "client");
+            if port <= 12 {
+                app.ingest_packet_at_for_test(&evidence_syn(&conn, 17), captured);
+            }
+            HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: conn.local_addr,
+                remote_addr: None,
+                state: HostSocketState::Tcp(HostTcpState::Listen),
+                owner: None,
+                native_id: None,
+            }
+        })
+        .collect();
+    app.set_socket_snapshot_for_test(SocketSnapshot::new(sockets));
+    let mut state = UiState {
+        selected_tab: 4,
+        ..Default::default()
+    };
+    let (closed, regions) = render_app_frame(&app, &mut state, &[], None, 140, 30);
+    assert!(closed.contains("Local endpoint")); // Wide endpoint table.
+    let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
+    for code in [KeyCode::Char('G'), KeyCode::Char('e'), KeyCode::Enter] {
+        dispatch_key(4, KeyEvent::new(code, KeyModifiers::NONE), &mut ctx).unwrap();
+    }
+    let (opened, regions) = render_app_frame(&app, &mut state, &[], None, 140, 30);
+    assert!(opened.contains("Host Socket States and Endpoints")); // Compact document.
+    assert!(
+        regions.tcp_rows[0].1.height > 0 && opened.contains("no handshake observed"),
+        "{opened}"
+    );
 }
 
 #[test]

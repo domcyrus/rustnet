@@ -1658,6 +1658,7 @@ mod tcp_attempt_json_tests {
             omitted: 3,
             recent_issues: vec![TcpAttempt {
                 key,
+                connection_created_at: None,
                 started_at: SystemTime::UNIX_EPOCH,
                 finished_at: SystemTime::UNIX_EPOCH + Duration::from_secs(10),
                 initial_sequence: 1000,

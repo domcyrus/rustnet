@@ -393,9 +393,7 @@ impl ConnectionTracker {
         now: SystemTime,
     ) -> (IngestOutcome, Option<bool>) {
         let mut attributed = None;
-        let outcome = self.ingest_at_impl(parsed, now, |conn| {
-            attributed = Some(conn.pid.is_some());
-        });
+        let outcome = self.ingest_at_impl(parsed, now, |owner| attributed = owner);
         (outcome, attributed)
     }
 
@@ -403,7 +401,7 @@ impl ConnectionTracker {
         &self,
         parsed: &ParsedPacket,
         now: SystemTime,
-        observe: impl FnOnce(&Connection),
+        observe_owner: impl FnOnce(Option<bool>),
     ) -> IngestOutcome {
         // Harvest IP -> MAC mappings from ARP and NDP packets; only they pay
         // this cost.
@@ -417,13 +415,6 @@ impl ConnectionTracker {
         }
 
         let timings = self.measure_timings(parsed, now);
-        if parsed.protocol == Protocol::Tcp
-            && let Some(tcp) = &parsed.tcp_header
-            && let Ok(mut attempts) = self.tcp_attempts.lock()
-        {
-            attempts.record(parsed.connection_key(), tcp, parsed.is_outgoing, now);
-        }
-
         if parsed.protocol == Protocol::Udp
             && let Some(dpi) = &parsed.dpi_result
             && let ApplicationProtocol::Dns(dns) = &dpi.application
@@ -450,7 +441,21 @@ impl ConnectionTracker {
             Vec::new()
         };
 
-        let outcome = self.ingest_update(parsed, now, timings, observe);
+        let outcome = self.ingest_update(parsed, now, timings, |connection| {
+            observe_owner(connection.map(|(_, attributed)| attributed));
+            if parsed.protocol == Protocol::Tcp
+                && let Some(tcp) = &parsed.tcp_header
+                && let Ok(mut attempts) = self.tcp_attempts.lock()
+            {
+                attempts.record(
+                    parsed.connection_key(),
+                    tcp,
+                    parsed.is_outgoing,
+                    now,
+                    connection.map(|(created_at, _)| created_at),
+                );
+            }
+        });
 
         // Tag drained waiters after the table update so the DNS packet's own
         // row never holds an entry lock while a waiter's row is taken.
@@ -471,7 +476,7 @@ impl ConnectionTracker {
         parsed: &ParsedPacket,
         now: SystemTime,
         timings: PacketTimings,
-        observe: impl FnOnce(&Connection),
+        observe: impl FnOnce(Option<(SystemTime, bool)>),
     ) -> IngestOutcome {
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
@@ -498,12 +503,14 @@ impl ConnectionTracker {
             let deltas = merge_packet_into_connection(&mut conn, parsed, now);
             apply_timings(&mut conn, &timings);
             apply_observed_protocol_health(&mut conn, parsed);
-            observe(&conn);
+            let observation = (conn.created_at, conn.pid.is_some());
             drop(conn);
+            observe(Some(observation));
             return self.finish_ingest(key, false, deltas);
         }
 
         if self.is_recent_late_packet(key, parsed, now) {
+            observe(None);
             return IngestOutcome {
                 ignored_late: true,
                 ..IngestOutcome::new(key)
@@ -737,7 +744,7 @@ impl ConnectionTracker {
         now: SystemTime,
         key: ConnectionKey,
         timings: PacketTimings,
-        observe: impl FnOnce(&Connection),
+        observe: impl FnOnce(Option<(SystemTime, bool)>),
     ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
@@ -748,6 +755,7 @@ impl ConnectionTracker {
         if self.active_count.load(Ordering::Relaxed) >= self.config.max_connections
             && !self.connections.contains_key(&key)
         {
+            observe(None);
             return IngestOutcome {
                 dropped: true,
                 ..IngestOutcome::new(key)
@@ -777,11 +785,12 @@ impl ConnectionTracker {
                 }
                 conn
             });
-        observe(&conn);
-        drop(conn);
+        let observation = (conn.created_at, conn.pid.is_some());
         if created {
             self.active_count.fetch_add(1, Ordering::Relaxed);
         }
+        drop(conn);
+        observe(Some(observation));
 
         self.finish_ingest(key, created, deltas)
     }
@@ -818,7 +827,7 @@ impl ConnectionTracker {
         now: SystemTime,
         key: ConnectionKey,
         timings: PacketTimings,
-        observe: impl FnOnce(&Connection),
+        observe: impl FnOnce(Option<(SystemTime, bool)>),
     ) -> IngestOutcome {
         let _lifecycle = self
             .lifecycle
