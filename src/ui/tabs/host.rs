@@ -134,7 +134,7 @@ fn draw_dns_analytics(f: &mut Frame, area: Rect, ctx: &ComponentContext<'_>) -> 
     Ok(())
 }
 
-fn dns_guidance(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> &'static str {
+pub(super) fn dns_guidance(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> &'static str {
     if capture_failed {
         "Capture stopped: restore capture before judging DNS health."
     } else if snapshot.timeouts > 0 {
@@ -192,21 +192,17 @@ fn draw_dns_evidence(
         area,
         section_title(format!(" Resolver Evidence ({})", snapshot.window_label())),
     );
-    let lines = dns_evidence_lines(snapshot, capture_failed, Some(usize::from(inner.height)));
+    let lines = dns_evidence_lines(snapshot, capture_failed, usize::from(inner.height));
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Inventory reserves space for questions. The findings inspector can scroll through every row.
-pub(super) fn dns_evidence_lines(
+/// Reserve inventory space for the question table.
+fn dns_evidence_lines(
     snapshot: &DnsAnalyticsSnapshot,
     capture_failed: bool,
-    height: Option<usize>,
+    height: usize,
 ) -> Vec<Line<'static>> {
-    let resolver_limit = match height {
-        Some(0..7) => 2,
-        Some(_) => 3,
-        None => snapshot.resolvers.len(),
-    };
+    let resolver_limit = if height < 7 { 2 } else { 3 };
     let mut lines = vec![Line::styled(
         dns_guidance(snapshot, capture_failed),
         theme::fg(theme::muted()),
@@ -214,43 +210,11 @@ pub(super) fn dns_evidence_lines(
     // Keep both live resolver evidence and retained failures visible on a
     // standard terminal. Explicit counts disclose rows omitted for space.
     for resolver in snapshot.resolvers.iter().take(resolver_limit) {
-        let (health, level) = if capture_failed {
-            ("unknown", super::HealthLevel::Warning)
-        } else {
-            super::dns_health_status(resolver.health, false)
-        };
-        let failures = resolver
-            .timeouts
-            .saturating_add(resolver.servfail)
-            .saturating_add(resolver.refused)
-            .saturating_add(resolver.other_rcodes);
-        let timing = if let Some(age) = resolver.oldest_pending {
-            format!("oldest {}s", age.as_secs())
-        } else {
-            format!(
-                "{}p95 {}",
-                if snapshot.approximate_latency {
-                    "~"
-                } else {
-                    ""
-                },
-                resolver
-                    .latency_p95
-                    .map_or_else(|| "-".into(), format_rtt_compact)
-            )
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{} ", resolver.address), theme::fg(theme::text())),
-            Span::styled(health, theme::fg(level.color())),
-            label(format!(
-                "  fail {}/{}  wait {}  retry {}  {}",
-                failures,
-                resolver.answered.saturating_add(resolver.timeouts),
-                resolver.pending,
-                resolver.retries,
-                timing
-            )),
-        ]));
+        lines.push(resolver_line(
+            resolver,
+            capture_failed,
+            snapshot.approximate_latency,
+        ));
     }
     if snapshot.resolvers.len() > resolver_limit {
         lines.push(Line::styled(
@@ -262,7 +226,7 @@ pub(super) fn dns_evidence_lines(
         ));
     }
     let groups = dns_issue_groups(&snapshot.recent_issues);
-    let available = height.map_or(groups.len(), |rows| rows.saturating_sub(lines.len() + 1));
+    let available = height.saturating_sub(lines.len() + 1);
     lines.push(Line::styled(
         format!(
             "Recent issues (15m, {}/{} groups, {} retained)",
@@ -278,31 +242,77 @@ pub(super) fn dns_evidence_lines(
             theme::fg(theme::muted()),
         ));
     }
-    let now = SystemTime::now();
     for (issue, count) in groups.into_iter().take(available) {
-        let age = now.duration_since(issue.at).unwrap_or_default().as_secs();
-        let age = if age < 60 {
-            format!("{age}s")
-        } else {
-            format!("{}m", age / 60)
-        };
-        let color = if issue.kind == DnsIssueKind::Slow {
-            theme::warn()
-        } else {
-            theme::err()
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{} {} x{}", issue.resolver, issue.kind.label(), count),
-                theme::fg(color),
-            ),
-            label(format!(
-                "  {age} ago  {}",
-                issue.query_name.as_deref().unwrap_or("unknown question")
-            )),
-        ]));
+        lines.push(dns_issue_line(issue, count));
     }
     lines
+}
+
+pub(super) fn dns_issue_line(issue: &DnsIssue, count: usize) -> Line<'static> {
+    let age = SystemTime::now()
+        .duration_since(issue.at)
+        .unwrap_or_default()
+        .as_secs();
+    let age = if age < 60 {
+        format!("{age}s")
+    } else {
+        format!("{}m", age / 60)
+    };
+    let color = if issue.kind == DnsIssueKind::Slow {
+        theme::warn()
+    } else {
+        theme::err()
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("{} {} x{}", issue.resolver, issue.kind.label(), count),
+            theme::fg(color),
+        ),
+        label(format!(
+            "  {age} ago  {}",
+            issue.query_name.as_deref().unwrap_or("unknown question")
+        )),
+    ])
+}
+
+pub(super) fn resolver_line(
+    resolver: &crate::network::dns_analytics::DnsResolverStats,
+    capture_failed: bool,
+    approximate_latency: bool,
+) -> Line<'static> {
+    let (health, level) = if capture_failed {
+        ("unknown", super::HealthLevel::Warning)
+    } else {
+        super::dns_health_status(resolver.health, false)
+    };
+    let failures = resolver
+        .timeouts
+        .saturating_add(resolver.servfail)
+        .saturating_add(resolver.refused)
+        .saturating_add(resolver.other_rcodes);
+    let timing = if let Some(age) = resolver.oldest_pending {
+        format!("oldest {}s", age.as_secs())
+    } else {
+        format!(
+            "{}p95 {}",
+            if approximate_latency { "~" } else { "" },
+            resolver
+                .latency_p95
+                .map_or_else(|| "-".into(), format_rtt_compact)
+        )
+    };
+    Line::from(vec![
+        Span::styled(format!("{} ", resolver.address), theme::fg(theme::text())),
+        Span::styled(health, theme::fg(level.color())),
+        label(format!(
+            "  fail {}/{}  wait {}  retry {}  {}",
+            failures,
+            resolver.answered.saturating_add(resolver.timeouts),
+            resolver.pending,
+            resolver.retries,
+            timing
+        )),
+    ])
 }
 
 fn draw_dns_outcomes(

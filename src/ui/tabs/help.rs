@@ -90,7 +90,7 @@ impl HelpContext {
             ],
             Self::Health => &[
                 "Health brings together TCP handshakes, resets and ICMP errors, interface drops, DNS replies, and capture quality.",
-                "Enter focuses the evidence preview. On narrow terminals it opens a full-width reader. v/V switches sections and preserves your place.",
+                "Space expands evidence inline. Browse each item with j/k or the arrows. v/V switches sections and preserves your place.",
                 "TCP attempts cover five minutes. Capture drops are session totals. Other findings use the selected window.",
             ],
             Self::HostInterfaces => &[
@@ -376,22 +376,21 @@ const HOST_WINDOW_KEY: HelpRow = (
 
 const HOST_SOCKET_KEYS: &[HelpRow] = &[("Esc", "Return to Overview")];
 
-const TCP_ATTEMPT_KEYS: &[HelpRow] = &[
+const FINDING_KEYS: &[HelpRow] = &[
     HOST_WINDOW_KEY,
     (
         "↑/k, ↓/j",
-        "Select a finding or TCP evidence row; scroll text evidence",
+        "Select the previous or next heading or evidence item",
     ),
-    ("Enter", "Inspect a finding or follow a labeled link"),
-    (
-        "Space, ←/→",
-        "Toggle, collapse, or expand a TCP destination",
-    ),
+    ("Space", "Expand or collapse the selected group"),
+    ("→", "Expand the selected heading"),
+    ("←", "Return to the heading, then collapse it"),
+    ("Enter", "Follow the selected item's labeled link"),
     (
         "Click",
-        "Select a finding; click › to inspect or ▸/▾ to fold",
+        "Toggle a heading, select an item, or follow its bracketed link",
     ),
-    ("Esc", "Return from a link or evidence to its source"),
+    ("Esc", "Return from a linked view to the source item"),
 ];
 
 const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
@@ -678,7 +677,7 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
             push_section(&mut lines, "Socket Concepts", HOST_SOCKET_CONCEPTS);
         }
         HelpContext::Health => {
-            push_section(&mut lines, "Health Actions", TCP_ATTEMPT_KEYS);
+            push_section(&mut lines, "Health Actions", FINDING_KEYS);
             push_section(
                 &mut lines,
                 "Finding colors (default theme)",
@@ -689,7 +688,7 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
                     ),
                     (
                         "Selection",
-                        "Your selected finding stays open when its position changes.",
+                        "Your selected item stays selected when findings change order.",
                     ),
                     ("Green", "Healthy TCP handshakes or responsive DNS"),
                     (
@@ -708,8 +707,8 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
                     &mut lines,
                     "Scrolling",
                     &[
-                        ("wheel", "Scroll the pane under the pointer"),
-                        ("Page Up/Down", "Scroll evidence one page"),
+                        ("wheel", "Scroll the findings list"),
+                        ("Page Up/Down", "Scroll the list one page"),
                         ("g, G", "Jump to the top or bottom"),
                     ],
                 );

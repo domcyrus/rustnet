@@ -2309,8 +2309,7 @@ fn host_network_events() {
     app.ingest_packet_at_for_test(&packet, SystemTime::now());
     let mut state = UiState {
         selected_tab: 4,
-        finding: Some(tabs::health::Finding::Events).into(),
-        inspecting_finding: true,
+        expanded_findings: [tabs::health::Finding::Events].into(),
         ..Default::default()
     };
     let output = render_app(&app, &mut state, &[], None, 140, 30);
@@ -2336,10 +2335,7 @@ fn host_network_events() {
         )
         .unwrap();
         let bottom = render_app(&app, &mut state, &[], None, width, 12);
-        assert!(
-            bottom.contains("Received") || bottom.contains(" / "),
-            "{bottom}"
-        );
+        assert!(bottom.contains("Capture quality"), "{bottom}");
     }
 }
 
@@ -2407,7 +2403,7 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             ..Default::default()
         };
         let (closed, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
-        assert!(closed.contains("▌ › TCP handshakes"));
+        assert!(closed.contains("▌ ▸ TCP handshakes"));
         assert!(!closed.contains("Open Details"));
         let mut ctx = HandlerContext {
             connections: &connections,
@@ -2418,19 +2414,17 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             assert!(rect.height > 1);
             click(rect.x + 2, rect.bottom() - 1, &mut ctx);
         } else {
-            key(KeyCode::Enter, &mut ctx);
+            key(KeyCode::Char(' '), &mut ctx);
         }
-        let (_, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
-        let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
-        key(KeyCode::Right, &mut ctx);
-        key(KeyCode::Right, &mut ctx);
-        assert_eq!(ctx.ui_state.tcp_expanded, Some(syn.remote_addr));
         let (open, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
-        assert!(open.contains("no handshake observed"), "{open}");
+        assert!(
+            open.contains("no handshake") && open.contains("observed"),
+            "{open}"
+        );
         let link = regions
             .health_rows
             .iter()
-            .find(|(target, _)| matches!(target, tabs::health::HealthTarget::Details(..)))
+            .find(|(target, _)| matches!(target, tabs::health::HealthTarget::Attempt { .. }))
             .unwrap()
             .1;
         let mut ctx = HandlerContext {
@@ -2438,8 +2432,11 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             ..test_support::empty_ctx(&app, &mut state, &regions)
         };
         let effects = if width == 48 {
-            click(link.x + 2, link.bottom() - 1, &mut ctx)
+            click(link.right() - 1, link.bottom() - 1, &mut ctx);
+            assert_eq!(ctx.ui_state.selected_tab, 4);
+            click(link.x + 5, link.y, &mut ctx)
         } else {
+            key(KeyCode::Down, &mut ctx);
             key(KeyCode::Char('j'), &mut ctx);
             key(KeyCode::Enter, &mut ctx)
         };
@@ -2456,10 +2453,14 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
         )
         .unwrap();
         assert_eq!(state.selected_tab, 4);
-        assert!(state.inspecting_finding);
+        assert!(
+            state
+                .expanded_findings
+                .contains(&tabs::health::Finding::Tcp)
+        );
         assert!(matches!(
-            state.health_focus.get(),
-            Some(tabs::health::HealthTarget::Details(..))
+            state.health_cursor.borrow().target,
+            Some(tabs::health::HealthTarget::Attempt { .. })
         ));
 
         // The same ports now belong to a different connection. Even an old hit region is harmless.
@@ -2469,7 +2470,7 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             connections: &connections,
             ..test_support::empty_ctx(&app, &mut state, &regions)
         };
-        click(link.x + 2, link.bottom() - 1, &mut ctx);
+        click(link.x + 5, link.y, &mut ctx);
         assert_eq!(state.selected_tab, 4);
         let (expired, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
         assert!(!expired.contains("Open Details"));
@@ -2477,14 +2478,19 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             regions
                 .health_rows
                 .iter()
-                .all(|(t, _)| !matches!(t, tabs::health::HealthTarget::Details(..)))
+                .any(|(t, _)| matches!(t, tabs::health::HealthTarget::Attempt { .. }))
         );
         key(
-            KeyCode::Esc,
+            KeyCode::Char(' '),
             &mut test_support::empty_ctx(&app, &mut state, &regions),
         );
-        assert!(!state.inspecting_finding);
-        assert_eq!(state.finding.get(), Some(tabs::health::Finding::Tcp));
+        assert!(state.expanded_findings.is_empty());
+        assert_eq!(
+            state.health_cursor.borrow().target,
+            Some(tabs::health::HealthTarget::Finding(
+                tabs::health::Finding::Tcp
+            ))
+        );
         connections[1].created_at -= Duration::from_secs(1);
     }
 }
@@ -2515,20 +2521,19 @@ fn host_tcp_details_opens_each_same_timestamp_generation() {
     assert!(connections[0].is_historic && connections[0].created_at < connections[1].created_at);
     let mut state = UiState {
         selected_tab: 4,
-        inspecting_finding: true,
-        tcp_expanded: Some(conn.remote_addr),
+        expanded_findings: [tabs::health::Finding::Tcp].into(),
         ..Default::default()
     };
     let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 50);
     let links: Vec<_> = regions
         .health_rows
         .iter()
-        .filter(|(t, _)| matches!(t, tabs::health::HealthTarget::Details(..)))
+        .filter(|(t, _)| matches!(t, tabs::health::HealthTarget::Attempt { .. }))
         .collect();
     assert_eq!(links.len(), 2);
     for (i, (target, _)) in links.into_iter().enumerate() {
         state.jump_to_tab(4);
-        state.health_focus.set(Some(*target));
+        state.health_cursor.get_mut().target = Some(target.clone());
         let mut ctx = HandlerContext {
             connections: &connections,
             ..test_support::empty_ctx(&app, &mut state, &regions)
@@ -2570,16 +2575,31 @@ fn health_findings_expand_individually_and_report_capture_failure() {
         ("Interface drops", "No interface samples available"),
     ] {
         let (closed, regions) = frame(&mut state);
-        assert!(closed.contains(&format!("▌ › {name}")), "{closed}");
+        assert!(closed.contains(&format!("▌ ▸ {name}")), "{closed}");
         assert!(closed.contains("Capture failed"));
-        key(KeyCode::Enter, &mut state, &regions);
+        key(KeyCode::Char(' '), &mut state, &regions);
         let (open, regions) = frame(&mut state);
         assert!(open.contains(evidence), "{open}");
-        key(KeyCode::Esc, &mut state, &regions);
+        key(KeyCode::Char(' '), &mut state, &regions);
         let (closed, regions) = frame(&mut state);
         assert!(!closed.contains(evidence));
         key(KeyCode::Down, &mut state, &regions);
     }
+    // Leave two groups open, then walk back to one heading and fold only that group.
+    let (_, regions) = frame(&mut state);
+    key(KeyCode::Right, &mut state, &regions);
+    key(KeyCode::Up, &mut state, &regions);
+    key(KeyCode::Right, &mut state, &regions);
+    let (open, regions) = frame(&mut state);
+    assert!(open.contains("▾ Resets and ICMP") && open.contains("▾ Interface drops"));
+    key(KeyCode::Down, &mut state, &regions);
+    key(KeyCode::Down, &mut state, &regions);
+    key(KeyCode::Left, &mut state, &regions);
+    let (heading, regions) = frame(&mut state);
+    assert!(heading.contains("▌ ▾ Interface drops"));
+    key(KeyCode::Left, &mut state, &regions);
+    let (closed, _) = frame(&mut state);
+    assert!(closed.contains("▌ ▸ Interface drops") && closed.contains("▾ Resets and ICMP"));
 }
 
 fn render_host_buffer(app: &App, state: &mut UiState, width: u16) -> ratatui::buffer::Buffer {
@@ -2618,7 +2638,6 @@ fn style_at_text(buffer: &ratatui::buffer::Buffer, text: &str) -> ratatui::style
 
 #[test]
 fn finding_status_and_counts_keep_their_colors_on_the_selected_row() {
-    use tabs::health::Finding;
     let app = test_app();
     for txid in 1..=3 {
         app.ingest_packet_at_for_test(
@@ -2628,7 +2647,6 @@ fn finding_status_and_counts_keep_their_colors_on_the_selected_row() {
     }
     let mut state = UiState {
         selected_tab: 4,
-        finding: Some(Finding::Dns).into(),
         ..Default::default()
     };
     let buffer = render_host_buffer(&app, &mut state, 96);
@@ -2661,9 +2679,9 @@ fn finding_status_and_counts_keep_their_colors_on_the_selected_row() {
 }
 
 #[test]
-fn dns_timeout_preview_and_inventory_links_keep_the_source_finding() {
+fn dns_timeout_and_inventory_links_keep_the_source_item() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use tabs::health::Finding;
+    use tabs::health::{Finding, HealthTarget};
     let app = test_app();
     app.ingest_packet_at_for_test(
         &dns_test_packet(42, "build.example", DnsQueryType::A, false, None),
@@ -2684,37 +2702,86 @@ fn dns_timeout_preview_and_inventory_links_keep_the_source_finding() {
             .unwrap();
         };
         let (index, regions) = frame(&mut state);
-        assert_eq!(state.finding.get(), Some(Finding::Dns));
-        assert_eq!(index.contains("build.example"), width >= 100);
-        key(KeyCode::Enter, &mut state, &regions);
+        assert_eq!(
+            state
+                .health_cursor
+                .borrow()
+                .target
+                .as_ref()
+                .map(HealthTarget::finding),
+            Some(Finding::Dns)
+        );
+        assert!(!index.contains("build.example"));
+        key(KeyCode::Char(' '), &mut state, &regions);
         let (reader, regions) = frame(&mut state);
         for text in ["1.1.1.1:53", "build.example", "Recent issues (15m"] {
             assert!(reader.contains(text), "{reader}");
         }
+        key(KeyCode::Down, &mut state, &regions);
+        let (_, regions) = frame(&mut state);
         key(KeyCode::Enter, &mut state, &regions);
         assert_eq!(state.host_view, HostView::Dns);
         let (inventory, regions) = frame(&mut state);
         assert!(inventory.contains("DNS Outcomes (60s)"), "{inventory}");
         key(KeyCode::Esc, &mut state, &regions);
         assert_eq!(state.host_view, HostView::Findings);
-        assert!(state.inspecting_finding);
+        assert!(matches!(
+            state.health_cursor.borrow().target,
+            Some(HealthTarget::Resolver(Some(_)))
+        ));
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Down, &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        let issue = state.health_cursor.borrow().target.clone();
+        assert!(matches!(issue, Some(HealthTarget::DnsIssue(..))));
+        key(KeyCode::Enter, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Dns);
         let (_, regions) = frame(&mut state);
         key(KeyCode::Esc, &mut state, &regions);
+        assert_eq!(state.health_cursor.borrow().target, issue);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char(' '), &mut state, &regions);
         for next in [Finding::Tcp, Finding::Events, Finding::Interfaces] {
             let (_, regions) = frame(&mut state);
             key(KeyCode::Down, &mut state, &regions);
-            assert_eq!(state.finding.get(), Some(next));
+            assert_eq!(
+                state
+                    .health_cursor
+                    .borrow()
+                    .target
+                    .as_ref()
+                    .map(HealthTarget::finding),
+                Some(next)
+            );
         }
-        assert_eq!(state.finding.get(), Some(Finding::Interfaces));
+        assert_eq!(
+            state
+                .health_cursor
+                .borrow()
+                .target
+                .as_ref()
+                .map(HealthTarget::finding),
+            Some(Finding::Interfaces)
+        );
         let (_, regions) = frame(&mut state);
-        key(KeyCode::Enter, &mut state, &regions);
+        key(KeyCode::Char(' '), &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char('j'), &mut state, &regions);
         let (_, regions) = frame(&mut state);
         key(KeyCode::Enter, &mut state, &regions);
         assert_eq!(state.host_view, HostView::Interfaces);
         let (_, regions) = frame(&mut state);
         key(KeyCode::Esc, &mut state, &regions);
         assert_eq!(state.host_view, HostView::Findings);
-        assert_eq!(state.finding.get(), Some(Finding::Interfaces));
+        assert_eq!(
+            state
+                .health_cursor
+                .borrow()
+                .target
+                .as_ref()
+                .map(HealthTarget::finding),
+            Some(Finding::Interfaces)
+        );
     }
 }
 
@@ -2742,37 +2809,76 @@ fn live_finding_order_preserves_the_scrolled_reader_and_return_target() {
             .unwrap();
         };
         let (_, regions) = frame(&mut state);
-        key(KeyCode::Enter, &mut state, &regions);
-        let (_, regions) = frame(&mut state);
         key(KeyCode::Char(' '), &mut state, &regions);
         let (_, regions) = frame(&mut state);
-        assert!(state.health_scroll.can_scroll());
-        key(KeyCode::End, &mut state, &regions);
-        let (before, regions) = frame(&mut state);
-        let focus = state.health_focus.get();
-        let expanded = state.tcp_expanded;
-        let evidence = |text: &str| {
-            text.lines()
-                .skip(usize::from(regions.evidence_area.y))
-                .take(usize::from(regions.evidence_area.height))
-                .map(|line| {
-                    line.chars()
-                        .skip(usize::from(regions.evidence_area.x))
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-        };
+        let attempts: Vec<_> = regions
+            .health_rows
+            .iter()
+            .filter_map(|(t, _)| matches!(t, HealthTarget::Attempt { .. }).then_some(t.clone()))
+            .collect();
+        assert_eq!(attempts.len(), 16);
+        key(KeyCode::Down, &mut state, &regions); // First destination
+        for (i, target) in attempts.iter().enumerate() {
+            let (_, regions) = frame(&mut state);
+            key(
+                if i % 2 == 0 {
+                    KeyCode::Down
+                } else {
+                    KeyCode::Char('j')
+                },
+                &mut state,
+                &regions,
+            );
+            let (_, regions) = frame(&mut state);
+            assert_eq!(state.health_cursor.borrow().target.as_ref(), Some(target));
+            assert!(
+                !regions
+                    .health_rows
+                    .iter()
+                    .find(|(t, _)| t == target)
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+        }
+        let focus = state.health_cursor.borrow().target.clone().unwrap();
+        let (_, regions) = frame(&mut state);
+        let before = regions
+            .health_rows
+            .iter()
+            .find(|(t, _)| t == &focus)
+            .unwrap()
+            .1;
         app.ingest_packet_at_for_test(
             &dns_test_packet(42, "build.example", DnsQueryType::A, false, None),
             captured,
         );
-        let (after, regions) = frame(&mut state);
-        assert_eq!(evidence(&before), evidence(&after));
-        assert_eq!(state.finding.get(), Some(Finding::Tcp));
-        assert!(state.inspecting_finding);
-        assert_eq!(state.health_focus.get(), focus);
-        assert_eq!(state.tcp_expanded, expanded);
-        key(KeyCode::Esc, &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        assert_eq!(state.health_cursor.borrow().target.as_ref(), Some(&focus));
+        assert_eq!(
+            regions
+                .health_rows
+                .iter()
+                .find(|(t, _)| t == &focus)
+                .unwrap()
+                .1,
+            before
+        );
+        for (i, target) in attempts.iter().rev().skip(1).enumerate() {
+            let (_, regions) = frame(&mut state);
+            key(
+                if i % 2 == 0 {
+                    KeyCode::Up
+                } else {
+                    KeyCode::Char('k')
+                },
+                &mut state,
+                &regions,
+            );
+            assert_eq!(state.health_cursor.borrow().target.as_ref(), Some(target));
+        }
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char(' '), &mut state, &regions);
         let (list, regions) = frame(&mut state);
         let order: Vec<_> = regions
             .health_rows
@@ -2792,9 +2898,12 @@ fn live_finding_order_preserves_the_scrolled_reader_and_return_target() {
                 Finding::Capture
             ]
         );
-        assert!(list.contains("▌ › TCP handshakes"));
+        assert!(list.contains("▌ ▸ TCP handshakes"));
         key(KeyCode::Up, &mut state, &regions);
-        assert_eq!(state.finding.get(), Some(Finding::Dns));
+        assert_eq!(
+            state.health_cursor.borrow().target,
+            Some(HealthTarget::Finding(Finding::Dns))
+        );
     }
 }
 
@@ -2853,20 +2962,21 @@ fn host_attempts_and_endpoints_scroll_independently() {
         );
         key(KeyCode::Char('V'), &mut state, &regions);
         let (closed, regions) = frame(&mut state);
-        assert!(closed.contains("▌ › TCP handshakes"));
-        key(KeyCode::Enter, &mut state, &regions);
-        let (_, regions) = frame(&mut state);
+        assert!(closed.contains("▌ ▸ TCP handshakes"));
         key(KeyCode::Char(' '), &mut state, &regions);
         let (open, regions) = frame(&mut state);
-        assert!(open.contains("no handshake observed"), "{open}");
+        assert!(
+            open.contains("no handshake") && open.contains("observed"),
+            "{open}"
+        );
         assert!(state.health_scroll.can_scroll());
         key(KeyCode::End, &mut state, &regions);
         let (last, regions) = frame(&mut state);
         assert_ne!(last, open);
         let wheel = MouseEvent {
             kind: MouseEventKind::ScrollUp,
-            column: regions.evidence_area.x + 1,
-            row: regions.evidence_area.y + 2,
+            column: regions.findings_area.x + 1,
+            row: regions.findings_area.y + 2,
             modifiers: KeyModifiers::NONE,
         };
         dispatch_mouse(
@@ -2881,9 +2991,9 @@ fn host_attempts_and_endpoints_scroll_independently() {
         assert_eq!(frame(&mut state).0, endpoints);
         key(KeyCode::Char('V'), &mut state, &regions);
         assert_eq!(frame(&mut state).0, scrolled);
-        key(KeyCode::Esc, &mut state, &regions);
+        key(KeyCode::Char(' '), &mut state, &regions);
         let (collapsed, regions) = frame(&mut state);
-        assert!(collapsed.contains("▌ › TCP handshakes"));
+        assert!(collapsed.contains("▌ ▸ TCP handshakes"));
         key(KeyCode::Char('v'), &mut state, &regions);
         assert_eq!(state.host_view, HostView::Sockets);
         assert_eq!(frame(&mut state).0, endpoints);

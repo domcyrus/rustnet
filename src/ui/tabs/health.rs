@@ -3,25 +3,26 @@ use std::{net::SocketAddr, sync::atomic::Ordering::Relaxed, time::SystemTime};
 
 use super::{HealthLevel, count_span, dns_health_status, tcp_handshake_status};
 use crate::network::{
+    dns_analytics::DnsIssue,
     process_activity::process_group_label,
     tcp_attempts::{AttemptCounts, AttemptOutcome},
     types::{Connection, ConnectionKey, NetworkEventKind},
 };
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, HostView, PaneScroll,
-    UiState, section_header, section_title, theme, try_handle_pane_scroll, try_handle_pane_wheel,
-    widgets::scrollbar::draw_scrolled_text,
+    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, HostView, UiState,
+    section_header, section_title, theme, try_handle_pane_scroll, try_handle_pane_wheel,
+    widgets::scrollbar::draw_scrollbar,
 };
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::Rect,
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(in crate::ui) enum Finding {
     Tcp,
     Events,
@@ -30,44 +31,77 @@ pub(in crate::ui) enum Finding {
     Capture,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl Finding {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Tcp => "TCP handshakes",
+            Self::Events => "Resets and ICMP",
+            Self::Interfaces => "Interface drops",
+            Self::Dns => "DNS replies",
+            Self::Capture => "Capture quality",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::ui) enum HealthTarget {
     Finding(Finding),
-    Section(HostView),
     Destination(SocketAddr),
-    Details(ConnectionKey, SystemTime, u32),
+    Attempt {
+        key: ConnectionKey,
+        created: Option<SystemTime>,
+        seq: u32,
+        started: SystemTime,
+    },
+    Resolver(Option<SocketAddr>),
+    DnsIssue(DnsIssue, usize),
+    Interface(Option<String>),
+    Event(NetworkEventKind),
+    Capture(&'static str),
 }
 
 impl HealthTarget {
-    fn connection(self, connections: &[Connection]) -> Option<usize> {
-        let Self::Details(key, created_at, _) = self else {
+    pub(in crate::ui) fn finding(&self) -> Finding {
+        match self {
+            Self::Finding(f) => *f,
+            Self::Destination(_) | Self::Attempt { .. } => Finding::Tcp,
+            Self::Resolver(_) | Self::DnsIssue(..) => Finding::Dns,
+            Self::Interface(_) => Finding::Interfaces,
+            Self::Event(_) => Finding::Events,
+            Self::Capture(_) => Finding::Capture,
+        }
+    }
+
+    fn connection(&self, connections: &[Connection]) -> Option<usize> {
+        let Self::Attempt {
+            key,
+            created: Some(created),
+            ..
+        } = self
+        else {
             return None;
         };
         connections
             .iter()
-            .position(|c| c.created_at == created_at && ConnectionKey::from_connection(c) == key)
+            .position(|c| c.created_at == *created && ConnectionKey::from_connection(c) == *key)
     }
 
-    fn activate(self, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
-        let state = &mut ctx.ui_state;
+    fn link(&self, connections: &[Connection]) -> Option<&'static str> {
         match self {
-            Self::Finding(finding) => {
-                select_finding(state, finding);
-                state.inspecting_finding = true;
-                state.health_reveal.set(true);
-            }
-            Self::Section(view) => {
-                state.select_section(view as usize);
-                state.return_to_finding = true;
-            }
-            Self::Destination(addr) => {
-                state.health_focus.set(Some(self));
-                state.tcp_expanded = (state.tcp_expanded != Some(addr)).then_some(addr);
-                state.health_reveal.set(true);
-            }
-            Self::Details(..) => {
+            Self::Resolver(_) | Self::DnsIssue(..) => Some("Open DNS resolvers"),
+            Self::Interface(_) => Some("Open interface counters"),
+            Self::Attempt { .. } if self.connection(connections).is_some() => Some("Open Details"),
+            _ => None,
+        }
+    }
+
+    fn activate(&self, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
+        let state = &mut ctx.ui_state;
+        let view = match self {
+            Self::Resolver(_) | Self::DnsIssue(..) => HostView::Dns,
+            Self::Interface(_) => HostView::Interfaces,
+            Self::Attempt { .. } => {
                 if let Some(i) = self.connection(ctx.connections) {
-                    state.health_focus.set(Some(self));
                     state.set_selected_by_index(ctx.connections, i);
                     state.jump_to_tab(1);
                     state.return_to_finding = true;
@@ -79,17 +113,78 @@ impl HealthTarget {
                         return vec![Effect::Regroup];
                     }
                 }
+                return Vec::new();
             }
-        }
+            _ => return Vec::new(),
+        };
+        state.select_section(view as usize);
+        state.return_to_finding = true;
         Vec::new()
     }
 }
 
-fn select_finding(state: &mut UiState, finding: Finding) {
-    if state.finding.replace(Some(finding)) != Some(finding) {
-        state.health_focus.set(None);
-        state.health_scroll.reset();
+#[derive(Debug, Default)]
+pub(in crate::ui) struct HealthCursor {
+    pub(in crate::ui) target: Option<HealthTarget>,
+    pub(in crate::ui) link: Option<&'static str>,
+    sibling: usize,
+    wrapped_row: Option<usize>,
+    notice: Option<&'static str>,
+    scrolled: bool,
+}
+
+impl HealthCursor {
+    /// Keep the same observation across refreshes. If it disappears, stay at the nearest
+    /// surviving sibling in that group, including its heading when the group is empty.
+    fn resolve(&mut self, targets: &[(usize, HealthTarget)]) -> usize {
+        let previous_target = self.target.take();
+        let prev = previous_target.as_ref();
+        let selected = targets
+            .iter()
+            .position(|(_, t)| Some(t) == prev)
+            .unwrap_or_else(|| {
+                let Some(prev) = prev else { return 0 };
+                self.notice = match prev {
+                    HealthTarget::Attempt { .. } => {
+                        Some("Attempt no longer retained (5m / last 32)")
+                    }
+                    HealthTarget::Destination(_) => Some("Destination left affected list (5m)"),
+                    _ => None,
+                };
+                let siblings = targets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, t))| t.finding() == prev.finding());
+                siblings.take(self.sibling + 1).last().map_or(0, |(i, _)| i)
+            });
+        let target = &targets[selected].1;
+        self.sibling = targets[..selected]
+            .iter()
+            .rev()
+            .take_while(|(_, t)| t.finding() == target.finding())
+            .count();
+        self.target = Some(target.clone());
+        selected
     }
+
+    fn select(&mut self, target: HealthTarget) {
+        self.target = Some(target);
+        self.wrapped_row = None;
+        self.scrolled = false;
+        self.notice = None;
+    }
+}
+
+fn fold(state: &mut UiState, finding: Finding, expand: bool) {
+    if expand {
+        state.expanded_findings.insert(finding);
+    } else {
+        state.expanded_findings.remove(&finding);
+    }
+    state
+        .health_cursor
+        .get_mut()
+        .select(HealthTarget::Finding(finding));
 }
 
 fn health_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
@@ -97,79 +192,51 @@ fn health_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>
         return None;
     }
     let state = &mut ctx.ui_state;
-    let inspecting = state.inspecting_finding;
     let rows = &ctx.click_regions.health_rows;
-    // The index is drawn first, followed by the selected finding's links.
-    let boundary = rows.partition_point(|(t, _)| matches!(t, HealthTarget::Finding(_)));
-    let rows = if inspecting {
-        &rows[boundary..]
-    } else {
-        &rows[..boundary]
-    };
-    let focus = if inspecting {
-        state.health_focus.get()
-    } else {
-        state.finding.get().map(HealthTarget::Finding)
-    };
-    let selected = rows.iter().position(|(t, _)| Some(*t) == focus);
+    let cursor = state.health_cursor.get_mut();
+    let selected = cursor.target.as_ref()?;
+    let finding = selected.finding();
     match key.code {
-        KeyCode::Esc if inspecting => {
-            state.inspecting_finding = false;
-            state.health_reveal.set(true);
-        }
         KeyCode::Down | KeyCode::Char('j') | KeyCode::Up | KeyCode::Char('k') => {
-            if inspecting && state.finding.get() != Some(Finding::Tcp) {
-                return None;
-            }
+            let i = rows.iter().position(|(t, _)| t == selected)?;
             let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
-            let i = selected?;
-            let next = rows[if down {
-                (i + 1).min(rows.len() - 1)
+            let next = if cursor.scrolled && rows[i].1.is_empty() {
+                if down {
+                    rows.iter().position(|(_, r)| !r.is_empty())
+                } else {
+                    rows.iter().rposition(|(_, r)| !r.is_empty())
+                }
             } else {
-                i.saturating_sub(1)
-            }]
-            .0;
-            if let HealthTarget::Finding(finding) = next {
-                select_finding(state, finding);
-            } else {
-                state.health_focus.set(Some(next));
+                None
+            };
+            let next = next.unwrap_or_else(|| {
+                if down {
+                    (i + 1).min(rows.len() - 1)
+                } else {
+                    i.saturating_sub(1)
+                }
+            });
+            cursor.select(rows[next].0.clone());
+        }
+        KeyCode::Char(' ') => fold(state, finding, !state.expanded_findings.contains(&finding)),
+        KeyCode::Right => {
+            if matches!(selected, HealthTarget::Finding(_)) {
+                fold(state, finding, true);
             }
-            state.health_reveal.set(true);
+        }
+        KeyCode::Left => {
+            if matches!(selected, HealthTarget::Finding(_)) {
+                fold(state, finding, false);
+            } else {
+                cursor.select(HealthTarget::Finding(finding));
+            }
         }
         KeyCode::Enter => {
-            let (target, rect) = rows[selected?];
-            if rect.height == 0 {
-                state.health_reveal.set(true);
-            } else if !matches!(target, HealthTarget::Destination(_)) {
-                return Some(target.activate(ctx));
+            if rows.iter().any(|(t, r)| t == selected && !r.is_empty()) {
+                return Some(selected.clone().activate(ctx));
             }
-        }
-        KeyCode::Left | KeyCode::Right | KeyCode::Char('l' | ' ') if inspecting => {
-            let (target, rect) = rows[selected?];
-            if rect.height == 0 {
-                state.health_reveal.set(true);
-                return Some(Vec::new());
-            }
-            match target {
-                HealthTarget::Destination(addr) => {
-                    let expanded = state.tcp_expanded == Some(addr);
-                    let expand = match key.code {
-                        KeyCode::Left => false,
-                        KeyCode::Char(' ') => !expanded,
-                        _ => true,
-                    };
-                    if expanded != expand {
-                        return Some(target.activate(ctx));
-                    }
-                }
-                HealthTarget::Details(..) if key.code == KeyCode::Left => {
-                    state
-                        .health_focus
-                        .set(state.tcp_expanded.map(HealthTarget::Destination));
-                    state.health_reveal.set(true);
-                }
-                _ => return None,
-            }
+            cursor.wrapped_row = None;
+            cursor.scrolled = false;
         }
         _ => return None,
     }
@@ -180,24 +247,25 @@ fn network_event_lines(
     events: &crate::network::types::NetworkEventSnapshot,
     window: crate::network::time_window::TimeWindow,
     compact: bool,
-) -> Vec<Line<'static>> {
+    rows: &mut FindingRows,
+) {
     let label = window.label_since_clear(events.since_clear);
     let total_label = if events.since_clear {
         "since clear"
     } else {
         "since startup"
     };
-    let mut lines = vec![Line::from(Span::styled(
+    rows.text(Line::from(Span::styled(
         format!("{label} / total ({total_label}) · captured packets"),
         theme::fg(theme::muted()),
-    ))];
+    )));
     let mut observed = events.total.observed().peekable();
     if observed.peek().is_none() {
-        lines.push(Line::from("No resets or ICMP errors observed"));
-        return lines;
+        rows.text(Line::from("No resets or ICMP errors observed"));
+        return;
     }
     if !compact {
-        lines.push(Line::from(Span::styled(
+        rows.text(Line::from(Span::styled(
             format!(
                 "{:<42}{:>26}{:>26}",
                 "", "Sent: window / total", "Received: window / total"
@@ -216,8 +284,8 @@ fn network_event_lines(
             },
         ));
         if compact {
-            lines.push(line);
-            lines.push(Line::from(format!(
+            rows.item(HealthTarget::Event(kind), line);
+            rows.text(Line::from(format!(
                 "  Sent {} / {}   Received {} / {}",
                 selected.sent, total.sent, selected.received, total.received
             )));
@@ -228,10 +296,9 @@ fn network_event_lines(
                 format!("{} / {}", selected.sent, total.sent),
                 format!("{} / {}", selected.received, total.received)
             ));
-            lines.push(line);
+            rows.item(HealthTarget::Event(kind), line);
         }
     }
-    lines
 }
 
 pub(in crate::ui) struct HealthTab;
@@ -239,12 +306,13 @@ pub(in crate::ui) struct HealthTab;
 impl Component for HealthTab {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
         health_key(key, ctx).or_else(|| {
-            let scroll = if ctx.ui_state.inspecting_finding {
-                &mut ctx.ui_state.health_scroll
-            } else {
-                &mut ctx.ui_state.finding_list_scroll
-            };
-            try_handle_pane_scroll(key, usize::from(scroll.viewport_rows()), scroll)
+            let state = &mut ctx.ui_state;
+            let scroll = &mut state.health_scroll;
+            let result = try_handle_pane_scroll(key, usize::from(scroll.viewport_rows()), scroll);
+            if result.is_some() {
+                state.health_cursor.get_mut().scrolled = true;
+            }
+            result
         })
     }
 
@@ -255,39 +323,34 @@ impl Component for HealthTab {
     ) -> Option<Vec<Effect>> {
         let point = (mouse.column, mouse.row).into();
         let regions = ctx.click_regions;
-        let in_evidence = regions.evidence_area.contains(point);
-        let in_list = regions.findings_area.contains(point);
-        if !in_evidence && !in_list {
+        if !regions.findings_area.contains(point) {
             return None;
         }
         let state = &mut ctx.ui_state;
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             state.quit_confirmation = false;
             state.clear_confirmation = false;
-            state.inspecting_finding = in_evidence;
-            if let Some(&(target, rect)) =
-                regions.health_rows.iter().find(|(_, r)| r.contains(point))
+            if let Some((target, _)) = regions
+                .health_rows
+                .iter()
+                .find(|(_, rect)| rect.contains(point))
             {
-                match target {
-                    HealthTarget::Finding(finding)
-                        if regions.evidence_area.width > 0 && mouse.column >= rect.x + 3 =>
-                    {
-                        select_finding(state, finding);
+                if let HealthTarget::Finding(f) = target {
+                    fold(state, *f, !state.expanded_findings.contains(f));
+                } else {
+                    state.health_cursor.get_mut().select(target.clone());
+                    if regions.health_links.iter().any(|rect| rect.contains(point)) {
+                        return Some(target.activate(ctx));
                     }
-                    HealthTarget::Destination(_) if mouse.column >= rect.x + 3 => {
-                        state.health_focus.set(Some(target));
-                    }
-                    _ => return Some(target.activate(ctx)),
                 }
             }
             return Some(Vec::new());
         }
-        let scroll = if in_evidence {
-            &mut state.health_scroll
-        } else {
-            &mut state.finding_list_scroll
-        };
-        try_handle_pane_wheel(mouse, scroll)
+        let result = try_handle_pane_wheel(mouse, &mut state.health_scroll);
+        if result.is_some() {
+            state.health_cursor.get_mut().scrolled = true;
+        }
+        result
     }
 
     fn draw(
@@ -297,18 +360,7 @@ impl Component for HealthTab {
         ctx: &ComponentContext<'_>,
         regions: &mut ClickableRegions,
     ) -> Result<()> {
-        let split = area.width >= 100;
-        let [list, evidence] = if split {
-            Layout::horizontal([Constraint::Percentage(35), Constraint::Fill(1)])
-                .spacing(1)
-                .areas(area)
-        } else if ctx.ui_state.inspecting_finding {
-            [Rect::default(), area]
-        } else {
-            [area, Rect::default()]
-        };
-        regions.findings_area = list;
-        regions.evidence_area = evidence;
+        regions.findings_area = area;
         let state = ctx.ui_state;
         let window = state.host_window;
         let tcp = ctx.app.get_tcp_attempt_snapshot();
@@ -382,10 +434,9 @@ impl Component for HealthTab {
         }
         // Stable ties follow the familiar category order, independent of count and theme.
         let mut summaries = [
-            (Finding::Tcp, "TCP handshakes", tcp_summary, "5m", tcp_level),
+            (Finding::Tcp, tcp_summary, "5m", tcp_level),
             (
                 Finding::Events,
-                "Resets and ICMP",
                 Line::from(vec![
                     Span::raw("RST "),
                     count_span(resets.sent, theme::warn()),
@@ -400,14 +451,12 @@ impl Component for HealthTab {
             ),
             (
                 Finding::Interfaces,
-                "Interface drops",
                 interface_summary,
                 window.label_since_clear(since_clear),
                 HealthLevel::observed(errors > 0, drops > 0),
             ),
             (
                 Finding::Dns,
-                "DNS replies",
                 dns_summary,
                 dns.window_label(),
                 if dns.failures > 0 {
@@ -418,7 +467,6 @@ impl Component for HealthTab {
             ),
             (
                 Finding::Capture,
-                "Capture quality",
                 if capture_error.is_some() {
                     Line::from(Span::styled("Capture failed", theme::fg(theme::err())))
                 } else {
@@ -437,181 +485,260 @@ impl Component for HealthTab {
                 HealthLevel::observed(capture_error.is_some(), reported > 0 || queue > 0),
             ),
         ];
-        summaries.sort_by_key(|(_, _, _, _, level)| level.attention_order());
-        let &(selected, evidence_name, _, evidence_window, _) = summaries
-            .iter()
-            .find(|row| Some(row.0) == state.finding.get())
-            .unwrap_or(&summaries[0]);
-        state.finding.set(Some(selected));
-        let reveal = state.health_reveal.take();
-        if !list.is_empty() {
-            let inner = section_header(
-                f,
-                list,
-                section_title(if state.inspecting_finding {
-                    "Findings"
-                } else {
-                    "▌ Findings"
-                }),
-            );
-            let mut lines = Vec::new();
-            let mut targets = Vec::new();
-            for (finding, name, summary, window, _) in summaries {
-                targets.push((lines.len(), HealthTarget::Finding(finding)));
-                let is_selected = finding == selected;
-                let marker = if is_selected { "▌" } else { " " };
-                let mut line = Line::from(vec![
-                    Span::styled(marker, theme::fg(theme::accent())),
-                    Span::raw(format!(" › {name} ")),
-                    Span::styled(format!("({window})  "), theme::fg(theme::muted())),
-                ]);
-                line.extend(summary.spans);
-                if is_selected && !state.inspecting_finding {
-                    highlight_line(&mut line);
-                }
-                lines.push(line);
+        summaries.sort_by_key(|(_, _, _, level)| level.attention_order());
+        let mut rows = FindingRows::default();
+        for (finding, summary, window_label, _) in summaries {
+            let name = finding.name();
+            let expanded = state.expanded_findings.contains(&finding);
+            let marker = if expanded { "▾" } else { "▸" };
+            let mut heading = Line::from(vec![
+                Span::raw(format!("{marker} {name} ")),
+                Span::styled(format!("({window_label})  "), theme::fg(theme::muted())),
+            ]);
+            heading.extend(summary.spans);
+            rows.item(HealthTarget::Finding(finding), heading);
+            if !expanded {
+                continue;
             }
-            draw_rows(
-                f,
-                inner,
-                lines,
-                targets,
-                &state.finding_list_scroll,
-                |target, row| {
-                    if target != HealthTarget::Finding(selected) {
-                        return false;
-                    }
-                    let moved = state.finding_list_row.replace(Some(row)) != Some(row);
-                    moved || (reveal && !state.inspecting_finding)
-                },
-                regions,
-            );
-        }
-        if !evidence.is_empty() {
-            let marker = if state.inspecting_finding { "▌ " } else { "" };
-            let inner = section_header(
-                f,
-                evidence,
-                section_title(format!("{marker}{evidence_name} ({evidence_window})")),
-            );
-            let mut targets = Vec::new();
-            let mut lines = Vec::new();
-            match selected {
-                Finding::Tcp => {
-                    lines = tcp_attempt_lines(&tcp, state, ctx.connections, &mut targets)
-                }
+            match finding {
+                Finding::Tcp => tcp_attempt_lines(&tcp, &mut rows),
                 Finding::Events => {
-                    lines.extend(network_event_lines(&events, window, inner.width < 100))
-                }
-                Finding::Interfaces => {
-                    targets.push((lines.len(), HealthTarget::Section(HostView::Interfaces)));
-                    lines.push(Line::from("[Open interface counters]"));
-                    let mut rows: Vec<_> = interfaces.iter().collect();
-                    rows.sort_unstable_by_key(|(name, _)| *name);
-                    for (name, c) in rows {
-                        lines.push(Line::from(vec![
-                            Span::raw(format!("    {name}  RX drops ")),
-                            count_span(c.rx_dropped, theme::warn()),
-                            Span::raw(" · TX drops "),
-                            count_span(c.tx_dropped, theme::warn()),
-                            Span::raw(" · RX errors "),
-                            count_span(c.rx_errors, theme::err()),
-                            Span::raw(" · TX errors "),
-                            count_span(c.tx_errors, theme::err()),
-                        ]));
-                    }
-                    if interfaces.is_empty() {
-                        lines.push(Line::from("    No interface samples available"));
-                    }
+                    network_event_lines(&events, window, area.width < 100, &mut rows)
                 }
                 Finding::Dns => {
-                    targets.push((lines.len(), HealthTarget::Section(HostView::Dns)));
-                    lines.push(Line::from("[Open DNS resolvers]"));
-                    lines.extend(super::host::dns_evidence_lines(
-                        &dns,
-                        capture_error.is_some(),
-                        None,
+                    rows.text(Line::styled(
+                        super::host::dns_guidance(&dns, capture_error.is_some()),
+                        theme::fg(theme::muted()),
                     ));
+                    for resolver in &dns.resolvers {
+                        rows.item(
+                            HealthTarget::Resolver(Some(resolver.address)),
+                            super::host::resolver_line(
+                                resolver,
+                                capture_error.is_some(),
+                                dns.approximate_latency,
+                            ),
+                        );
+                    }
+                    if dns.resolvers.is_empty() {
+                        rows.item(HealthTarget::Resolver(None), "No observed resolvers");
+                    }
+                    rows.text(format!(
+                        "Recent issues (15m, {} retained)",
+                        dns.recent_issues.len()
+                    ));
+                    for (i, issue) in dns.recent_issues.iter().enumerate() {
+                        // Identical observations can share the same timestamp and question.
+                        let duplicate = dns.recent_issues[i + 1..]
+                            .iter()
+                            .filter(|other| *other == issue)
+                            .count();
+                        rows.item(
+                            HealthTarget::DnsIssue(issue.clone(), duplicate),
+                            super::host::dns_issue_line(issue, 1),
+                        );
+                    }
                     if dns.truncated {
-                        lines.push(Line::styled(
-                            "    Incomplete DNS evidence",
+                        rows.text(Line::styled(
+                            "Incomplete DNS evidence",
                             theme::fg(theme::warn()),
                         ));
                     }
                 }
+                Finding::Interfaces => {
+                    let mut interfaces: Vec<_> = interfaces.iter().collect();
+                    interfaces.sort_unstable_by_key(|(name, _)| *name);
+                    if interfaces.is_empty() {
+                        rows.item(
+                            HealthTarget::Interface(None),
+                            "No interface samples available",
+                        );
+                    }
+                    for (name, c) in interfaces {
+                        rows.item(
+                            HealthTarget::Interface(Some(name.clone())),
+                            Line::from(vec![
+                                Span::raw(format!("{name}  RX drops ")),
+                                count_span(c.rx_dropped, theme::warn()),
+                                Span::raw(" · TX drops "),
+                                count_span(c.tx_dropped, theme::warn()),
+                                Span::raw(" · RX errors "),
+                                count_span(c.rx_errors, theme::err()),
+                                Span::raw(" · TX errors "),
+                                count_span(c.tx_errors, theme::err()),
+                            ]),
+                        );
+                    }
+                }
                 Finding::Capture => {
                     if let Some(error) = &capture_error {
-                        lines.push(Line::styled(
-                            format!("    {error}"),
-                            theme::fg(theme::err()),
-                        ));
+                        rows.item(
+                            HealthTarget::Capture("Capture failed"),
+                            Line::styled(error.clone(), theme::fg(theme::err())),
+                        );
                     }
-                    lines.push(Line::from(vec![
-                        Span::raw("    Capture backend drops "),
-                        count_span(capture, theme::warn()),
-                        Span::raw(" · interface-reported drops "),
-                        count_span(iface, theme::warn()),
-                        Span::raw(" · processing queue drops "),
-                        count_span(queue, theme::warn()),
-                    ]));
+                    for (name, value) in [
+                        ("Capture backend drops", capture),
+                        ("Interface-reported drops", iface),
+                        ("Processing queue drops", queue),
+                    ] {
+                        rows.item(
+                            HealthTarget::Capture(name),
+                            Line::from(vec![
+                                Span::raw(format!("{name} ")),
+                                count_span(value, theme::warn()),
+                            ]),
+                        );
+                    }
                 }
             }
-            let old_focus = state.health_focus.get();
-            highlight(&mut lines, &targets, state);
-            let focus = state.health_focus.get();
-            let reveal_focus = state.inspecting_finding && (reveal || old_focus != focus);
-            draw_rows(
-                f,
-                inner,
-                lines,
-                targets,
-                &state.health_scroll,
-                |target, _| reveal_focus && Some(target) == focus,
-                regions,
-            );
         }
+        rows.draw(f, area, ctx, regions);
         Ok(())
     }
 }
 
-fn draw_rows(
-    f: &mut Frame,
-    inner: Rect,
-    lines: Vec<Line<'_>>,
+#[derive(Default)]
+struct FindingRows {
+    lines: Vec<Line<'static>>,
     targets: Vec<(usize, HealthTarget)>,
-    scroll: &PaneScroll,
-    mut should_reveal: impl FnMut(HealthTarget, u16) -> bool,
-    regions: &mut ClickableRegions,
-) {
-    // Map logical rows to terminal lines using the scrolled pane's gutter.
-    let width = inner.width.saturating_sub(2).max(1);
-    let height = |line: &Line<'_>| {
-        Paragraph::new(line.clone())
-            .wrap(Wrap { trim: false })
-            .line_count(width) as u16
-    };
-    let mut previous = 0;
-    let mut row = 0;
-    let wrapped_targets: Vec<_> = targets
-        .into_iter()
-        .map(|(index, target)| {
-            row += lines[previous..index].iter().map(height).sum::<u16>();
-            previous = index;
-            let height = height(&lines[index]);
-            if should_reveal(target, row) {
-                scroll.reveal(row, row + height, inner.height);
+}
+
+impl FindingRows {
+    fn item(&mut self, target: HealthTarget, line: impl Into<Line<'static>>) {
+        self.targets.push((self.lines.len(), target));
+        self.text(line);
+    }
+    fn text(&mut self, line: impl Into<Line<'static>>) {
+        self.lines.push(line.into());
+    }
+
+    fn draw(
+        mut self,
+        f: &mut Frame,
+        area: Rect,
+        ctx: &ComponentContext<'_>,
+        regions: &mut ClickableRegions,
+    ) {
+        let state = ctx.ui_state;
+        let mut cursor = state.health_cursor.borrow_mut();
+        let selected = cursor.resolve(&self.targets);
+        let target = &self.targets[selected].1;
+        cursor.link = target.link(ctx.connections);
+        let title = if let Some(notice) = cursor.notice {
+            notice.to_owned()
+        } else if matches!(target, HealthTarget::Finding(_)) {
+            "Findings".to_owned()
+        } else {
+            let following = self.targets[selected + 1..]
+                .iter()
+                .take_while(|(_, t)| t.finding() == target.finding())
+                .count();
+            let index = cursor.sibling;
+            let position = format!(
+                "{} · {index}/{}",
+                target.finding().name(),
+                index + following
+            );
+            if let HealthTarget::Attempt { key, .. } = target {
+                format!("{position} · {}", key.remote_addr)
+            } else {
+                position
             }
-            (target, row, height)
-        })
-        .collect();
-    let (text_area, offset) = draw_scrolled_text(
-        f,
-        inner,
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        scroll,
-    );
-    for (target, row, height) in wrapped_targets {
-        register_health_row(regions, target, row, height, text_area, offset);
+        };
+        let inner = section_header(f, area, section_title(title));
+        let width = inner.width.saturating_sub(2).max(1);
+        let mut positions = Vec::with_capacity(self.targets.len());
+        let mut next = self.targets.into_iter().enumerate().peekable();
+        let mut starts = Vec::with_capacity(self.lines.len());
+        let mut top = 0usize;
+        for (index, line) in self.lines.iter_mut().enumerate() {
+            let item = next.next_if(|(_, (line_index, _))| *line_index == index);
+            let mut label_width = 0;
+            if let Some((idx, (_, target))) = &item {
+                let link = target.link(ctx.connections);
+                if let Some(label) = link {
+                    // Keep the entire mouse link on one physical row on narrow terminals.
+                    let text = if usize::from(width) >= label.len() + 6 {
+                        format!("[{label}] ")
+                    } else {
+                        "[>] ".to_owned()
+                    };
+                    label_width = text.len() as u16 - 1;
+                    line.spans
+                        .insert(0, Span::styled(text, theme::fg(theme::accent())));
+                } else if matches!(target, HealthTarget::Attempt { .. }) {
+                    line.push_span(" · Details unavailable");
+                }
+                let marker = if *idx == selected { "▌ " } else { "  " };
+                line.spans
+                    .insert(0, Span::styled(marker, theme::fg(theme::accent())));
+                if !matches!(target, HealthTarget::Finding(_)) {
+                    line.spans.insert(0, Span::raw("  "));
+                }
+                if *idx == selected {
+                    highlight_line(line);
+                }
+            } else {
+                line.spans.insert(0, Span::raw("    "));
+            }
+            starts.push(top);
+            let height = if line.width() <= usize::from(width) {
+                1
+            } else {
+                Paragraph::new(line.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+            };
+            if let Some((idx, (_, target))) = item {
+                if idx == selected {
+                    let old = cursor.wrapped_row.replace(top);
+                    if !cursor.scrolled {
+                        state
+                            .health_scroll
+                            .follow_row(top, height, usize::from(inner.height), old);
+                    }
+                }
+                positions.push((target, top, height, label_width));
+            }
+            top = top.saturating_add(height);
+        }
+        // Only the visible logical lines go into Paragraph. Its scroll offset is u16,
+        // but a large set of wrapped destinations can span more than 65,535 lines.
+        let viewport = usize::from(inner.height);
+        let scroll = &state.health_scroll;
+        scroll.record_viewport(inner.height);
+        let offset = scroll.clamp_for_render_len(top.saturating_sub(viewport));
+        let first = starts.partition_point(|&y| y <= offset).saturating_sub(1);
+        let end = starts
+            .partition_point(|&y| y < offset + viewport)
+            .max(first);
+        let area = Rect {
+            width: inner.width.saturating_sub(2),
+            ..inner
+        };
+        let visible = self.lines.drain(first..end).collect::<Vec<_>>();
+        f.render_widget(
+            Paragraph::new(visible)
+                .wrap(Wrap { trim: false })
+                .scroll(((offset - starts[first]) as u16, 0)),
+            area,
+        );
+        draw_scrollbar(f, inner, top, offset, viewport);
+        for (target, top, height, label_width) in positions {
+            let start = top.saturating_sub(offset).min(viewport) as u16;
+            let end = (top + height).saturating_sub(offset).min(viewport) as u16;
+            let rect = Rect::new(area.x, area.y + start, area.width, end - start);
+            if label_width > 0 && top >= offset && !rect.is_empty() {
+                regions.health_links.push(Rect::new(
+                    rect.x + 4,
+                    rect.y,
+                    label_width.min(rect.width.saturating_sub(4)),
+                    1,
+                ));
+            }
+            regions.health_rows.push((target, rect));
+        }
     }
 }
 
@@ -624,48 +751,6 @@ fn highlight_line(line: &mut Line<'_>) {
             span.style = span.style.patch(selection);
         }
     }
-}
-
-fn highlight(
-    lines: &mut [Line<'_>],
-    targets: &[(usize, HealthTarget)],
-    state: &crate::ui::UiState,
-) {
-    let selected = targets
-        .iter()
-        .find(|(_, target)| Some(*target) == state.health_focus.get())
-        .or_else(|| {
-            targets.iter().find(|(_, target)| {
-                Some(*target) == state.tcp_expanded.map(HealthTarget::Destination)
-            })
-        })
-        .or(targets.first());
-    state.health_focus.set(selected.map(|(_, target)| *target));
-    for &(index, target) in targets {
-        let marker = if Some(target) == state.health_focus.get() {
-            if state.inspecting_finding {
-                highlight_line(&mut lines[index]);
-            }
-            "▌ "
-        } else {
-            "  "
-        };
-        lines[index].spans.insert(0, Span::raw(marker));
-    }
-}
-
-fn register_health_row(
-    regions: &mut ClickableRegions,
-    target: HealthTarget,
-    row: u16,
-    height: u16,
-    area: Rect,
-    offset: u16,
-) {
-    let top = row.saturating_sub(offset).min(area.height);
-    let bottom = (row + height).saturating_sub(offset).min(area.height);
-    let rect = Rect::new(area.x, area.y + top, area.width, bottom - top);
-    regions.health_rows.push((target, rect));
 }
 
 fn outcome_counts(counts: &AttemptCounts, indent: &'static str) -> Line<'static> {
@@ -682,124 +767,94 @@ fn outcome_counts(counts: &AttemptCounts, indent: &'static str) -> Line<'static>
     ])
 }
 
-pub(super) fn tcp_attempt_lines(
+fn tcp_attempt_lines(
     snapshot: &crate::network::tcp_attempts::TcpAttemptSnapshot,
-    state: &crate::ui::UiState,
-    connections: &[Connection],
-    targets: &mut Vec<(usize, HealthTarget)>,
-) -> Vec<Line<'static>> {
+    rows: &mut FindingRows,
+) {
     let c = &snapshot.total;
-    let mut lines = vec![
-        Line::from(format!(
-            "{} completed, {} pending",
-            c.completed, snapshot.pending
-        )),
-        outcome_counts(c, "  "),
-    ];
+    rows.text(format!(
+        "{} completed, {} pending",
+        c.completed, snapshot.pending
+    ));
+    rows.text(outcome_counts(c, ""));
     let mut destinations: Vec<_> = snapshot
         .destinations
         .iter()
         .filter(|(_, c)| c.is_affected())
         .collect();
     destinations.sort_by(|a, b| super::compare_tcp_destinations(*b, *a));
-    let inspecting = state.tcp_expanded;
-    let rank = inspecting.and_then(|addr| destinations.iter().position(|(a, _)| **a == addr));
-    let extra = rank.filter(|&index| index >= 3).map(|i| &destinations[i]);
-    if !destinations.is_empty() || inspecting.is_some() {
-        lines.push(Line::from(
-            "Affected destinations · Space or ▸ to expand · issues expire after 5 min",
-        ));
+    if destinations.is_empty() {
+        rows.text("No affected destinations in the last 5 min");
     } else {
-        lines.push(Line::from("No affected destinations in the last 5 min"));
+        rows.text("Affected destinations · issues expire after 5 min");
     }
-    for &(address, c) in destinations.iter().take(3).chain(extra) {
-        let target = HealthTarget::Destination(*address);
-        targets.push((lines.len(), target));
-        let expanded = state.tcp_expanded == Some(*address);
-        let marker = if expanded { "▾" } else { "▸" };
-        lines.push(Line::from(vec![
-            Span::raw(format!("{marker} {address}  ")),
-            count_span(c.reset + c.no_handshake, theme::warn()),
-            Span::raw(format!("/{} reset or incomplete, ", c.completed)),
-            count_span(c.anomalous, theme::warn()),
-            Span::raw(" anomalous, "),
-            count_span(c.syn_retries, theme::warn()),
-            Span::raw(" SYN retries"),
-        ]));
-        if expanded {
-            lines.push(outcome_counts(c, "    "));
-            let mut issues = snapshot
-                .recent_issues
-                .iter()
-                .filter(|issue| issue.key.remote_addr == *address)
-                .peekable();
-            if issues.peek().is_none() {
-                lines.push(Line::from(
-                    "    No matching attempt in the 32 most recent issues",
-                ));
-            }
-            for issue in issues {
-                let link = issue.connection_created_at.map(|created| {
-                    HealthTarget::Details(issue.key, created, issue.initial_sequence)
-                });
-                let action = if let Some(link) =
-                    link.filter(|target| target.connection(connections).is_some())
-                {
-                    targets.push((lines.len(), link));
-                    "[Open Details]"
-                } else {
-                    "Details unavailable"
-                };
-                let (outcome, color) = match issue.outcome {
-                    AttemptOutcome::Established => ("established after anomaly", theme::warn()),
-                    AttemptOutcome::NoHandshake => ("no handshake observed", theme::warn()),
-                    AttemptOutcome::Reset => ("reset", theme::err()),
-                    AttemptOutcome::Superseded => ("superseded", theme::warn()),
-                };
-                lines.push(Line::from(vec![
+    for (address, c) in destinations {
+        let mut issues = snapshot
+            .recent_issues
+            .iter()
+            .filter(|issue| issue.key.remote_addr == *address)
+            .peekable();
+        rows.item(
+            HealthTarget::Destination(*address),
+            Line::from(vec![
+                Span::raw(format!("{address}  ")),
+                count_span(c.reset + c.no_handshake, theme::warn()),
+                Span::raw(format!("/{} reset or incomplete, ", c.completed)),
+                count_span(c.anomalous, theme::warn()),
+                Span::raw(" anomalous, "),
+                count_span(c.syn_retries, theme::warn()),
+                Span::raw(" SYN retries"),
+            ]),
+        );
+        rows.text(outcome_counts(c, "  "));
+        if issues.peek().is_none() {
+            rows.text(Line::from(
+                "    No matching attempt in the 32 most recent issues",
+            ));
+        }
+        for issue in issues {
+            let (outcome, color) = match issue.outcome {
+                AttemptOutcome::Established => ("established after anomaly", theme::warn()),
+                AttemptOutcome::NoHandshake => ("no handshake observed", theme::warn()),
+                AttemptOutcome::Reset => ("reset", theme::err()),
+                AttemptOutcome::Superseded => ("superseded", theme::warn()),
+            };
+            rows.item(
+                HealthTarget::Attempt {
+                    key: issue.key,
+                    created: issue.connection_created_at,
+                    seq: issue.initial_sequence,
+                    started: issue.started_at,
+                },
+                Line::from(vec![
                     Span::raw(format!(
-                        "    {}  ",
+                        "{}  ",
                         chrono::DateTime::<chrono::Local>::from(issue.finished_at)
                             .format("%H:%M:%S")
                     )),
                     Span::styled(outcome, theme::fg(color)),
                     Span::raw(format!(
-                        "  {}  {action} · expires {}",
+                        "  {} · expires {}",
                         issue.key.local_addr,
                         chrono::DateTime::<chrono::Local>::from(
                             issue.finished_at + crate::network::tcp_attempts::WINDOW
                         )
                         .format("%H:%M:%S")
                     )),
-                ]));
-                if issue.unexpected_acks
-                    + issue.invalid_syn_acks
-                    + issue.local_resets
-                    + issue.syn_retries
-                    > 0
-                {
-                    lines.push(Line::from(format!("      SYN retries {}  unexpected ACKs {}  invalid SYN-ACKs {}  local resets {}", issue.syn_retries, issue.unexpected_acks, issue.invalid_syn_acks, issue.local_resets)));
-                }
+                ]),
+            );
+            if issue.unexpected_acks
+                + issue.invalid_syn_acks
+                + issue.local_resets
+                + issue.syn_retries
+                > 0
+            {
+                rows.text(Line::from(format!("      SYN retries {}  unexpected ACKs {}  invalid SYN-ACKs {}  local resets {}", issue.syn_retries, issue.unexpected_acks, issue.invalid_syn_acks, issue.local_resets)));
             }
         }
     }
-    if let Some(addr) = inspecting.filter(|_| rank.is_none()) {
-        targets.push((lines.len(), HealthTarget::Destination(addr)));
-        lines.push(Line::from(format!(
-            "▾ {addr}  No affected attempts remain in the last 5 min · ← dismiss"
-        )));
-    }
-    let hidden = destinations
-        .len()
-        .saturating_sub(3 + usize::from(extra.is_some()));
-    if hidden > 0 {
-        lines.push(Line::from(format!(
-            "  {} more affected destinations in JSON",
-            hidden
-        )));
-    }
     if snapshot.omitted > 0 {
-        lines.push(Line::styled(
+        rows.text(Line::styled(
             format!(
                 "  Incomplete evidence: {} capacity omissions since clear",
                 snapshot.omitted
@@ -808,11 +863,10 @@ pub(super) fn tcp_attempt_lines(
         ));
     }
     if c.no_handshake + c.anomalous > 0 {
-        lines.push(Line::from(
+        rows.text(Line::from(
             "  Missing capture packets or local cancellation can also prevent observed completion.",
         ));
     }
-    lines
 }
 
 #[cfg(test)]
@@ -821,50 +875,73 @@ mod tcp_attempt_tests {
     use crate::network::tcp_attempts::{AttemptCounts, TcpAttemptSnapshot};
 
     #[test]
-    fn open_destination_survives_reranking_and_explains_expiry_until_dismissed() {
-        let addr = "198.51.100.4:443".parse().unwrap();
-        let mut state = crate::ui::UiState {
-            tcp_expanded: Some(addr),
-            ..Default::default()
-        };
+    fn every_affected_destination_is_ranked_and_browsable_without_an_issue_record() {
         let mut snapshot = TcpAttemptSnapshot::default();
-        for ip in 1..=4 {
+        for (ip, completed, failures) in [
+            (1, 100, 15),
+            (2, 10, 5),
+            (3, 20, 10),
+            (4, 100, 14),
+            (5, 100, 13),
+        ] {
             snapshot.destinations.insert(
-                SocketAddr::from(([198, 51, 100, ip], 443)),
+                SocketAddr::from(([192, 0, 2, ip], 443)),
                 AttemptCounts {
-                    completed: 1,
-                    reset: 1,
+                    completed,
+                    no_handshake: failures,
                     ..Default::default()
                 },
             );
         }
-        let render = |snapshot: &TcpAttemptSnapshot, state: &crate::ui::UiState| {
-            let mut targets = Vec::new();
-            let mut lines = tcp_attempt_lines(snapshot, state, &[], &mut targets);
-            highlight(&mut lines, &targets, state);
-            lines
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("\n")
+        let mut rows = FindingRows::default();
+        tcp_attempt_lines(&snapshot, &mut rows);
+        let expected = [3, 2, 1, 4, 5]
+            .map(|ip| HealthTarget::Destination(SocketAddr::from(([192, 0, 2, ip], 443))));
+        assert_eq!(
+            rows.targets.into_iter().map(|(_, t)| t).collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn selected_attempt_leaving_the_window_stays_in_its_group() {
+        let heading = HealthTarget::Finding(Finding::Tcp);
+        let other = HealthTarget::Finding(Finding::Dns);
+        let addr = SocketAddr::from(([192, 0, 2, 1], 443));
+        let destination = HealthTarget::Destination(addr);
+        let attempt = |seq| HealthTarget::Attempt {
+            key: ConnectionKey::new(crate::network::types::Protocol::Tcp, addr, addr),
+            created: None,
+            seq,
+            started: SystemTime::UNIX_EPOCH,
         };
-        let live = render(&snapshot, &state);
-        assert!(live.contains(&format!("▌ ▾ {addr}")));
-        assert!(!live.contains("more affected destinations"));
-        snapshot.destinations.clear();
-        let expired = render(&snapshot, &state);
-        assert!(expired.contains(&format!("▌ ▾ {addr}  No affected attempts remain")));
-        state
-            .health_focus
-            .get()
-            .unwrap()
-            .activate(&mut crate::ui::test_support::empty_ctx(
-                &crate::test_support::test_app(),
-                &mut state,
-                &ClickableRegions::default(),
-            ));
-        assert!(render(&snapshot, &state).contains("No affected destinations in the last 5 min"));
-        assert_eq!(state.health_focus.get(), None);
+        let rows = |items: Vec<HealthTarget>| items.into_iter().enumerate().collect::<Vec<_>>();
+        let original = rows(vec![
+            heading.clone(),
+            destination.clone(),
+            attempt(1),
+            attempt(2),
+            other.clone(),
+        ]);
+        let mut cursor = HealthCursor::default();
+        cursor.select(attempt(1));
+        cursor.resolve(&original);
+        let updated = rows(vec![
+            other.clone(),
+            heading.clone(),
+            destination,
+            attempt(2),
+        ]);
+        cursor.resolve(&updated);
+        assert_eq!(cursor.target, Some(attempt(2)));
+        assert!(cursor.notice.unwrap().contains("5m / last 32"));
+        cursor.resolve(&updated);
+        assert!(cursor.notice.is_some());
+        cursor.resolve(&rows(vec![other.clone(), heading.clone()]));
+        assert_eq!(cursor.target, Some(heading));
+        assert!(cursor.notice.is_some());
+        cursor.select(other);
+        assert!(cursor.notice.is_none());
     }
 
     #[test]
@@ -883,7 +960,10 @@ mod tcp_attempt_tests {
             destinations: [("198.51.100.1:443".parse().unwrap(), counts)].into(),
             ..Default::default()
         };
-        let text = tcp_attempt_lines(&snapshot, &Default::default(), &[], &mut Vec::new())
+        let mut rows = FindingRows::default();
+        tcp_attempt_lines(&snapshot, &mut rows);
+        let text = rows
+            .lines
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()

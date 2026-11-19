@@ -316,19 +316,24 @@ impl ActivitySort {
 /// against what is actually on screen.
 #[derive(Debug, Default)]
 pub struct PaneScroll {
-    offset: Cell<u16>,
-    max: Cell<u16>,
+    offset: Cell<usize>,
+    max: Cell<usize>,
     viewport: Cell<u16>,
 }
 
 impl PaneScroll {
     pub fn scroll_up(&mut self, lines: u16) {
-        self.offset.set(self.offset.get().saturating_sub(lines));
+        self.offset
+            .set(self.offset.get().saturating_sub(usize::from(lines)));
     }
 
     pub fn scroll_down(&mut self, lines: u16) {
-        self.offset
-            .set(self.offset.get().saturating_add(lines).min(self.max.get()));
+        self.offset.set(
+            self.offset
+                .get()
+                .saturating_add(usize::from(lines))
+                .min(self.max.get()),
+        );
     }
 
     pub fn scroll_to_top(&mut self) {
@@ -347,12 +352,24 @@ impl PaneScroll {
         self.max.set(0);
     }
 
-    /// Keep an activated row and its first detail visible after reflow.
-    pub(super) fn reveal(&self, row: u16, last: u16, viewport: u16) {
-        let offset = self.offset.get();
-        if row < offset || last >= offset.saturating_add(viewport) {
-            self.offset.set(row);
-        }
+    /// Follow a selection through live reordering, or scroll just enough to show a newly selected row.
+    pub(super) fn follow_row(
+        &self,
+        row: usize,
+        height: usize,
+        viewport: usize,
+        previous: Option<usize>,
+    ) {
+        let offset = self.offset.get().min(self.max.get());
+        let anchored =
+            previous.map_or(offset, |old| row.saturating_add(offset).saturating_sub(old));
+        self.offset.set(
+            anchored.clamp(
+                row.saturating_add(height.min(viewport))
+                    .saturating_sub(viewport),
+                row,
+            ),
+        );
     }
 
     /// Whether the last render had content beyond the viewport. Drives
@@ -364,6 +381,10 @@ impl PaneScroll {
     /// Record this render's maximum scroll offset and return the
     /// (clamped) offset to draw with.
     pub fn clamp_for_render(&self, max: u16) -> u16 {
+        self.clamp_for_render_len(usize::from(max)) as u16
+    }
+
+    pub(super) fn clamp_for_render_len(&self, max: usize) -> usize {
         self.max.set(max);
         self.offset.get().min(max)
     }
@@ -521,7 +542,7 @@ pub enum ClickAction {
 pub struct ClickableRegions {
     regions: Vec<(Rect, ClickAction)>,
     pub(super) findings_area: Rect,
-    pub(super) evidence_area: Rect,
+    pub(super) health_links: Vec<Rect>,
     pub(super) health_rows: Vec<(super::tabs::health::HealthTarget, Rect)>,
     /// The area of the connections table, used for scroll event targeting
     pub scroll_area: Option<Rect>,
@@ -532,7 +553,7 @@ impl ClickableRegions {
         self.regions.clear();
         self.health_rows.clear();
         self.findings_area = Rect::default();
-        self.evidence_area = Rect::default();
+        self.health_links.clear();
         self.scroll_area = None;
     }
 
@@ -620,15 +641,9 @@ pub struct UiState {
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
     pub(super) health_scroll: PaneScroll,
-    pub(super) health_focus: Cell<Option<super::tabs::health::HealthTarget>>,
-    pub(super) finding: Cell<Option<super::tabs::health::Finding>>,
-    /// Wrapped start of the selected finding in the last rendered list.
-    pub(super) finding_list_row: Cell<Option<u16>>,
-    pub(super) inspecting_finding: bool,
-    pub(super) finding_list_scroll: PaneScroll,
+    pub(super) health_cursor: RefCell<super::tabs::health::HealthCursor>,
+    pub(super) expanded_findings: HashSet<super::tabs::health::Finding>,
     pub(super) return_to_finding: bool,
-    pub(super) tcp_expanded: Option<std::net::SocketAddr>,
-    pub(super) health_reveal: Cell<bool>,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
     pub graph_states_scroll: PaneScroll,
@@ -702,14 +717,9 @@ impl Default for UiState {
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
             health_scroll: PaneScroll::default(),
-            health_focus: Cell::default(),
-            finding: Cell::default(),
-            finding_list_row: Cell::default(),
-            inspecting_finding: false,
-            finding_list_scroll: Default::default(),
+            health_cursor: Default::default(),
+            expanded_findings: Default::default(),
             return_to_finding: false,
-            tcp_expanded: None,
-            health_reveal: Cell::default(),
             graph_section: GraphSection::default(),
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),
@@ -966,14 +976,9 @@ impl UiState {
 
     pub(super) fn reset_findings(&mut self) {
         self.health_scroll.reset();
-        self.health_focus.set(None);
-        self.finding.set(None);
-        self.finding_list_row.set(None);
-        self.inspecting_finding = false;
-        self.finding_list_scroll.reset();
+        *self.health_cursor.get_mut() = Default::default();
+        self.expanded_findings.clear();
         self.return_to_finding = false;
-        self.tcp_expanded = None;
-        self.health_reveal.set(false);
     }
 
     /// Jump directly to a tab by index (0 = Overview, 4 = Host).

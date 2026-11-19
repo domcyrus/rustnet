@@ -6,22 +6,21 @@ expression: output
 ────────────────────────────────────────────────────────────━━━━━━━━━━━━━━━─────────────────────────────────────────────────────────────────
 Findings   Sockets   Interfaces   DNS resolvers                                                                                             
 ━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-▎ Findings ────────────────────────────────────── ▎ ▌ Resets and ICMP (60s) ────────────────────────────────────────────────────────────────
-▌ › Resets and ICMP (60s)  RST 1 sent / 0         60s / total (since startup) · captured packets                                            
-received · 0 ICMP                                 TCP reset                                                                                 
-  › TCP handshakes (5m)  not observed               Sent 1 / 1   Received 0 / 0                                                             
-  › Interface drops (60s)  Waiting for            ICMP port unreachable                                                                     
-interface statistics                                Sent 0 / 0   Received 0 / 1                                                             
-  › DNS replies (60s)  not observed · 0 replies   ICMP destination unreachable                                                              
-· 0 timeouts                                        Sent 0 / 0   Received 0 / 1                                                             
-  › Capture quality (since startup)  0 reported   ICMP administratively prohibited                                                          
-drops · 0 queue drops                               Sent 0 / 0   Received 0 / 1                                                             
-                                                  ICMP packet too big / frag needed                                                         
-                                                    Sent 0 / 0   Received 0 / 1                                                             
-                                                  ICMP time exceeded                                                                        
-                                                    Sent 0 / 0   Received 0 / 1                                                             
-                                                  ICMP parameter problem                                                                    
-                                                    Sent 0 / 0   Received 0 / 1                                                             
+▎ Findings ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▌ ▾ Resets and ICMP (60s)  RST 1 sent / 0 received · 0 ICMP                                                                                 
+    60s / total (since startup) · captured packets                                                                                          
+                                                    Sent: window / total  Received: window / total                                          
+    TCP reset                                                      1 / 1                     0 / 0                                          
+    ICMP port unreachable                                          0 / 0                     0 / 1                                          
+    ICMP destination unreachable                                   0 / 0                     0 / 1                                          
+    ICMP administratively prohibited                               0 / 0                     0 / 1                                          
+    ICMP packet too big / frag needed                              0 / 0                     0 / 1                                          
+    ICMP time exceeded                                             0 / 0                     0 / 1                                          
+    ICMP parameter problem                                         0 / 0                     0 / 1                                          
+  ▸ TCP handshakes (5m)  not observed                                                                                                       
+  ▸ Interface drops (60s)  Waiting for interface statistics                                                                                 
+  ▸ DNS replies (60s)  not observed · 0 replies · 0 timeouts                                                                                
+  ▸ Capture quality (since startup)  0 reported drops · 0 queue drops                                                                       
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -31,4 +30,5 @@ drops · 0 queue drops                               Sent 0 / 0   Received 0 / 1
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- v/V section  w window  esc back                                                                                             h help  q quit
+                                                                                                                                            
+ v/V section  ↑/↓ select  space collapse  w window                                                                           h help  q quit
