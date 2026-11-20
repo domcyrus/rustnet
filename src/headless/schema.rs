@@ -26,6 +26,7 @@ pub(super) struct SnapshotEnvelope<C = ConnectionSnapshots> {
     runtime: RuntimeSnapshot,
     sandbox: SandboxSnapshot,
     stats: StatsSnapshot,
+    tcp_attempts: TcpAttemptSummary,
     filter: Option<String>,
     connection_count: usize,
     connections: C,
@@ -40,6 +41,7 @@ impl<C> SnapshotEnvelope<C> {
             runtime: self.runtime,
             sandbox: self.sandbox,
             stats: self.stats,
+            tcp_attempts: self.tcp_attempts,
             filter: self.filter,
             connection_count: self.connection_count,
             connections,
@@ -111,6 +113,7 @@ impl SnapshotEnvelope {
                 ),
                 sandbox: SandboxSnapshot::from_app(app),
                 stats: StatsSnapshot::from_stats(&app.get_stats()),
+                tcp_attempts: TcpAttemptSummary::from(app.get_tcp_attempt_snapshot().as_ref()),
                 filter: filter.map(str::to_string),
                 connection_count,
                 connections,
@@ -1144,6 +1147,7 @@ mod tests {
                 "sandbox",
                 "schema_version",
                 "stats",
+                "tcp_attempts",
                 "timestamp",
                 "type",
             ]
@@ -1523,5 +1527,168 @@ mod tests {
         assert_eq!(value["container"]["id"], "web");
         assert_eq!(value["container"]["name"], "web");
         assert_eq!(value["container"]["cgroup_path"], "/lxc.payload.web");
+    }
+}
+
+// Additive snapshot evidence. It is independent of connection display filters
+// and is emitted in full in both ordinary and incremental JSON snapshots.
+#[derive(Serialize)]
+struct TcpAttemptSummary {
+    window_seconds: u64,
+    timeout_seconds: u64,
+    pending: usize,
+    omitted_since_clear: u64,
+    total: TcpAttemptCounts,
+    destinations: Vec<TcpAttemptDestination>,
+    recent_issues: Vec<TcpAttemptIssue>,
+}
+
+#[derive(Serialize)]
+struct TcpAttemptCounts {
+    completed: u64,
+    established: u64,
+    reset: u64,
+    no_handshake_observed: u64,
+    superseded: u64,
+    syn_retries: u64,
+    anomalous: u64,
+    recovered_anomalies: u64,
+}
+impl From<crate::network::tcp_attempts::AttemptCounts> for TcpAttemptCounts {
+    fn from(c: crate::network::tcp_attempts::AttemptCounts) -> Self {
+        Self {
+            completed: c.completed,
+            established: c.established,
+            reset: c.reset,
+            no_handshake_observed: c.no_handshake,
+            superseded: c.superseded,
+            syn_retries: c.syn_retries,
+            anomalous: c.anomalous,
+            recovered_anomalies: c.recovered_anomalies,
+        }
+    }
+}
+#[derive(Serialize)]
+struct TcpAttemptDestination {
+    address: String,
+    ip_version: u8,
+    #[serde(flatten)]
+    counts: TcpAttemptCounts,
+}
+#[derive(Serialize)]
+struct TcpAttemptIssue {
+    local_address: String,
+    remote_address: String,
+    started_at: String,
+    finished_at: String,
+    initial_sequence: u32,
+    expected_acknowledgment: u32,
+    last_unexpected_acknowledgment: Option<u32>,
+    outcome: &'static str,
+    syn_retries: u64,
+    unexpected_acks: u64,
+    invalid_syn_acks: u64,
+    local_resets: u64,
+}
+impl From<&crate::network::tcp_attempts::TcpAttemptSnapshot> for TcpAttemptSummary {
+    fn from(s: &crate::network::tcp_attempts::TcpAttemptSnapshot) -> Self {
+        Self {
+            window_seconds: crate::network::tcp_attempts::WINDOW.as_secs(),
+            timeout_seconds: crate::network::tcp_attempts::ATTEMPT_TIMEOUT.as_secs(),
+            pending: s.pending,
+            omitted_since_clear: s.omitted,
+            total: s.total.clone().into(),
+            destinations: s
+                .destinations
+                .iter()
+                .map(|(address, counts)| TcpAttemptDestination {
+                    address: address.to_string(),
+                    ip_version: if address.is_ipv4() { 4 } else { 6 },
+                    counts: counts.clone().into(),
+                })
+                .collect(),
+            recent_issues: s
+                .recent_issues
+                .iter()
+                .map(|a| TcpAttemptIssue {
+                    local_address: a.key.local_addr.to_string(),
+                    remote_address: a.key.remote_addr.to_string(),
+                    started_at: timestamp(a.started_at),
+                    finished_at: timestamp(a.finished_at),
+                    initial_sequence: a.initial_sequence,
+                    expected_acknowledgment: a.expected_acknowledgment,
+                    last_unexpected_acknowledgment: a.last_unexpected_acknowledgment,
+                    outcome: a.outcome.label(),
+                    syn_retries: a.syn_retries,
+                    unexpected_acks: a.unexpected_acks,
+                    invalid_syn_acks: a.invalid_syn_acks,
+                    local_resets: a.local_resets,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tcp_attempt_json_tests {
+    use super::*;
+    use crate::network::tcp_attempts::{
+        AttemptCounts, AttemptOutcome, TcpAttempt, TcpAttemptSnapshot,
+    };
+    use crate::network::types::Protocol;
+
+    #[test]
+    fn exports_destination_family_outcome_and_packet_evidence() {
+        let key = ConnectionKey::new(
+            Protocol::Tcp,
+            "[2001:db8::1]:40000".parse().unwrap(),
+            "[2001:db8::2]:443".parse().unwrap(),
+        );
+        let counts = AttemptCounts {
+            completed: 1,
+            no_handshake: 1,
+            anomalous: 1,
+            syn_retries: 2,
+            ..Default::default()
+        };
+        let snapshot = TcpAttemptSnapshot {
+            total: counts.clone(),
+            destinations: [(key.remote_addr, counts)].into(),
+            pending: 1,
+            omitted: 3,
+            recent_issues: vec![TcpAttempt {
+                key,
+                connection_created_at: None,
+                started_at: SystemTime::UNIX_EPOCH,
+                finished_at: SystemTime::UNIX_EPOCH + Duration::from_secs(10),
+                initial_sequence: 1000,
+                expected_acknowledgment: 1001,
+                last_unexpected_acknowledgment: Some(999999),
+                outcome: AttemptOutcome::NoHandshake,
+                syn_retries: 2,
+                unexpected_acks: 2,
+                invalid_syn_acks: 0,
+                local_resets: 2,
+            }],
+        };
+        let value = serde_json::to_value(TcpAttemptSummary::from(&snapshot)).unwrap();
+        assert_eq!(value["window_seconds"], 300);
+        assert_eq!(value["timeout_seconds"], 10);
+        assert_eq!(value["omitted_since_clear"], 3);
+        assert_eq!(value["destinations"][0]["ip_version"], 6);
+        assert_eq!(value["destinations"][0]["address"], "[2001:db8::2]:443");
+        assert_eq!(value["total"]["no_handshake_observed"], 1);
+        assert_eq!(
+            value["recent_issues"][0]["outcome"],
+            "no_handshake_observed"
+        );
+        assert_eq!(value["recent_issues"][0]["unexpected_acks"], 2);
+        assert_eq!(value["recent_issues"][0]["local_resets"], 2);
+        assert_eq!(value["recent_issues"][0]["initial_sequence"], 1000);
+        assert_eq!(value["recent_issues"][0]["expected_acknowledgment"], 1001);
+        assert_eq!(
+            value["recent_issues"][0]["last_unexpected_acknowledgment"],
+            999999
+        );
     }
 }

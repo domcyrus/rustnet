@@ -28,6 +28,7 @@ enum HelpContext {
     Activity,
     Graph,
     HostSockets,
+    Health,
     HostInterfaces,
     HostDns,
 }
@@ -40,6 +41,7 @@ impl HelpContext {
             2 => Self::Activity,
             3 => Self::Graph,
             4 => match ui_state.host_view {
+                HostView::Findings => Self::Health,
                 HostView::Sockets => Self::HostSockets,
                 HostView::Interfaces => Self::HostInterfaces,
                 HostView::Dns => Self::HostDns,
@@ -56,9 +58,10 @@ impl HelpContext {
             Self::Details => TAB_TITLES[1],
             Self::Activity => TAB_TITLES[2],
             Self::Graph => TAB_TITLES[3],
-            Self::HostSockets => "Host · Sockets",
-            Self::HostInterfaces => "Host · Interfaces",
-            Self::HostDns => "Host · DNS",
+            Self::HostSockets => "Health & Host · Sockets",
+            Self::Health => "Health & Host · Findings",
+            Self::HostInterfaces => "Health & Host · Interfaces",
+            Self::HostDns => "Health & Host · DNS resolvers",
         }
     }
 
@@ -84,6 +87,11 @@ impl HelpContext {
             Self::HostSockets => &[
                 "Host shows the operating system's sockets, even without captured packets.",
                 "Sockets lists TCP listeners and UDP bound endpoints, plus TCP state totals.",
+            ],
+            Self::Health => &[
+                "Health brings together TCP handshakes, resets and ICMP errors, interface drops, DNS replies, and capture quality.",
+                "Space expands evidence inline. Browse each item with j/k or the arrows. v/V switches sections and preserves your place.",
+                "TCP attempts cover five minutes. Capture drops are session totals. Other findings use the selected window.",
             ],
             Self::HostInterfaces => &[
                 "Host shows the operating system's network interfaces and their counters.",
@@ -170,7 +178,10 @@ type HelpRow = (&'static str, &'static str);
 const GLOBAL_KEYS: &[HelpRow] = &[
     ("Tab, ]", "Next tab"),
     ("Shift+Tab, [", "Previous tab"),
-    ("1-5", "Jump to Overview, Details, Activity, Graph, or Host"),
+    (
+        "1-5",
+        "Jump to Overview, Details, Activity, Graph, or Health & Host",
+    ),
     ("x", "Clear all connections (press twice)"),
     ("h, Esc", "Close this help overlay"),
     ("q", "Quit application (press twice to confirm)"),
@@ -256,7 +267,7 @@ const DETAILS_KEYS: &[HelpRow] = &[
     ("Page Up/Down", "Move through connections by one page"),
     ("Ctrl+B/F", "Move through connections by one page"),
     ("c", "Copy the remote address"),
-    ("Esc", "Return to Overview"),
+    ("Esc", "Return to the source finding or Overview"),
 ];
 
 const DETAILS_CONCEPTS: &[HelpRow] = &[
@@ -327,7 +338,10 @@ const ACTIVITY_CONCEPTS: &[HelpRow] = &[
         "Mapped share of retained traffic, not the 60s window",
     ),
     ("Conns", "Active connections / retained connections"),
-    ("Interfaces", "Browse interface counters in Host (5)"),
+    (
+        "Interfaces",
+        "Browse counters in Health & Host > Interfaces",
+    ),
     (
         "60s coverage",
         "Captured connection traffic divided by interface traffic",
@@ -355,9 +369,28 @@ const PANE_SCROLL_KEYS: &[HelpRow] = &[
     ("g, G", "Jump to the top or bottom"),
 ];
 
-const HOST_SOCKET_KEYS: &[HelpRow] = &[
-    ("w", "Cycle Host window: 60s / 5m / 1h / since startup"),
-    ("Esc", "Return to Overview"),
+const HOST_WINDOW_KEY: HelpRow = (
+    "w",
+    "Cycle observation window: 60s / 5m / 1h / since startup",
+);
+
+const HOST_SOCKET_KEYS: &[HelpRow] = &[("Esc", "Return to Overview")];
+
+const FINDING_KEYS: &[HelpRow] = &[
+    HOST_WINDOW_KEY,
+    (
+        "↑/k, ↓/j",
+        "Select the previous or next heading or evidence item",
+    ),
+    ("Space", "Expand or collapse the selected group"),
+    ("→", "Expand the selected heading"),
+    ("←", "Return to the heading, then collapse it"),
+    ("Enter", "Follow the selected item's labeled link"),
+    (
+        "Click",
+        "Toggle a heading, select an item, or follow its bracketed link",
+    ),
+    ("Esc", "Return from a linked view to the source item"),
 ];
 
 const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
@@ -371,13 +404,86 @@ const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
         "Measured from captured packets, not the socket table",
     ),
     ("Refresh", "The socket inventory rescans every 5 seconds"),
+];
+
+const TCP_HEALTH_CONCEPTS: &[HelpRow] = &[
     (
-        "Events",
-        "Selected window / Rustnet total since startup or clear",
+        "Window",
+        "Observed outbound attempts over fixed 5m, by completion time",
+    ),
+    (
+        "Scope",
+        "Independent of Host window and filters; excludes inbound/midstream",
+    ),
+    (
+        "Attempt",
+        "Initial outbound SYN; repeated SYNs count as retries",
+    ),
+    (
+        "Established",
+        "Matching SYN-ACK and final outbound ACK observed",
+    ),
+    ("Not observed", "No completed or pending attempts observed"),
+    (
+        "Pending/checking",
+        "Awaiting completion; pending attempts are not failures",
+    ),
+    ("Healthy", "Observed handshakes completed without anomalies"),
+    (
+        "Anomalous",
+        "Unexpected ACK or invalid SYN-ACK; may still recover",
+    ),
+    (
+        "Recovered",
+        "Anomalous attempts that established; counted as successes",
+    ),
+    ("Reset", "Matching peer reset observed during the attempt"),
+    (
+        "No handshake",
+        "No complete handshake observed within 10s, not proof of loss",
+    ),
+    (
+        "Degraded",
+        "Peer resets or no complete handshake observed within 10s",
+    ),
+    (
+        "Superseded",
+        "A new initial sequence replaced a pending attempt",
+    ),
+    (
+        "Incomplete",
+        "Capture error, drops since clear, omissions or superseded attempts",
+    ),
+    (
+        "Capacity",
+        "Omissions mean incomplete evidence, not network failures",
+    ),
+    (
+        "Worst",
+        "Highest reset/incomplete fraction; ties favor evidence, then anomalies",
+    ),
+    (
+        "Counts",
+        "Completed attempts, not packets; pending attempts are separate",
+    ),
+    (
+        "Evidence",
+        "Missing packets or local cancellation can mislead; check capture drops",
+    ),
+    (
+        "Limits",
+        "Does not diagnose NAT, TLS, application or QUIC failures",
+    ),
+    (
+        "Details",
+        "Full endpoints: Findings > TCP handshakes; recent ACK evidence: tcp_attempts JSON",
     ),
 ];
 
-const INTERFACE_KEYS: &[HelpRow] = HOST_SOCKET_KEYS;
+const INTERFACE_KEYS: &[HelpRow] = &[
+    HOST_WINDOW_KEY,
+    ("Esc", "Return to the source finding or Overview"),
+];
 
 const INTERFACE_CONCEPTS: &[HelpRow] = &[
     (
@@ -396,9 +502,12 @@ const INTERFACE_CONCEPTS: &[HelpRow] = &[
 ];
 
 const DNS_KEYS: &[HelpRow] = &[
-    ("w", "Cycle Host window: 60s / 5m / 1h / since startup"),
+    (
+        "w",
+        "Cycle observation window: 60s / 5m / 1h / since startup",
+    ),
     ("o", "Cycle question sort metric"),
-    ("Esc", "Return to Overview"),
+    ("Esc", "Return to the source finding or Overview"),
 ];
 
 const DNS_CONCEPTS: &[HelpRow] = &[
@@ -540,6 +649,7 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
         HelpContext::Overview => {
             push_section(&mut lines, "Connection Navigation", CONNECTION_NAV_KEYS);
             push_section(&mut lines, "Overview Actions", OVERVIEW_KEYS);
+            push_section(&mut lines, "TCP Handshake Health", TCP_HEALTH_CONCEPTS);
             push_section(&mut lines, "Connection Display", CONNECTION_DISPLAY);
             push_section(&mut lines, "Filter Examples", FILTER_EXAMPLES);
             push_section(&mut lines, "Mouse", OVERVIEW_MOUSE);
@@ -565,6 +675,45 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
             );
             push_section(&mut lines, "Socket Actions", &rows);
             push_section(&mut lines, "Socket Concepts", HOST_SOCKET_CONCEPTS);
+        }
+        HelpContext::Health => {
+            push_section(&mut lines, "Health Actions", FINDING_KEYS);
+            push_section(
+                &mut lines,
+                "Finding colors (default theme)",
+                &[
+                    (
+                        "Order",
+                        "Errors first, then warnings. Ties keep their category order.",
+                    ),
+                    (
+                        "Selection",
+                        "Your selected item stays selected when findings change order.",
+                    ),
+                    ("Green", "Healthy TCP handshakes or responsive DNS"),
+                    (
+                        "Yellow",
+                        "Degraded health, packet drops or incomplete evidence",
+                    ),
+                    (
+                        "Red",
+                        "Observed failures, such as DNS timeouts or capture failure",
+                    ),
+                    ("Muted", "Checking or no observations yet"),
+                ],
+            );
+            if ui_state.health_scroll.can_scroll() {
+                push_section(
+                    &mut lines,
+                    "Scrolling",
+                    &[
+                        ("wheel", "Scroll the findings list"),
+                        ("Page Up/Down", "Scroll the list one page"),
+                        ("g, G", "Jump to the top or bottom"),
+                    ],
+                );
+            }
+            push_section(&mut lines, "TCP Attempt Health", TCP_HEALTH_CONCEPTS);
         }
         HelpContext::HostInterfaces => {
             let rows = host_pane_rows(
@@ -743,7 +892,7 @@ mod tests {
     #[test]
     fn host_help_lists_scroll_keys_only_when_the_pane_scrolls() {
         for host_view in [HostView::Sockets, HostView::Interfaces, HostView::Dns] {
-            let state = UiState {
+            let mut state = UiState {
                 selected_tab: 4,
                 host_view,
                 section_navigation: true,
@@ -753,7 +902,10 @@ mod tests {
             assert!(!fits.contains("Scroll one line"));
             assert!(!fits.contains("Scroll wheel"));
             assert!(fits.contains(crate::ui::sections::SECTION_KEYS));
-            assert!(fits.contains("Return to Overview"));
+            assert!(
+                fits.contains("Return to Overview")
+                    || fits.contains("Return to the source finding or Overview")
+            );
             assert!(!fits.contains("Switch Host view"));
             assert!(!fits.contains("Show interface details"));
             assert_eq!(
@@ -761,12 +913,7 @@ mod tests {
                 host_view == HostView::Dns
             );
 
-            let scroll = match host_view {
-                HostView::Sockets => &state.host_sockets_scroll,
-                HostView::Interfaces => &state.interfaces_scroll,
-                HostView::Dns => &state.dns_questions_scroll,
-            };
-            scroll.clamp_for_render(3);
+            state.host_scroll_mut().clamp_for_render(3);
             let outgrown = plain_text(&state);
             assert!(outgrown.contains("Scroll one line"));
             assert!(outgrown.contains("Scroll wheel"));
@@ -788,6 +935,7 @@ mod tests {
             (HelpContext::Details, "selected connection"),
             (HelpContext::Activity, "compares captured traffic"),
             (HelpContext::Graph, "change over time"),
+            (HelpContext::Health, "Health brings together"),
             (HelpContext::HostSockets, "operating system's sockets"),
             (HelpContext::HostInterfaces, "network interfaces"),
             (HelpContext::HostDns, "tracks lookups and replies"),
@@ -824,10 +972,26 @@ mod tests {
     fn host_subviews_have_distinct_help() {
         let sockets = UiState {
             selected_tab: 4,
+            host_view: HostView::Sockets,
             ..UiState::default()
         };
         let text = plain_text(&sockets);
         assert!(text.contains("Socket Actions"));
+        assert!(!text.contains("TCP Attempt Health"));
+        assert!(!text.contains("Health Actions"));
+        let text = plain_text(&UiState {
+            host_view: HostView::Findings,
+            ..sockets
+        });
+        assert!(text.contains("Health Actions"));
+        assert!(text.contains("TCP Attempt Health"));
+        assert!(text.contains("may still recover"));
+        assert!(text.contains("not proof of loss"));
+        let overview = plain_text(&UiState::default());
+        for (label, description) in TCP_HEALTH_CONCEPTS {
+            assert!(text.contains(label) && text.contains(description));
+            assert!(overview.contains(label) && overview.contains(description));
+        }
         assert!(!text.contains("Interface Actions"));
 
         let interfaces = UiState {

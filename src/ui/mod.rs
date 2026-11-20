@@ -51,11 +51,23 @@ pub fn dispatch_key(
     key: crossterm::event::KeyEvent,
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if (!ctx.ui_state.filter_mode || ctx.ui_state.show_help)
+        && let (KeyCode::Char(n @ '1'..='5'), KeyModifiers::NONE) = (key.code, key.modifiers)
+    {
+        ctx.ui_state.jump_to_tab(n as usize - '1' as usize);
+        return Some(Vec::new());
+    }
     if ctx.ui_state.show_help {
         return HelpOverlay.handle_key(key, ctx);
     }
     if ctx.ui_state.filter_mode {
         return OverviewTab.handle_key(key, ctx);
+    }
+    if key.code == KeyCode::Esc && ctx.ui_state.return_to_finding {
+        ctx.ui_state.jump_to_tab(4);
+        ctx.ui_state.host_view = HostView::Findings;
+        return Some(Vec::new());
     }
     if let Some(effects) = sections::handle_key(key, ctx.ui_state) {
         return Some(effects);
@@ -277,12 +289,6 @@ fn fade_at(lines: &mut [Line<'_>], index: usize) {
     if let Some(line) = lines.get_mut(index) {
         fade_line(line);
     }
-}
-
-/// Foreground style for a counter that is fine at zero and alarming
-/// otherwise: `ok` while nothing is wrong, `alert` once `alerting`.
-pub(crate) fn alert_style(alerting: bool, alert: Color) -> ratatui::style::Style {
-    theme::fg(if alerting { alert } else { theme::ok() })
 }
 
 /// Resolve the cell color for a connection's State column.

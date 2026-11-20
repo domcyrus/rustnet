@@ -35,7 +35,10 @@ impl UiState {
                 &["Traffic", "Health", "Distribution"],
                 self.graph_section as usize,
             ),
-            4 => (&["Sockets", "Interfaces", "DNS"], self.host_view as usize),
+            4 => (
+                &["Findings", "Sockets", "Interfaces", "DNS resolvers"],
+                self.host_view as usize,
+            ),
             _ => (&[], 0),
         }
     }
@@ -74,7 +77,15 @@ impl UiState {
                     GraphSection::Distribution,
                 ][index]
             }
-            4 => self.host_view = [HostView::Sockets, HostView::Interfaces, HostView::Dns][index],
+            4 => {
+                self.return_to_finding = false;
+                self.host_view = [
+                    HostView::Findings,
+                    HostView::Sockets,
+                    HostView::Interfaces,
+                    HostView::Dns,
+                ][index];
+            }
             _ => {}
         }
     }

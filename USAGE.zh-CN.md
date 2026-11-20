@@ -182,7 +182,7 @@ EOF 或读取失败会请求正常关闭并输出终态记录。`--include-histo
 
 #### Schema 约定
 
-默认 `jsonl` 和 `json` 输出格式版本为 `schema_version = 1`。每条记录都是快照对象，顶层字段为 `schema_version`、`type`、`timestamp`、`runtime`、`sandbox`、`stats`、`filter`、`connection_count` 和 `connections`。最终终止记录会将 `runtime.status` 设为 `stopping`、`stopped` 或 `stopped_with_errors`，并包含 `runtime.termination_reason` 和 `runtime.shutdown`。连接记录涵盖端点、进程归属、流量、各协议计时、GeoIP，以及可选的 Kubernetes 元数据。`rtt` 对象以毫秒为单位提供当前值、初始值、平滑 TCP 值，以及 DNS、LLMNR、NetBIOS、ICMP echo、STUN 和 NTP 计时。可选的增强与计时字段在被发现前保持为 null；关闭期间排空的连接可能在进程、GeoIP 或 Kubernetes 增强完成前就出现在最终记录中。使用方必须根据 `schema_version` 选择解析逻辑，并允许出现新增的未知字段。
+默认 `jsonl` 和 `json` 输出格式版本为 `schema_version = 1`。每条记录都是快照对象，顶层字段为 `schema_version`、`type`、`timestamp`、`runtime`、`sandbox`、`stats`、`tcp_attempts`、`filter`、`connection_count` 和 `connections`。最终终止记录会将 `runtime.status` 设为 `stopping`、`stopped` 或 `stopped_with_errors`，并包含 `runtime.termination_reason` 和 `runtime.shutdown`。连接记录涵盖端点、进程归属、流量、各协议计时、GeoIP，以及可选的 Kubernetes 元数据。`rtt` 对象以毫秒为单位提供当前值、初始值、平滑 TCP 值，以及 DNS、LLMNR、NetBIOS、ICMP echo、STUN 和 NTP 计时。可选的增强与计时字段在被发现前保持为 null；关闭期间排空的连接可能在进程、GeoIP 或 Kubernetes 增强完成前就出现在最终记录中。使用方必须根据 `schema_version` 选择解析逻辑，并允许出现新增的未知字段。
 
 开发版本会复用未变化的无界面历史连接记录的 JSON 编码。缓存最多保留 10,000 条记录和 16 MiB 的连接 JSON 编码，以及对应的投影字段和管理数据。它会比较所有导出的连接字段，因此延迟到达的元数据和最终计数仍会更新。在 `jsonl` 和 `json` 模式下，每条输出记录仍然是版本 1 的完整快照；快照构建开销和输出大小仍会随可见连接数量增长。
 
@@ -197,7 +197,7 @@ EOF 或读取失败会请求正常关闭并输出终态记录。`--include-histo
 `--headless --output jsonl-delta` 显式启用 **schema 版本 2**。默认 `jsonl` 和 `json` 仍使用版本 1。使用方切换前必须支持以下规则：
 
 - **快照：**`type: "snapshot"` 替换全部状态。`connections` 包含所有选中的连接，`base_sequence` 为 null，`removed_connection_ids` 为空。首次、关闭时，以及距上次完整快照 60 条记录后或满 30 秒后的下一次输出时，发送完整快照，以先到者为准。
-- **增量：**原子应用 `type: "delta"`：先删除 `removed_connection_ids`，再按 `id` 插入或替换完整的 `connections` 对象。每条记录都替换 `timestamp`、`runtime`、`sandbox`、`stats` 和 `filter`。验证最终总数等于 `connection_count`；按 `id` 排序可匹配完整快照的顺序。
+- **增量：**原子应用 `type: "delta"`：先删除 `removed_connection_ids`，再按 `id` 插入或替换完整的 `connections` 对象。每条记录都替换 `timestamp`、`runtime`、`sandbox`、`stats`、`tcp_attempts` 和 `filter`。验证最终总数等于 `connection_count`；按 `id` 排序可匹配完整快照的顺序。
 - **恢复：**每个新流从 `sequence: 1` 开始。增量的 `base_sequence` 必须等于最后应用的序号，`sequence` 必须是其下一序号。遇到间断、重复、无效记录或数量不符时，将状态标为过期，并忽略增量直到有效完整快照到达。不要混合不同流。恢复依靠周期性快照，不支持 stdin 重新同步请求。
 - **上限：**基线最多保留合计 10,000 条活跃及历史连接、16 MiB 的 JSON 编码，以及投影字段和管理数据。超过上限时使用完整快照，直到完整基线再次满足上限。所有导出字段都参与变化检测，包括延迟元数据和最终计数。
 
@@ -506,7 +506,7 @@ rustnet --kubernetes on
 
 - `Tab`：下一个标签页
 - `Shift+Tab`：上一个标签页
-- `1` / `2` / `3` / `4` / `5`：直接跳转到 概览 / 详情 / 活动 / 图表 / 主机
+- `1` / `2` / `3` / `4` / `5`：直接跳转到 概览 / 详情 / 活动 / 图表 / 健康与主机（Health & Host）
 - `Enter` —— 查看所选连接的详细信息
 - `Esc` —— 返回上一个视图或清除活动过滤器
 - `h`：切换仅包含当前标签页相关操作的帮助浮层
@@ -1023,14 +1023,14 @@ Activity 按完全相同的进程名汇总，与 Overview 的进程分组一致�
 
 宽屏将 Capture 放在应用表右侧。空间不足时，使用 `v` / Shift+`v` 或点击 Applications / Capture 切换区块。Capture 可滚动，调整窗口大小后保留位置，并明确区分最近 60 秒的捕获覆盖率与保留流量的进程归属比例，展示已归属、未知和总字节数。接口清单和速率表统一放在 Host，Activity 仅保留解释覆盖率所需的接口依据。流量占比条在空间允许时显示在同一行。
 
-按 `d` 在出站 (TX，蓝色) 和入站 (RX，绿色) 之间切换，按 `s` 轮换活动指标的排序方式，按 `S` 反转排序顺序。详细的接口表格位于主机标签页（按 `5`，再用 `v` / Shift+`v` 选择 Interfaces）。
+按 `d` 在出站 (TX，蓝色) 和入站 (RX，绿色) 之间切换，按 `s` 轮换活动指标的排序方式，按 `S` 反转排序顺序。详细的接口表格位于 Health & Host 标签页（按 `5`，再用 `v` / Shift+`v` 选择 Interfaces）。
 
 进行快速安全检查时，可按滚动字节数或保留字节数对出站流量排序，找出异常的高流量进程，并检查其流量最大的远端对端。保留流量会让短寿命上传进程在套接字关闭后仍然可见。
 
 ### 紧凑终端布局<a id="compact-terminals"></a>
 
 完整仪表板放不下时，按 `v` / Shift+`v` 或点击区块名称切换视图。
-Host 始终使用这些操作切换 Sockets、Interfaces 和 DNS。
+Health & Host 使用这些操作切换 Findings、Sockets、Interfaces 和 DNS resolvers。
 在 Details 中，这些操作也用于长区块翻页；`j` / `k` 和鼠标滚轮切换连接。
 调整大小或切换连接时保留所选区块。
 
@@ -1067,7 +1067,7 @@ Details 的 Connection 区块通过 **Observed VLANs** 显示该连接中捕获�
 
 > **自 v1.7.0 起可用。**
 
-按 `5` 打开主机标签页。此视图直接读取操作系统套接字表，不需要先捕获到数据包，因此可显示未产生流量的监听端点。
+按 `5` 打开 Health & Host，然后选择 Sockets。此视图直接读取操作系统套接字表，不需要先捕获到数据包，因此可显示未产生流量的监听端点。
 
 套接字视图包括：
 
@@ -1090,11 +1090,11 @@ Linux 在沙箱启用后为未变化的套接字保留启动时缓存的进程�
 | FreeBSD | 使用 `sockstat -s` 获取原生 TCP 状态及 UDP 套接字行 |
 | Windows | IP Helper 的 `GetExtendedTcpTable` 和 `GetExtendedUdpTable` owner 表 |
 
-使用 `v` / Shift+`v` 或点击 Sockets / Interfaces / DNS 选择区块。底部显示切换快捷键。Tab / Shift+Tab 和 1-5 切换主标签页。
+使用 `v` / Shift+`v` 或点击 Findings / Sockets / Interfaces / DNS resolvers 选择区块。底部显示切换快捷键。Tab / Shift+Tab 和 1-5 切换主标签页。
 
 ### 观测到的网络事件（尚未发布）<a id="observed-network-events-unreleased"></a>
 
-Host > Sockets 统计 TCP 重置和 ICMPv4/v6 错误的发送/接收数，包括不可达、禁止访问、
+Findings > Resets and ICMP 统计 TCP 重置和 ICMPv4/v6 错误的发送/接收数，包括不可达、禁止访问、
 数据包过大/需要分片、超时和参数问题。计数覆盖启动或清空以来捕获的流量，
 不受显示筛选或连接保留期限影响。这些是观测值，不是防火墙判定或整个系统的计数；
 MTU 和 traceroute 消息也可能是正常行为。
@@ -1102,11 +1102,11 @@ MTU 和 traceroute 消息也可能是正常行为。
 Details > Health 显示计数和最近错误的类型/代码、报告地址、方向、距今时间及可用的通告 MTU。
 通过引用的端点匹配 TCP/UDP 连接，不改变连接状态或流量总数。
 截断的引用、分片、IPv6 扩展头、NAT、缺失或复用的连接可能导致无法匹配或误匹配。
-未匹配的错误仍计入 Host；不保留单条错误记录。
+未匹配的错误仍计入 Health；不保留单条错误记录。
 
 ### Host 时间范围（开发版本）
 
-在任意 Host 区块按 `w`，循环选择 **60s / 5m / 1h / since startup**。Sockets、Interfaces 和 DNS 共用选择；套接字清单和接口速率仍显示实时值。
+在 Findings、Health & Host > Interfaces 或 Health & Host > DNS resolvers 中按 `w`，循环选择 **60s / 5m / 1h / since startup**。这三个视图共用选择；套接字清单和接口速率仍显示实时值。
 
 - **网络事件：** 发送和接收计数同时显示所选时间范围与 Rustnet 启动或清空以来的累计值，包括所选范围内计数已归零的事件类型。
 - **接口：** 错误、丢包和碰撞显示为 `所选范围/OS 总计`。只有首次采样之后观察到的增量计入所选范围；已有 OS 错误不计为新错误。OS 总计和数据包总计仍显示，高亮依据所选范围。
@@ -1117,7 +1117,7 @@ Details > Health 显示计数和最近错误的类型/代码、报告地址、�
 
 ## 被动 DNS 分析<a id="passive-dns-analytics"></a>
 
-按 `5` 打开 Host，再用 `v` / Shift+`v` 或点击名称选择 DNS 分析。该视图默认在滚动 60 秒窗口中汇总捕获到的单播 UDP DNS 流量。**开发版：**按 `w` 在 60 秒、5 分钟、1 小时和自启动以来之间循环切换。响应结果、延迟、解析器证据和查询名称均使用所选窗口；Overview 的健康状态始终使用 60 秒：
+按 `5` 打开 Health & Host，再用 `v` / Shift+`v` 或点击名称选择 DNS resolvers。该视图默认在滚动 60 秒窗口中汇总捕获到的单播 UDP DNS 流量。**开发版：**按 `w` 在 60 秒、5 分钟、1 小时和自启动以来之间循环切换。响应结果、延迟、解析器证据和查询名称均使用所选窗口；Overview 的健康状态始终使用 60 秒：
 
 - **响应结果**：查询、应答、待处理、超时、NOERROR、NXDOMAIN、NODATA、SERVFAIL、REFUSED 和其他响应码计数
 - **响应时间**：按连接和事务 ID 匹配响应后得到的 p50、p95、最大值和延迟区间
@@ -1142,7 +1142,7 @@ NXDOMAIN 是有效的解析器响应，因此不会单独导致 DNS 被判定为
 
 ### 解析器证据（未发布）
 
-Host > DNS 按观测到的解析器地址分别显示健康状态、失败数/已完成查询数、待处理数（`wait`）、重复查询数（`retry`），以及最早待处理查询的等待时间或 p95 延迟。优先显示有问题的解析器。根据终端高度显示两到三行，额外计数表示未显示的解析器。
+Health & Host > DNS resolvers 按观测到的解析器地址分别显示健康状态、失败数/已完成查询数、待处理数（`wait`）、重复查询数（`retry`），以及最早待处理查询的等待时间或 p95 延迟。优先显示有问题的解析器。根据终端高度显示两到三行，额外计数表示未显示的解析器。
 
 三个滚动窗口共享最多 8,192 个已完成事务和 4,096 个待处理查询的有界缓冲区。`sampled` 表示容量压力导致所选窗口的部分证据缺失；查询量较大时可能无法保留所选时段的完整明细。切换窗口不会清空数据，且仅在 RustNet 捕获期间收集数据。
 
@@ -1150,7 +1150,7 @@ Host > DNS 按观测到的解析器地址分别显示健康状态、失败数/�
 
 最多保留 64 条超时、SERVFAIL、REFUSED、其他错误或慢响应（至少 500 ms）的观测记录，保留 15 分钟。近期问题按解析器和原因分组，最新记录优先，显示保留记录数、最后观测时间距今多久和最新查询名称。标题说明可见分组数。这些记录在 60 秒健康窗口结束后仍保留，但不表示故障仍在持续。按 `x` 同时清空历史和实时汇总。
 
-提示区区分无响应、解析器错误、拒绝查询、重试和慢响应。缺失数据包不能证明解析器故障：请同时查看 Host > Sockets 的 ICMP 错误、Host > Interfaces 的错误和丢包，以及捕获范围。捕获失败时 Host 显示 unknown。
+提示区区分无响应、解析器错误、拒绝查询、重试和慢响应。缺失数据包不能证明解析器故障：请同时查看 Findings > Resets and ICMP 的 ICMP 错误、Health & Host > Interfaces 的错误和丢包，以及捕获范围。捕获失败时 Host 显示 unknown。
 
 Linux 上可用 `sudo rustnet -i any --no-resolve-dns` 同时捕获回环 DNS 存根和上游流量。`127.0.0.53:53` 常见于 systemd-resolved，也支持 `127.0.0.1:53` 和 `[::1]:53`。仅捕获物理接口会漏掉存根交换。若同时捕获存根与上游，它们是独立的线上事务，并非唯一的应用查询。使用 systemd-resolved 时可通过 `resolvectl status` 查看按链路配置的服务器；RustNet 仅列出观测到的端点，不修改配置或发送主动探测。
 
@@ -1169,8 +1169,8 @@ RustNet 在所有支持的平台上（Linux、macOS、FreeBSD、Windows）提供
 - 显示：`InterfaceName: X KB/s ↓ / Y KB/s ↑`
 - 显示累计总数：`Errors (Total): N  Drops (Total): M`
 
-**主机标签页（详细视图）：**
-- 按 `5` 打开主机标签页，再用 `v` / Shift+`v` 或点击名称选择 Interfaces
+**Health & Host（详细视图）**
+- 按 `5` 打开 Health & Host，再用 `v` / Shift+`v` 或点击名称选择 Interfaces
 - 显示所有网络接口的详细表格
 - 显示每个接口的综合指标
 
@@ -1636,3 +1636,39 @@ cat capture.pcap.connections.jsonl | jq -r '[.protocol, .local_addr, .remote_add
 # 在 Wireshark 中按连接元组过滤
 # ip.addr == 142.250.80.46 && tcp.port == 443
 ```
+
+### TCP 连接尝试健康状态（未发布）
+
+Findings > TCP handshakes 显示固定五分钟窗口内观测到的出站 TCP 连接尝试，不受 Host 时间范围或连接筛选条件影响。初始出站 SYN 开始一次尝试，相同 SYN 重传合并计数。只有匹配的 SYN-ACK 和最终出站 ACK 都被观测到，才算成功，包括本机端点之间的连接，以及 SYN 数据未被接受时的 TCP Fast Open 回退。匹配的对端重置（包括 TCP Fast Open 回退）、十秒内未观测到完整握手，以及新的初始序列号替代旧尝试分别统计。仅入站或从连接中途开始捕获的流量不计入尝试。异常 ACK 和确认号不匹配的 SYN-ACK 即使后来恢复成功也会保留；本地纠正性 RST 不会立即结束尝试。
+
+无界面 `json`、`jsonl`、`jsonl-delta` 输出新增 `tcp_attempts` 对象，包括 `window_seconds`、`timeout_seconds`、`pending`、`omitted_since_clear`、`total`、`destinations` 和 `recent_issues`。增量记录中的此对象必须整体替换。已完成结果按远端套接字地址和 `ip_version` 分组，以完成时间计算窗口。计数包含 `completed`、`established`、`reset`、`no_handshake_observed`、`superseded`、`syn_retries` 和 `anomalous`（包括已恢复尝试的异常响应）。待完成尝试不是失败；滚动计数不能跨快照累加。
+
+最多保留 4,096 个待完成和 8,192 个已完成尝试，每次快照最多导出 32 条近期问题。统计容量遗漏前会先回收已过期的条目。容量遗漏计入 `omitted_since_clear`，不算网络失败；清除连接历史会重置状态。如果仍有捕获的数据包等待处理，处理到期限内的完整握手后，超时记录会更新为已建立。十秒是观测期限，不是系统连接超时；已完成记录保留期间，相同的迟到 SYN 重传不会重复计数。捕获丢包、单向可见性、本地取消和捕获停止都可能导致无法观测到完整握手。解读前请检查捕获状态和丢包计数。这些观测无法定位故障路由器、NAT 或远端主机；DNS 传输与 IPv4/IPv6 应用成功率是不同指标。
+
+按 `5` 打开 **Health & Host**。**Findings** 在同一列表中显示 TCP 握手、重置与 ICMP、接口丢包、DNS 应答和捕获质量。每个组标题都标有统计窗口。按 `Space` 或点击标题可就地展开该组的全部证据，也可以同时展开多个组。用 `j` / `k` 或 `↓` / `↑` 依次选中各组标题和每条记录。在记录上按 `Space` 可收起该组，按 `←` 可返回标题，再按一次即可收起。选中标题后按 `→` 可展开。
+
+首次打开 Findings 时会选中优先级最高的一项。错误排在最前，其次是警告，其他项目排在最后。同一优先级内保留原有的类别顺序。新增观测记录或组的排序改变时，原先选中的记录仍保持选中。
+
+默认主题用绿色表示握手正常或 DNS 应答正常，用黄色表示状态下降、丢包或观测数据不完整。DNS 超时、接口错误和捕获中断等已观测到的故障显示为红色。检查中或尚未观测到的状态使用弱化颜色，错误计数为零时不着色。启用 `NO_COLOR` 后，仍可通过状态文字、计数和 `▌` 标记识别状态与当前选中项。
+
+在 **DNS replies** 中可逐项查看解析器和问题记录，选择 **Open DNS resolvers** 查看应答结果、延迟和查询名称。**Interface drops** 可打开操作系统接口计数器。展开 **TCP handshakes** 可查看所有受影响的目标及保留的尝试。在带链接的行上按 `Enter`，或点击方括号内的链接。只要对应的连接仍可查看，行内就会显示 **Open Details**。按 `Esc` 可返回原先选中的记录。用 Page Up/Down 或鼠标滚轮阅读较长的内容。按 `v` 切到 **Sockets** 查找监听端口所属进程，再按 `V` 返回。各区块分别保留位置。
+
+每次尝试从完成时起计入统计，保留五分钟。每条尝试都显示到期时间，所有目标合计最多显示最近 32 条问题记录。如果选中的尝试移出列表，界面会提示保留条件，并选中同组中邻近的一项。如果该组已无记录，则选中组标题。
+
+在 Findings 中按 `h` 打开 TCP Attempt Health 帮助，查看计数含义、固定窗口、已恢复的异常、导出证据及诊断限制。
+
+Overview > Network Stats 也显示同一固定五分钟窗口的 TCP 握手健康状态，区分未观测、检查中、健康、异常后恢复、降级和证据不完整。捕获错误、报告的丢包或跟踪容量遗漏会覆盖健康标签。仅被替代的尝试不能确定故障。Overview 和 Findings 均按重置或握手不完整比例对受影响目标排序，再比较失败次数、异常比例和异常次数；完全相同时按地址稳定排序。显示样本数量，因为小样本不能证明持续故障。健康的 IPv6 流量不会稀释 IPv4 目标的问题。侧栏可能缩短长地址，Findings 和 JSON 保留完整地址。在 Overview 按 `h` 查看解释与限制。JSON 计数新增 `recovered_anomalies`，直接统计异常后成功建立连接的尝试，不从数量受限的近期问题列表推算。
+
+#### TCP 健康状态性能测量
+
+TCP 汇总共享不可变的缓存快照，直到可见状态改变或到达超时、窗口到期时间。数据包处理的全局到期扫描最多每秒一次；快照和待完成连接元组的数据包仍严格检查到期时间。重建汇总时先选出最新的 32 条问题再排序。每条导出记录仍需执行 JSON 投影和序列化。
+
+运行可选的合成 release 基准测试（不使用捕获文件或网络）：
+
+```bash
+cargo test --release --locked -p rustnet-core --lib benchmark_tcp_ -- --ignored --nocapture --test-threads=1
+```
+
+`BENCH` 行依次报告工作负载、样本、操作数和耗时纳秒。将耗时除以操作数以比较样本；`RUSTNET_BENCH_SAMPLES` 默认为 7。摄取测试涵盖已建立连接、顺序握手、每批 256 个重叠握手以及交错超时。有界尝试映射使用与连接表相同的哈希器；替换和完成操作复用已找到的条目，避免重复查找。快照测试保留 8,192 次尝试，分布在 1、64 或 8,192 个目标端点，分别测量未改变的读取和每次读取前新增一次重置的情况。更新读取的耗时包括两次数据包摄取。这些测试测量核心摄取和快照 API，不包含捕获、解析、UI 渲染、JSON 序列化或锁竞争。
+
+与没有此功能的版本比较时，将 `crates/rustnet-core/src/network/tracker_benchmarks.rs` 复制到该版本，并在其网络 `mod.rs` 注册 `#[cfg(test)] mod tracker_benchmarks;`，然后在两版本上运行 `benchmark_tcp_ingestion` 筛选器。main 没有对应的 TCP 汇总 API。保持 release 设置一致，交替运行版本，先预热，并在其他负载较低的机器上报告重复样本。

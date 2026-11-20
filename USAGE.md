@@ -188,7 +188,7 @@ socket identity; unverifiable or changed identities stay unresolved.
 
 #### Schema contract
 
-The default `jsonl` and `json` wire schema is `schema_version = 1`. Every record is a snapshot object with these top-level fields: `schema_version`, `type`, `timestamp`, `runtime`, `sandbox`, `stats`, `filter`, `connection_count`, and `connections`. A terminal record sets `runtime.status` to `stopping`, `stopped`, or `stopped_with_errors`, and includes `runtime.termination_reason` and `runtime.shutdown`. Connection records cover endpoints, process attribution, traffic, protocol timing, GeoIP, and optional Kubernetes metadata. The `rtt` object includes current, initial, smoothed TCP, DNS, LLMNR, NetBIOS, ICMP echo, STUN, and NTP timings in milliseconds. Optional enrichment and timing fields remain null until discovered; connections drained during shutdown can appear before process, GeoIP, or Kubernetes enrichment completes. Consumers must branch on `schema_version` and tolerate unknown additive fields.
+The default `jsonl` and `json` wire schema is `schema_version = 1`. Every record is a snapshot object with these top-level fields: `schema_version`, `type`, `timestamp`, `runtime`, `sandbox`, `stats`, `tcp_attempts`, `filter`, `connection_count`, and `connections`. A terminal record sets `runtime.status` to `stopping`, `stopped`, or `stopped_with_errors`, and includes `runtime.termination_reason` and `runtime.shutdown`. Connection records cover endpoints, process attribution, traffic, protocol timing, GeoIP, and optional Kubernetes metadata. The `rtt` object includes current, initial, smoothed TCP, DNS, LLMNR, NetBIOS, ICMP echo, STUN, and NTP timings in milliseconds. Optional enrichment and timing fields remain null until discovered; connections drained during shutdown can appear before process, GeoIP, or Kubernetes enrichment completes. Consumers must branch on `schema_version` and tolerate unknown additive fields.
 
 Development builds reuse encoded JSON for unchanged historic headless connections. The cache retains at most 10,000 records and 16 MiB of encoded connection JSON, plus their projected fields and bookkeeping. It compares all exported connection fields, so late metadata and final counters still update. In `jsonl` and `json` mode, every output record remains a full snapshot with schema version 1; snapshot construction and output size still grow with the number of visible connections.
 
@@ -203,7 +203,7 @@ Closing a JSONL pipeline early, for example with `head`, produces a broken pipe.
 `--headless --output jsonl-delta` opts into **schema version 2**. Default `jsonl` and `json` output stays at version 1. Consumers must support these rules before switching:
 
 - **Snapshots:** `type: "snapshot"` replaces all state. `connections` contains all selected connections, `base_sequence` is null, and `removed_connection_ids` is empty. Full snapshots are sent initially, at shutdown, and after 60 records or on the next emission after 30 seconds, whichever comes first.
-- **Deltas:** apply `type: "delta"` atomically: delete `removed_connection_ids`, then insert or replace the complete `connections` objects by `id`. Replace `timestamp`, `runtime`, `sandbox`, `stats`, and `filter` on every record. Verify the resulting total equals `connection_count`; sort by `id` to match full-snapshot ordering.
+- **Deltas:** apply `type: "delta"` atomically: delete `removed_connection_ids`, then insert or replace the complete `connections` objects by `id`. Replace `timestamp`, `runtime`, `sandbox`, `stats`, `tcp_attempts`, and `filter` on every record. Verify the resulting total equals `connection_count`; sort by `id` to match full-snapshot ordering.
 - **Recovery:** each new stream starts at `sequence: 1`. A delta's `base_sequence` must equal the last applied sequence, and `sequence` must be its successor. On gaps, duplicates, invalid records, or count mismatches, mark state stale and ignore deltas until a valid full snapshot arrives. Do not combine streams. Recovery uses periodic snapshots, with no stdin resync request.
 - **Limits:** the baseline holds up to 10,000 active/historic connections and 16 MiB of encoded JSON, plus projected fields and bookkeeping. Larger states use full snapshots until a complete baseline fits again. All exported fields participate in change detection, including late metadata and final counters.
 
@@ -521,7 +521,7 @@ rustnet --kubernetes on
 
 - `Tab` - Next tab
 - `Shift+Tab` - Previous tab
-- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Host
+- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Health & Host
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
 - `h` - Toggle a help overlay containing controls for the active tab
@@ -534,7 +534,7 @@ click anywhere dismisses it.
 ### Compact terminals
 
 When the dashboard does not fit, use `v` / Shift+`v` or click a section name to
-switch views. Host always uses these controls for Sockets, Interfaces, and DNS.
+switch views. Health & Host uses these controls for Findings, Sockets, Interfaces, and DNS resolvers.
 In Details they also page through long sections; `j` / `k` and the mouse wheel
 switch connections. The selected section survives resizing and connection changes.
 
@@ -1128,7 +1128,7 @@ including mapped, unknown, and total bytes. Interface inventory and rate tables
 live in Host. Activity only retains the interface basis needed to explain coverage.
 Share bars use the theme's traffic colours and appear inline when space permits.
 
-Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives on the Host tab (press `5`, then select Interfaces with `v` / Shift+`v`).
+Press `d` to switch between Egress (TX, blue) and Ingress (RX, green) in the default theme, `s` to cycle the Activity sort metric, and `S` to reverse its order. Other themes keep their own TX/RX colours. The detailed interface table lives under Health & Host (press `5`, then select Interfaces with `v` / Shift+`v`).
 
 For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
 
@@ -1136,7 +1136,7 @@ For a quick security review, sort Egress by the rolling or retained byte count, 
 
 > **Available since v1.7.0.**
 
-Press `5` to open the Host tab. Unlike the Overview connection list, this view reads the operating system's socket table and does not require a packet to have been captured for a row to appear.
+Press `5` for **Health & Host**, then select **Sockets**. Unlike the Overview connection list, this view reads the operating system's socket table and does not require a packet to have been captured for a row to appear.
 
 The Sockets view includes:
 
@@ -1160,11 +1160,11 @@ permissions can leave ownership unknown. Newly created sockets still require pro
 | FreeBSD | `sockstat -s` for native TCP states plus UDP socket rows |
 | Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |
 
-Use `v` / Shift+`v` or click Sockets / Interfaces / DNS to select a section. The footer shows the shortcut. Tab / Shift+Tab and 1-5 switch main tabs.
+Use `v` / Shift+`v` or click Findings / Sockets / Interfaces / DNS resolvers to select a section. The footer shows the shortcut. Tab / Shift+Tab and 1-5 switch main tabs.
 
 ### Observed network events (unreleased)
 
-Host > Sockets counts sent/received TCP resets and ICMPv4/v6 errors: unreachable,
+Findings > Resets and ICMP counts sent/received TCP resets and ICMPv4/v6 errors: unreachable,
 prohibited, packet too big/fragmentation needed, time exceeded, and parameter problems.
 Counts cover captured traffic since startup or clear, independent of display filters
 and connection retention. They are observations, not firewall verdicts or OS-wide
@@ -1174,11 +1174,11 @@ Details > Health shows counts and the latest error's type/code, reporter, direct
 age, and advertised MTU when available. TCP/UDP correlation uses quoted endpoints
 without changing connection state or traffic totals. Truncated quotes, fragments,
 IPv6 extensions, NAT, or missing/reused connections can prevent or confuse matching.
-Unmatched errors still count in Host; individual error records are not retained.
+Unmatched errors still count in Health; individual error records are not retained.
 
 ### Host timeframes (development version)
 
-Press `w` in any Host section to cycle **60s / 5m / 1h / since startup**. The selection is shared by Sockets, Interfaces, and DNS. Socket inventory and interface rates remain live.
+Press `w` in Findings, Health & Host > Interfaces, or Health & Host > DNS resolvers to cycle **60s / 5m / 1h / since startup**. These sections share the selection. Socket inventory and interface rates remain live.
 
 - **Network events:** sent and received counts show the selected window alongside the cumulative Rustnet total since startup or clear, including event types whose selected-window count is zero.
 - **Interfaces:** errors, drops, and collisions show `window/OS total`. Only increases observed after the first interface sample enter the selected window. OS totals and packet totals remain visible; existing OS errors are not counted as new errors. Highlighting follows the selected window.
@@ -1188,7 +1188,7 @@ Event and interface histories use bounded one-second buckets. Counts near a roll
 
 ## Passive DNS Analytics
 
-Press `5` for Host, then select DNS with `v` / Shift+`v` or click its name. The view summarizes captured unicast UDP DNS traffic over a rolling 60-second window. **Development version:** press `w` to cycle through 60 seconds, 5 minutes, 1 hour, and since startup. Outcomes, latency, resolver evidence, and question names use the selected window; Overview always keeps its 60-second health window:
+Press `5` for Health & Host, then select DNS resolvers with `v` / Shift+`v` or click its name. The view summarizes captured unicast UDP DNS traffic over a rolling 60-second window. **Development version:** press `w` to cycle through 60 seconds, 5 minutes, 1 hour, and since startup. Outcomes, latency, resolver evidence, and question names use the selected window; Overview always keeps its 60-second health window:
 
 - **Outcomes**: lookup, answer, pending, timeout, NOERROR, NXDOMAIN, NODATA, SERVFAIL, REFUSED, and other response-code counts
 - **Response time**: p50, p95, maximum, and latency buckets for responses paired by connection and transaction ID
@@ -1213,7 +1213,7 @@ This is passive evidence, not an active DNS probe. DNS over HTTPS, DNS over TLS,
 
 ### Resolver evidence (unreleased)
 
-Host > DNS shows observed resolver addresses with separate health, failures/finalized lookups, pending queries (`wait`), repeated queries (`retry`), and oldest pending age or p95 latency. Problematic resolvers appear first. Depending on terminal height, two or three resolver rows are shown; an additional count indicates omitted rows.
+Health & Host > DNS resolvers shows observed resolver addresses with separate health, failures/finalized lookups, pending queries (`wait`), repeated queries (`retry`), and oldest pending age or p95 latency. Problematic resolvers appear first. Depending on terminal height, two or three resolver rows are shown; an additional count indicates omitted rows.
 
 The three rolling windows share a bounded buffer of up to 8,192 completed transactions and 4,096 pending queries. A `sampled` indicator means capacity pressure omitted evidence from the selected window; at high query rates, the selected duration of complete detail may not fit. Switching windows does not clear data, and data is collected only while RustNet is capturing.
 
@@ -1221,7 +1221,7 @@ The three rolling windows share a bounded buffer of up to 8,192 completed transa
 
 The view retains up to 64 individual timeout, SERVFAIL, REFUSED, other error, or slow-reply (at least 500 ms) observations for 15 minutes. Recent issues group those retained observations by resolver and cause, newest first, with a count, last-seen age, and the latest question name. Counts cover only retained observations, and the heading shows how many groups fit. This history survives the 60-second health window and does not imply an outage is still ongoing. `x` clears it together with the live aggregates.
 
-Guidance distinguishes missing replies, resolver errors, refused queries, retries, and slow replies. Missing packets cannot prove a resolver outage: inspect Host > Sockets for ICMP errors and Host > Interfaces for errors/drops, and check capture scope. When capture fails, Host displays `unknown` rather than continuing to claim live resolver health.
+Guidance distinguishes missing replies, resolver errors, refused queries, retries, and slow replies. Missing packets cannot prove a resolver outage: inspect Findings > Resets and ICMP for ICMP errors and Health & Host > Interfaces for errors/drops, and check capture scope. When capture fails, Host displays `unknown` rather than continuing to claim live resolver health.
 
 On Linux, `sudo rustnet -i any --no-resolve-dns` includes loopback DNS stubs as well as upstream traffic. `127.0.0.53:53` is commonly a local systemd-resolved stub; loopback resolvers such as `127.0.0.1:53` and `[::1]:53` are supported. Capturing only a physical interface misses local stub exchanges. If both stub and upstream traffic are visible, they are separate wire transactions, not unique application lookups. `resolvectl status` can identify configured per-link servers when systemd-resolved is in use; RustNet's list contains only observed endpoints. The host configuration is not changed and no active probes are sent.
 
@@ -1240,8 +1240,8 @@ RustNet provides real-time network interface statistics across all supported pla
 - Displays: `InterfaceName: X KB/s ↓ / Y KB/s ↑`
 - Shows cumulative totals: `Errors (Total): N  Drops (Total): M`
 
-**Host Tab (Detailed View):**
-- Press `5` for Host, then select Interfaces with `v` / Shift+`v` or click its name
+**Health & Host (detailed view)**
+- Press `5` for Health & Host, then select Interfaces with `v` / Shift+`v` or click its name
 - Shows a detailed table of all network interfaces
 - Displays comprehensive metrics for each interface
 
@@ -1731,3 +1731,39 @@ cat capture.pcap.connections.jsonl | jq -r '[.protocol, .local_addr, .remote_add
 # Filter in Wireshark by connection tuple
 # ip.addr == 142.250.80.46 && tcp.port == 443
 ```
+
+### TCP attempt health (unreleased)
+
+Findings > TCP handshakes shows a fixed five-minute summary of observed outbound TCP attempts, independently of the selected Host timeframe and connection filters. An initial outbound SYN starts an attempt; identical SYN retries share that attempt. A matching SYN-ACK and final outbound ACK establish observed success, including local-to-local connections and TCP Fast Open fallback when SYN data is not accepted. A matching peer reset (including Fast Open fallback), no complete handshake observed within ten seconds, and replacement by a new initial sequence number are separate outcomes. Incoming-only or midstream flows do not count as attempts. Unexpected ACKs and invalid SYN-ACK acknowledgments remain evidence even when an attempt subsequently succeeds. Corrective local resets do not immediately close an attempt.
+
+Headless `json`, `jsonl`, and `jsonl-delta` records include an additive `tcp_attempts` object: `window_seconds`, `timeout_seconds`, `pending`, `omitted_since_clear`, `total`, `destinations`, and `recent_issues`. Replace this entire object on every incremental record. Completed outcomes are grouped by remote socket address and `ip_version`; the window uses completion time. Counts include `completed`, `established`, `reset`, `no_handshake_observed`, `superseded`, `syn_retries`, and `anomalous` (attempts with unexpected replies, including recovered attempts). Pending attempts are not failures. These are rolling counts, not cumulative counters to sum across snapshots.
+
+The tracker retains at most 4,096 pending and 8,192 completed attempts, plus 32 recent issue records in each exported snapshot. The tracker reclaims expired slots before counting a capacity omission. Capacity omissions increment `omitted_since_clear`, never network failures. State clears with the connection history. A timeout shown while capture packets are queued can change to established when an on-time handshake is processed. Ten seconds is an observation deadline, not an operating-system connection timeout; identical late SYN retries are suppressed while their completed record is retained. Capture loss, asymmetric visibility, local cancellation and capture shutdown can prevent observed completion. Check capture status and drop counters before interpreting failures. These observations cannot locate a faulty router, NAT or remote host. DNS transport and IPv4/IPv6 application success remain separate measurements.
+
+Press `5` for **Health & Host**. **Findings** shows TCP handshakes, resets and ICMP, interface drops, DNS replies, and capture quality in one list. Each heading shows its time window. Press `Space` or click a heading to expand all of its evidence inline. Several groups can stay open. Use `j`/`k` or `↓`/`↑` to visit every heading and evidence item in order. From an item, `Space` collapses its group. `←` selects its heading, then collapses it on the next press. `→` expands a heading.
+
+Findings opens on the highest-priority row. Errors come first, then warnings, then healthy or unobserved findings. Ties keep their category order. When a group moves or new evidence arrives, the same item stays selected.
+
+In the default theme, green marks healthy handshakes or responsive DNS. Yellow marks degraded health, drops, or incomplete evidence. Red marks observed failures such as a DNS timeout, an interface error, or a stopped capture. Checking and unobserved states are muted. Zero error counts stay neutral. Status words, counts, and the `▌` selection marker remain readable with `NO_COLOR`.
+
+In **DNS replies**, browse resolvers and individual issues. Follow **Open DNS resolvers** for resolver outcomes, latency and question names. **Interface drops** links to the OS counters. Expand **TCP handshakes** to see every affected destination and its retained attempts. On a linked row, press `Enter` or click its bracketed link. **Open Details** appears while the matching connection is available. `Esc` returns to the source item. Use Page Up/Down or the wheel to read long text. Use `v` to visit **Sockets** for the owner of a listening port and `V` to return. Each section keeps its position.
+
+Each completed attempt counts for five minutes. Findings shows the expiry time on each retained attempt and keeps up to 32 recent issues across destinations. If the selected attempt leaves the list, a notice explains the retention limits. Selection moves to a nearby item in TCP handshakes, or to its heading when the group is empty.
+
+In Findings, press `h` to open the TCP Attempt Health help for counter meanings, the fixed window, recovered anomalies, export evidence and diagnostic limits.
+
+Overview > Network Stats also shows TCP handshake health for the same fixed five-minute window. Statuses distinguish not observed, checking, healthy, recovered anomalies, degraded, and incomplete evidence. Capture errors, reported drops or tracking omissions override a healthy label. Superseded attempts alone are inconclusive. Overview and Findings rank affected destinations by reset/incomplete fraction, then failure count, anomaly fraction and anomaly count; ties use a stable address order. Counts are shown because small samples are not proof of a persistent fault. Healthy IPv6 traffic cannot dilute an affected IPv4 destination. Long endpoints may be shortened in the sidebar; Findings and JSON retain full addresses. Press `h` in Overview for interpretation and limitations. JSON counts now include `recovered_anomalies`, counting anomalous attempts that established successfully; this is not inferred from the limited recent-issue list.
+
+#### TCP health performance measurements
+
+TCP summaries share an immutable cached snapshot until visible state changes or a timeout/window deadline expires. Packet ingestion limits global expiry scans to once per second; snapshots and packets for a pending tuple still enforce exact deadlines. Rebuilding a summary selects the newest 32 issues before sorting them. JSON projection and serialization still run for each exported record.
+
+Run the opt-in synthetic release benchmarks (no capture files or network access):
+
+```bash
+cargo test --release --locked -p rustnet-core --lib benchmark_tcp_ -- --ignored --nocapture --test-threads=1
+```
+
+`BENCH` rows report workload, sample, operation count and elapsed nanoseconds. Divide elapsed time by operations to compare samples; `RUSTNET_BENCH_SAMPLES` defaults to 7. Ingestion workloads cover established traffic, sequential handshakes, bursts of 256 overlapping handshakes and staggered timeouts. The bounded attempt maps use the same hasher as the connection table; replacements and completions reuse occupied entries to avoid repeated lookups. Snapshot workloads retain 8,192 attempts across 1, 64 or 8,192 destination endpoints and measure both unchanged reads and a new reset before every read. Updated-read timings include the two packet ingestions. These measure core ingestion and the snapshot API, not capture, parsing, UI rendering, JSON serialization or contended locking.
+
+To compare against a revision without this feature, copy `crates/rustnet-core/src/network/tracker_benchmarks.rs` into that revision and register `#[cfg(test)] mod tracker_benchmarks;` in its network `mod.rs`, then run the `benchmark_tcp_ingestion` filter on both revisions. Main has no equivalent TCP-summary API. Use identical release settings, alternate revision order, warm up first and report repeated samples on an otherwise quiet machine.

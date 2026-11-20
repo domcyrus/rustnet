@@ -235,11 +235,28 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             hints.push(Hint::action("esc", "back"));
             hints
         }
-        // Host
+        4 if ui_state.host_view == HostView::Findings => {
+            let cursor = ui_state.health_cursor.borrow();
+            let expanded = cursor
+                .target
+                .as_ref()
+                .is_some_and(|t| ui_state.expanded_findings.contains(&t.finding()));
+            let mut hints = vec![
+                Hint::action("↑/↓", "select"),
+                Hint::action("space", if expanded { "collapse" } else { "expand" }),
+            ];
+            if cursor.link.is_some() {
+                hints.push(Hint::action("enter", "open"));
+            }
+            if ui_state.health_scroll.can_scroll() {
+                hints.push(Hint::action("pgup/dn", "scroll"));
+            }
+            hints.push(Hint::action("w", "window"));
+            hints
+        }
         4 => {
-            // Only advertise scrolling when the
-            // table actually outgrew its pane.
             let scroll = match ui_state.host_view {
+                HostView::Findings => &ui_state.health_scroll,
                 HostView::Sockets => &ui_state.host_sockets_scroll,
                 HostView::Interfaces => &ui_state.interfaces_scroll,
                 HostView::Dns => &ui_state.dns_questions_scroll,
@@ -248,7 +265,9 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             if scroll.can_scroll() {
                 hints.push(Hint::action("j/k", "scroll"));
             }
-            hints.push(Hint::action("w", "window"));
+            if ui_state.host_view != HostView::Sockets {
+                hints.push(Hint::action("w", "window"));
+            }
             if ui_state.host_view == HostView::Dns {
                 hints.push(Hint::action("o", "sort"));
             }

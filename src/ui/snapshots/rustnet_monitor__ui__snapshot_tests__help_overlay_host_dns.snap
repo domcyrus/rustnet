@@ -1,17 +1,17 @@
 ---
-source: src/ui/mod.rs
+source: src/ui/snapshot_tests.rs
 expression: output
 ---
                                                                                                     
-    ╭ Help · Host · DNS ───────────────────────────────────────────────────────────────────────╮    
+    ╭ Help · Health & Host · DNS resolvers ────────────────────────────────────────────────────╮    
     │ DNS tracks lookups and replies seen in captured unicast UDP traffic.                   ▐ │    
     │ Use it to spot slow or failed lookups and the most queried names.                      ▐ │    
     │ These are passive observations; encrypted DNS and cached answers are not shown.        ▐ │    
     │                                                                                        ▐ │    
     │ ▎ DNS Actions                                                                          ▐ │    
-    │   w    Cycle Host window: 60s / 5m / 1h / since startup                                ▐ │    
+    │   w    Cycle observation window: 60s / 5m / 1h / since startup                         ▐ │    
     │   o    Cycle question sort metric                                                      ▐ │    
-    │   Esc  Return to Overview                                                              ▐ │    
+    │   Esc  Return to the source finding or Overview                                        ▐ │    
     │                                                                                        ▐ │    
     │ ▎ DNS Concepts                                                                         ▐ │    
     │   Window         Host uses 60s / 5m / 1h / startup; Overview uses 60s                  ▐ │    
@@ -27,7 +27,7 @@ expression: output
     │ ▎ Global                                                                               ▐ │    
     │   Tab, ]        Next tab                                                               ▐ │    
     │   Shift+Tab, [  Previous tab                                                           ▐ │    
-    │   1-5           Jump to Overview, Details, Activity, Graph, or Host                      │    
+    │   1-5           Jump to Overview, Details, Activity, Graph, or Health & Host             │    
     │   x             Clear all connections (press twice)                                      │    
     │   h, Esc        Close this help overlay                                                  │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯
