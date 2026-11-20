@@ -1,6 +1,6 @@
 //! Shared title rows, selection rules, and mouse targets for tab navigation.
 
-use crate::ui::{ClickAction, ClickableRegions, theme};
+use crate::ui::{ClickAction, ClickableRegions, cell_borders, theme};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -8,7 +8,9 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-pub(in crate::ui) const HEIGHT: u16 = 2;
+pub(in crate::ui) fn height() -> u16 {
+    if cell_borders::enabled() { 1 } else { 2 }
+}
 
 pub(in crate::ui) fn title(text: impl Into<String>, active: bool) -> Span<'static> {
     Span::styled(
@@ -24,7 +26,7 @@ pub(in crate::ui) fn title(text: impl Into<String>, active: bool) -> Span<'stati
 pub(in crate::ui) struct TabStrip {
     pub titles: Vec<Span<'static>>,
     rules: Vec<Span<'static>>,
-    targets: Vec<(u16, u16, ClickAction)>,
+    targets: Vec<(u16, u16, ClickAction, bool)>,
     width: u16,
 }
 
@@ -62,7 +64,7 @@ impl TabStrip {
                 theme::border()
             }),
         ));
-        self.targets.push((self.width + gap, width, action));
+        self.targets.push((self.width + gap, width, action, active));
         self.width += gap + width;
     }
 
@@ -78,15 +80,33 @@ impl TabStrip {
             Paragraph::new(Line::from(self.titles)),
             Rect::new(area.x, area.y, area.width, 1),
         );
-        if area.height >= HEIGHT {
+        if cell_borders::enabled() {
+            cell_borders::edge(
+                Rect::new(area.x, area.y, area.width, 1),
+                cell_borders::BOTTOM,
+                theme::border(),
+                0,
+                false,
+            );
+        } else if area.height >= 2 {
             f.render_widget(
                 Paragraph::new(Line::from(self.rules)),
                 Rect::new(area.x, area.y + 1, area.width, 1),
             );
         }
-        for (x, width, action) in self.targets {
-            let rect = Rect::new(area.x + x, area.y, width, HEIGHT).intersection(area);
+        for (x, width, action, active) in self.targets {
+            let rect =
+                Rect::new(area.x.saturating_add(x), area.y, width, height()).intersection(area);
             if rect.width > 0 && rect.height > 0 {
+                if active {
+                    cell_borders::edge(
+                        Rect::new(rect.x, rect.y, rect.width, 1),
+                        cell_borders::BOTTOM,
+                        theme::accent(),
+                        1,
+                        false,
+                    );
+                }
                 regions.register(rect, action);
             }
         }
