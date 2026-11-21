@@ -96,6 +96,12 @@ rustnet
 
 按 `/` 过滤连接，按 `Enter` 查看详情，按 `q` 退出。接口选择、其他选项、键盘操作、过滤和导出方法见[使用指南](USAGE.zh-CN.md)。
 
+## 安全与验证
+
+RustNet 可通过 Linux 上的 Landlock 和 macOS 上的 Seatbelt 限制抓包进程的权限。各平台的具体限制见[安全指南](SECURITY.zh-CN.md)。
+
+QUIC 解析器在计算数据包长度时会检查整数溢出。CI 在 32 位平台上分别以调试和发布模式运行解析器回归测试，并每天运行 `cargo audit` 检查锁定的依赖版本。复现性能测量的方法见[性能分析指南](PROFILING.zh-CN.md)。
+
 ## 文档
 
 - [QUIC 检查](QUIC.zh-CN.md)：握手存储及库兼容性（自 v1.7.0 起可用）。

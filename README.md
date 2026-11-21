@@ -96,6 +96,12 @@ On macOS, PKTAP requires `sudo`. With BPF access configured, RustNet can run wit
 
 Press `/` to filter connections, `Enter` to inspect one, and `q` to quit. See the [usage guide](USAGE.md) for interface selection, options, controls, filters, and exports.
 
+## Security and verification
+
+RustNet can restrict the capture process with Landlock on Linux and Seatbelt on macOS. The [security guide](SECURITY.md) explains which restrictions apply on each platform.
+
+The QUIC parser uses checked arithmetic for packet lengths. CI runs 32-bit parser regression tests in debug and release builds, and a daily `cargo audit` checks the locked dependencies. To reproduce performance measurements, see the [profiling guide](PROFILING.md).
+
 ## Documentation
 
 - [QUIC inspection](QUIC.md): handshake storage and library compatibility (available since v1.7.0).
