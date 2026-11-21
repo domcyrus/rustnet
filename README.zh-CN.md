@@ -79,7 +79,7 @@ v1.7.0 修复了 ARM DEB 与旧版 glibc 及 Debian 13 time64 库的兼容性。
 | Alpine Linux (edge/community) | `apk add rustnet` |
 | Windows (WinGet) | `winget install --id domcyrus.RustNet --exact --source winget` |
 | Windows (Chocolatey / Scoop) | `choco install rustnet` 或 `scoop install rustnet` |
-| Cargo | `cargo install rustnet-monitor` |
+| Cargo | [安装预编译程序或从源码安装](INSTALL.zh-CN.md#install-via-cargo) |
 | Nix / NixOS | `nix-shell -p rustnet` |
 
 Windows 还需要安装 [Npcap](https://npcap.com)。v1.7.0 支持默认设置；v1.6.0 需要启用“WinPcap API compatible mode”。openSUSE、Pop!_OS、FreeBSD、Docker 和源码构建的说明见[安装指南](INSTALL.zh-CN.md)。

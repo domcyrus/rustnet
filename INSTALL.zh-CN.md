@@ -503,15 +503,18 @@ RustNet 可以通过 [Termux](https://termux.dev/en/) 在 Android 设备上运�
 
 ## 通过 Cargo 安装<a id="install-via-cargo"></a>
 
-```bash
-# 直接从 crates.io 安装
-cargo install rustnet-monitor
+安装 [cargo-binstall](https://github.com/cargo-bins/cargo-binstall#installation) 后，可以下载适用于当前平台的官方预编译程序：
 
-# 二进制文件将安装到 ~/.cargo/bin/rustnet
-# 确保 ~/.cargo/bin 在你的 PATH 中
+```bash
+cargo binstall rustnet-monitor
+rustnet --version
 ```
 
-安装后，参见[权限配置](#permissions-setup)章节配置权限。
+crates.io 上的包名为 `rustnet-monitor`，安装后的命令为 `rustnet`。v1.7.0 尚未包含此配置，如需该版本，请直接下载[发行包](#installing-from-release-packages)。
+
+GNU/Linux 预编译程序可能需要 libpcap 和 libelf 运行库。Windows 抓包需要安装 [Npcap](https://npcap.com)。抓包前请参见[权限配置](#permissions-setup)。
+
+如需从源码安装，请先安装[构建依赖](#prerequisites)，再运行 `cargo install rustnet-monitor`。
 
 ## 从源码构建<a id="building-from-source"></a>
 
