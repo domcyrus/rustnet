@@ -17,12 +17,12 @@ use ratatui::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use log::{debug, info};
 
-use crate::app::{App, AppStats, ConnectionCounts};
+use crate::app::{App, ConnectionCounts};
 use crate::network::dns::DnsResolver;
 use crate::network::dns_analytics::{DEGRADED_FAILURE_PERCENT, DnsAnalyticsSnapshot, DnsHealth};
 use crate::network::types::Connection;
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
+    ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER, OverviewSection, PaneScroll, SelectionMove, SortColumn, UiState,
     clear_all_with_confirmation,
     connection_table::{
@@ -351,7 +351,6 @@ const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
 const TRAFFIC_MIN_HEIGHT: u16 = 4;
 /// Compact Security keeps its heading and overall sandbox status visible.
 const COMPACT_SECURITY_HEIGHT: u16 = 2;
-const NETWORK_STATS_HEIGHT: u16 = 11;
 const SECTION_GAP_HEIGHT: u16 = 1;
 
 /// The sidebar has `SYSTEM_PANEL_WIDTH` minus the rule and padding to play
@@ -405,9 +404,14 @@ fn capture_summary_lines(
 
 /// Whether the complete Security section fits without taking the four rows
 /// needed to keep the live Traffic summary usable.
-fn security_details_fit(area_height: u16, stats_height: u16, full_security_height: u16) -> bool {
+fn security_details_fit(
+    area_height: u16,
+    stats_height: u16,
+    network_stats_height: u16,
+    full_security_height: u16,
+) -> bool {
     let required_height = stats_height
-        .saturating_add(NETWORK_STATS_HEIGHT)
+        .saturating_add(network_stats_height)
         .saturating_add(TRAFFIC_MIN_HEIGHT)
         .saturating_add(SECTION_GAP_HEIGHT * 3)
         .saturating_add(full_security_height);
@@ -438,11 +442,10 @@ fn draw_overview(
         return draw_stats_panel(
             f,
             counts,
-            ctx.stats,
-            ctx.app,
+            ctx,
             area,
             Some(&ctx.ui_state.system_scroll),
-            ctx.ui_state,
+            click_regions,
         );
     }
     let show_system_panel =
@@ -494,15 +497,7 @@ fn draw_overview(
         } else {
             ConnectionCounts::from_connections(ctx.connections)
         };
-        draw_stats_panel(
-            f,
-            connection_counts,
-            ctx.stats,
-            ctx.app,
-            chunks[1],
-            None,
-            ctx.ui_state,
-        )?;
+        draw_stats_panel(f, connection_counts, ctx, chunks[1], None, click_regions)?;
     }
 
     Ok(())
@@ -853,6 +848,8 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
 }
 
 /// Conservative evidence summary: capture limitations override a healthy label.
+/// Stays on one compact line while quiet or healthy so the sidebar preserves room
+/// for Traffic and Security on shorter terminals, expanding when issues appear.
 fn tcp_handshake_lines(
     snapshot: &crate::network::tcp_attempts::TcpAttemptSnapshot,
     capture_incomplete: bool,
@@ -860,24 +857,63 @@ fn tcp_handshake_lines(
     let c = &snapshot.total;
     let failed = c.reset + c.no_handshake;
     let (status, level) = super::tcp_handshake_status(snapshot, capture_incomplete);
-    // Highest observed failure fraction first; ties favor more evidence.
-    // Successful IPv6 destinations cannot dilute a failing IPv4 destination.
     let worst = super::worst_tcp_destination(snapshot);
-    let mut lines = vec![
-        Line::from(vec![
+    let max_width = usize::from(SYSTEM_PANEL_WIDTH) - 3;
+
+    if matches!(
+        level,
+        super::HealthLevel::Healthy | super::HealthLevel::Muted
+    ) && worst.is_none()
+    {
+        let mut spans = vec![
             Span::raw("TCP (5m): "),
             Span::styled(status, theme::fg(level.color())),
-        ]),
-        Line::from(format!("{}/{} reset/incomplete", failed, c.completed)),
-        Line::from(format!(
+        ];
+        if c.established > 0 {
+            let suffix = if snapshot.pending > 0 {
+                format!(" · {} ok · {} pend", c.established, snapshot.pending)
+            } else {
+                format!(" · {} ok", c.established)
+            };
+            if 10 + status.len() + suffix.len() <= max_width {
+                spans.push(Span::styled(suffix, theme::fg(theme::muted())));
+            }
+        } else if snapshot.pending > 0 {
+            let suffix = format!(" · {} pending", snapshot.pending);
+            if 10 + status.len() + suffix.len() <= max_width {
+                spans.push(Span::styled(suffix, theme::fg(theme::muted())));
+            }
+        }
+        return vec![Line::from(spans)];
+    }
+
+    let mut lines = vec![Line::from(vec![
+        Span::raw("TCP (5m): "),
+        Span::styled(status, theme::fg(level.color())),
+    ])];
+    if c.completed > 0 {
+        let fail_color = if c.reset > 0 {
+            theme::err()
+        } else {
+            theme::warn()
+        };
+        lines.push(Line::from(vec![
+            super::count_span(failed, fail_color),
+            Span::raw(format!("/{} reset/incomplete", c.completed)),
+        ]));
+    }
+    if c.recovered_anomalies > 0 || snapshot.pending > 0 {
+        lines.push(Line::from(format!(
             "{} recovered · {} pending",
             c.recovered_anomalies, snapshot.pending
-        )),
-    ];
+        )));
+    }
+    // Highest observed failure fraction first; ties favor more evidence.
+    // Successful IPv6 destinations cannot dilute a failing IPv4 destination.
     if let Some((address, counts)) = worst {
         lines.push(Line::from(truncate_with_ellipsis(
             &format!("Worst: {address}"),
-            usize::from(SYSTEM_PANEL_WIDTH) - 3,
+            max_width,
         )));
         lines.push(Line::from(format!(
             "{}/{} failed · {} anomalous",
@@ -885,9 +921,6 @@ fn tcp_handshake_lines(
             counts.completed,
             counts.anomalous
         )));
-    } else {
-        lines.push(Line::from("Worst: none observed"));
-        lines.push(Line::from("5 Health & Host: Findings"));
     }
 
     lines
@@ -979,12 +1012,14 @@ fn sandbox_status_line(
 fn draw_stats_panel(
     f: &mut Frame,
     connection_counts: ConnectionCounts,
-    stats: &AppStats,
-    app: &App,
+    ctx: &ComponentContext<'_>,
     area: Rect,
     scroll: Option<&PaneScroll>,
-    state: &UiState,
+    click_regions: &mut ClickableRegions,
 ) -> Result<()> {
+    let stats = ctx.stats;
+    let app = ctx.app;
+    let state = ctx.ui_state;
     // Borderless: a single quiet vertical rule separates the sidebar
     // from the connections table, and the section header names it:
     // deliberately *not* the same chrome as the table so the two read
@@ -1158,13 +1193,57 @@ fn draw_stats_panel(
         + if pcap_export_enabled { 4 } else { 0 }
         + if pcapng_export_enabled { 7 } else { 0 };
 
+    let queue_drops = stats.packets_dropped.load(Relaxed);
+    let capture_drops = stats
+        .capture_packets_dropped
+        .load(Relaxed)
+        .saturating_add(stats.interface_packets_dropped.load(Relaxed));
+    let total_retransmits = stats.total_tcp_retransmits.load(Relaxed);
+    let total_out_of_order = stats.total_tcp_out_of_order.load(Relaxed);
+    let total_fast_retransmits = stats.total_tcp_fast_retransmits.load(Relaxed);
+
+    let capture_failed = app.capture_error().is_some();
+    let capture_incomplete = capture_failed || queue_drops > 0 || capture_drops > 0;
+    let tcp_lines = tcp_handshake_lines(&app.get_tcp_attempt_snapshot(), capture_incomplete);
+    let tcp_line_count = tcp_lines.len();
+    let mut network_stats_text: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("Network Stats ", theme::bold_fg(theme::heading())),
+            Span::styled("(active / total)", theme::fg(theme::muted())),
+        ]),
+        dns_health_line(&app.get_dns_analytics_snapshot(), capture_failed),
+        Line::from(format!(
+            "TCP Retransmits: {} / {}",
+            connection_counts.tcp_retransmits, total_retransmits
+        )),
+        Line::from(format!(
+            "Out-of-Order: {} / {}",
+            connection_counts.tcp_out_of_order, total_out_of_order
+        )),
+        Line::from(format!(
+            "Fast Retransmits: {} / {}",
+            connection_counts.tcp_fast_retransmits, total_fast_retransmits
+        )),
+        Line::from(format!(
+            "Active TCP Flows: {}",
+            connection_counts.tcp_flows_with_analytics
+        )),
+    ];
+    network_stats_text.splice(2..2, tcp_lines);
+    let network_stats_height = network_stats_text.len() as u16;
+
     // Keep Security after the live Traffic section. If both do not fit, retain
     // the overall sandbox status and hide the static detail lines. They return
     // automatically as soon as the terminal is tall enough.
     let full_security_height = 1u16.saturating_add(security_text.len() as u16);
     let compact_security = scroll.is_none()
         && full_security_height > COMPACT_SECURITY_HEIGHT
-        && !security_details_fit(inner_area.height, stats_height, full_security_height);
+        && !security_details_fit(
+            inner_area.height,
+            stats_height,
+            network_stats_height,
+            full_security_height,
+        );
     if compact_security {
         security_text.truncate(1);
     }
@@ -1178,7 +1257,7 @@ fn draw_stats_panel(
         .constraints([
             Constraint::Length(stats_height), // Statistics (1 heading + content)
             Constraint::Length(SECTION_GAP_HEIGHT),
-            Constraint::Length(NETWORK_STATS_HEIGHT),
+            Constraint::Length(network_stats_height),
             Constraint::Length(SECTION_GAP_HEIGHT),
             Constraint::Min(TRAFFIC_MIN_HEIGHT),
             Constraint::Length(SECTION_GAP_HEIGHT),
@@ -1223,11 +1302,6 @@ fn draw_stats_panel(
             theme::fg(theme::muted()),
         )));
     }
-    let queue_drops = stats.packets_dropped.load(Relaxed);
-    let capture_drops = stats
-        .capture_packets_dropped
-        .load(Relaxed)
-        .saturating_add(stats.interface_packets_dropped.load(Relaxed));
     conn_stats_text.extend([
         Line::from(""),
         Line::from(format!(
@@ -1287,41 +1361,6 @@ fn draw_stats_panel(
         ]);
     }
 
-    let total_retransmits = stats.total_tcp_retransmits.load(Relaxed);
-    let total_out_of_order = stats.total_tcp_out_of_order.load(Relaxed);
-    let total_fast_retransmits = stats.total_tcp_fast_retransmits.load(Relaxed);
-
-    let capture_failed = app.capture_error().is_some();
-    let mut network_stats_text: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("Network Stats ", theme::bold_fg(theme::heading())),
-            Span::styled("(active / total)", theme::fg(theme::muted())),
-        ]),
-        dns_health_line(&app.get_dns_analytics_snapshot(), capture_failed),
-        Line::from(format!(
-            "TCP Retransmits: {} / {}",
-            connection_counts.tcp_retransmits, total_retransmits
-        )),
-        Line::from(format!(
-            "Out-of-Order: {} / {}",
-            connection_counts.tcp_out_of_order, total_out_of_order
-        )),
-        Line::from(format!(
-            "Fast Retransmits: {} / {}",
-            connection_counts.tcp_fast_retransmits, total_fast_retransmits
-        )),
-        Line::from(format!(
-            "Active TCP Flows: {}",
-            connection_counts.tcp_flows_with_analytics
-        )),
-    ];
-
-    let capture_incomplete = capture_failed || queue_drops > 0 || capture_drops > 0;
-    network_stats_text.splice(
-        2..2,
-        tcp_handshake_lines(&app.get_tcp_attempt_snapshot(), capture_incomplete),
-    );
-
     let security_heading = if compact_security {
         Line::from(vec![
             Span::styled("Security ", theme::bold_fg(theme::heading())),
@@ -1371,6 +1410,21 @@ fn draw_stats_panel(
 
     let network_stats = Paragraph::new(network_stats_text).style(Style::default());
     f.render_widget(network_stats, chunks[2]);
+    // Clicking DNS or TCP health lines in the sidebar jumps straight to the
+    // matching category in 5 Health & Host > Findings.
+    if chunks[2].height > 1 && chunks[2].width > 0 {
+        click_regions.register(
+            Rect::new(chunks[2].x, chunks[2].y + 1, chunks[2].width, 1),
+            ClickAction::OpenFinding(crate::ui::HealthFinding::Dns),
+        );
+    }
+    let tcp_rows = (tcp_line_count as u16).min(chunks[2].height.saturating_sub(2));
+    if tcp_rows > 0 && chunks[2].width > 0 {
+        click_regions.register(
+            Rect::new(chunks[2].x, chunks[2].y + 2, chunks[2].width, tcp_rows),
+            ClickAction::OpenFinding(crate::ui::HealthFinding::Tcp),
+        );
+    }
     render_section_separator(f, chunks[3]);
 
     draw_interface_stats_with_graph(f, app, chunks[4], state)?;
@@ -1743,8 +1797,10 @@ mod tests {
 
     #[test]
     fn security_details_only_use_rows_left_after_traffic_minimum() {
-        assert!(!security_details_fit(42, 14, 11));
-        assert!(security_details_fit(43, 14, 11));
+        assert!(!security_details_fit(37, 14, 6, 11));
+        assert!(security_details_fit(38, 14, 6, 11));
+        assert!(!security_details_fit(42, 14, 11, 11));
+        assert!(security_details_fit(43, 14, 11, 11));
     }
 
     #[test]
@@ -1986,7 +2042,7 @@ mod tcp_handshake_tests {
 
     fn text(s: &TcpAttemptSnapshot, incomplete: bool) -> String {
         let lines = tcp_handshake_lines(s, incomplete);
-        assert_eq!(lines.len(), 5);
+        assert!((1..=5).contains(&lines.len()));
         assert!(lines[0].to_string().starts_with("TCP (5m): "));
         assert!(lines[0].width() <= usize::from(SYSTEM_PANEL_WIDTH) - 3);
         lines
@@ -1999,12 +2055,15 @@ mod tcp_handshake_tests {
     #[test]
     fn distinguishes_pending_recovery_failures_and_incomplete_evidence() {
         let mut s = TcpAttemptSnapshot::default();
+        assert_eq!(tcp_handshake_lines(&s, false).len(), 1);
         assert!(text(&s, false).contains("not observed"));
         s.pending = 1;
+        assert_eq!(tcp_handshake_lines(&s, false).len(), 1);
         assert!(text(&s, false).contains("checking"));
         s.pending = 0;
         s.total.completed = 4;
         s.total.established = 4;
+        assert_eq!(tcp_handshake_lines(&s, false).len(), 1);
         assert!(text(&s, false).contains("healthy"));
         s.total.anomalous = 1;
         s.total.recovered_anomalies = 1;

@@ -378,6 +378,14 @@ impl PaneScroll {
         self.max.get() > 0
     }
 
+    pub(super) fn offset(&self) -> usize {
+        self.offset.get()
+    }
+
+    pub(super) fn clamp_offset(&mut self) {
+        self.offset.set(self.offset.get().min(self.max.get()));
+    }
+
     /// Record this render's maximum scroll offset and return the
     /// (clamped) offset to draw with.
     pub fn clamp_for_render(&self, max: u16) -> u16 {
@@ -520,10 +528,12 @@ pub enum GroupedRow<'a> {
 /// Represents an action that can be triggered by clicking a screen region.
 #[derive(Debug, Clone)]
 pub enum ClickAction {
-    /// Switch to a specific tab (index 0-5).
+    /// Switch to a specific tab (index 0-4).
     SwitchTab(usize),
     /// Select a section in the current tab.
     SelectSection(usize),
+    /// Jump to Health & Host > Findings with the given category expanded and selected.
+    OpenFinding(super::HealthFinding),
     /// Select a process from the rendered Activity snapshot.
     SelectActivityProcess(ProcessIdentity),
     /// Select a connection by index in the current sorted/filtered list
@@ -644,6 +654,7 @@ pub struct UiState {
     pub(super) health_cursor: RefCell<super::tabs::health::HealthCursor>,
     pub(super) expanded_findings: HashSet<super::tabs::health::Finding>,
     pub(super) return_to_finding: bool,
+    pub(super) health_badge: Cell<super::tabs::health::HealthBadge>,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
     pub graph_states_scroll: PaneScroll,
@@ -720,6 +731,7 @@ impl Default for UiState {
             health_cursor: Default::default(),
             expanded_findings: Default::default(),
             return_to_finding: false,
+            health_badge: Cell::new(super::tabs::health::HealthBadge::default()),
             graph_section: GraphSection::default(),
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),
@@ -979,6 +991,16 @@ impl UiState {
         *self.health_cursor.get_mut() = Default::default();
         self.expanded_findings.clear();
         self.return_to_finding = false;
+    }
+
+    /// Jump to `5 Health & Host > Findings`, expanding and selecting `finding`.
+    pub fn open_finding(&mut self, finding: super::HealthFinding) {
+        self.jump_to_tab(4);
+        self.host_view = HostView::Findings;
+        self.expanded_findings.insert(finding);
+        self.health_cursor
+            .get_mut()
+            .select(super::tabs::health::HealthTarget::Finding(finding));
     }
 
     /// Jump directly to a tab by index (0 = Overview, 4 = Host).

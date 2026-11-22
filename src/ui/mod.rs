@@ -128,6 +128,7 @@ pub use state::{
     DetailsSection, DnsSort, GraphSection, GroupedRow, HostView, OverviewSection, PaneScroll,
     SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,
 };
+pub use tabs::health::Finding as HealthFinding;
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
 mod connection_table;
@@ -410,6 +411,12 @@ pub fn draw(
         link_type: Some(link_type.as_str()).filter(|link| *link != "Unknown"),
         failed: capture_error.is_some(),
     };
+
+    // Refresh the cross-tab health summary before drawing the top tab bar and
+    // section selector so both reflect live error/warning indicators.
+    ui_state
+        .health_badge
+        .set(tabs::health::health_badge(app, stats, ui_state.host_window));
 
     draw_tabs(f, ui_state, &capture, chunks[0], click_regions);
 

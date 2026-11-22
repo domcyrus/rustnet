@@ -2,10 +2,10 @@
 source: src/ui/snapshot_tests.rs
 expression: "render_host_dns(80, 24)"
 ---
- rustnet  1 Overview 2 Details 3 Activity 4 Graph 5 Health & Host         ● eth0
-──────────────────────────────────────────────────━━━━━━━━━━━━━━━───────────────
-Findings   Sockets   Interfaces   DNS resolvers                                 
-──────────────────────────────────━━━━━━━━━━━━━─────────────────────────────────
+ rustnet  1 Overview 2 Details 3 Activity 4 Graph 5 Health & Host !       ● eth0
+──────────────────────────────────────────────────━━━━━━━━━━━━━━━━━─────────────
+Findings (1)   Sockets   Interfaces   DNS resolvers                             
+──────────────────────────────────────━━━━━━━━━━━━━─────────────────────────────
 ▎ DNS Outcomes (60s) ───────────────────────────────────────────────────────────
 Status degraded                                                                 
 Lookups 5   answered 5   pending 0   timeout 0                                  

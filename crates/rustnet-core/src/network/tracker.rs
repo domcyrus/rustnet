@@ -57,7 +57,7 @@ use crate::network::types::{
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
@@ -323,6 +323,10 @@ pub struct ConnectionTracker {
     rtt: Mutex<RttTracker>,
     dns_analytics: Mutex<DnsAnalyticsTracker>,
     tcp_attempts: Mutex<super::tcp_attempts::TcpAttemptTracker>,
+    /// Fast-path flag indicating whether `tcp_attempts` currently tracks any
+    /// pending handshakes, allowing steady-state established TCP packets to
+    /// skip acquiring the `tcp_attempts` mutex.
+    has_pending_tcp_attempts: AtomicBool,
     network_events: Mutex<NetworkEventHistory>,
     quic_map: Mutex<HashMap<String, ConnectionKey>>,
     recently_closed: Mutex<HashMap<ConnectionKey, SystemTime>>,
@@ -359,6 +363,7 @@ impl ConnectionTracker {
             rtt: Mutex::new(RttTracker::new()),
             dns_analytics: Mutex::new(DnsAnalyticsTracker::default()),
             tcp_attempts: Mutex::new(super::tcp_attempts::TcpAttemptTracker::default()),
+            has_pending_tcp_attempts: AtomicBool::new(false),
             network_events: Mutex::new(NetworkEventHistory::default()),
             quic_map: Mutex::new(HashMap::new()),
             recently_closed: Mutex::new(HashMap::new()),
@@ -445,6 +450,12 @@ impl ConnectionTracker {
             observe_owner(connection.map(|(_, attributed)| attributed));
             if parsed.protocol == Protocol::Tcp
                 && let Some(tcp) = &parsed.tcp_header
+                && ((parsed.is_outgoing
+                    && tcp.flags.syn
+                    && !tcp.flags.ack
+                    && !tcp.flags.rst
+                    && !tcp.flags.fin)
+                    || self.has_pending_tcp_attempts.load(Ordering::Acquire))
                 && let Ok(mut attempts) = self.tcp_attempts.lock()
             {
                 attempts.record(
@@ -454,6 +465,8 @@ impl ConnectionTracker {
                     now,
                     connection.map(|(created_at, _)| created_at),
                 );
+                self.has_pending_tcp_attempts
+                    .store(attempts.has_pending(), Ordering::Release);
             }
         });
 
@@ -1231,6 +1244,8 @@ impl ConnectionTracker {
         }
         if let Ok(mut attempts) = self.tcp_attempts.lock() {
             *attempts = super::tcp_attempts::TcpAttemptTracker::default();
+            self.has_pending_tcp_attempts
+                .store(false, Ordering::Release);
         }
         if let Ok(mut analytics) = self.dns_analytics.lock() {
             analytics.clear();

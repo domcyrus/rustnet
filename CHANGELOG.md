@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
 
 ### Changed
+- Skip TCP attempt mutex locking on steady-state established packets when no handshakes are pending (#734)
+- Keep Overview's TCP handshake summary on one compact line while quiet or healthy, expanding when issues appear, and make sidebar DNS/TCP health rows jump directly to Findings (#734)
+- Show a severity indicator on `5 Health & Host` in the tab bar, attention counts on `Findings`, and trailing action chips on linked evidence rows (#734)
 - Reduce TCP attempt lookups and reclaim expired entries before counting capacity omissions (#734)
 - Reuse unchanged TCP health snapshots, preserve exact expiry deadlines, and select recent issues without sorting all retained attempts (#734)
 - Share TCP destination ranking and health help between Overview and Findings (#734)

@@ -1,16 +1,23 @@
 //! Expandable network health findings from the existing capture and OS counters.
-use std::{net::SocketAddr, sync::atomic::Ordering::Relaxed, time::SystemTime};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::atomic::Ordering::Relaxed,
+    time::{Duration, SystemTime},
+};
 
 use super::{HealthLevel, count_span, dns_health_status, tcp_handshake_status};
+use crate::app::{App, AppStats};
 use crate::network::{
     dns_analytics::DnsIssue,
     process_activity::process_group_label,
-    tcp_attempts::{AttemptCounts, AttemptOutcome},
+    tcp_attempts::{AttemptCounts, AttemptOutcome, TcpAttempt},
+    time_window::TimeWindow,
     types::{Connection, ConnectionKey, NetworkEventKind},
 };
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, HandlerContext, HostView, UiState,
-    section_header, section_title, theme, try_handle_pane_scroll, try_handle_pane_wheel,
+    section_header, section_title, theme, try_handle_pane_wheel,
     widgets::scrollbar::draw_scrollbar,
 };
 use anyhow::Result;
@@ -23,7 +30,7 @@ use ratatui::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(in crate::ui) enum Finding {
+pub enum Finding {
     Tcp,
     Events,
     Interfaces,
@@ -32,6 +39,14 @@ pub(in crate::ui) enum Finding {
 }
 
 impl Finding {
+    const ALL: [Self; 5] = [
+        Self::Tcp,
+        Self::Events,
+        Self::Interfaces,
+        Self::Dns,
+        Self::Capture,
+    ];
+
     fn name(self) -> &'static str {
         match self {
             Self::Tcp => "TCP handshakes",
@@ -41,6 +56,78 @@ impl Finding {
             Self::Capture => "Capture quality",
         }
     }
+}
+
+/// Cross-tab summary of findings that currently need attention.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::ui) struct HealthBadge {
+    pub errors: usize,
+    pub warnings: usize,
+}
+
+impl HealthBadge {
+    pub(in crate::ui) fn attention_count(self) -> usize {
+        self.errors + self.warnings
+    }
+
+    pub(in crate::ui) fn level(self) -> HealthLevel {
+        HealthLevel::observed(self.errors > 0, self.warnings > 0)
+    }
+
+    fn record(&mut self, level: HealthLevel) {
+        match level {
+            HealthLevel::Error => self.errors += 1,
+            HealthLevel::Warning => self.warnings += 1,
+            HealthLevel::Healthy | HealthLevel::Muted => {}
+        }
+    }
+}
+
+/// Compute the live error/warning count across all five finding categories so the
+/// top tab bar, section strip, and Findings header stay strictly in sync.
+pub(in crate::ui) fn health_badge(app: &App, stats: &AppStats, window: TimeWindow) -> HealthBadge {
+    let tcp = app.get_tcp_attempt_snapshot();
+    let events = app.get_network_event_snapshot(window);
+    let (interfaces, _) = app.get_interface_errors(window);
+    let dns = app.get_dns_analytics_for_window(window);
+    let capture_error = app.capture_error();
+    let queue = stats.packets_dropped.load(Relaxed);
+    let capture = stats.capture_packets_dropped.load(Relaxed);
+    let iface = stats.interface_packets_dropped.load(Relaxed);
+    let reported = capture.saturating_add(iface);
+    let resets = events.selected.get(NetworkEventKind::TcpReset);
+    let icmp: u64 = events
+        .selected
+        .observed()
+        .filter(|(k, _)| *k != NetworkEventKind::TcpReset)
+        .map(|(_, c)| c.sent + c.received)
+        .sum();
+    let drops: u64 = interfaces
+        .values()
+        .map(|c| c.rx_dropped + c.tx_dropped)
+        .sum();
+    let errors: u64 = interfaces.values().map(|c| c.rx_errors + c.tx_errors).sum();
+    let (_, tcp_level) =
+        tcp_handshake_status(&tcp, capture_error.is_some() || reported > 0 || queue > 0);
+    let (_, dns_level) = dns_health_status(dns.health, capture_error.is_some());
+    let dns_attention = if dns.failures > 0 {
+        HealthLevel::Error
+    } else {
+        dns_level
+    };
+    let mut badge = HealthBadge::default();
+    badge.record(tcp_level);
+    badge.record(HealthLevel::observed(
+        false,
+        resets.sent > 0 || resets.received > 0 || icmp > 0,
+    ));
+    badge.record(HealthLevel::observed(errors > 0, drops > 0));
+    badge.record(dns_attention);
+    badge.record(HealthLevel::observed(
+        capture_error.is_some(),
+        reported > 0 || queue > 0,
+    ));
+    badge
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,9 +182,40 @@ impl HealthTarget {
         }
     }
 
+    fn copy_value(&self) -> Option<(String, String)> {
+        match self {
+            Self::Destination(addr) => {
+                let s = addr.to_string();
+                Some((s.clone(), s))
+            }
+            Self::Attempt { key, .. } => {
+                let s = key.remote_addr.to_string();
+                Some((s.clone(), s))
+            }
+            Self::Resolver(Some(addr)) => {
+                let s = addr.to_string();
+                Some((s.clone(), s))
+            }
+            Self::DnsIssue(issue, _) => {
+                let value = issue
+                    .query_name
+                    .clone()
+                    .unwrap_or_else(|| issue.resolver.to_string());
+                Some((value.clone(), value))
+            }
+            Self::Interface(Some(name)) => Some((name.clone(), name.clone())),
+            _ => None,
+        }
+    }
+
     fn activate(&self, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
         let state = &mut ctx.ui_state;
         let view = match self {
+            Self::Finding(finding) => {
+                let expanded = !state.expanded_findings.contains(finding);
+                fold(state, *finding, expanded);
+                return Vec::new();
+            }
             Self::Resolver(_) | Self::DnsIssue(..) => HostView::Dns,
             Self::Interface(_) => HostView::Interfaces,
             Self::Attempt { .. } => {
@@ -105,12 +223,12 @@ impl HealthTarget {
                     state.set_selected_by_index(ctx.connections, i);
                     state.jump_to_tab(1);
                     state.return_to_finding = true;
-                    if state.grouping_enabled
-                        && state
-                            .expanded_groups
-                            .insert(process_group_label(&ctx.connections[i]).to_owned())
-                    {
-                        return vec![Effect::Regroup];
+                    if state.grouping_enabled {
+                        let group = process_group_label(&ctx.connections[i]).to_owned();
+                        state.selected_group = Some(group.clone());
+                        if state.expanded_groups.insert(group) {
+                            return vec![Effect::Regroup];
+                        }
                     }
                 }
                 return Vec::new();
@@ -127,6 +245,8 @@ impl HealthTarget {
 pub(in crate::ui) struct HealthCursor {
     pub(in crate::ui) target: Option<HealthTarget>,
     pub(in crate::ui) link: Option<&'static str>,
+    pub(in crate::ui) copyable: bool,
+    attention_findings: Vec<Finding>,
     sibling: usize,
     wrapped_row: Option<usize>,
     notice: Option<&'static str>,
@@ -167,7 +287,7 @@ impl HealthCursor {
         selected
     }
 
-    fn select(&mut self, target: HealthTarget) {
+    pub(in crate::ui) fn select(&mut self, target: HealthTarget) {
         self.target = Some(target);
         self.wrapped_row = None;
         self.scrolled = false;
@@ -188,17 +308,19 @@ fn fold(state: &mut UiState, finding: Finding, expand: bool) {
 }
 
 fn health_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-    if key.modifiers != KeyModifiers::NONE {
-        return None;
-    }
     let state = &mut ctx.ui_state;
     let rows = &ctx.click_regions.health_rows;
+    let viewport_step = usize::from(state.health_scroll.viewport_rows()).max(1);
     let cursor = state.health_cursor.get_mut();
-    let selected = cursor.target.as_ref()?;
+    let selected = cursor.target.as_ref()?.clone();
     let finding = selected.finding();
-    match key.code {
-        KeyCode::Down | KeyCode::Char('j') | KeyCode::Up | KeyCode::Char('k') => {
-            let i = rows.iter().position(|(t, _)| t == selected)?;
+
+    match (key.code, key.modifiers) {
+        (KeyCode::Down, KeyModifiers::NONE)
+        | (KeyCode::Char('j'), KeyModifiers::NONE)
+        | (KeyCode::Up, KeyModifiers::NONE)
+        | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+            let i = rows.iter().position(|(t, _)| t == &selected)?;
             let down = matches!(key.code, KeyCode::Down | KeyCode::Char('j'));
             let next = if cursor.scrolled && rows[i].1.is_empty() {
                 if down {
@@ -218,22 +340,86 @@ fn health_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>
             });
             cursor.select(rows[next].0.clone());
         }
-        KeyCode::Char(' ') => fold(state, finding, !state.expanded_findings.contains(&finding)),
-        KeyCode::Right => {
+        (KeyCode::PageDown, KeyModifiers::NONE) | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+            if let Some(i) = rows.iter().position(|(t, _)| t == &selected) {
+                let next = (i + viewport_step).min(rows.len() - 1);
+                cursor.select(rows[next].0.clone());
+            } else {
+                state.health_scroll.scroll_down(viewport_step as u16);
+                cursor.scrolled = true;
+            }
+        }
+        (KeyCode::PageUp, KeyModifiers::NONE) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+            if let Some(i) = rows.iter().position(|(t, _)| t == &selected) {
+                let next = i.saturating_sub(viewport_step);
+                cursor.select(rows[next].0.clone());
+            } else {
+                state.health_scroll.scroll_up(viewport_step as u16);
+                cursor.scrolled = true;
+            }
+        }
+        (KeyCode::Char('g'), KeyModifiers::NONE) | (KeyCode::Home, KeyModifiers::NONE) => {
+            if let Some((first, _)) = rows.first() {
+                cursor.select(first.clone());
+            } else {
+                state.health_scroll.scroll_to_top();
+                cursor.scrolled = true;
+            }
+        }
+        (KeyCode::Char('G'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+        | (KeyCode::Char('g'), KeyModifiers::SHIFT)
+        | (KeyCode::End, KeyModifiers::NONE) => {
+            if let Some((last, _)) = rows.last() {
+                cursor.select(last.clone());
+            } else {
+                state.health_scroll.scroll_to_bottom();
+                cursor.scrolled = true;
+            }
+        }
+        (KeyCode::Char(' '), KeyModifiers::NONE) => {
+            fold(state, finding, !state.expanded_findings.contains(&finding));
+        }
+        (KeyCode::Right, KeyModifiers::NONE) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
             if matches!(selected, HealthTarget::Finding(_)) {
                 fold(state, finding, true);
             }
         }
-        KeyCode::Left => {
+        (KeyCode::Left, KeyModifiers::NONE) => {
             if matches!(selected, HealthTarget::Finding(_)) {
                 fold(state, finding, false);
             } else {
                 cursor.select(HealthTarget::Finding(finding));
             }
         }
-        KeyCode::Enter => {
-            if rows.iter().any(|(t, r)| t == selected && !r.is_empty()) {
-                return Some(selected.clone().activate(ctx));
+        (KeyCode::Char('e'), KeyModifiers::NONE) => {
+            let attention = cursor.attention_findings.clone();
+            let targets: &[Finding] = if attention.is_empty() {
+                &Finding::ALL
+            } else {
+                &attention
+            };
+            let all_open = targets.iter().all(|f| state.expanded_findings.contains(f));
+            if all_open {
+                state.expanded_findings.clear();
+                state
+                    .health_cursor
+                    .get_mut()
+                    .select(HealthTarget::Finding(finding));
+            } else {
+                for &f in targets {
+                    state.expanded_findings.insert(f);
+                }
+            }
+        }
+        (KeyCode::Char('c'), KeyModifiers::NONE) => {
+            if let Some((label, value)) = selected.copy_value() {
+                return Some(vec![Effect::Copy { label, value }]);
+            }
+            return Some(Vec::new());
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            if rows.iter().any(|(t, r)| t == &selected && !r.is_empty()) {
+                return Some(selected.activate(ctx));
             }
             cursor.wrapped_row = None;
             cursor.scrolled = false;
@@ -245,7 +431,7 @@ fn health_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>
 
 fn network_event_lines(
     events: &crate::network::types::NetworkEventSnapshot,
-    window: crate::network::time_window::TimeWindow,
+    window: TimeWindow,
     compact: bool,
     rows: &mut FindingRows,
 ) {
@@ -261,7 +447,10 @@ fn network_event_lines(
     )));
     let mut observed = events.total.observed().peekable();
     if observed.peek().is_none() {
-        rows.text(Line::from("No resets or ICMP errors observed"));
+        rows.text(Line::styled(
+            "No resets or ICMP errors observed",
+            theme::fg(theme::muted()),
+        ));
         return;
     }
     if !compact {
@@ -285,17 +474,23 @@ fn network_event_lines(
         ));
         if compact {
             rows.item(HealthTarget::Event(kind), line);
-            rows.text(Line::from(format!(
-                "  Sent {} / {}   Received {} / {}",
-                selected.sent, total.sent, selected.received, total.received
-            )));
+            rows.text(Line::from(vec![
+                Span::raw("  Sent "),
+                count_span(selected.sent, theme::warn()),
+                Span::raw(format!(" / {}   Received ", total.sent)),
+                count_span(selected.received, theme::warn()),
+                Span::raw(format!(" / {}", total.received)),
+            ]));
         } else {
             line.push_span(" ".repeat(42usize.saturating_sub(line.width())));
-            line.push_span(format!(
-                "{:>26}{:>26}",
-                format!("{} / {}", selected.sent, total.sent),
-                format!("{} / {}", selected.received, total.received)
-            ));
+            let sent_text = format!("{} / {}", selected.sent, total.sent);
+            let recv_text = format!("{} / {}", selected.received, total.received);
+            line.push_span(" ".repeat(26usize.saturating_sub(sent_text.len())));
+            line.push_span(count_span(selected.sent, theme::warn()));
+            line.push_span(format!(" / {}", total.sent));
+            line.push_span(" ".repeat(26usize.saturating_sub(recv_text.len())));
+            line.push_span(count_span(selected.received, theme::warn()));
+            line.push_span(format!(" / {}", total.received));
             rows.item(HealthTarget::Event(kind), line);
         }
     }
@@ -305,15 +500,7 @@ pub(in crate::ui) struct HealthTab;
 
 impl Component for HealthTab {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        health_key(key, ctx).or_else(|| {
-            let state = &mut ctx.ui_state;
-            let scroll = &mut state.health_scroll;
-            let result = try_handle_pane_scroll(key, usize::from(scroll.viewport_rows()), scroll);
-            if result.is_some() {
-                state.health_cursor.get_mut().scrolled = true;
-            }
-            result
-        })
+        health_key(key, ctx)
     }
 
     fn handle_mouse(
@@ -346,8 +533,10 @@ impl Component for HealthTab {
             }
             return Some(Vec::new());
         }
+        state.health_scroll.clamp_offset();
+        let before = state.health_scroll.offset();
         let result = try_handle_pane_wheel(mouse, &mut state.health_scroll);
-        if result.is_some() {
+        if result.is_some() && state.health_scroll.offset() != before {
             state.health_cursor.get_mut().scrolled = true;
         }
         result
@@ -389,12 +578,19 @@ impl Component for HealthTab {
         let (dns_status, dns_level) = dns_health_status(dns.health, capture_error.is_some());
         let mut tcp_summary = Line::from(Span::styled(tcp_status, theme::fg(tcp_level.color())));
         if c.completed > 0 {
-            tcp_summary.push_span(format!(
-                " · {}/{} reset or incomplete · {} anomalous",
-                c.reset + c.no_handshake,
-                c.completed,
-                c.anomalous
-            ));
+            let failed = c.reset + c.no_handshake;
+            let fail_color = if c.reset > 0 {
+                theme::err()
+            } else {
+                theme::warn()
+            };
+            tcp_summary.extend([
+                Span::raw(" · "),
+                count_span(failed, fail_color),
+                Span::raw(format!("/{} reset or incomplete · ", c.completed)),
+                count_span(c.anomalous, theme::warn()),
+                Span::raw(" anomalous"),
+            ]);
         }
         if tcp.pending > 0 {
             tcp_summary.push_span(format!(" · {} pending", tcp.pending));
@@ -486,7 +682,21 @@ impl Component for HealthTab {
             ),
         ];
         summaries.sort_by_key(|(_, _, _, level)| level.attention_order());
-        let mut rows = FindingRows::default();
+        let mut badge = HealthBadge::default();
+        let mut attention_findings = Vec::new();
+        for (finding, _, _, level) in &summaries {
+            badge.record(*level);
+            if matches!(level, HealthLevel::Error | HealthLevel::Warning) {
+                attention_findings.push(*finding);
+            }
+        }
+        state.health_cursor.borrow_mut().attention_findings = attention_findings;
+
+        let mut rows = FindingRows {
+            window_label: window.label_since_clear(events.since_clear),
+            badge,
+            ..Default::default()
+        };
         for (finding, summary, window_label, _) in summaries {
             let name = finding.name();
             let expanded = state.expanded_findings.contains(&finding);
@@ -521,11 +731,14 @@ impl Component for HealthTab {
                         );
                     }
                     if dns.resolvers.is_empty() {
-                        rows.item(HealthTarget::Resolver(None), "No observed resolvers");
+                        rows.item(
+                            HealthTarget::Resolver(None),
+                            Line::styled("No observed resolvers", theme::fg(theme::muted())),
+                        );
                     }
-                    rows.text(format!(
-                        "Recent issues (15m, {} retained)",
-                        dns.recent_issues.len()
+                    rows.text(Line::styled(
+                        format!("Recent issues (15m, {} retained)", dns.recent_issues.len()),
+                        theme::fg(theme::muted()),
                     ));
                     for (i, issue) in dns.recent_issues.iter().enumerate() {
                         // Identical observations can share the same timestamp and question.
@@ -535,7 +748,7 @@ impl Component for HealthTab {
                             .count();
                         rows.item(
                             HealthTarget::DnsIssue(issue.clone(), duplicate),
-                            super::host::dns_issue_line(issue, 1),
+                            super::host::dns_issue_line(issue, None),
                         );
                     }
                     if dns.truncated {
@@ -551,7 +764,10 @@ impl Component for HealthTab {
                     if interfaces.is_empty() {
                         rows.item(
                             HealthTarget::Interface(None),
-                            "No interface samples available",
+                            Line::styled(
+                                "No interface samples available",
+                                theme::fg(theme::muted()),
+                            ),
                         );
                     }
                     for (name, c) in interfaces {
@@ -602,6 +818,8 @@ impl Component for HealthTab {
 struct FindingRows {
     lines: Vec<Line<'static>>,
     targets: Vec<(usize, HealthTarget)>,
+    window_label: &'static str,
+    badge: HealthBadge,
 }
 
 impl FindingRows {
@@ -611,6 +829,69 @@ impl FindingRows {
     }
     fn text(&mut self, line: impl Into<Line<'static>>) {
         self.lines.push(line.into());
+    }
+
+    fn header_line(&self, cursor: &HealthCursor, selected: usize) -> Line<'static> {
+        let target = &self.targets[selected].1;
+        if let Some(notice) = cursor.notice {
+            return Line::from(section_title(notice));
+        }
+        if matches!(target, HealthTarget::Finding(_)) {
+            let mut spans = vec![section_title("Findings")];
+            if !self.window_label.is_empty() {
+                spans.push(Span::styled(
+                    format!("  window: {}", self.window_label),
+                    theme::fg(theme::muted()),
+                ));
+            }
+            if self.badge.errors > 0 {
+                spans.push(Span::styled(" · ", theme::fg(theme::muted())));
+                spans.push(Span::styled(
+                    format!(
+                        "{} {}",
+                        self.badge.errors,
+                        if self.badge.errors == 1 {
+                            "error"
+                        } else {
+                            "errors"
+                        }
+                    ),
+                    theme::fg(theme::err()),
+                ));
+            }
+            if self.badge.warnings > 0 {
+                spans.push(Span::styled(" · ", theme::fg(theme::muted())));
+                spans.push(Span::styled(
+                    format!(
+                        "{} {}",
+                        self.badge.warnings,
+                        if self.badge.warnings == 1 {
+                            "warning"
+                        } else {
+                            "warnings"
+                        }
+                    ),
+                    theme::fg(theme::warn()),
+                ));
+            }
+            return Line::from(spans);
+        }
+        let following = self.targets[selected + 1..]
+            .iter()
+            .take_while(|(_, t)| t.finding() == target.finding())
+            .count();
+        let index = cursor.sibling;
+        let position = format!(
+            "{} · {index}/{}",
+            target.finding().name(),
+            index + following
+        );
+        let title = if let HealthTarget::Attempt { key, .. } = target {
+            format!("{position} · {}", key.remote_addr)
+        } else {
+            position
+        };
+        Line::from(section_title(title))
     }
 
     fn draw(
@@ -625,28 +906,9 @@ impl FindingRows {
         let selected = cursor.resolve(&self.targets);
         let target = &self.targets[selected].1;
         cursor.link = target.link(ctx.connections);
-        let title = if let Some(notice) = cursor.notice {
-            notice.to_owned()
-        } else if matches!(target, HealthTarget::Finding(_)) {
-            "Findings".to_owned()
-        } else {
-            let following = self.targets[selected + 1..]
-                .iter()
-                .take_while(|(_, t)| t.finding() == target.finding())
-                .count();
-            let index = cursor.sibling;
-            let position = format!(
-                "{} · {index}/{}",
-                target.finding().name(),
-                index + following
-            );
-            if let HealthTarget::Attempt { key, .. } = target {
-                format!("{position} · {}", key.remote_addr)
-            } else {
-                position
-            }
-        };
-        let inner = section_header(f, area, section_title(title));
+        cursor.copyable = target.copy_value().is_some();
+        let header = self.header_line(&cursor, selected);
+        let inner = section_header(f, area, header);
         let width = inner.width.saturating_sub(2).max(1);
         let mut positions = Vec::with_capacity(self.targets.len());
         let mut next = self.targets.into_iter().enumerate().peekable();
@@ -654,29 +916,42 @@ impl FindingRows {
         let mut top = 0usize;
         for (index, line) in self.lines.iter_mut().enumerate() {
             let item = next.next_if(|(_, (line_index, _))| *line_index == index);
-            let mut label_width = 0;
+            let mut link_badge: Option<String> = None;
             if let Some((idx, (_, target))) = &item {
+                let is_selected = *idx == selected;
                 let link = target.link(ctx.connections);
                 if let Some(label) = link {
-                    // Keep the entire mouse link on one physical row on narrow terminals.
-                    let text = if usize::from(width) >= label.len() + 6 {
-                        format!("[{label}] ")
+                    // Keep data aligned on the left; show the full action chip on the
+                    // selected row and a quiet compact link indicator on unselected rows.
+                    let badge = if is_selected && usize::from(width) >= label.len() + 8 {
+                        format!("[{label} ↵]")
                     } else {
-                        "[>] ".to_owned()
+                        "[↗]".to_owned()
                     };
-                    label_width = text.len() as u16 - 1;
-                    line.spans
-                        .insert(0, Span::styled(text, theme::fg(theme::accent())));
+                    let badge_style = if is_selected {
+                        theme::fg(theme::accent())
+                    } else {
+                        theme::fg(theme::muted())
+                    };
+                    line.push_span(Span::raw("  "));
+                    line.push_span(Span::styled(badge.clone(), badge_style));
+                    link_badge = Some(badge);
                 } else if matches!(target, HealthTarget::Attempt { .. }) {
-                    line.push_span(" · Details unavailable");
+                    let hint = match (state.has_active_filter(), state.show_historic) {
+                        (true, false) => " · Details unavailable (filter active / history off)",
+                        (true, true) => " · Details unavailable (filtered)",
+                        (false, false) => " · Details unavailable (press t for history)",
+                        (false, true) => " · Details unavailable",
+                    };
+                    line.push_span(Span::styled(hint, theme::fg(theme::muted())));
                 }
-                let marker = if *idx == selected { "▌ " } else { "  " };
+                let marker = if is_selected { "▌ " } else { "  " };
                 line.spans
                     .insert(0, Span::styled(marker, theme::fg(theme::accent())));
                 if !matches!(target, HealthTarget::Finding(_)) {
                     line.spans.insert(0, Span::raw("  "));
                 }
-                if *idx == selected {
+                if is_selected {
                     highlight_line(line);
                 }
             } else {
@@ -699,7 +974,7 @@ impl FindingRows {
                             .follow_row(top, height, usize::from(inner.height), old);
                     }
                 }
-                positions.push((target, top, height, label_width));
+                positions.push((target, top, height, link_badge));
             }
             top = top.saturating_add(height);
         }
@@ -725,21 +1000,53 @@ impl FindingRows {
             area,
         );
         draw_scrollbar(f, inner, top, offset, viewport);
-        for (target, top, height, label_width) in positions {
+        let buf = f.buffer_mut();
+        for (target, top, height, link_badge) in positions {
             let start = top.saturating_sub(offset).min(viewport) as u16;
             let end = (top + height).saturating_sub(offset).min(viewport) as u16;
             let rect = Rect::new(area.x, area.y + start, area.width, end - start);
-            if label_width > 0 && top >= offset && !rect.is_empty() {
-                regions.health_links.push(Rect::new(
-                    rect.x + 4,
-                    rect.y,
-                    label_width.min(rect.width.saturating_sub(4)),
-                    1,
-                ));
+            if let Some(badge) = link_badge
+                && !rect.is_empty()
+                && let Some(link_rect) = find_link_rect(buf, rect, &badge)
+            {
+                regions.health_links.push(link_rect);
             }
             regions.health_rows.push((target, rect));
         }
     }
+}
+
+/// Locate the rendered trailing link badge inside `rect` so mouse hit-testing
+/// stays exact across word-wrapping and narrow terminal widths.
+fn find_link_rect(buf: &ratatui::buffer::Buffer, rect: Rect, badge: &str) -> Option<Rect> {
+    let badge_chars: Vec<char> = badge.chars().collect();
+    let target_width = Span::raw(badge).width() as u16;
+    if badge_chars.is_empty() || target_width == 0 || rect.width < target_width {
+        return None;
+    }
+    for y in (rect.y..rect.bottom()).rev() {
+        for x in (rect.x..=rect.right().saturating_sub(target_width)).rev() {
+            let mut matched = true;
+            let mut col = x;
+            for &ch in &badge_chars {
+                if col >= rect.right() {
+                    matched = false;
+                    break;
+                }
+                let sym = buf[(col, y)].symbol();
+                let mut chars = sym.chars();
+                if chars.next() != Some(ch) || chars.next().is_some() {
+                    matched = false;
+                    break;
+                }
+                col += Span::raw(sym).width().max(1) as u16;
+            }
+            if matched {
+                return Some(Rect::new(x, y, target_width, 1));
+            }
+        }
+    }
+    None
 }
 
 fn highlight_line(line: &mut Line<'_>) {
@@ -767,14 +1074,48 @@ fn outcome_counts(counts: &AttemptCounts, indent: &'static str) -> Line<'static>
     ])
 }
 
+fn format_remaining(remaining: Duration) -> String {
+    let secs = remaining.as_secs();
+    if secs >= 60 {
+        format!("{}m {:02}s left", secs / 60, secs % 60)
+    } else if secs > 0 {
+        format!("{secs}s left")
+    } else {
+        "<1s left".to_owned()
+    }
+}
+
+fn anomaly_detail_line(issue: &TcpAttempt) -> Option<Line<'static>> {
+    let items = [
+        ("SYN retries", issue.syn_retries, theme::warn()),
+        ("unexpected ACKs", issue.unexpected_acks, theme::warn()),
+        ("invalid SYN-ACKs", issue.invalid_syn_acks, theme::err()),
+        ("local resets", issue.local_resets, theme::warn()),
+    ];
+    let mut spans = Vec::new();
+    for (label, count, color) in items {
+        if count == 0 {
+            continue;
+        }
+        if spans.is_empty() {
+            spans.push(Span::raw("      "));
+        } else {
+            spans.push(Span::styled(" · ", theme::fg(theme::muted())));
+        }
+        spans.push(Span::styled(format!("{label} "), theme::fg(theme::muted())));
+        spans.push(count_span(count, color));
+    }
+    (!spans.is_empty()).then(|| Line::from(spans))
+}
+
 fn tcp_attempt_lines(
     snapshot: &crate::network::tcp_attempts::TcpAttemptSnapshot,
     rows: &mut FindingRows,
 ) {
     let c = &snapshot.total;
-    rows.text(format!(
-        "{} completed, {} pending",
-        c.completed, snapshot.pending
+    rows.text(Line::styled(
+        format!("{} completed, {} pending", c.completed, snapshot.pending),
+        theme::fg(theme::muted()),
     ));
     rows.text(outcome_counts(c, ""));
     let mut destinations: Vec<_> = snapshot
@@ -784,21 +1125,40 @@ fn tcp_attempt_lines(
         .collect();
     destinations.sort_by(|a, b| super::compare_tcp_destinations(*b, *a));
     if destinations.is_empty() {
-        rows.text("No affected destinations in the last 5 min");
+        rows.text(Line::styled(
+            "No affected destinations in the last 5 min",
+            theme::fg(theme::muted()),
+        ));
     } else {
-        rows.text("Affected destinations · issues expire after 5 min");
+        rows.text(Line::styled(
+            "Affected destinations · issues expire after 5 min",
+            theme::fg(theme::muted()),
+        ));
     }
+    // Index the bounded recent-issue list once instead of scanning it per destination.
+    let mut issues_by_dest: HashMap<SocketAddr, Vec<&TcpAttempt>> = HashMap::new();
+    for issue in &snapshot.recent_issues {
+        issues_by_dest
+            .entry(issue.key.remote_addr)
+            .or_default()
+            .push(issue);
+    }
+    let now = SystemTime::now();
     for (address, c) in destinations {
-        let mut issues = snapshot
-            .recent_issues
-            .iter()
-            .filter(|issue| issue.key.remote_addr == *address)
-            .peekable();
+        let issues = issues_by_dest
+            .get(address)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let fail_color = if c.reset > 0 {
+            theme::err()
+        } else {
+            theme::warn()
+        };
         rows.item(
             HealthTarget::Destination(*address),
             Line::from(vec![
                 Span::raw(format!("{address}  ")),
-                count_span(c.reset + c.no_handshake, theme::warn()),
+                count_span(c.reset + c.no_handshake, fail_color),
                 Span::raw(format!("/{} reset or incomplete, ", c.completed)),
                 count_span(c.anomalous, theme::warn()),
                 Span::raw(" anomalous, "),
@@ -807,9 +1167,10 @@ fn tcp_attempt_lines(
             ]),
         );
         rows.text(outcome_counts(c, "  "));
-        if issues.peek().is_none() {
-            rows.text(Line::from(
+        if issues.is_empty() {
+            rows.text(Line::styled(
                 "    No matching attempt in the 32 most recent issues",
+                theme::fg(theme::muted()),
             ));
         }
         for issue in issues {
@@ -819,6 +1180,8 @@ fn tcp_attempt_lines(
                 AttemptOutcome::Reset => ("reset", theme::err()),
                 AttemptOutcome::Superseded => ("superseded", theme::warn()),
             };
+            let expires_at = issue.finished_at + crate::network::tcp_attempts::WINDOW;
+            let remaining = expires_at.duration_since(now).unwrap_or_default();
             rows.item(
                 HealthTarget::Attempt {
                     key: issue.key,
@@ -827,29 +1190,28 @@ fn tcp_attempt_lines(
                     started: issue.started_at,
                 },
                 Line::from(vec![
-                    Span::raw(format!(
-                        "{}  ",
-                        chrono::DateTime::<chrono::Local>::from(issue.finished_at)
-                            .format("%H:%M:%S")
-                    )),
+                    Span::styled(
+                        format!(
+                            "{}  ",
+                            chrono::DateTime::<chrono::Local>::from(issue.finished_at)
+                                .format("%H:%M:%S")
+                        ),
+                        theme::fg(theme::muted()),
+                    ),
                     Span::styled(outcome, theme::fg(color)),
-                    Span::raw(format!(
-                        "  {} · expires {}",
-                        issue.key.local_addr,
-                        chrono::DateTime::<chrono::Local>::from(
-                            issue.finished_at + crate::network::tcp_attempts::WINDOW
-                        )
-                        .format("%H:%M:%S")
-                    )),
+                    Span::raw(format!("  {} ", issue.key.local_addr)),
+                    Span::styled(
+                        format!(
+                            "· expires {} ({})",
+                            chrono::DateTime::<chrono::Local>::from(expires_at).format("%H:%M:%S"),
+                            format_remaining(remaining),
+                        ),
+                        theme::fg(theme::muted()),
+                    ),
                 ]),
             );
-            if issue.unexpected_acks
-                + issue.invalid_syn_acks
-                + issue.local_resets
-                + issue.syn_retries
-                > 0
-            {
-                rows.text(Line::from(format!("      SYN retries {}  unexpected ACKs {}  invalid SYN-ACKs {}  local resets {}", issue.syn_retries, issue.unexpected_acks, issue.invalid_syn_acks, issue.local_resets)));
+            if let Some(detail) = anomaly_detail_line(issue) {
+                rows.text(detail);
             }
         }
     }
@@ -863,8 +1225,9 @@ fn tcp_attempt_lines(
         ));
     }
     if c.no_handshake + c.anomalous > 0 {
-        rows.text(Line::from(
+        rows.text(Line::styled(
             "  Missing capture packets or local cancellation can also prevent observed completion.",
+            theme::fg(theme::muted()),
         ));
     }
 }
@@ -973,5 +1336,29 @@ mod tcp_attempt_tests {
         assert!(text.contains("198.51.100.1:443  2/3"));
         assert!(text.contains("4 capacity omissions"));
         assert!(text.contains("Missing capture packets or local cancellation"));
+    }
+
+    #[test]
+    fn anomaly_detail_line_omits_zero_counters() {
+        let addr: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        let issue = TcpAttempt {
+            key: ConnectionKey::new(crate::network::types::Protocol::Tcp, addr, addr),
+            connection_created_at: None,
+            started_at: SystemTime::UNIX_EPOCH,
+            finished_at: SystemTime::UNIX_EPOCH,
+            initial_sequence: 1,
+            expected_acknowledgment: 2,
+            last_unexpected_acknowledgment: Some(99),
+            outcome: AttemptOutcome::NoHandshake,
+            syn_retries: 2,
+            unexpected_acks: 1,
+            invalid_syn_acks: 0,
+            local_resets: 0,
+        };
+        let text = anomaly_detail_line(&issue).unwrap().to_string();
+        assert!(text.contains("SYN retries 2"));
+        assert!(text.contains("unexpected ACKs 1"));
+        assert!(!text.contains("invalid SYN-ACKs"));
+        assert!(!text.contains("local resets"));
     }
 }

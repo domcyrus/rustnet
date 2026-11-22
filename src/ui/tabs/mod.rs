@@ -45,8 +45,8 @@ fn compare_tcp_destinations(
         .then_with(|| addr_b.cmp(addr_a))
 }
 
-#[derive(Clone, Copy)]
-enum HealthLevel {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui) enum HealthLevel {
     Error,
     Warning,
     Healthy,
@@ -54,7 +54,7 @@ enum HealthLevel {
 }
 
 impl HealthLevel {
-    fn color(self) -> Color {
+    pub(in crate::ui) fn color(self) -> Color {
         match self {
             Self::Error => theme::err(),
             Self::Warning => theme::warn(),
@@ -90,7 +90,9 @@ fn tcp_handshake_status(
     let c = &snapshot.total;
     if capture_incomplete || snapshot.omitted > 0 {
         ("incomplete evidence", HealthLevel::Warning)
-    } else if c.reset + c.no_handshake > 0 {
+    } else if c.reset > 0 {
+        ("degraded", HealthLevel::Error)
+    } else if c.no_handshake > 0 {
         ("degraded", HealthLevel::Warning)
     } else if c.recovered_anomalies > 0 {
         ("recovered anomalies", HealthLevel::Warning)

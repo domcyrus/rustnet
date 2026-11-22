@@ -382,15 +382,27 @@ const FINDING_KEYS: &[HelpRow] = &[
         "↑/k, ↓/j",
         "Select the previous or next heading or evidence item",
     ),
-    ("Space", "Expand or collapse the selected group"),
-    ("→", "Expand the selected heading"),
+    ("Page Up/Down", "Move selection by one page (also Ctrl+B/F)"),
+    ("g, G", "Jump selection to the first or last item"),
+    (
+        "Space, Enter",
+        "Expand or collapse a heading; open a linked item",
+    ),
+    ("→, l", "Expand the selected heading"),
     ("←", "Return to the heading, then collapse it"),
-    ("Enter", "Follow the selected item's labeled link"),
+    (
+        "e",
+        "Expand all findings needing attention, or collapse all",
+    ),
+    ("c", "Copy the selected address, domain, or interface"),
     (
         "Click",
-        "Toggle a heading, select an item, or follow its bracketed link",
+        "Toggle a heading, select an item, or follow its trailing link",
     ),
-    ("Esc", "Return from a linked view to the source item"),
+    (
+        "Esc",
+        "Return from a linked view to the source item, or back to Overview",
+    ),
 ];
 
 const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
@@ -706,11 +718,10 @@ fn help_lines(context: HelpContext, ui_state: &UiState) -> Vec<Line<'static>> {
                 push_section(
                     &mut lines,
                     "Scrolling",
-                    &[
-                        ("wheel", "Scroll the findings list"),
-                        ("Page Up/Down", "Scroll the list one page"),
-                        ("g, G", "Jump to the top or bottom"),
-                    ],
+                    &[(
+                        "wheel",
+                        "Scroll the findings list independently of selection",
+                    )],
                 );
             }
             push_section(&mut lines, "TCP Attempt Health", TCP_HEALTH_CONCEPTS);

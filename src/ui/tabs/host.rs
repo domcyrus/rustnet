@@ -243,12 +243,12 @@ fn dns_evidence_lines(
         ));
     }
     for (issue, count) in groups.into_iter().take(available) {
-        lines.push(dns_issue_line(issue, count));
+        lines.push(dns_issue_line(issue, Some(count)));
     }
     lines
 }
 
-pub(super) fn dns_issue_line(issue: &DnsIssue, count: usize) -> Line<'static> {
+pub(super) fn dns_issue_line(issue: &DnsIssue, count: Option<usize>) -> Line<'static> {
     let age = SystemTime::now()
         .duration_since(issue.at)
         .unwrap_or_default()
@@ -263,11 +263,12 @@ pub(super) fn dns_issue_line(issue: &DnsIssue, count: usize) -> Line<'static> {
     } else {
         theme::err()
     };
+    let head = match count {
+        Some(n) => format!("{} {} x{n}", issue.resolver, issue.kind.label()),
+        None => format!("{} {}", issue.resolver, issue.kind.label()),
+    };
     Line::from(vec![
-        Span::styled(
-            format!("{} {} x{}", issue.resolver, issue.kind.label(), count),
-            theme::fg(color),
-        ),
+        Span::styled(head, theme::fg(color)),
         label(format!(
             "  {age} ago  {}",
             issue.query_name.as_deref().unwrap_or("unknown question")

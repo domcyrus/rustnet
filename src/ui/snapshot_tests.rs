@@ -855,7 +855,7 @@ fn overview_system_panel_compacts_security_on_short_terminals() {
 fn overview_system_panel_expands_security_when_space_returns() {
     let app = test_app();
     let connections = overview_connections();
-    let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 42);
+    let output = render_app(&app, &mut UiState::default(), &connections, None, 140, 36);
 
     assert!(!output.contains("Security (compact)"));
     assert!(output.contains("No restrictions active"));
@@ -2427,14 +2427,20 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             .find(|(target, _)| matches!(target, tabs::health::HealthTarget::Attempt { .. }))
             .unwrap()
             .1;
+        let badge = regions
+            .health_links
+            .iter()
+            .find(|r| r.y >= link.y && r.y < link.bottom())
+            .copied()
+            .expect("attempt row should expose a clickable trailing link badge");
         let mut ctx = HandlerContext {
             connections: &connections,
             ..test_support::empty_ctx(&app, &mut state, &regions)
         };
         let effects = if width == 48 {
-            click(link.right() - 1, link.bottom() - 1, &mut ctx);
+            click(link.x, link.y, &mut ctx);
             assert_eq!(ctx.ui_state.selected_tab, 4);
-            click(link.x + 5, link.y, &mut ctx)
+            click(badge.x, badge.y, &mut ctx)
         } else {
             key(KeyCode::Down, &mut ctx);
             key(KeyCode::Char('j'), &mut ctx);
@@ -2442,10 +2448,14 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
         };
         assert!(matches!(effects.as_slice(), [Effect::Regroup]));
         assert_eq!(state.selected_tab, 1);
+        assert_eq!(state.selected_group.as_deref(), Some("client"));
         let grouped = compute_grouped_rows(&connections, &state.expanded_groups);
-        let (_, detail_regions) =
+        let (detail_frame, detail_regions) =
             render_app_frame(&app, &mut state, &connections, Some(&grouped), width, 50);
         assert_eq!(state.get_selected_index(&connections), Some(1));
+        if width == 140 {
+            assert!(detail_frame.contains("esc findings"), "{detail_frame}");
+        }
         dispatch_key(
             1,
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -2470,7 +2480,7 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             connections: &connections,
             ..test_support::empty_ctx(&app, &mut state, &regions)
         };
-        click(link.x + 5, link.y, &mut ctx);
+        click(badge.x, badge.y, &mut ctx);
         assert_eq!(state.selected_tab, 4);
         let (expired, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
         assert!(!expired.contains("Open Details"));
@@ -2991,6 +3001,8 @@ fn host_attempts_and_endpoints_scroll_independently() {
         assert_eq!(frame(&mut state).0, endpoints);
         key(KeyCode::Char('V'), &mut state, &regions);
         assert_eq!(frame(&mut state).0, scrolled);
+        key(KeyCode::Char('g'), &mut state, &regions);
+        let (_, regions) = frame(&mut state);
         key(KeyCode::Char(' '), &mut state, &regions);
         let (collapsed, regions) = frame(&mut state);
         assert!(collapsed.contains("▌ ▸ TCP handshakes"));
@@ -2998,6 +3010,106 @@ fn host_attempts_and_endpoints_scroll_independently() {
         assert_eq!(state.host_view, HostView::Sockets);
         assert_eq!(frame(&mut state).0, endpoints);
     }
+}
+
+#[test]
+fn findings_polish_enter_expand_all_copy_badges_and_sidebar_clicks() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let app = seeded_dns_app();
+    let captured = SystemTime::now() - Duration::from_secs(20);
+    app.ingest_packet_at_for_test(&evidence_syn(&local_tcp(50123, "client"), 17), captured);
+
+    // Overview shows top-tab severity badge and clickable DNS / TCP sidebar links.
+    let mut overview_state = UiState::default();
+    let (overview, overview_regions) =
+        render_app_frame(&app, &mut overview_state, &[], None, 140, 36);
+    assert!(
+        overview
+            .lines()
+            .next()
+            .unwrap()
+            .contains("5 Health & Host !"),
+        "{overview}"
+    );
+    let mut found_dns_click = false;
+    let mut found_tcp_click = false;
+    for y in 0..36 {
+        for x in 0..140 {
+            match overview_regions.hit_test(x, y) {
+                Some(ClickAction::OpenFinding(HealthFinding::Dns)) => found_dns_click = true,
+                Some(ClickAction::OpenFinding(HealthFinding::Tcp)) => found_tcp_click = true,
+                _ => {}
+            }
+        }
+    }
+    assert!(found_dns_click && found_tcp_click);
+
+    // open_finding jumps to tab 4, Findings, expands and selects that finding.
+    overview_state.open_finding(HealthFinding::Tcp);
+    assert_eq!(overview_state.selected_tab, 4);
+    assert_eq!(overview_state.host_view, HostView::Findings);
+    assert!(
+        overview_state
+            .expanded_findings
+            .contains(&HealthFinding::Tcp)
+    );
+
+    let mut state = UiState {
+        selected_tab: 4,
+        ..Default::default()
+    };
+    let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, 120, 32);
+    let key = |code, state: &mut UiState, regions: &ClickableRegions| {
+        dispatch_key(
+            4,
+            KeyEvent::new(code, KeyModifiers::NONE),
+            &mut test_support::empty_ctx(&app, state, regions),
+        )
+        .unwrap()
+    };
+
+    // Section strip shows Findings (2) and header shows active window and counts.
+    let (initial, regions) = frame(&mut state);
+    assert!(initial.contains("Findings (2)"), "{initial}");
+    assert!(initial.contains("window: 60s"), "{initial}");
+    assert!(initial.contains("1 error"), "{initial}");
+    assert!(initial.contains("1 warning"), "{initial}");
+
+    // Enter toggles a selected heading; e expands all attention findings and collapses all.
+    key(KeyCode::Enter, &mut state, &regions);
+    assert!(state.expanded_findings.contains(&HealthFinding::Dns));
+    let (_, regions) = frame(&mut state);
+    key(KeyCode::Char('e'), &mut state, &regions);
+    assert!(state.expanded_findings.contains(&HealthFinding::Dns));
+    assert!(state.expanded_findings.contains(&HealthFinding::Tcp));
+    assert!(!state.expanded_findings.contains(&HealthFinding::Capture));
+
+    // Selecting a resolver and pressing c emits Effect::Copy with its address.
+    let (_, regions) = frame(&mut state);
+    key(KeyCode::Down, &mut state, &regions);
+    let (selected_resolver, regions) = frame(&mut state);
+    assert!(
+        selected_resolver.contains("[Open DNS resolvers ↵]"),
+        "{selected_resolver}"
+    );
+    let effects = key(KeyCode::Char('c'), &mut state, &regions);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Copy { value, .. }] if value == "1.1.1.1:53"
+    ));
+
+    // Pressing e again collapses all expanded attention findings.
+    key(KeyCode::Char('e'), &mut state, &regions);
+    assert!(state.expanded_findings.is_empty());
+
+    // Clamping before wheel-up ensures shrinking Findings content scrolls immediately.
+    let mut scroll = PaneScroll::default();
+    assert_eq!(scroll.clamp_for_render_len(100), 0);
+    scroll.scroll_to_bottom();
+    assert_eq!(scroll.clamp_for_render_len(10), 10);
+    scroll.clamp_offset();
+    scroll.scroll_up(1);
+    assert_eq!(scroll.clamp_for_render_len(10), 9);
 }
 
 #[test]

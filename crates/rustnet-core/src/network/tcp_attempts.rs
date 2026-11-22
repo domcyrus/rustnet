@@ -231,6 +231,10 @@ impl TcpAttemptTracker {
         self.pending_deadline = self.pending.values().map(|p| p.attempt.finished_at).min();
     }
 
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub fn record(
         &mut self,
         key: ConnectionKey,

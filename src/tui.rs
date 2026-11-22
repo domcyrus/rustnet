@@ -155,7 +155,9 @@ where
         'events: while crossterm::event::poll(poll_timeout)? {
             // Evidence links and pane bounds come from the last frame. Rebuild them
             // before a queued click or key can act on a different view or folded tree.
-            if needs_redraw && (ui_state.selected_tab != rendered_tab || ui_state.selected_tab == 4)
+            if needs_redraw
+                && (ui_state.selected_tab != rendered_tab
+                    || (ui_state.selected_tab == 4 && ui_state.host_view == ui::HostView::Findings))
             {
                 break 'events;
             }
@@ -215,6 +217,9 @@ where
                                     ui::ClickAction::SelectSection(index) => {
                                         ui_state.select_section(index);
                                     }
+                                    ui::ClickAction::OpenFinding(finding) => {
+                                        ui_state.open_finding(finding);
+                                    }
                                     ui::ClickAction::SelectActivityProcess(identity) => {
                                         ui_state.activity_list().borrow_mut().selected =
                                             Some(identity);
@@ -242,7 +247,7 @@ where
                                                     }
                                                     ui::GroupedRow::Connection { .. } => {
                                                         // Double-click connection: open Details tab
-                                                        ui_state.selected_tab = 1;
+                                                        ui_state.jump_to_tab(1);
                                                     }
                                                 }
                                             }
@@ -250,7 +255,7 @@ where
                                             ui_state.set_selected_by_index(&connections, conn_idx);
                                             if is_double_click {
                                                 // Double-click connection in flat view: open Details tab
-                                                ui_state.selected_tab = 1;
+                                                ui_state.jump_to_tab(1);
                                             }
                                         }
                                     }
