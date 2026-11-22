@@ -504,15 +504,18 @@ Because Android strictly controls network and process information, RustNet requi
 
 ## Install via Cargo
 
-```bash
-# Install directly from crates.io
-cargo install rustnet-monitor
+With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall#installation) installed, download the official release binary for your platform:
 
-# The binary will be installed to ~/.cargo/bin/rustnet
-# Make sure ~/.cargo/bin is in your PATH
+```bash
+cargo binstall rustnet-monitor
+rustnet --version
 ```
 
-After installation, see the [Permissions Setup](#permissions-setup) section to configure permissions.
+The crates.io package is `rustnet-monitor` and the installed command is `rustnet`. The v1.7.0 crate predates this integration. For that version, download a [release package](#installing-from-release-packages) directly.
+
+GNU/Linux binaries may require the libpcap and libelf runtime libraries. Windows packet capture requires [Npcap](https://npcap.com). See [Permissions Setup](#permissions-setup) before capturing traffic.
+
+To build the crate locally, install the [build prerequisites](#prerequisites) and run `cargo install rustnet-monitor`.
 
 ## Building from Source
 

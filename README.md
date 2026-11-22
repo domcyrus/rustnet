@@ -79,7 +79,7 @@ v1.7.0 fixes ARM DEB compatibility with older glibc and Debian 13's time64 libra
 | Alpine Linux (edge/community) | `apk add rustnet` |
 | Windows (WinGet) | `winget install --id domcyrus.RustNet --exact --source winget` |
 | Windows (Chocolatey / Scoop) | `choco install rustnet` or `scoop install rustnet` |
-| Cargo | `cargo install rustnet-monitor` |
+| Cargo | [Prebuilt binary or source install](INSTALL.md#install-via-cargo) |
 | Nix / NixOS | `nix-shell -p rustnet` |
 
 Windows also requires [Npcap](https://npcap.com). v1.7.0 supports its default settings; v1.6.0 requires "WinPcap API compatible mode". For openSUSE, Pop!_OS, FreeBSD, Docker, and source builds, see the [installation guide](INSTALL.md).

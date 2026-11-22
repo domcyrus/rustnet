@@ -168,6 +168,20 @@ passthrough = [
     "CARGO_NET_TIMEOUT",
 ]
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/rustnet-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "rustnet-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+disabled-strategies = ["quick-install", "compile"]
+
+[package.metadata.binstall.overrides.'cfg(windows)']
+pkg-fmt = "zip"
+
+# Android releases use static musl binaries labeled by architecture.
+[package.metadata.binstall.overrides.'cfg(any(target_env = "android", target_env = "androideabi"))']
+pkg-url = "{ repo }/releases/download/v{ version }/rustnet-v{ version }-{ target-arch }-linux-android-musl.tar.gz"
+bin-dir = "rustnet-v{ version }-{ target-arch }-linux-android-musl/{ bin }"
+
 [package.metadata.deb]
 maintainer = "domcyrus <domcyrus@example.com>"
 copyright = "2024, domcyrus <domcyrus@example.com>"

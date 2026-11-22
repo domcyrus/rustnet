@@ -79,7 +79,7 @@ v1.7.0 では、ARM DEB と古い glibc および Debian 13 の time64 ライブ
 | Alpine Linux (edge/community) | `apk add rustnet` |
 | Windows (WinGet) | `winget install --id domcyrus.RustNet --exact --source winget` |
 | Windows (Chocolatey / Scoop) | `choco install rustnet` または `scoop install rustnet` |
-| Cargo | `cargo install rustnet-monitor` |
+| Cargo | [ビルド済みバイナリまたはソースからインストール](INSTALL.md#install-via-cargo) |
 | Nix / NixOS | `nix-shell -p rustnet` |
 
 Windows では [Npcap](https://npcap.com) も必要です。v1.7.0 はデフォルト設定に対応しています。v1.6.0 では「WinPcap API compatible mode」が必要です。openSUSE、Pop!_OS、FreeBSD、Docker、ソースからのビルドについては[インストールガイド](INSTALL.md)を参照してください。
