@@ -26,8 +26,8 @@ use crate::ui::{
     NONE_PLACEHOLDER, OverviewSection, PaneScroll, RateUnit, SelectionMove, SortColumn, UiState,
     clear_all_with_confirmation,
     connection_table::{
-        CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
-        connection_row, render_row_table, select_columns, visible_window,
+        CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, connection_row,
+        render_row_table, select_columns, visible_window,
     },
     format::{format_rate, format_rtt_compact, truncate_with_ellipsis},
     section_header, section_title,
@@ -544,7 +544,6 @@ fn draw_connection_grid<'a, T>(
 
     // Reserve the two rightmost columns: a blank gap, then the scrollbar.
     let columns = select_columns(area.width.saturating_sub(2), show_location);
-    let widths = column_constraints(&columns);
     let header = build_header(&columns, ui_state);
 
     let rows: Vec<Row> = visible_items
@@ -558,7 +557,7 @@ fn draw_connection_grid<'a, T>(
         area,
         header,
         rows,
-        &widths,
+        &columns,
         RowWindow {
             selected,
             scroll_offset,
@@ -692,7 +691,14 @@ fn draw_grouped_connections_list(
                 process_name,
                 stats,
                 expanded,
-            } => group_header_row(columns, process_name, stats, *expanded, ui_state),
+            } => group_header_row(
+                columns,
+                process_name,
+                stats,
+                *expanded,
+                ui_state,
+                is_selected,
+            ),
             GroupedRow::Connection {
                 connection,
                 is_last_in_group,
@@ -735,6 +741,7 @@ fn group_header_row<'a>(
     stats: &ProcessGroupStats,
     expanded: bool,
     ui_state: &UiState,
+    selected: bool,
 ) -> Row<'a> {
     let indicator = if expanded { "▾" } else { "▸" };
     // Plain BOLD (no accent): group headers are structural anchors, and
@@ -779,6 +786,7 @@ fn group_header_row<'a>(
                     Cell::from(trend_line(
                         ui_state.trend_history.group_samples(process_name),
                         true,
+                        selected && theme::selection_has_bg(),
                     ))
                 }
             }

@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Row, Table};
 
@@ -585,7 +585,7 @@ pub(in crate::ui) fn connection_row<'a>(
             }
             ColumnId::Rtt => rtt_cell(conn, paint.signal()),
             ColumnId::Health => health_cell(conn, paint.signal()),
-            ColumnId::Trend => trend_cell(conn, ui_state, paint.signal()),
+            ColumnId::Trend => trend_cell(conn, ui_state, paint.signal(), selected),
             ColumnId::Bandwidth => {
                 connection_bandwidth_cell(conn, paint.signal(), ui_state.rate_unit)
             }
@@ -603,12 +603,18 @@ pub(in crate::ui) fn connection_row<'a>(
 /// UI-side [`TrendHistory`](crate::ui::trend::TrendHistory). Historic
 /// rows have no live traffic to chart and stay blank, like their "n/a"
 /// bandwidth says.
-fn trend_cell<'a>(conn: &Connection, ui_state: &UiState, paint: CellPaint) -> Cell<'a> {
+fn trend_cell<'a>(
+    conn: &Connection,
+    ui_state: &UiState,
+    paint: CellPaint,
+    selected: bool,
+) -> Cell<'a> {
     if conn.is_historic {
         return Cell::from("");
     }
     let samples = ui_state.trend_history.samples(&conn.key());
-    Cell::from(trend_line(samples, paint.colored()))
+    let on_tint = selected && theme::selection_has_bg();
+    Cell::from(trend_line(samples, paint.colored(), on_tint))
 }
 
 /// Bandwidth cell for one connection row: "n/a" once historic, the
@@ -922,6 +928,70 @@ pub(in crate::ui) fn table_rows_area(area: Rect) -> Rect {
     )
 }
 
+/// Strip `REVERSED` (and `BOLD`) from the Trend sparkline cell on the
+/// selected row when the active theme highlights rows with `REVERSED`
+/// instead of a background tint (`!theme::selection_has_bg()`).
+///
+/// `Table` patches `row_highlight_style` onto the whole row after
+/// rendering its cells. Reversing eighth-block bar glyphs (`▁`..`█`)
+/// and the idle track (`·`) turns low bars into tall inverted blocks,
+/// full bars into dark holes, and idle dots into a solid rectangle.
+/// Blank cells (historic rows) stay reversed so their selection band
+/// remains continuous.
+pub(in crate::ui) fn preserve_trend_glyphs_on_selection(
+    f: &mut Frame,
+    table_area: Rect,
+    columns: &[Column],
+    selected_visible_row: Option<usize>,
+) {
+    if theme::selection_has_bg() {
+        return;
+    }
+    let Some(visible_row) = selected_visible_row else {
+        return;
+    };
+    let Some((offset, width)) = trend_column_span(columns) else {
+        return;
+    };
+    // Header (1 row) + bottom margin (1 row) sit above row 0.
+    let Some(row_y) = table_area
+        .y
+        .checked_add(2)
+        .and_then(|y| y.checked_add(u16::try_from(visible_row).ok()?))
+    else {
+        return;
+    };
+    if row_y >= table_area.y.saturating_add(table_area.height) {
+        return;
+    }
+    let start_x = table_area.x.saturating_add(offset);
+    let end_x = start_x
+        .saturating_add(width)
+        .min(table_area.x.saturating_add(table_area.width));
+    let buf = f.buffer_mut();
+    for x in start_x..end_x {
+        if let Some(cell) = buf.cell_mut((x, row_y))
+            && cell.symbol() != " "
+        {
+            cell.modifier.remove(Modifier::REVERSED | Modifier::BOLD);
+        }
+    }
+}
+
+/// Horizontal `(offset, width)` of the Trend column within a rendered
+/// `Table` area that reserves 1 cell for [`SELECTION_BAR`] and uses
+/// `column_spacing(1)`.
+fn trend_column_span(columns: &[Column]) -> Option<(u16, u16)> {
+    let mut x: u16 = 1; // SELECTION_BAR highlight symbol
+    for col in columns {
+        if col.id == ColumnId::Trend {
+            return Some((x, col.width));
+        }
+        x = x.saturating_add(col.width).saturating_add(1);
+    }
+    None
+}
+
 /// Render a windowed connection table plus its scrollbar and click
 /// regions: the shared back half of the flat and grouped Overview
 /// lists. `rows` holds only the visible window described by `window`.
@@ -930,7 +1000,7 @@ pub(in crate::ui) fn render_row_table(
     area: Rect,
     header: Row<'_>,
     rows: Vec<Row<'_>>,
-    widths: &[Constraint],
+    columns: &[Column],
     window: RowWindow,
     click_regions: &mut ClickableRegions,
 ) {
@@ -946,13 +1016,15 @@ pub(in crate::ui) fn render_row_table(
         state.select(Some(selected_index.saturating_sub(scroll_offset)));
     }
 
-    let connections_table = Table::new(rows, widths)
+    let widths = column_constraints(columns);
+    let connections_table = Table::new(rows, &widths)
         .header(header)
         .row_highlight_style(theme::row_highlight())
         .highlight_symbol(Line::styled(SELECTION_BAR, theme::fg(theme::accent())));
 
     let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
     f.render_stateful_widget(connections_table, table_area, &mut state);
+    preserve_trend_glyphs_on_selection(f, table_area, columns, state.selected());
 
     // Scrollbar tracks the row region (below header + margin).
     let rows_area = table_rows_area(area);
@@ -1594,5 +1666,46 @@ mod tests {
         dns.protocol_health.request_retry_count = 3;
         dns.protocol_health.request_timeout_count = 1;
         assert_eq!(health_counts(&dns), Some((HealthKind::Transaction, 3, 1)));
+    }
+
+    #[test]
+    fn selected_trend_cell_drops_reversed_for_live_rows_only() {
+        use crate::ui::test_support::render_buffer;
+
+        let ui_state = UiState::default();
+        let columns = select_columns(138, false);
+        let (trend_x, trend_width) = trend_column_span(&columns).expect("Trend visible");
+        assert!(!theme::selection_has_bg());
+
+        let live = local_tcp(45000, "firefox");
+        let mut historic = local_tcp(45001, "old");
+        historic.is_historic = true;
+
+        for (conn, expect_reversed) in [(&live, false), (&historic, true)] {
+            let mut regions = ClickableRegions::default();
+            let buf = render_buffer(140, 6, |f| {
+                let rows = vec![connection_row(conn, &columns, &ui_state, None, None, true)];
+                render_row_table(
+                    f,
+                    Rect::new(0, 0, 140, 6),
+                    build_header(&columns, &ui_state),
+                    rows,
+                    &columns,
+                    RowWindow {
+                        selected: Some(0),
+                        scroll_offset: 0,
+                        total_rows: 1,
+                        visible_rows: 4,
+                    },
+                    &mut regions,
+                );
+            });
+            // Process cell keeps REVERSED; Trend strips it only when it draws glyphs.
+            assert!(buf[(2, 2)].modifier.contains(Modifier::REVERSED));
+            for x in trend_x..trend_x + trend_width {
+                let reversed = buf[(x, 2)].modifier.contains(Modifier::REVERSED);
+                assert_eq!(reversed, expect_reversed, "column x={x}");
+            }
+        }
     }
 }

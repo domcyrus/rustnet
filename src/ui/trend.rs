@@ -193,10 +193,12 @@ impl TrendHistory {
 /// at the right edge and older ones to its left. Seconds before the first
 /// sample show the idle track too: a connection that did not exist yet
 /// moved no traffic. `colored` false drops every style, for rows painted
-/// whole by the historic pass.
+/// whole by the historic pass; `on_selection_tint` lifts the idle track
+/// from `faint` to `muted` so it stays readable on a tinted selection band.
 pub(in crate::ui) fn trend_line(
     samples: Option<&VecDeque<TrendSample>>,
     colored: bool,
+    on_selection_tint: bool,
 ) -> Line<'static> {
     let count = samples.map_or(0, VecDeque::len);
     let ceiling = samples
@@ -204,10 +206,12 @@ pub(in crate::ui) fn trend_line(
         .flatten()
         .map(|sample| sample.total())
         .fold(MIN_CEILING_BPS, f64::max);
-    let idle = if colored {
-        theme::fg(theme::faint())
-    } else {
+    let idle = if !colored {
         Style::default()
+    } else if on_selection_tint {
+        theme::fg(theme::muted())
+    } else {
+        theme::fg(theme::faint())
     };
 
     let mut spans = Vec::with_capacity(TREND_SAMPLES);
@@ -332,17 +336,16 @@ mod tests {
 
     #[test]
     fn empty_trend_is_a_full_idle_track() {
-        assert_eq!(text(&trend_line(None, false)), "·".repeat(TREND_SAMPLES));
-        assert_eq!(
-            text(&trend_line(Some(&VecDeque::new()), true)),
-            "·".repeat(TREND_SAMPLES)
-        );
+        let idle = "·".repeat(TREND_SAMPLES);
+        let empty = VecDeque::new();
+        assert_eq!(text(&trend_line(None, false, false)), idle);
+        assert_eq!(text(&trend_line(Some(&empty), true, false)), idle);
     }
 
     #[test]
     fn bars_scale_to_the_row_peak_newest_on_the_right() {
         let samples = series(&[0.0, 512.0, 1_024.0, 4_096.0]);
-        let line = trend_line(Some(&samples), false);
+        let line = trend_line(Some(&samples), false, false);
         assert_eq!(text(&line), "·····▁▂█");
         assert_eq!(line.width(), TREND_SAMPLES);
     }
@@ -351,7 +354,8 @@ mod tests {
     fn a_trickle_stays_low_under_the_ceiling_floor() {
         // 100 B/s is below MIN_CEILING_BPS: the lowest bar, not a wall.
         let samples = series(&[100.0, 100.0]);
-        assert_eq!(text(&trend_line(Some(&samples), false)), "······▁▁");
+        let line = trend_line(Some(&samples), false, false);
+        assert_eq!(text(&line), "······▁▁");
     }
 
     #[test]
@@ -368,7 +372,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let line = trend_line(Some(&samples), true);
+        let line = trend_line(Some(&samples), true, false);
         let rx = &line.spans[TREND_SAMPLES - 2];
         let tx = &line.spans[TREND_SAMPLES - 1];
         assert_eq!(rx.style, theme::fg(theme::rx_wave(1.0)));
