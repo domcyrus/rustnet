@@ -250,13 +250,19 @@ mod tests {
     use crate::test_support::local_tcp;
 
     fn text(line: &Line<'_>) -> String {
-        line.spans.iter().map(|span| span.content.as_ref()).collect()
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 
     fn series(totals: &[f64]) -> VecDeque<TrendSample> {
         totals
             .iter()
-            .map(|&rx_bps| TrendSample { rx_bps, tx_bps: 0.0 })
+            .map(|&rx_bps| TrendSample {
+                rx_bps,
+                tx_bps: 0.0,
+            })
             .collect()
     }
 
