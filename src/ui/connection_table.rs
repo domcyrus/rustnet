@@ -33,6 +33,7 @@ use crate::ui::{
     ClickAction, ClickableRegions, NONE_PLACEHOLDER, RateUnit, SortColumn, UiState, dpi_color,
     format::{format_countdown, format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
     state_color, theme,
+    trend::{TREND_SAMPLES, trend_line},
     widgets::scrollbar::draw_scrollbar,
 };
 
@@ -56,6 +57,8 @@ const APP_WIDTH_COMPACT: u16 = 14;
 const STATE_WIDTH: u16 = 11; // longest TCP state: "ESTABLISHED" (11)
 const RTT_WIDTH: u16 = 7; // "234ms", "1.2s"; header "RTT ↓" when sorted
 const HEALTH_WIDTH: u16 = 5; // "R3/O1", "R1/V0", or "R2/T1"
+/// One cell per second of history in the Trend sparkline.
+const TREND_WIDTH: u16 = TREND_SAMPLES as u16;
 const BANDWIDTH_WIDTH: u16 = 11;
 /// Floor for the Remote column; bare "ip:port" for IPv4 fits in 21.
 const REMOTE_MIN_WIDTH: u16 = 21;
@@ -85,6 +88,8 @@ pub(in crate::ui) enum ColumnId {
     Rtt,
     /// Protocol-aware observable health badge.
     Health,
+    /// Per-second throughput sparkline over the last few seconds.
+    Trend,
     Bandwidth,
 }
 
@@ -109,6 +114,7 @@ impl Column {
             ColumnId::State => Some(SortColumn::State),
             ColumnId::Rtt => Some(SortColumn::Rtt),
             ColumnId::Health => Some(SortColumn::Health),
+            ColumnId::Trend => None,
             ColumnId::Bandwidth => Some(SortColumn::BandwidthTotal),
         };
         Self { id, width, sort }
@@ -130,10 +136,12 @@ fn table_chrome(column_count: usize) -> u16 {
 /// never affects the layout, so columns stay put while scrolling.
 ///
 /// Too narrow: whole columns are hidden in a fixed degradation order
-/// (Location → Service → Local → RTT → Health → Application shrinks to
-/// compact → State) rather than truncating cells. The floor is Process ·
-/// Remote · App · Bandwidth; below that ratatui clips columns from the
-/// right.
+/// (Location → Service → Trend → Local → RTT → Health → Application
+/// shrinks to compact → State) rather than truncating cells. Trend
+/// outranks Service, which mostly repeats what the App column already
+/// says ("https" next to "TCP·HTTPS"), and yields to everything else.
+/// The floor is Process · Remote · App · Bandwidth; below that ratatui
+/// clips columns from the right.
 ///
 /// Width to spare: the surplus is distributed to the flexible columns
 /// proportionally to their weight (Remote 4 · App 3 · Process 2 ·
@@ -155,6 +163,7 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
         Column::new(ColumnId::State, STATE_WIDTH),
         Column::new(ColumnId::Rtt, RTT_WIDTH),
         Column::new(ColumnId::Health, HEALTH_WIDTH),
+        Column::new(ColumnId::Trend, TREND_WIDTH),
         Column::new(ColumnId::Bandwidth, BANDWIDTH_WIDTH),
     ]);
 
@@ -166,6 +175,7 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
     for id in [
         ColumnId::Location,
         ColumnId::Service,
+        ColumnId::Trend,
         ColumnId::Local,
         ColumnId::Rtt,
         ColumnId::Health,
@@ -354,6 +364,7 @@ fn header_label(id: ColumnId, ui_state: &UiState) -> &'static str {
         ColumnId::State => "State",
         ColumnId::Rtt => "RTT",
         ColumnId::Health => "Hlth",
+        ColumnId::Trend => "Trend",
         ColumnId::Bandwidth => "", // built as spans in build_header
     }
 }
@@ -574,6 +585,7 @@ pub(in crate::ui) fn connection_row<'a>(
             }
             ColumnId::Rtt => rtt_cell(conn, paint.signal()),
             ColumnId::Health => health_cell(conn, paint.signal()),
+            ColumnId::Trend => trend_cell(conn, ui_state, paint.signal()),
             ColumnId::Bandwidth => {
                 connection_bandwidth_cell(conn, paint.signal(), ui_state.rate_unit)
             }
@@ -585,6 +597,18 @@ pub(in crate::ui) fn connection_row<'a>(
         Some(style) => row.style(style),
         None => row,
     }
+}
+
+/// Trend cell: the connection's per-second throughput sparkline from the
+/// UI-side [`TrendHistory`](crate::ui::trend::TrendHistory). Historic
+/// rows have no live traffic to chart and stay blank, like their "n/a"
+/// bandwidth says.
+fn trend_cell<'a>(conn: &Connection, ui_state: &UiState, paint: CellPaint) -> Cell<'a> {
+    if conn.is_historic {
+        return Cell::from("");
+    }
+    let samples = ui_state.trend_history.samples(&conn.key());
+    Cell::from(trend_line(samples, paint.colored()))
 }
 
 /// Bandwidth cell for one connection row: "n/a" once historic, the
@@ -1034,8 +1058,8 @@ mod tests {
     }
 
     // Width math for the full set with Location at floor widths:
-    // 22+21+18+4+10+24+11+7+5+11 = 133 content + chrome(10 cols) = 10 -> 143.
-    const FULL_WIDTH: u16 = 143;
+    // 22+21+18+4+10+24+11+7+5+8+11 = 141 content + chrome(11 cols) = 11 -> 152.
+    const FULL_WIDTH: u16 = 152;
 
     #[test]
     fn select_columns_shows_everything_when_wide() {
@@ -1052,6 +1076,7 @@ mod tests {
                 ColumnId::State,
                 ColumnId::Rtt,
                 ColumnId::Health,
+                ColumnId::Trend,
                 ColumnId::Bandwidth,
             ]
         );
@@ -1065,9 +1090,19 @@ mod tests {
         assert!(!ids(&cols).contains(&ColumnId::Location));
         assert!(ids(&cols).contains(&ColumnId::Service));
 
-        // 22+21+18+10+24+11+7+5+11 = 129 + chrome(9) = 138 -> below that Service goes.
-        let cols = select_columns(137, true);
+        // 22+21+18+10+24+11+7+5+8+11 = 137 + chrome(10) = 147 -> below that Service goes.
+        let cols = select_columns(147, true);
+        assert!(ids(&cols).contains(&ColumnId::Service));
+        let cols = select_columns(146, true);
         assert!(!ids(&cols).contains(&ColumnId::Service));
+        assert!(ids(&cols).contains(&ColumnId::Trend));
+        assert!(ids(&cols).contains(&ColumnId::Local));
+
+        // 22+21+18+24+11+7+5+8+11 = 127 + chrome(9) = 136 -> below that Trend goes.
+        let cols = select_columns(136, true);
+        assert!(ids(&cols).contains(&ColumnId::Trend));
+        let cols = select_columns(135, true);
+        assert!(!ids(&cols).contains(&ColumnId::Trend));
         assert!(ids(&cols).contains(&ColumnId::Local));
 
         // 22+21+18+24+11+7+5+11 = 119 + chrome(8) = 127 -> below that Local goes.
@@ -1130,6 +1165,7 @@ mod tests {
         assert_eq!(width_of(&cols, ColumnId::State), STATE_WIDTH);
         assert_eq!(width_of(&cols, ColumnId::Rtt), RTT_WIDTH);
         assert_eq!(width_of(&cols, ColumnId::Health), HEALTH_WIDTH);
+        assert_eq!(width_of(&cols, ColumnId::Trend), TREND_WIDTH);
         assert_eq!(width_of(&cols, ColumnId::Bandwidth), BANDWIDTH_WIDTH);
         // The grid spans the full width exactly, so the Bandwidth
         // column sits flush against the right edge.

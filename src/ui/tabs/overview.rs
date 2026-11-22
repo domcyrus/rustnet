@@ -32,7 +32,9 @@ use crate::ui::{
     format::{format_rate, format_rtt_compact, truncate_with_ellipsis},
     section_header, section_title,
     state::ProcessGroupStats,
-    theme, try_handle_connection_nav, try_handle_pane_scroll, try_handle_pane_wheel,
+    theme,
+    trend::trend_line,
+    try_handle_connection_nav, try_handle_pane_scroll, try_handle_pane_wheel,
     widgets::{badge, braille_graph},
 };
 
@@ -770,6 +772,16 @@ fn group_header_row<'a>(
                 Span::styled("UDP:", theme::fg(theme::muted())),
                 Span::raw(stats.udp_count.to_string()),
             ])),
+            ColumnId::Trend => {
+                if stats.connection_count == 0 {
+                    Cell::from("")
+                } else {
+                    Cell::from(trend_line(
+                        ui_state.trend_history.group_samples(process_name),
+                        true,
+                    ))
+                }
+            }
             ColumnId::Bandwidth => bandwidth_cell(
                 stats.total_incoming_rate_bps,
                 stats.total_outgoing_rate_bps,

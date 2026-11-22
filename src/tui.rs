@@ -81,6 +81,11 @@ where
                 ui_state.sort_column,
                 ui_state.sort_ascending,
             );
+            // Self-throttled to one sample per second, so refreshing more
+            // often (or on input) never distorts the Trend sparklines.
+            ui_state
+                .trend_history
+                .record(&connections, std::time::Instant::now());
             grouped_rows = if ui_state.grouping_enabled {
                 ui::compute_grouped_rows(&connections, &ui_state.expanded_groups)
             } else {

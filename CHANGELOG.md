@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add `--rate-unit <bytes|bits>` and `[view] rate_unit` in `config.toml` to display live TUI traffic rates in decimal SI bits (`bps`, `kbps`, `Mbps`, `Gbps`) instead of the default binary IEC bytes (`B/s`, `KiB/s`, `MiB/s`, `GiB/s`)
 - Go back and forward through visited tabs with `Alt+Left` / `Alt+Right`
 - Mirror the Graph tab's RX/TX traffic waves around a shared center time horizon (RX up, TX down), with `m` to toggle back to the split view and `[view] mirrored_traffic_graph` in `config.toml`
+- Add a per-row 8-second throughput `Trend` sparkline column to the connection tables (individual connections and process-group aggregates), using direction-colored wave gradients with a glyph-only `NO_COLOR` fallback and responsive column hiding
 - Sort findings by severity while preserving the selected finding and evidence position (#734)
 - Align health colors across Findings, Overview, Details and host inventory, and leave zero error counts neutral (#734)
 - Combine Findings, Sockets, Interfaces and DNS resolvers in 5 Health & Host, with a single expandable list, item-by-item navigation and return links (#734)
