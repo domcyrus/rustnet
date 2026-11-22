@@ -420,75 +420,36 @@ const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
 
 const TCP_HEALTH_CONCEPTS: &[HelpRow] = &[
     (
-        "Window",
-        "Observed outbound attempts over fixed 5m, by completion time",
+        "Window & Scope",
+        "Outbound SYNs over fixed 5m (ignores Host window/filters; excludes inbound/midstream)",
     ),
     (
-        "Scope",
-        "Independent of Host window and filters; excludes inbound/midstream",
+        "Outcomes",
+        "Established (SYN-ACK + ACK), Reset (peer RST+ACK), No handshake (10s, not proof of loss), Superseded",
     ),
     (
-        "Attempt",
-        "Initial outbound SYN; repeated SYNs count as retries",
+        "Anomalies",
+        "Unexpected ACK or invalid SYN-ACK; may still recover (counted as recovered successes)",
     ),
     (
-        "Established",
-        "Matching SYN-ACK and final outbound ACK observed",
-    ),
-    ("Not observed", "No completed or pending attempts observed"),
-    (
-        "Pending/checking",
-        "Awaiting completion; pending attempts are not failures",
-    ),
-    ("Healthy", "Observed handshakes completed without anomalies"),
-    (
-        "Anomalous",
-        "Unexpected ACK or invalid SYN-ACK; may still recover",
-    ),
-    (
-        "Recovered",
-        "Anomalous attempts that established; counted as successes",
-    ),
-    ("Reset", "Matching peer reset observed during the attempt"),
-    (
-        "No handshake",
-        "No complete handshake observed within 10s, not proof of loss",
-    ),
-    (
-        "Degraded",
-        "Peer resets or no complete handshake observed within 10s",
-    ),
-    (
-        "Superseded",
-        "A new initial sequence replaced a pending attempt",
+        "Statuses",
+        "Not observed, checking (pending != failure), healthy, recovered anomalies, degraded, incomplete evidence",
     ),
     (
         "Incomplete",
-        "Capture error, drops since clear, omissions or superseded attempts",
-    ),
-    (
-        "Capacity",
-        "Omissions mean incomplete evidence, not network failures",
+        "Capture errors, drops since clear, capacity omissions (not failures), or superseded attempts",
     ),
     (
         "Worst",
-        "Highest reset/incomplete fraction; ties favor evidence, then anomalies",
-    ),
-    (
-        "Counts",
-        "Completed attempts, not packets; pending attempts are separate",
-    ),
-    (
-        "Evidence",
-        "Missing packets or local cancellation can mislead; check capture drops",
+        "Highest reset/incomplete fraction, then count and anomalies; healthy IPv6 cannot hide IPv4 issues",
     ),
     (
         "Limits",
-        "Does not diagnose NAT, TLS, application or QUIC failures",
+        "Missing packets or local cancellation can mislead; does not diagnose NAT, TLS, app, or QUIC",
     ),
     (
         "Details",
-        "Full endpoints: Findings > TCP handshakes; recent ACK evidence: tcp_attempts JSON",
+        "Full endpoints in Findings > TCP handshakes; recent ACK evidence in tcp_attempts JSON",
     ),
 ];
 

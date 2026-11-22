@@ -1753,17 +1753,3 @@ Each completed attempt counts for five minutes. Findings shows the expiry time a
 In Findings, press `h` to open the TCP Attempt Health help for counter meanings, the fixed window, recovered anomalies, export evidence and diagnostic limits.
 
 Overview > Network Stats also shows TCP handshake health for the same fixed five-minute window, staying on a single compact line while quiet or healthy and expanding when degradation, anomalies, or incomplete evidence occur. Clicking the DNS or TCP health lines in the Overview sidebar jumps straight to that category in Findings. Statuses distinguish not observed, checking, healthy, recovered anomalies, degraded, and incomplete evidence. Capture errors, reported drops or tracking omissions override a healthy label. Superseded attempts alone are inconclusive. Overview and Findings rank affected destinations by reset/incomplete fraction, then failure count, anomaly fraction and anomaly count; ties use a stable address order. Counts are shown because small samples are not proof of a persistent fault. Healthy IPv6 traffic cannot dilute an affected IPv4 destination. Long endpoints may be shortened in the sidebar; Findings and JSON retain full addresses. Press `h` in Overview for interpretation and limitations. JSON counts now include `recovered_anomalies`, counting anomalous attempts that established successfully; this is not inferred from the limited recent-issue list.
-
-#### TCP health performance measurements
-
-TCP summaries share an immutable cached snapshot until visible state changes or a timeout/window deadline expires. Packet ingestion limits global expiry scans to once per second; snapshots and packets for a pending tuple still enforce exact deadlines. Rebuilding a summary selects the newest 32 issues before sorting them. JSON projection and serialization still run for each exported record.
-
-Run the opt-in synthetic release benchmarks (no capture files or network access):
-
-```bash
-cargo test --release --locked -p rustnet-core --lib benchmark_tcp_ -- --ignored --nocapture --test-threads=1
-```
-
-`BENCH` rows report workload, sample, operation count and elapsed nanoseconds. Divide elapsed time by operations to compare samples; `RUSTNET_BENCH_SAMPLES` defaults to 7. Ingestion workloads cover established traffic, sequential handshakes, bursts of 256 overlapping handshakes and staggered timeouts. The bounded attempt maps use the same hasher as the connection table; replacements and completions reuse occupied entries to avoid repeated lookups. Snapshot workloads retain 8,192 attempts across 1, 64 or 8,192 destination endpoints and measure both unchanged reads and a new reset before every read. Updated-read timings include the two packet ingestions. These measure core ingestion and the snapshot API, not capture, parsing, UI rendering, JSON serialization or contended locking.
-
-To compare against a revision without this feature, copy `crates/rustnet-core/src/network/tracker_benchmarks.rs` into that revision and register `#[cfg(test)] mod tracker_benchmarks;` in its network `mod.rs`, then run the `benchmark_tcp_ingestion` filter on both revisions. Main has no equivalent TCP-summary API. Use identical release settings, alternate revision order, warm up first and report repeated samples on an otherwise quiet machine.
