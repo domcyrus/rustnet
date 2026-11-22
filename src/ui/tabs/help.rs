@@ -532,6 +532,10 @@ const GRAPH_KEYS: &[HelpRow] = &[
         "Time-weighted rate over up to two seconds of observations",
     ),
     (
+        "m",
+        "Toggle mirrored (RX up / TX down) and split traffic graphs",
+    ),
+    (
         "j/k, ↑/↓",
         "Scroll TCP states when the Health panel overflows",
     ),
