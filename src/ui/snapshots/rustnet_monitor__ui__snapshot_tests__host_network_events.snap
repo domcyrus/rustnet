@@ -1,28 +1,26 @@
 ---
-source: src/ui/mod.rs
+source: src/ui/snapshot_tests.rs
 expression: output
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
-────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────────────────────────────────────────────
-Sockets   Interfaces   DNS                                                                                                                  
-━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-▎ Host Socket States ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-TCP 0   LISTEN 0   ESTAB 0   OPENING 0   CLOSING 0   TIME_WAIT 0   OTHER 0   UDP BOUND 0                                                    
-Observed RTT  no samples                                                                                                                    
-                                                                                                                                            
-▎ Observed network events ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-60s / total (since startup) · captured packets                                                                                              
-                                                Sent: window / total  Received: window / total                                              
-TCP reset                                                      1 / 1                     0 / 0                                              
-ICMP port unreachable                                          0 / 0                     0 / 1                                              
-ICMP destination unreachable                                   0 / 0                     0 / 1                                              
-ICMP administratively prohibited                               0 / 0                     0 / 1                                              
-ICMP packet too big / frag needed                              0 / 0                     0 / 1                                              
-ICMP time exceeded                                             0 / 0                     0 / 1                                              
-ICMP parameter problem                                         0 / 0                     0 / 1                                              
-                                                                                                                                            
-▎ Listening and Bound Endpoints  0 rows ────────────────────────────────────────────────────────────────────────────────────────────────────
-Proto   State      Local endpoint                        Peer                                 Service             PID Process               
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Health & Host •                                                         ● eth0
+────────────────────────────────────────────────────────────━━━━━━━━━━━━━━━━━───────────────────────────────────────────────────────────────
+Findings (1)   Sockets   Interfaces   DNS resolvers                                                                                         
+━━━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▎ Findings  window: 60s · 1 warning ────────────────────────────────────────────────────────────────────────────────────────────────────────
+▌ ▾ Resets and ICMP (60s)  RST 1 sent / 0 received · 0 ICMP                                                                                 
+    60s / total (since startup) · captured packets                                                                                          
+                                                    Sent: window / total  Received: window / total                                          
+    TCP reset                                                      1 / 1                     0 / 0                                          
+    ICMP port unreachable                                          0 / 0                     0 / 1                                          
+    ICMP destination unreachable                                   0 / 0                     0 / 1                                          
+    ICMP administratively prohibited                               0 / 0                     0 / 1                                          
+    ICMP packet too big / frag needed                              0 / 0                     0 / 1                                          
+    ICMP time exceeded                                             0 / 0                     0 / 1                                          
+    ICMP parameter problem                                         0 / 0                     0 / 1                                          
+  ▸ TCP handshakes (5m)  not observed                                                                                                       
+  ▸ Interface drops (60s)  Waiting for interface statistics                                                                                 
+  ▸ DNS replies (60s)  not observed · 0 replies · 0 timeouts                                                                                
+  ▸ Capture quality (since startup)  0 reported drops · 0 queue drops                                                                       
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -31,4 +29,6 @@ Proto   State      Local endpoint                        Peer                   
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- v/V section  w window  esc back                                                                                             h help  q quit
+                                                                                                                                            
+                                                                                                                                            
+ v/V section  ↑/↓ select  space collapse  w window  esc back                                                                 h help  q quit

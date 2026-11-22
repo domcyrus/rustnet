@@ -51,11 +51,23 @@ pub fn dispatch_key(
     key: crossterm::event::KeyEvent,
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if (!ctx.ui_state.filter_mode || ctx.ui_state.show_help)
+        && let (KeyCode::Char(n @ '1'..='5'), KeyModifiers::NONE) = (key.code, key.modifiers)
+    {
+        ctx.ui_state.jump_to_tab(n as usize - '1' as usize);
+        return Some(Vec::new());
+    }
     if ctx.ui_state.show_help {
         return HelpOverlay.handle_key(key, ctx);
     }
     if ctx.ui_state.filter_mode {
         return OverviewTab.handle_key(key, ctx);
+    }
+    if key.code == KeyCode::Esc && ctx.ui_state.return_to_finding {
+        ctx.ui_state.jump_to_tab(4);
+        ctx.ui_state.host_view = HostView::Findings;
+        return Some(Vec::new());
     }
     if let Some(effects) = sections::handle_key(key, ctx.ui_state) {
         return Some(effects);
@@ -116,6 +128,7 @@ pub use state::{
     DetailsSection, DnsSort, GraphSection, GroupedRow, HostView, OverviewSection, PaneScroll,
     SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,
 };
+pub use tabs::health::Finding as HealthFinding;
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
 mod connection_table;
@@ -279,12 +292,6 @@ fn fade_at(lines: &mut [Line<'_>], index: usize) {
     }
 }
 
-/// Foreground style for a counter that is fine at zero and alarming
-/// otherwise: `ok` while nothing is wrong, `alert` once `alerting`.
-pub(crate) fn alert_style(alerting: bool, alert: Color) -> ratatui::style::Style {
-    theme::fg(if alerting { alert } else { theme::ok() })
-}
-
 /// Resolve the cell color for a connection's State column.
 /// Maps TCP states to the existing `tcp_*` aliases; falls back to
 /// `field_state()` for non-TCP protocols.
@@ -404,6 +411,12 @@ pub fn draw(
         link_type: Some(link_type.as_str()).filter(|link| *link != "Unknown"),
         failed: capture_error.is_some(),
     };
+
+    // Refresh the cross-tab health summary before drawing the top tab bar and
+    // section selector so both reflect live error/warning indicators.
+    ui_state
+        .health_badge
+        .set(tabs::health::health_badge(app, stats, ui_state.host_window));
 
     draw_tabs(f, ui_state, &capture, chunks[0], click_regions);
 

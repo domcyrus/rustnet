@@ -1013,6 +1013,7 @@ fn host_interface_columns_expand_and_keep_large_values_aligned() {
         name,
         InterfaceStats {
             interface_name: name.into(),
+            is_loopback: false,
             rx_bytes: 0,
             tx_bytes: 0,
             rx_packets: u64::MAX,
@@ -1980,6 +1981,7 @@ fn host_compact_records_preserve_ipv6_and_unicode_owners() {
     for width in [50, 80, 100, 140] {
         let mut state = UiState {
             selected_tab: 4,
+            host_view: HostView::Sockets,
             ..Default::default()
         };
         let output = render_app(&app, &mut state, &[], None, width, 30);
@@ -1999,6 +2001,7 @@ fn host_interfaces_keep_rate_digits_and_scroll_every_record() {
             name,
             InterfaceStats {
                 interface_name: name.to_string(),
+                is_loopback: false,
                 rx_bytes: 1,
                 tx_bytes: 1,
                 rx_packets: 123456789,
@@ -2139,6 +2142,7 @@ fn host_socket_inventory() {
 
     let mut ui_state = UiState {
         selected_tab: 4,
+        host_view: HostView::Sockets,
         ..Default::default()
     };
     let connections = app.get_connections();
@@ -2165,6 +2169,7 @@ fn host_interface_windows_preserve_os_totals_and_clear_observed_counts() {
     let now = SystemTime::now();
     let mut stat = InterfaceStats {
         interface_name: "test0".into(),
+        is_loopback: false,
         rx_bytes: 0,
         tx_bytes: 0,
         rx_packets: 900,
@@ -2201,6 +2206,21 @@ fn host_interface_windows_preserve_os_totals_and_clear_observed_counts() {
         assert!(output.contains("2/102"), "{output}");
         assert!(output.contains("3/303"), "{output}");
     }
+    for width in [80, 160] {
+        let buffer = render_host_buffer(&app, &mut state, width);
+        for (text, color) in [
+            ("2/102", theme::err()),
+            ("3/303", theme::warn()),
+            ("0/200", Color::Reset),
+            ("/102", Color::Reset),
+        ] {
+            assert_eq!(
+                style_at_text(&buffer, text).fg,
+                Some(color),
+                "{text} at {width} columns"
+            );
+        }
+    }
     app.clear_all_connections();
     let output = render_app(&app, &mut state, &[], None, 100, 28);
     assert!(output.contains("since clear"), "{output}");
@@ -2210,16 +2230,17 @@ fn host_interface_windows_preserve_os_totals_and_clear_observed_counts() {
 }
 
 #[test]
-fn every_host_section_cycles_the_shared_window() {
+fn host_sections_with_a_selectable_window_cycle_it() {
     use crate::network::time_window::TimeWindow;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let app = test_app();
     let regions = ClickableRegions::default();
     let mut state = UiState {
         selected_tab: 4,
+        host_view: HostView::Sockets,
         ..Default::default()
     };
-    for host_view in [HostView::Sockets, HostView::Interfaces, HostView::Dns] {
+    for host_view in [HostView::Findings, HostView::Interfaces, HostView::Dns] {
         state.host_view = host_view;
         state.host_window = TimeWindow::OneMinute;
         for expected in [
@@ -2291,6 +2312,7 @@ fn host_network_events() {
     app.ingest_packet_at_for_test(&packet, SystemTime::now());
     let mut state = UiState {
         selected_tab: 4,
+        expanded_findings: [tabs::health::Finding::Events].into(),
         ..Default::default()
     };
     let output = render_app(&app, &mut state, &[], None, 140, 30);
@@ -2301,9 +2323,9 @@ fn host_network_events() {
     let history = render_app(&app, &mut state, &[], None, 80, 40);
     assert!(history.contains("Received 1 / 1"), "{history}");
     for width in [50, 80, 140] {
-        state.host_sockets_scroll.reset();
+        state.health_scroll.reset();
         render_app(&app, &mut state, &[], None, width, 12);
-        assert!(state.host_sockets_scroll.can_scroll());
+        assert!(state.health_scroll.can_scroll());
         let regions = ClickableRegions::default();
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
         dispatch_key(
@@ -2316,8 +2338,781 @@ fn host_network_events() {
         )
         .unwrap();
         let bottom = render_app(&app, &mut state, &[], None, width, 12);
-        assert!(bottom.contains("Listening and Bound Endpoints"), "{bottom}");
+        assert!(bottom.contains("Capture quality"), "{bottom}");
     }
+}
+
+fn evidence_syn(conn: &Connection, seq: u32) -> ParsedPacket {
+    use crate::network::parser::{TcpFlags, TcpHeaderInfo};
+    let mut syn = ParsedPacket::new(
+        conn.protocol,
+        conn.local_addr,
+        conn.remote_addr,
+        ProtocolState::Tcp(TcpState::SynSent),
+        true,
+        40,
+        None,
+        None,
+    );
+    syn.tcp_header = Some(TcpHeaderInfo {
+        seq,
+        ack: 0,
+        window: 100,
+        payload_len: 0,
+        window_scale: None,
+        flags: TcpFlags {
+            syn: true,
+            fin: false,
+            rst: false,
+            ack: false,
+        },
+    });
+    syn
+}
+
+#[test]
+fn host_tcp_evidence_links_only_to_the_observed_connection() {
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+
+    let app = test_app();
+    let mut conn = local_tcp(50123, "client");
+    conn.created_at = SystemTime::now() - Duration::from_secs(20);
+    let syn = evidence_syn(&conn, 17);
+    app.ingest_packet_at_for_test(&syn, conn.created_at);
+    let mut connections = [local_tcp(40000, "other"), conn];
+    let key = |code, ctx: &mut HandlerContext<'_>| {
+        dispatch_key(4, KeyEvent::new(code, KeyModifiers::NONE), ctx).unwrap()
+    };
+    let click = |column, row, ctx: &mut HandlerContext<'_>| {
+        dispatch_mouse(
+            4,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+            ctx,
+        )
+        .unwrap()
+    };
+
+    for width in [48, 140] {
+        let mut state = UiState {
+            selected_tab: 4,
+            grouping_enabled: true,
+            ..Default::default()
+        };
+        let (closed, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
+        assert!(closed.contains("▌ ▸ TCP handshakes"));
+        assert!(!closed.contains("Open Details"));
+        let mut ctx = HandlerContext {
+            connections: &connections,
+            ..test_support::empty_ctx(&app, &mut state, &regions)
+        };
+        if width == 48 {
+            let rect = regions.health_rows[0].1;
+            assert!(rect.height > 1);
+            click(rect.x + 2, rect.bottom() - 1, &mut ctx);
+        } else {
+            key(KeyCode::Char(' '), &mut ctx);
+        }
+        let (open, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
+        assert!(
+            open.contains("no handshake") && open.contains("observed"),
+            "{open}"
+        );
+        let link = regions
+            .health_rows
+            .iter()
+            .find(|(target, _)| matches!(target, tabs::health::HealthTarget::Attempt { .. }))
+            .unwrap()
+            .1;
+        let badge = regions
+            .health_links
+            .iter()
+            .find(|r| r.y >= link.y && r.y < link.bottom())
+            .copied()
+            .expect("attempt row should expose a clickable trailing link badge");
+        let mut ctx = HandlerContext {
+            connections: &connections,
+            ..test_support::empty_ctx(&app, &mut state, &regions)
+        };
+        let effects = if width == 48 {
+            click(link.x, link.y, &mut ctx);
+            assert_eq!(ctx.ui_state.selected_tab, 4);
+            click(badge.x, badge.y, &mut ctx)
+        } else {
+            key(KeyCode::Down, &mut ctx);
+            key(KeyCode::Char('j'), &mut ctx);
+            key(KeyCode::Enter, &mut ctx)
+        };
+        assert!(matches!(effects.as_slice(), [Effect::Regroup]));
+        assert_eq!(state.selected_tab, 1);
+        assert_eq!(state.selected_group.as_deref(), Some("client"));
+        let grouped = compute_grouped_rows(&connections, &state.expanded_groups);
+        let (detail_frame, detail_regions) =
+            render_app_frame(&app, &mut state, &connections, Some(&grouped), width, 50);
+        assert_eq!(state.get_selected_index(&connections), Some(1));
+        if width == 140 {
+            assert!(detail_frame.contains("esc findings"), "{detail_frame}");
+        }
+        dispatch_key(
+            1,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut test_support::empty_ctx(&app, &mut state, &detail_regions),
+        )
+        .unwrap();
+        assert_eq!(state.selected_tab, 4);
+        assert!(
+            state
+                .expanded_findings
+                .contains(&tabs::health::Finding::Tcp)
+        );
+        assert!(matches!(
+            state.health_cursor.borrow().target,
+            Some(tabs::health::HealthTarget::Attempt { .. })
+        ));
+
+        // The same ports now belong to a different connection. Even an old hit region is harmless.
+        connections[1].created_at += Duration::from_secs(1);
+        state.jump_to_tab(4);
+        let mut ctx = HandlerContext {
+            connections: &connections,
+            ..test_support::empty_ctx(&app, &mut state, &regions)
+        };
+        click(badge.x, badge.y, &mut ctx);
+        assert_eq!(state.selected_tab, 4);
+        let (expired, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
+        assert!(!expired.contains("Open Details"));
+        assert!(
+            regions
+                .health_rows
+                .iter()
+                .any(|(t, _)| matches!(t, tabs::health::HealthTarget::Attempt { .. }))
+        );
+        key(
+            KeyCode::Char(' '),
+            &mut test_support::empty_ctx(&app, &mut state, &regions),
+        );
+        assert!(state.expanded_findings.is_empty());
+        assert_eq!(
+            state.health_cursor.borrow().target,
+            Some(tabs::health::HealthTarget::Finding(
+                tabs::health::Finding::Tcp
+            ))
+        );
+        connections[1].created_at -= Duration::from_secs(1);
+    }
+}
+
+#[test]
+fn host_tcp_details_opens_each_same_timestamp_generation() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let conn = local_tcp(50123, "client");
+    let captured = SystemTime::now() - Duration::from_secs(2);
+    for seq in [17, 33] {
+        let mut packet = evidence_syn(&conn, seq);
+        app.ingest_packet_at_for_test(&packet, captured);
+        packet.is_outgoing = false;
+        packet.protocol_state = ProtocolState::Tcp(TcpState::Closed);
+        let header = packet.tcp_header.as_mut().unwrap();
+        header.flags.syn = false;
+        header.flags.ack = true;
+        header.flags.rst = true;
+        header.ack = seq + 1;
+        app.ingest_packet_at_for_test(&packet, captured);
+    }
+    app.set_show_historic(true);
+    // Publish both real generations through the final snapshot builder.
+    assert_eq!(app.stop().panicked_workers, 0);
+    let connections = app.get_connections();
+    assert_eq!(connections.len(), 2);
+    assert!(connections[0].is_historic && connections[0].created_at < connections[1].created_at);
+    let mut state = UiState {
+        selected_tab: 4,
+        expanded_findings: [tabs::health::Finding::Tcp].into(),
+        ..Default::default()
+    };
+    let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 50);
+    let links: Vec<_> = regions
+        .health_rows
+        .iter()
+        .filter(|(t, _)| matches!(t, tabs::health::HealthTarget::Attempt { .. }))
+        .collect();
+    assert_eq!(links.len(), 2);
+    for (i, (target, _)) in links.into_iter().enumerate() {
+        state.jump_to_tab(4);
+        state.health_cursor.get_mut().target = Some(target.clone());
+        let mut ctx = HandlerContext {
+            connections: &connections,
+            ..test_support::empty_ctx(&app, &mut state, &regions)
+        };
+        dispatch_key(
+            4,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut ctx,
+        )
+        .unwrap();
+        assert_eq!(state.selected_tab, 1);
+        assert_eq!(state.get_selected_index(&connections), Some(i));
+    }
+}
+
+#[test]
+fn health_findings_expand_individually_and_report_capture_failure() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let app = seeded_dns_app();
+    app.set_capture_error_for_test(Some("Capture stopped: interface disconnected"));
+    let mut state = UiState {
+        selected_tab: 4,
+        ..Default::default()
+    };
+    let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, 80, 50);
+    let key = |code, state: &mut UiState, regions: &ClickableRegions| {
+        dispatch_key(
+            4,
+            KeyEvent::new(code, KeyModifiers::NONE),
+            &mut test_support::empty_ctx(&app, state, regions),
+        )
+        .unwrap();
+    };
+    for (name, evidence) in [
+        ("DNS replies", "registry.example.com"),
+        ("Capture quality", "Capture backend drops"),
+        ("TCP handshakes", "No affected destinations"),
+        ("Resets and ICMP", "No resets or ICMP errors observed"),
+        ("Interface drops", "No interface samples available"),
+    ] {
+        let (closed, regions) = frame(&mut state);
+        assert!(closed.contains(&format!("▌ ▸ {name}")), "{closed}");
+        assert!(closed.contains("Capture failed"));
+        key(KeyCode::Char(' '), &mut state, &regions);
+        let (open, regions) = frame(&mut state);
+        assert!(open.contains(evidence), "{open}");
+        key(KeyCode::Char(' '), &mut state, &regions);
+        let (closed, regions) = frame(&mut state);
+        assert!(!closed.contains(evidence));
+        key(KeyCode::Down, &mut state, &regions);
+    }
+    // Leave two groups open, then walk back to one heading and fold only that group.
+    let (_, regions) = frame(&mut state);
+    key(KeyCode::Right, &mut state, &regions);
+    key(KeyCode::Up, &mut state, &regions);
+    key(KeyCode::Right, &mut state, &regions);
+    let (open, regions) = frame(&mut state);
+    assert!(open.contains("▾ Resets and ICMP") && open.contains("▾ Interface drops"));
+    key(KeyCode::Down, &mut state, &regions);
+    key(KeyCode::Down, &mut state, &regions);
+    key(KeyCode::Left, &mut state, &regions);
+    let (heading, regions) = frame(&mut state);
+    assert!(heading.contains("▌ ▾ Interface drops"));
+    key(KeyCode::Left, &mut state, &regions);
+    let (closed, _) = frame(&mut state);
+    assert!(closed.contains("▌ ▸ Interface drops") && closed.contains("▾ Resets and ICMP"));
+}
+
+fn render_host_buffer(app: &App, state: &mut UiState, width: u16) -> ratatui::buffer::Buffer {
+    test_support::render_buffer(width, 32, |f| {
+        draw(
+            f,
+            app,
+            state,
+            &[],
+            None,
+            &app.get_stats(),
+            &mut ClickableRegions::default(),
+        )
+        .unwrap();
+    })
+}
+
+/// Find a rendered ASCII label or value and read the style of its first cell.
+fn style_at_text(buffer: &ratatui::buffer::Buffer, text: &str) -> ratatui::style::Style {
+    for row in buffer.content.chunks(usize::from(buffer.area.width)) {
+        for cells in row.windows(text.len()) {
+            if cells
+                .iter()
+                .flat_map(|cell| cell.symbol().chars())
+                .eq(text.chars())
+            {
+                return cells[0].style();
+            }
+        }
+    }
+    panic!(
+        "missing {text:?} in {}",
+        test_support::buffer_to_string(buffer)
+    );
+}
+
+#[test]
+fn finding_status_and_counts_keep_their_colors_on_the_selected_row() {
+    let app = test_app();
+    for txid in 1..=3 {
+        app.ingest_packet_at_for_test(
+            &dns_test_packet(txid, "timeout.example", DnsQueryType::A, false, None),
+            SystemTime::now() - Duration::from_secs(20),
+        );
+    }
+    let mut state = UiState {
+        selected_tab: 4,
+        ..Default::default()
+    };
+    let buffer = render_host_buffer(&app, &mut state, 96);
+    let status = style_at_text(&buffer, "no replies");
+    assert_eq!(status.fg, Some(theme::err()));
+    assert!(
+        status
+            .add_modifier
+            .contains(theme::row_highlight().add_modifier)
+    );
+    assert_eq!(style_at_text(&buffer, "3 timeouts").fg, status.fg);
+    assert_eq!(
+        style_at_text(&buffer, "not observed").fg,
+        Some(theme::muted())
+    );
+    assert_eq!(
+        style_at_text(&buffer, "0 reported drops").fg,
+        Some(Color::Reset)
+    );
+
+    app.set_capture_error_for_test(Some("Capture stopped: interface disconnected"));
+    let buffer = render_host_buffer(&app, &mut state, 96);
+    for text in ["incomplete evidence", "unknown (capture stopped)"] {
+        assert_eq!(style_at_text(&buffer, text).fg, Some(theme::warn()));
+    }
+    assert_eq!(
+        style_at_text(&buffer, "Capture failed").fg,
+        Some(theme::err())
+    );
+}
+
+#[test]
+fn dns_timeout_and_inventory_links_keep_the_source_item() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tabs::health::{Finding, HealthTarget};
+    let app = test_app();
+    app.ingest_packet_at_for_test(
+        &dns_test_packet(42, "build.example", DnsQueryType::A, false, None),
+        SystemTime::now() - Duration::from_secs(20),
+    );
+    for width in [60, 140] {
+        let mut state = UiState {
+            selected_tab: 4,
+            ..Default::default()
+        };
+        let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, width, 32);
+        let key = |code, state: &mut UiState, regions: &ClickableRegions| {
+            dispatch_key(
+                4,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut test_support::empty_ctx(&app, state, regions),
+            )
+            .unwrap();
+        };
+        let (index, regions) = frame(&mut state);
+        assert_eq!(
+            state
+                .health_cursor
+                .borrow()
+                .target
+                .as_ref()
+                .map(HealthTarget::finding),
+            Some(Finding::Dns)
+        );
+        assert!(!index.contains("build.example"));
+        key(KeyCode::Char(' '), &mut state, &regions);
+        let (reader, regions) = frame(&mut state);
+        for text in ["1.1.1.1:53", "build.example", "Recent issues (15m"] {
+            assert!(reader.contains(text), "{reader}");
+        }
+        key(KeyCode::Down, &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Enter, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Dns);
+        let (inventory, regions) = frame(&mut state);
+        assert!(inventory.contains("DNS Outcomes (60s)"), "{inventory}");
+        key(KeyCode::Esc, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Findings);
+        assert!(matches!(
+            state.health_cursor.borrow().target,
+            Some(HealthTarget::Resolver(Some(_)))
+        ));
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Down, &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        let issue = state.health_cursor.borrow().target.clone();
+        assert!(matches!(issue, Some(HealthTarget::DnsIssue(..))));
+        key(KeyCode::Enter, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Dns);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Esc, &mut state, &regions);
+        assert_eq!(state.health_cursor.borrow().target, issue);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char(' '), &mut state, &regions);
+        for next in [Finding::Tcp, Finding::Events, Finding::Interfaces] {
+            let (_, regions) = frame(&mut state);
+            key(KeyCode::Down, &mut state, &regions);
+            assert_eq!(
+                state
+                    .health_cursor
+                    .borrow()
+                    .target
+                    .as_ref()
+                    .map(HealthTarget::finding),
+                Some(next)
+            );
+        }
+        assert_eq!(
+            state
+                .health_cursor
+                .borrow()
+                .target
+                .as_ref()
+                .map(HealthTarget::finding),
+            Some(Finding::Interfaces)
+        );
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char(' '), &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char('j'), &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Enter, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Interfaces);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Esc, &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Findings);
+        assert_eq!(
+            state
+                .health_cursor
+                .borrow()
+                .target
+                .as_ref()
+                .map(HealthTarget::finding),
+            Some(Finding::Interfaces)
+        );
+    }
+}
+
+#[test]
+fn live_finding_order_preserves_the_scrolled_reader_and_return_target() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tabs::health::{Finding, HealthTarget};
+    for (width, height) in [(60, 16), (120, 16)] {
+        let app = test_app();
+        let captured = SystemTime::now() - Duration::from_secs(20);
+        for port in 40000..40016 {
+            app.ingest_packet_at_for_test(&evidence_syn(&local_tcp(port, "client"), 17), captured);
+        }
+        let mut state = UiState {
+            selected_tab: 4,
+            ..Default::default()
+        };
+        let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, width, height);
+        let key = |code, state: &mut UiState, regions: &ClickableRegions| {
+            dispatch_key(
+                4,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut test_support::empty_ctx(&app, state, regions),
+            )
+            .unwrap();
+        };
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char(' '), &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        let attempts: Vec<_> = regions
+            .health_rows
+            .iter()
+            .filter_map(|(t, _)| matches!(t, HealthTarget::Attempt { .. }).then_some(t.clone()))
+            .collect();
+        assert_eq!(attempts.len(), 16);
+        key(KeyCode::Down, &mut state, &regions); // First destination
+        for (i, target) in attempts.iter().enumerate() {
+            let (_, regions) = frame(&mut state);
+            key(
+                if i % 2 == 0 {
+                    KeyCode::Down
+                } else {
+                    KeyCode::Char('j')
+                },
+                &mut state,
+                &regions,
+            );
+            let (_, regions) = frame(&mut state);
+            assert_eq!(state.health_cursor.borrow().target.as_ref(), Some(target));
+            assert!(
+                !regions
+                    .health_rows
+                    .iter()
+                    .find(|(t, _)| t == target)
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+        }
+        let focus = state.health_cursor.borrow().target.clone().unwrap();
+        let (_, regions) = frame(&mut state);
+        let before = regions
+            .health_rows
+            .iter()
+            .find(|(t, _)| t == &focus)
+            .unwrap()
+            .1;
+        app.ingest_packet_at_for_test(
+            &dns_test_packet(42, "build.example", DnsQueryType::A, false, None),
+            captured,
+        );
+        let (_, regions) = frame(&mut state);
+        assert_eq!(state.health_cursor.borrow().target.as_ref(), Some(&focus));
+        assert_eq!(
+            regions
+                .health_rows
+                .iter()
+                .find(|(t, _)| t == &focus)
+                .unwrap()
+                .1,
+            before
+        );
+        for (i, target) in attempts.iter().rev().skip(1).enumerate() {
+            let (_, regions) = frame(&mut state);
+            key(
+                if i % 2 == 0 {
+                    KeyCode::Up
+                } else {
+                    KeyCode::Char('k')
+                },
+                &mut state,
+                &regions,
+            );
+            assert_eq!(state.health_cursor.borrow().target.as_ref(), Some(target));
+        }
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char(' '), &mut state, &regions);
+        let (list, regions) = frame(&mut state);
+        let order: Vec<_> = regions
+            .health_rows
+            .iter()
+            .filter_map(|(target, _)| match target {
+                HealthTarget::Finding(finding) => Some(*finding),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                Finding::Dns,
+                Finding::Tcp,
+                Finding::Events,
+                Finding::Interfaces,
+                Finding::Capture
+            ]
+        );
+        assert!(list.contains("▌ ▸ TCP handshakes"));
+        key(KeyCode::Up, &mut state, &regions);
+        assert_eq!(
+            state.health_cursor.borrow().target,
+            Some(HealthTarget::Finding(Finding::Dns))
+        );
+    }
+}
+
+#[test]
+fn host_attempts_and_endpoints_scroll_independently() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+    let app = test_app();
+    let captured = SystemTime::now() - Duration::from_secs(20);
+    let sockets = (1..=100)
+        .map(|port| {
+            let conn = local_tcp(port, "client");
+            if port <= 32 {
+                app.ingest_packet_at_for_test(&evidence_syn(&conn, 17), captured);
+            }
+            HostSocket {
+                protocol: Protocol::Tcp,
+                local_addr: conn.local_addr,
+                remote_addr: None,
+                state: HostSocketState::Tcp(HostTcpState::Listen),
+                owner: None,
+                native_id: None,
+            }
+        })
+        .collect();
+    app.set_socket_snapshot_for_test(SocketSnapshot::new(sockets));
+    for (width, height) in [(48, 18), (140, 30)] {
+        let mut state = UiState {
+            selected_tab: 4,
+            host_view: HostView::Sockets,
+            ..Default::default()
+        };
+        let key = |code, state: &mut UiState, regions: &ClickableRegions| {
+            dispatch_key(
+                state.selected_tab,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut test_support::empty_ctx(&app, state, regions),
+            )
+            .unwrap();
+        };
+        let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, width, height);
+        let (top, regions) = frame(&mut state);
+        assert_eq!(top.contains("Local endpoint"), width == 140);
+        key(KeyCode::End, &mut state, &regions);
+        let (bottom, regions) = frame(&mut state);
+        key(KeyCode::Up, &mut state, &regions);
+        let (endpoints, regions) = frame(&mut state);
+        assert_ne!(endpoints, bottom);
+        assert!(regions.health_rows.is_empty());
+        assert!(
+            dispatch_key(
+                4,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &mut test_support::empty_ctx(&app, &mut state, &regions)
+            )
+            .is_none()
+        );
+        key(KeyCode::Char('V'), &mut state, &regions);
+        let (closed, regions) = frame(&mut state);
+        assert!(closed.contains("▌ ▸ TCP handshakes"));
+        key(KeyCode::Char(' '), &mut state, &regions);
+        let (open, regions) = frame(&mut state);
+        assert!(
+            open.contains("no handshake") && open.contains("observed"),
+            "{open}"
+        );
+        assert!(state.health_scroll.can_scroll());
+        key(KeyCode::End, &mut state, &regions);
+        let (last, regions) = frame(&mut state);
+        assert_ne!(last, open);
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: regions.findings_area.x + 1,
+            row: regions.findings_area.y + 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        dispatch_mouse(
+            4,
+            wheel,
+            &mut test_support::empty_ctx(&app, &mut state, &regions),
+        )
+        .unwrap();
+        let (scrolled, regions) = frame(&mut state);
+        assert_ne!(scrolled, last);
+        key(KeyCode::Char('v'), &mut state, &regions);
+        assert_eq!(frame(&mut state).0, endpoints);
+        key(KeyCode::Char('V'), &mut state, &regions);
+        assert_eq!(frame(&mut state).0, scrolled);
+        key(KeyCode::Char('g'), &mut state, &regions);
+        let (_, regions) = frame(&mut state);
+        key(KeyCode::Char(' '), &mut state, &regions);
+        let (collapsed, regions) = frame(&mut state);
+        assert!(collapsed.contains("▌ ▸ TCP handshakes"));
+        key(KeyCode::Char('v'), &mut state, &regions);
+        assert_eq!(state.host_view, HostView::Sockets);
+        assert_eq!(frame(&mut state).0, endpoints);
+    }
+}
+
+#[test]
+fn findings_polish_enter_expand_all_copy_badges_and_sidebar_clicks() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let app = seeded_dns_app();
+    let captured = SystemTime::now() - Duration::from_secs(20);
+    app.ingest_packet_at_for_test(&evidence_syn(&local_tcp(50123, "client"), 17), captured);
+
+    // Overview shows top-tab severity badge and clickable DNS / TCP sidebar links.
+    let mut overview_state = UiState::default();
+    let (overview, overview_regions) =
+        render_app_frame(&app, &mut overview_state, &[], None, 140, 36);
+    assert!(
+        overview
+            .lines()
+            .next()
+            .unwrap()
+            .contains("5 Health & Host !"),
+        "{overview}"
+    );
+    let mut found_dns_click = false;
+    let mut found_tcp_click = false;
+    for y in 0..36 {
+        for x in 0..140 {
+            match overview_regions.hit_test(x, y) {
+                Some(ClickAction::OpenFinding(HealthFinding::Dns)) => found_dns_click = true,
+                Some(ClickAction::OpenFinding(HealthFinding::Tcp)) => found_tcp_click = true,
+                _ => {}
+            }
+        }
+    }
+    assert!(found_dns_click && found_tcp_click);
+
+    // open_finding jumps to tab 4, Findings, expands and selects that finding.
+    overview_state.open_finding(HealthFinding::Tcp);
+    assert_eq!(overview_state.selected_tab, 4);
+    assert_eq!(overview_state.host_view, HostView::Findings);
+    assert!(
+        overview_state
+            .expanded_findings
+            .contains(&HealthFinding::Tcp)
+    );
+
+    let mut state = UiState {
+        selected_tab: 4,
+        ..Default::default()
+    };
+    let frame = |state: &mut UiState| render_app_frame(&app, state, &[], None, 120, 32);
+    let key = |code, state: &mut UiState, regions: &ClickableRegions| {
+        dispatch_key(
+            4,
+            KeyEvent::new(code, KeyModifiers::NONE),
+            &mut test_support::empty_ctx(&app, state, regions),
+        )
+        .unwrap()
+    };
+
+    // Section strip shows Findings (2) and header shows active window and counts.
+    let (initial, regions) = frame(&mut state);
+    assert!(initial.contains("Findings (2)"), "{initial}");
+    assert!(initial.contains("window: 60s"), "{initial}");
+    assert!(initial.contains("1 error"), "{initial}");
+    assert!(initial.contains("1 warning"), "{initial}");
+
+    // Enter toggles a selected heading; e expands all attention findings and collapses all.
+    key(KeyCode::Enter, &mut state, &regions);
+    assert!(state.expanded_findings.contains(&HealthFinding::Dns));
+    let (_, regions) = frame(&mut state);
+    key(KeyCode::Char('e'), &mut state, &regions);
+    assert!(state.expanded_findings.contains(&HealthFinding::Dns));
+    assert!(state.expanded_findings.contains(&HealthFinding::Tcp));
+    assert!(!state.expanded_findings.contains(&HealthFinding::Capture));
+
+    // Selecting a resolver and pressing c emits Effect::Copy with its address.
+    let (_, regions) = frame(&mut state);
+    key(KeyCode::Down, &mut state, &regions);
+    let (selected_resolver, regions) = frame(&mut state);
+    assert!(
+        selected_resolver.contains("[Open DNS resolvers ↵]"),
+        "{selected_resolver}"
+    );
+    let effects = key(KeyCode::Char('c'), &mut state, &regions);
+    assert!(matches!(
+        effects.as_slice(),
+        [Effect::Copy { value, .. }] if value == "1.1.1.1:53"
+    ));
+
+    // Pressing e again collapses all expanded attention findings.
+    key(KeyCode::Char('e'), &mut state, &regions);
+    assert!(state.expanded_findings.is_empty());
+
+    // Clamping before wheel-up ensures shrinking Findings content scrolls immediately.
+    let mut scroll = PaneScroll::default();
+    assert_eq!(scroll.clamp_for_render_len(100), 0);
+    scroll.scroll_to_bottom();
+    assert_eq!(scroll.clamp_for_render_len(10), 10);
+    scroll.clamp_offset();
+    scroll.scroll_up(1);
+    assert_eq!(scroll.clamp_for_render_len(10), 9);
 }
 
 #[test]
@@ -2373,6 +3168,7 @@ fn host_interface_details() {
         "eth0",
         InterfaceStats {
             interface_name: "eth0".to_string(),
+            is_loopback: false,
             rx_bytes: 1_500_000_000,
             tx_bytes: 250_000_000,
             rx_packets: 1_200_000,
@@ -2559,7 +3355,7 @@ fn host_dns_window_switch_recovers_old_queries_and_preserves_live_health() {
     assert!(output.contains("earlier-outage.example"), "{output}");
     assert_eq!(app.get_dns_analytics_snapshot().lookups, 0);
     state.select_section(0);
-    state.select_section(2);
+    state.select_section(HostView::Dns as usize);
     render_app(&app, &mut state, &[], None, 80, 24);
     assert_eq!(state.host_window, TimeWindow::FiveMinutes);
     {
@@ -2731,7 +3527,7 @@ fn host_dns_navigation_preserves_scroll_and_sort_across_sections() {
     assert_ne!(scrolled, output);
     state.select_section(0);
     render_app(&app, &mut state, &[], None, 80, 24);
-    state.select_section(2);
+    state.select_section(HostView::Dns as usize);
     assert_eq!(render_app(&app, &mut state, &[], None, 80, 24), scrolled);
     {
         let mut ctx = test_support::empty_ctx(&app, &mut state, &regions);
@@ -3311,6 +4107,7 @@ fn narrow_tabs_keep_all_five_shortcuts_visible_and_clickable() {
         let mut regions = ClickableRegions::default();
         let ui_state = UiState {
             selected_tab: 4,
+            host_view: HostView::Sockets,
             ..Default::default()
         };
         let output = render(width, 2, |f| {
@@ -4441,6 +5238,7 @@ fn host_section_keys_are_consumed_while_help_is_open() {
     let regions = ClickableRegions::default();
     let mut state = UiState {
         selected_tab: 4,
+        host_view: HostView::Sockets,
         show_help: true,
         section_navigation: true,
         ..Default::default()

@@ -9,7 +9,7 @@ use anyhow::Result;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -158,6 +158,14 @@ impl<'a> DetailsBuilder<'a> {
         self.field_styled(label, value, Style::default());
     }
 
+    fn health_count(&mut self, label: &str, count: Option<u64>, color: Color) {
+        self.field_styled_opt(
+            label,
+            count.map(|n| n.to_string()),
+            super::count_style(count.unwrap_or(0), color),
+        );
+    }
+
     /// Push a label-value line with a custom-styled value span.
     fn field_styled(&mut self, label: &str, value: String, value_style: Style) {
         self.field_with_copy(label, value.clone(), value, value_style);
@@ -298,20 +306,20 @@ fn format_window_sizes(counters: Option<&TcpAnalytics>) -> String {
 }
 
 fn request_health_fields(details: &mut DetailsBuilder<'_>, conn: &Connection) {
-    let display = |count: u64| {
-        if conn.protocol_health.request_observed {
-            count.to_string()
-        } else {
-            NONE_PLACEHOLDER.to_string()
-        }
-    };
-    details.field(
+    let health = &conn.protocol_health;
+    details.health_count(
         "Request Retries (R)",
-        display(conn.protocol_health.request_retry_count),
+        health
+            .request_observed
+            .then_some(health.request_retry_count),
+        theme::warn(),
     );
-    details.field(
+    details.health_count(
         "Request Timeouts (T)",
-        display(conn.protocol_health.request_timeout_count),
+        health
+            .request_observed
+            .then_some(health.request_timeout_count),
+        theme::err(),
     );
 }
 
@@ -335,7 +343,11 @@ fn network_event_fields(details: &mut DetailsBuilder<'_>, conn: &Connection) {
                     events.icmp_errors.sent, events.icmp_errors.received
                 ),
             );
-            details.field("Latest Error", last.error.kind.to_string());
+            details.field_styled(
+                "Latest Error",
+                last.error.kind.to_string(),
+                theme::fg(theme::warn()),
+            );
             details.field(
                 "Type / Code",
                 format!(
@@ -1351,10 +1363,10 @@ pub(in crate::ui) fn draw_connection_details(
     if let Some(dns) = dns_info {
         details.rtt_field("DNS Response Time", conn.dns_response_time);
         if let Some(rcode) = dns.rcode {
-            let rcode_color = if rcode == 0 {
-                theme::ok()
-            } else {
-                theme::err()
+            let rcode_color = match rcode {
+                0 => theme::ok(),
+                3 => theme::warn(), // NXDOMAIN is a valid negative reply.
+                _ => theme::err(),
             };
             details.field_styled(
                 "Last Response Code",
@@ -1428,15 +1440,15 @@ pub(in crate::ui) fn draw_connection_details(
         details.rtt_field("Initial RTT", conn.initial_rtt);
     }
     if let Some(quic) = quic_info {
-        details.field(
+        details.health_count(
             "Retry Packets (R)",
-            conn.protocol_health.quic_retry_count.to_string(),
+            Some(conn.protocol_health.quic_retry_count),
+            theme::warn(),
         );
-        details.field(
+        details.health_count(
             "Ver. Negotiations (V)",
-            conn.protocol_health
-                .quic_version_negotiation_count
-                .to_string(),
+            Some(conn.protocol_health.quic_version_negotiation_count),
+            theme::warn(),
         );
         details.field_opt("Idle Timeout", quic.idle_timeout.map(format_idle_timeout));
         details.field_opt(
@@ -1452,16 +1464,29 @@ pub(in crate::ui) fn draw_connection_details(
         // Live RTT: EWMA over data-segment round trips, updated for the whole
         // life of the connection (unlike the one-shot handshake RTT above).
         details.rtt_field("Live RTT", counters.and_then(|a| a.smoothed_rtt));
-        for (label, value) in [
-            ("TCP Retransmits (R)", counters.map(|a| a.retransmit_count)),
-            ("Out-of-Order (O)", counters.map(|a| a.out_of_order_count)),
-            ("Duplicate ACKs", counters.map(|a| a.duplicate_ack_count)),
+        for (label, value, color) in [
+            (
+                "TCP Retransmits (R)",
+                counters.map(|a| a.retransmit_count),
+                theme::err(),
+            ),
+            (
+                "Out-of-Order (O)",
+                counters.map(|a| a.out_of_order_count),
+                theme::warn(),
+            ),
+            (
+                "Duplicate ACKs",
+                counters.map(|a| a.duplicate_ack_count),
+                theme::warn(),
+            ),
             (
                 "Fast Retransmits",
                 counters.map(|a| a.fast_retransmit_count),
+                theme::err(),
             ),
         ] {
-            details.field_opt(label, value.map(|v| v.to_string()));
+            details.health_count(label, value, color);
         }
         details.field("Window Size", format_window_sizes(counters));
     }

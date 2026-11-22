@@ -176,6 +176,7 @@ impl ActivityTableState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HostView {
     #[default]
+    Findings,
     Sockets,
     Interfaces,
     Dns,
@@ -315,34 +316,60 @@ impl ActivitySort {
 /// against what is actually on screen.
 #[derive(Debug, Default)]
 pub struct PaneScroll {
-    offset: u16,
-    max: Cell<u16>,
+    offset: Cell<usize>,
+    max: Cell<usize>,
     viewport: Cell<u16>,
 }
 
 impl PaneScroll {
     pub fn scroll_up(&mut self, lines: u16) {
-        self.offset = self.offset.saturating_sub(lines);
+        self.offset
+            .set(self.offset.get().saturating_sub(usize::from(lines)));
     }
 
     pub fn scroll_down(&mut self, lines: u16) {
-        self.offset = self.offset.saturating_add(lines).min(self.max.get());
+        self.offset.set(
+            self.offset
+                .get()
+                .saturating_add(usize::from(lines))
+                .min(self.max.get()),
+        );
     }
 
     pub fn scroll_to_top(&mut self) {
-        self.offset = 0;
+        self.offset.set(0);
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        self.offset = self.max.get();
+        self.offset.set(self.max.get());
     }
 
     pub fn reset(&mut self) {
-        self.offset = 0;
+        self.offset.set(0);
         // Forget the last render's extent too, so the hint gating does not
         // keep advertising scroll for content that is gone; the next render
         // reports the real extent again.
         self.max.set(0);
+    }
+
+    /// Follow a selection through live reordering, or scroll just enough to show a newly selected row.
+    pub(super) fn follow_row(
+        &self,
+        row: usize,
+        height: usize,
+        viewport: usize,
+        previous: Option<usize>,
+    ) {
+        let offset = self.offset.get().min(self.max.get());
+        let anchored =
+            previous.map_or(offset, |old| row.saturating_add(offset).saturating_sub(old));
+        self.offset.set(
+            anchored.clamp(
+                row.saturating_add(height.min(viewport))
+                    .saturating_sub(viewport),
+                row,
+            ),
+        );
     }
 
     /// Whether the last render had content beyond the viewport. Drives
@@ -351,11 +378,23 @@ impl PaneScroll {
         self.max.get() > 0
     }
 
+    pub(super) fn offset(&self) -> usize {
+        self.offset.get()
+    }
+
+    pub(super) fn clamp_offset(&mut self) {
+        self.offset.set(self.offset.get().min(self.max.get()));
+    }
+
     /// Record this render's maximum scroll offset and return the
     /// (clamped) offset to draw with.
     pub fn clamp_for_render(&self, max: u16) -> u16 {
+        self.clamp_for_render_len(usize::from(max)) as u16
+    }
+
+    pub(super) fn clamp_for_render_len(&self, max: usize) -> usize {
         self.max.set(max);
-        self.offset.min(max)
+        self.offset.get().min(max)
     }
 
     /// Record this render's viewport height so page-wise scrolling can
@@ -493,6 +532,8 @@ pub enum ClickAction {
     SwitchTab(usize),
     /// Select a section in the current tab.
     SelectSection(usize),
+    /// Jump to Health & Host > Findings with the given category expanded and selected.
+    OpenFinding(super::HealthFinding),
     /// Select a process from the rendered Activity snapshot.
     SelectActivityProcess(ProcessIdentity),
     /// Select a connection by index in the current sorted/filtered list
@@ -510,6 +551,9 @@ pub enum ClickAction {
 #[derive(Debug, Default)]
 pub struct ClickableRegions {
     regions: Vec<(Rect, ClickAction)>,
+    pub(super) findings_area: Rect,
+    pub(super) health_links: Vec<Rect>,
+    pub(super) health_rows: Vec<(super::tabs::health::HealthTarget, Rect)>,
     /// The area of the connections table, used for scroll event targeting
     pub scroll_area: Option<Rect>,
 }
@@ -517,6 +561,9 @@ pub struct ClickableRegions {
 impl ClickableRegions {
     pub fn clear(&mut self) {
         self.regions.clear();
+        self.health_rows.clear();
+        self.findings_area = Rect::default();
+        self.health_links.clear();
         self.scroll_area = None;
     }
 
@@ -603,6 +650,11 @@ pub struct UiState {
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
+    pub(super) health_scroll: PaneScroll,
+    pub(super) health_cursor: RefCell<super::tabs::health::HealthCursor>,
+    pub(super) expanded_findings: HashSet<super::tabs::health::Finding>,
+    pub(super) return_to_finding: bool,
+    pub(super) health_badge: Cell<super::tabs::health::HealthBadge>,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
     pub graph_states_scroll: PaneScroll,
@@ -675,6 +727,11 @@ impl Default for UiState {
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
+            health_scroll: PaneScroll::default(),
+            health_cursor: Default::default(),
+            expanded_findings: Default::default(),
+            return_to_finding: false,
+            health_badge: Cell::new(super::tabs::health::HealthBadge::default()),
             graph_section: GraphSection::default(),
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),
@@ -723,6 +780,15 @@ pub fn compute_scroll_offset(
 }
 
 impl UiState {
+    pub(super) fn host_scroll_mut(&mut self) -> &mut PaneScroll {
+        match self.host_view {
+            HostView::Findings => &mut self.health_scroll,
+            HostView::Sockets => &mut self.host_sockets_scroll,
+            HostView::Interfaces => &mut self.interfaces_scroll,
+            HostView::Dns => &mut self.dns_questions_scroll,
+        }
+    }
+
     pub(crate) fn from_config(config: &crate::config::UserConfig) -> Self {
         Self {
             grouping_enabled: config.group_by_process,
@@ -920,6 +986,23 @@ impl UiState {
         }
     }
 
+    pub(super) fn reset_findings(&mut self) {
+        self.health_scroll.reset();
+        *self.health_cursor.get_mut() = Default::default();
+        self.expanded_findings.clear();
+        self.return_to_finding = false;
+    }
+
+    /// Jump to `5 Health & Host > Findings`, expanding and selecting `finding`.
+    pub fn open_finding(&mut self, finding: super::HealthFinding) {
+        self.jump_to_tab(4);
+        self.host_view = HostView::Findings;
+        self.expanded_findings.insert(finding);
+        self.health_cursor
+            .get_mut()
+            .select(super::tabs::health::HealthTarget::Finding(finding));
+    }
+
     /// Jump directly to a tab by index (0 = Overview, 4 = Host).
     /// Out-of-range indices are ignored.
     pub fn jump_to_tab(&mut self, target: usize) {
@@ -928,33 +1011,22 @@ impl UiState {
             return;
         }
         self.selected_tab = target;
-        self.rewind_help_for_new_view();
+        self.return_to_finding = false;
+        if self.show_help {
+            self.help_scroll.reset();
+        }
     }
 
     /// Cycle to the next tab, wrapping back to Overview after Host.
     pub fn next_tab(&mut self) {
         use crate::ui::TAB_COUNT;
-        self.selected_tab = (self.selected_tab + 1) % TAB_COUNT;
-        self.rewind_help_for_new_view();
+        self.jump_to_tab((self.selected_tab + 1) % TAB_COUNT);
     }
 
     /// Cycle to the previous tab, wrapping from Overview back to Host.
     pub fn prev_tab(&mut self) {
         use crate::ui::TAB_COUNT;
-        self.selected_tab = if self.selected_tab == 0 {
-            TAB_COUNT - 1
-        } else {
-            self.selected_tab - 1
-        };
-        self.rewind_help_for_new_view();
-    }
-
-    /// Help content is per-view, so an open overlay restarts from its top
-    /// when tab navigation changes the view underneath it.
-    fn rewind_help_for_new_view(&mut self) {
-        if self.show_help {
-            self.help_scroll.reset();
-        }
+        self.jump_to_tab((self.selected_tab + TAB_COUNT - 1) % TAB_COUNT);
     }
 
     pub fn cycle_sort_column(&mut self) {
@@ -1017,6 +1089,7 @@ impl UiState {
         self.activity_direction = ActivityDirection::default();
         self.dns_sort = DnsSort::default();
         self.host_window = TimeWindow::default();
+        self.reset_findings();
         self.dns_questions_scroll.reset();
         self.grouped_scroll_offset = 0;
     }

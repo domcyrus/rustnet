@@ -1113,20 +1113,22 @@ fn update_connection(
         (tracker.ingest_at(parsed, now), None)
     };
 
-    if outcome.retransmits > 0 {
-        stats
-            .total_tcp_retransmits
-            .fetch_add(outcome.retransmits, Ordering::Relaxed);
-    }
-    if outcome.out_of_order > 0 {
-        stats
-            .total_tcp_out_of_order
-            .fetch_add(outcome.out_of_order, Ordering::Relaxed);
-    }
-    if outcome.fast_retransmits > 0 {
-        stats
-            .total_tcp_fast_retransmits
-            .fetch_add(outcome.fast_retransmits, Ordering::Relaxed);
+    if !(tracker.ignores_localhost_health() && parsed.is_loopback()) {
+        if outcome.retransmits > 0 {
+            stats
+                .total_tcp_retransmits
+                .fetch_add(outcome.retransmits, Ordering::Relaxed);
+        }
+        if outcome.out_of_order > 0 {
+            stats
+                .total_tcp_out_of_order
+                .fetch_add(outcome.out_of_order, Ordering::Relaxed);
+        }
+        if outcome.fast_retransmits > 0 {
+            stats
+                .total_tcp_fast_retransmits
+                .fetch_add(outcome.fast_retransmits, Ordering::Relaxed);
+        }
     }
 
     if outcome.dropped {
@@ -2168,6 +2170,88 @@ mod connection_lifecycle_tests {
 
         assert_eq!(stats.total_connections_created.load(Ordering::Relaxed), 2);
         assert_eq!(stats.total_connections_archived.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn localhost_tcp_loss_counters_respect_ignore_localhost_health() {
+        use rustnet_core::network::tracker::TrackerConfig;
+
+        let make_data = |local: &str, remote: &str, seq: u32| {
+            let mut packet = tcp_packet(TcpFlags {
+                ack: true,
+                ..flags(false, false)
+            });
+            packet.local_addr = local.parse().unwrap();
+            packet.remote_addr = remote.parse().unwrap();
+            packet.is_outgoing = true;
+            if let Some(header) = packet.tcp_header.as_mut() {
+                header.seq = seq;
+                header.payload_len = 100;
+            }
+            packet
+        };
+
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let no_log = None;
+
+        // Filtered tracker skips loopback retransmits in AppStats but counts remote ones.
+        let filtered_tracker = ConnectionTracker::with_config(TrackerConfig {
+            ignore_localhost_health: true,
+            ..TrackerConfig::default()
+        });
+        let filtered_stats = AppStats::default();
+        for (i, seq) in [1_000u32, 1_000].into_iter().enumerate() {
+            update_connection(
+                &filtered_tracker,
+                &make_data("127.0.0.1:40000", "127.0.0.1:8080", seq),
+                now + Duration::from_millis(i as u64 * 10),
+                &filtered_stats,
+                None,
+                &no_log,
+                None,
+            );
+        }
+        assert_eq!(
+            filtered_stats.total_tcp_retransmits.load(Ordering::Relaxed),
+            0
+        );
+
+        for (i, seq) in [2_000u32, 2_000].into_iter().enumerate() {
+            update_connection(
+                &filtered_tracker,
+                &make_data("192.0.2.1:40000", "198.51.100.1:443", seq),
+                now + Duration::from_millis(i as u64 * 10),
+                &filtered_stats,
+                None,
+                &no_log,
+                None,
+            );
+        }
+        assert_eq!(
+            filtered_stats.total_tcp_retransmits.load(Ordering::Relaxed),
+            1
+        );
+
+        // Unfiltered tracker (--show-localhost) counts loopback retransmits.
+        let unfiltered_tracker = ConnectionTracker::new();
+        let unfiltered_stats = AppStats::default();
+        for (i, seq) in [1_000u32, 1_000].into_iter().enumerate() {
+            update_connection(
+                &unfiltered_tracker,
+                &make_data("127.0.0.1:40000", "127.0.0.1:8080", seq),
+                now + Duration::from_millis(i as u64 * 10),
+                &unfiltered_stats,
+                None,
+                &no_log,
+                None,
+            );
+        }
+        assert_eq!(
+            unfiltered_stats
+                .total_tcp_retransmits
+                .load(Ordering::Relaxed),
+            1
+        );
     }
 
     #[test]

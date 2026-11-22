@@ -3,6 +3,8 @@
 //! traffic), the section separator helper, and the per-interface
 //! sparkline used inside the stats sidebar.
 
+use std::sync::atomic::Ordering::Relaxed;
+
 use anyhow::Result;
 use ratatui::{
     Frame,
@@ -15,13 +17,13 @@ use ratatui::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use log::{debug, info};
 
-use crate::app::{App, AppStats, ConnectionCounts};
+use crate::app::{App, ConnectionCounts};
 use crate::network::dns::DnsResolver;
 use crate::network::dns_analytics::{DEGRADED_FAILURE_PERCENT, DnsAnalyticsSnapshot, DnsHealth};
 use crate::network::types::Connection;
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER, OverviewSection, PaneScroll, SelectionMove, SortColumn, UiState, alert_style,
+    ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
+    NONE_PLACEHOLDER, OverviewSection, PaneScroll, SelectionMove, SortColumn, UiState,
     clear_all_with_confirmation,
     connection_table::{
         CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
@@ -349,7 +351,6 @@ const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
 const TRAFFIC_MIN_HEIGHT: u16 = 4;
 /// Compact Security keeps its heading and overall sandbox status visible.
 const COMPACT_SECURITY_HEIGHT: u16 = 2;
-const NETWORK_STATS_HEIGHT: u16 = 6;
 const SECTION_GAP_HEIGHT: u16 = 1;
 
 /// The sidebar has `SYSTEM_PANEL_WIDTH` minus the rule and padding to play
@@ -403,9 +404,14 @@ fn capture_summary_lines(
 
 /// Whether the complete Security section fits without taking the four rows
 /// needed to keep the live Traffic summary usable.
-fn security_details_fit(area_height: u16, stats_height: u16, full_security_height: u16) -> bool {
+fn security_details_fit(
+    area_height: u16,
+    stats_height: u16,
+    network_stats_height: u16,
+    full_security_height: u16,
+) -> bool {
     let required_height = stats_height
-        .saturating_add(NETWORK_STATS_HEIGHT)
+        .saturating_add(network_stats_height)
         .saturating_add(TRAFFIC_MIN_HEIGHT)
         .saturating_add(SECTION_GAP_HEIGHT * 3)
         .saturating_add(full_security_height);
@@ -436,11 +442,10 @@ fn draw_overview(
         return draw_stats_panel(
             f,
             counts,
-            ctx.stats,
-            ctx.app,
+            ctx,
             area,
             Some(&ctx.ui_state.system_scroll),
-            ctx.ui_state,
+            click_regions,
         );
     }
     let show_system_panel =
@@ -492,15 +497,7 @@ fn draw_overview(
         } else {
             ConnectionCounts::from_connections(ctx.connections)
         };
-        draw_stats_panel(
-            f,
-            connection_counts,
-            ctx.stats,
-            ctx.app,
-            chunks[1],
-            None,
-            ctx.ui_state,
-        )?;
+        draw_stats_panel(f, connection_counts, ctx, chunks[1], None, click_regions)?;
     }
 
     Ok(())
@@ -799,10 +796,11 @@ fn section_separator(width: u16) -> Line<'static> {
 }
 
 fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Line<'static> {
+    let (status, level) = super::dns_health_status(snapshot.health, capture_failed);
     if capture_failed {
         return Line::from(vec![
             Span::raw("DNS: "),
-            Span::styled("unknown · capture stopped", theme::fg(theme::warn())),
+            Span::styled("unknown · capture stopped", theme::fg(level.color())),
         ]);
     }
 
@@ -812,15 +810,11 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
         .saturating_mul(100)
         .checked_div(finalized)
         .unwrap_or(0);
-    let (text, color) = match snapshot.health {
-        DnsHealth::NotObserved => ("not observed".to_string(), theme::muted()),
-        DnsHealth::Checking => ("checking".to_string(), theme::muted()),
-        DnsHealth::Responsive => (
-            snapshot.latency_p95.map_or_else(
-                || "responsive".to_string(),
-                |p95| format!("responsive · p95 {}", format_rtt_compact(p95)),
-            ),
-            theme::ok(),
+    let text = match snapshot.health {
+        DnsHealth::NotObserved | DnsHealth::Checking => status.to_owned(),
+        DnsHealth::Responsive => snapshot.latency_p95.map_or_else(
+            || status.to_owned(),
+            |p95| format!("{status} · p95 {}", format_rtt_compact(p95)),
         ),
         DnsHealth::Degraded => {
             let reason = if failure_percent >= DEGRADED_FAILURE_PERCENT {
@@ -835,28 +829,101 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
                     )
                 })
             {
-                "resolver issue (Host)".to_string()
+                "resolver issue (DNS resolvers)".to_string()
             } else {
                 snapshot.latency_p95.map_or_else(
                     || "limited evidence".to_string(),
                     |p95| format!("p95 {}", format_rtt_compact(p95)),
                 )
             };
-            (format!("degraded · {reason}"), theme::warn())
+            format!("{status} · {reason}")
         }
-        DnsHealth::Failing => (
-            format!("failing · {} errors", snapshot.failures),
-            theme::err(),
-        ),
-        DnsHealth::NoReplies => (
-            format!("no replies · {} timeouts", snapshot.timeouts),
-            theme::err(),
-        ),
+        DnsHealth::Failing => format!("{status} · {} errors", snapshot.failures),
+        DnsHealth::NoReplies => format!("{status} · {} timeouts", snapshot.timeouts),
     };
     Line::from(vec![
         Span::raw("DNS: "),
-        Span::styled(text, theme::fg(color)),
+        Span::styled(text, theme::fg(level.color())),
     ])
+}
+
+/// Conservative evidence summary: capture limitations override a healthy label.
+/// Stays on one compact line while quiet or healthy so the sidebar preserves room
+/// for Traffic and Security on shorter terminals, expanding when issues appear.
+fn tcp_handshake_lines(
+    snapshot: &crate::network::tcp_attempts::TcpAttemptSnapshot,
+    capture_incomplete: bool,
+) -> Vec<Line<'static>> {
+    let c = &snapshot.total;
+    let failed = c.reset + c.no_handshake;
+    let (status, level) = super::tcp_handshake_status(snapshot, capture_incomplete);
+    let worst = super::worst_tcp_destination(snapshot);
+    let max_width = usize::from(SYSTEM_PANEL_WIDTH) - 3;
+
+    if matches!(
+        level,
+        super::HealthLevel::Healthy | super::HealthLevel::Muted
+    ) && worst.is_none()
+    {
+        let mut spans = vec![
+            Span::raw("TCP (5m): "),
+            Span::styled(status, theme::fg(level.color())),
+        ];
+        if c.established > 0 {
+            let suffix = if snapshot.pending > 0 {
+                format!(" · {} ok · {} pend", c.established, snapshot.pending)
+            } else {
+                format!(" · {} ok", c.established)
+            };
+            if 10 + status.len() + suffix.len() <= max_width {
+                spans.push(Span::styled(suffix, theme::fg(theme::muted())));
+            }
+        } else if snapshot.pending > 0 {
+            let suffix = format!(" · {} pending", snapshot.pending);
+            if 10 + status.len() + suffix.len() <= max_width {
+                spans.push(Span::styled(suffix, theme::fg(theme::muted())));
+            }
+        }
+        return vec![Line::from(spans)];
+    }
+
+    let mut lines = vec![Line::from(vec![
+        Span::raw("TCP (5m): "),
+        Span::styled(status, theme::fg(level.color())),
+    ])];
+    if c.completed > 0 {
+        let fail_color = if c.reset > 0 {
+            theme::err()
+        } else {
+            theme::warn()
+        };
+        lines.push(Line::from(vec![
+            super::count_span(failed, fail_color),
+            Span::raw(format!("/{} reset/incomplete", c.completed)),
+        ]));
+    }
+    if c.recovered_anomalies > 0 || snapshot.pending > 0 {
+        lines.push(Line::from(format!(
+            "{} recovered · {} pending",
+            c.recovered_anomalies, snapshot.pending
+        )));
+    }
+    // Highest observed failure fraction first; ties favor more evidence.
+    // Successful IPv6 destinations cannot dilute a failing IPv4 destination.
+    if let Some((address, counts)) = worst {
+        lines.push(Line::from(truncate_with_ellipsis(
+            &format!("Worst: {address}"),
+            max_width,
+        )));
+        lines.push(Line::from(format!(
+            "{}/{} failed · {} anomalous",
+            counts.reset + counts.no_handshake,
+            counts.completed,
+            counts.anomalous
+        )));
+    }
+
+    lines
 }
 
 /// Effective-UID privilege line shared by the Linux and macOS Security
@@ -912,14 +979,10 @@ fn sandbox_lines<'a, S: AsRef<str>>(
 /// An indented `label: count` statistics line whose count turns `alert`
 /// colored once it is non-zero.
 fn counter_line(label: &str, count: u64, alert: Color) -> Line<'static> {
-    if count > 0 {
-        Line::from(vec![
-            Span::raw(format!("  {label}: ")),
-            Span::styled(count.to_string(), theme::fg(alert)),
-        ])
-    } else {
-        Line::from(format!("  {label}: {count}"))
-    }
+    Line::from(vec![
+        Span::raw(format!("  {label}: ")),
+        super::count_span(count, alert),
+    ])
 }
 
 /// The Security section's lead line: `prefix` followed by the sandbox
@@ -949,12 +1012,14 @@ fn sandbox_status_line(
 fn draw_stats_panel(
     f: &mut Frame,
     connection_counts: ConnectionCounts,
-    stats: &AppStats,
-    app: &App,
+    ctx: &ComponentContext<'_>,
     area: Rect,
     scroll: Option<&PaneScroll>,
-    state: &UiState,
+    click_regions: &mut ClickableRegions,
 ) -> Result<()> {
+    let stats = ctx.stats;
+    let app = ctx.app;
+    let state = ctx.ui_state;
     // Borderless: a single quiet vertical rule separates the sidebar
     // from the connections table, and the section header names it:
     // deliberately *not* the same chrome as the table so the two read
@@ -1119,9 +1184,7 @@ fn draw_stats_panel(
     // counters cannot be clipped when their combinations change.
     let pcap_export_enabled = app.is_pcap_export_enabled();
     let pcapng_export_enabled = app.is_pcapng_export_enabled();
-    let pre_attribution_packets = stats
-        .pre_attribution_packets
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let pre_attribution_packets = stats.pre_attribution_packets.load(Relaxed);
     let stats_height: u16 = 11
         + capture_lines.len() as u16
         + u16::from(connection_counts.historic > 0)
@@ -1130,13 +1193,57 @@ fn draw_stats_panel(
         + if pcap_export_enabled { 4 } else { 0 }
         + if pcapng_export_enabled { 7 } else { 0 };
 
+    let queue_drops = stats.packets_dropped.load(Relaxed);
+    let capture_drops = stats
+        .capture_packets_dropped
+        .load(Relaxed)
+        .saturating_add(stats.interface_packets_dropped.load(Relaxed));
+    let total_retransmits = stats.total_tcp_retransmits.load(Relaxed);
+    let total_out_of_order = stats.total_tcp_out_of_order.load(Relaxed);
+    let total_fast_retransmits = stats.total_tcp_fast_retransmits.load(Relaxed);
+
+    let capture_failed = app.capture_error().is_some();
+    let capture_incomplete = capture_failed || queue_drops > 0 || capture_drops > 0;
+    let tcp_lines = tcp_handshake_lines(&app.get_tcp_attempt_snapshot(), capture_incomplete);
+    let tcp_line_count = tcp_lines.len();
+    let mut network_stats_text: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("Network Stats ", theme::bold_fg(theme::heading())),
+            Span::styled("(active / total)", theme::fg(theme::muted())),
+        ]),
+        dns_health_line(&app.get_dns_analytics_snapshot(), capture_failed),
+        Line::from(format!(
+            "TCP Retransmits: {} / {}",
+            connection_counts.tcp_retransmits, total_retransmits
+        )),
+        Line::from(format!(
+            "Out-of-Order: {} / {}",
+            connection_counts.tcp_out_of_order, total_out_of_order
+        )),
+        Line::from(format!(
+            "Fast Retransmits: {} / {}",
+            connection_counts.tcp_fast_retransmits, total_fast_retransmits
+        )),
+        Line::from(format!(
+            "Active TCP Flows: {}",
+            connection_counts.tcp_flows_with_analytics
+        )),
+    ];
+    network_stats_text.splice(2..2, tcp_lines);
+    let network_stats_height = network_stats_text.len() as u16;
+
     // Keep Security after the live Traffic section. If both do not fit, retain
     // the overall sandbox status and hide the static detail lines. They return
     // automatically as soon as the terminal is tall enough.
     let full_security_height = 1u16.saturating_add(security_text.len() as u16);
     let compact_security = scroll.is_none()
         && full_security_height > COMPACT_SECURITY_HEIGHT
-        && !security_details_fit(inner_area.height, stats_height, full_security_height);
+        && !security_details_fit(
+            inner_area.height,
+            stats_height,
+            network_stats_height,
+            full_security_height,
+        );
     if compact_security {
         security_text.truncate(1);
     }
@@ -1150,7 +1257,7 @@ fn draw_stats_panel(
         .constraints([
             Constraint::Length(stats_height), // Statistics (1 heading + content)
             Constraint::Length(SECTION_GAP_HEIGHT),
-            Constraint::Length(NETWORK_STATS_HEIGHT),
+            Constraint::Length(network_stats_height),
             Constraint::Length(SECTION_GAP_HEIGHT),
             Constraint::Min(TRAFFIC_MIN_HEIGHT),
             Constraint::Length(SECTION_GAP_HEIGHT),
@@ -1199,39 +1306,22 @@ fn draw_stats_panel(
         Line::from(""),
         Line::from(format!(
             "Packets Processed: {}",
-            stats
-                .packets_processed
-                .load(std::sync::atomic::Ordering::Relaxed)
+            stats.packets_processed.load(Relaxed)
         )),
         Line::from(format!(
             "Packets/sec: {}",
             app.get_traffic_history().get_latest_packets_per_sec()
         )),
-        {
-            let dropped = stats
-                .packets_dropped
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if dropped > 0 {
-                Line::from(vec![
-                    Span::raw("Queue Drops: "),
-                    Span::styled(format!("{}", dropped), theme::fg(theme::warn())),
-                    Span::styled(" (backpressure)", theme::fg(theme::muted())),
-                ])
-            } else {
-                Line::from(format!("Queue Drops: {}", dropped))
-            }
+        if queue_drops > 0 {
+            Line::from(vec![
+                Span::raw("Queue Drops: "),
+                Span::styled(queue_drops.to_string(), theme::fg(theme::warn())),
+                Span::styled(" (backpressure)", theme::fg(theme::muted())),
+            ])
+        } else {
+            Line::from("Queue Drops: 0")
         },
-        {
-            let dropped = stats
-                .capture_packets_dropped
-                .load(std::sync::atomic::Ordering::Relaxed)
-                .saturating_add(
-                    stats
-                        .interface_packets_dropped
-                        .load(std::sync::atomic::Ordering::Relaxed),
-                );
-            counter_line("Capture Drops", dropped, theme::warn())
-        },
+        counter_line("Capture Drops", capture_drops, theme::warn()),
     ]);
     if pre_attribution_packets > 0 {
         conn_stats_text.push(counter_line(
@@ -1242,12 +1332,8 @@ fn draw_stats_panel(
     }
 
     if pcap_export_enabled {
-        let written = stats
-            .pcap_records_written
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let errors = stats
-            .pcap_export_errors
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let written = stats.pcap_records_written.load(Relaxed);
+        let errors = stats.pcap_export_errors.load(Relaxed);
         conn_stats_text.extend([
             Line::from(""),
             Line::from(Span::styled("PCAP Export", theme::fg(theme::heading()))),
@@ -1257,24 +1343,12 @@ fn draw_stats_panel(
     }
 
     if pcapng_export_enabled {
-        let queued = stats
-            .pcapng_records_queued
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let written = stats
-            .pcapng_records_written
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let annotated = stats
-            .pcapng_records_annotated
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let unannotated = stats
-            .pcapng_records_unannotated
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let dropped = stats
-            .pcapng_records_dropped
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let errors = stats
-            .pcapng_export_errors
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let queued = stats.pcapng_records_queued.load(Relaxed);
+        let written = stats.pcapng_records_written.load(Relaxed);
+        let annotated = stats.pcapng_records_annotated.load(Relaxed);
+        let unannotated = stats.pcapng_records_unannotated.load(Relaxed);
+        let dropped = stats.pcapng_records_dropped.load(Relaxed);
+        let errors = stats.pcapng_export_errors.load(Relaxed);
 
         conn_stats_text.extend([
             Line::from(""),
@@ -1286,43 +1360,6 @@ fn draw_stats_panel(
             counter_line("Errors", errors, theme::err()),
         ]);
     }
-
-    let total_retransmits = stats
-        .total_tcp_retransmits
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let total_out_of_order = stats
-        .total_tcp_out_of_order
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let total_fast_retransmits = stats
-        .total_tcp_fast_retransmits
-        .load(std::sync::atomic::Ordering::Relaxed);
-
-    let network_stats_text: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("Network Stats ", theme::bold_fg(theme::heading())),
-            Span::styled("(active / total)", theme::fg(theme::muted())),
-        ]),
-        dns_health_line(
-            &app.get_dns_analytics_snapshot(),
-            app.capture_error().is_some(),
-        ),
-        Line::from(format!(
-            "TCP Retransmits: {} / {}",
-            connection_counts.tcp_retransmits, total_retransmits
-        )),
-        Line::from(format!(
-            "Out-of-Order: {} / {}",
-            connection_counts.tcp_out_of_order, total_out_of_order
-        )),
-        Line::from(format!(
-            "Fast Retransmits: {} / {}",
-            connection_counts.tcp_fast_retransmits, total_fast_retransmits
-        )),
-        Line::from(format!(
-            "Active TCP Flows: {}",
-            connection_counts.tcp_flows_with_analytics
-        )),
-    ];
 
     let security_heading = if compact_security {
         Line::from(vec![
@@ -1373,6 +1410,21 @@ fn draw_stats_panel(
 
     let network_stats = Paragraph::new(network_stats_text).style(Style::default());
     f.render_widget(network_stats, chunks[2]);
+    // Clicking DNS or TCP health lines in the sidebar jumps straight to the
+    // matching category in 5 Health & Host > Findings.
+    if chunks[2].height > 1 && chunks[2].width > 0 {
+        click_regions.register(
+            Rect::new(chunks[2].x, chunks[2].y + 1, chunks[2].width, 1),
+            ClickAction::OpenFinding(crate::ui::HealthFinding::Dns),
+        );
+    }
+    let tcp_rows = (tcp_line_count as u16).min(chunks[2].height.saturating_sub(2));
+    if tcp_rows > 0 && chunks[2].width > 0 {
+        click_regions.register(
+            Rect::new(chunks[2].x, chunks[2].y + 2, chunks[2].width, tcp_rows),
+            ClickAction::OpenFinding(crate::ui::HealthFinding::Tcp),
+        );
+    }
     render_section_separator(f, chunks[3]);
 
     draw_interface_stats_with_graph(f, app, chunks[4], state)?;
@@ -1596,7 +1648,11 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
             all_interface_stats
                 .into_iter()
                 .filter(|s| {
-                    s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0
+                    !app.should_filter_loopback_interface(&s.interface_name)
+                        && (s.rx_bytes > 0
+                            || s.tx_bytes > 0
+                            || s.rx_packets > 0
+                            || s.tx_packets > 0)
                 })
                 .collect()
         } else {
@@ -1608,7 +1664,10 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
     } else {
         all_interface_stats
             .into_iter()
-            .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
+            .filter(|s| {
+                !app.should_filter_loopback_interface(&s.interface_name)
+                    && (s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
+            })
             .collect()
     };
 
@@ -1625,15 +1684,12 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
             let total_errors = stat.rx_errors + stat.tx_errors;
             let total_drops = stat.rx_dropped + stat.tx_dropped;
 
-            let error_style = alert_style(total_errors > 0, theme::err());
-            let drop_style = alert_style(total_drops > 0, theme::warn());
-
             lines.push(Line::from(vec![
                 Span::raw(format!("{}: ", stat.interface_name)),
                 Span::raw("Err: "),
-                Span::styled(format!("{}", total_errors), error_style),
+                super::count_span(total_errors, theme::err()),
                 Span::raw("  Drop: "),
-                Span::styled(format!("{}", total_drops), drop_style),
+                super::count_span(total_drops, theme::warn()),
             ]));
         }
 
@@ -1748,8 +1804,10 @@ mod tests {
 
     #[test]
     fn security_details_only_use_rows_left_after_traffic_minimum() {
-        assert!(!security_details_fit(37, 14, 11));
-        assert!(security_details_fit(38, 14, 11));
+        assert!(!security_details_fit(37, 14, 6, 11));
+        assert!(security_details_fit(38, 14, 6, 11));
+        assert!(!security_details_fit(42, 14, 11, 11));
+        assert!(security_details_fit(43, 14, 11, 11));
     }
 
     #[test]
@@ -1832,7 +1890,7 @@ mod tests {
         };
         assert_eq!(
             line_text(&dns_health_line(&mixed, false)),
-            "DNS: degraded · resolver issue (Host)"
+            "DNS: degraded · resolver issue (DNS resolvers)"
         );
         assert_eq!(
             line_text(&dns_health_line(&responsive, true)),
@@ -1981,5 +2039,120 @@ mod tests {
         assert!(matches!(effects.as_deref(), Some([Effect::Regroup])));
         assert!(!ctx.ui_state.expanded_groups.contains("alpha"));
         assert!(ctx.ui_state.is_group_selected());
+    }
+}
+
+#[cfg(test)]
+mod tcp_handshake_tests {
+    use super::*;
+    use crate::network::tcp_attempts::{AttemptCounts, TcpAttemptSnapshot};
+
+    fn text(s: &TcpAttemptSnapshot, incomplete: bool) -> String {
+        let lines = tcp_handshake_lines(s, incomplete);
+        assert!((1..=5).contains(&lines.len()));
+        assert!(lines[0].to_string().starts_with("TCP (5m): "));
+        assert!(lines[0].width() <= usize::from(SYSTEM_PANEL_WIDTH) - 3);
+        lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn distinguishes_pending_recovery_failures_and_incomplete_evidence() {
+        let mut s = TcpAttemptSnapshot::default();
+        assert_eq!(tcp_handshake_lines(&s, false).len(), 1);
+        assert!(text(&s, false).contains("not observed"));
+        s.pending = 1;
+        assert_eq!(tcp_handshake_lines(&s, false).len(), 1);
+        assert!(text(&s, false).contains("checking"));
+        s.pending = 0;
+        s.total.completed = 4;
+        s.total.established = 4;
+        assert_eq!(tcp_handshake_lines(&s, false).len(), 1);
+        assert!(text(&s, false).contains("healthy"));
+        s.total.anomalous = 1;
+        s.total.recovered_anomalies = 1;
+        assert!(text(&s, false).contains("recovered anomalies"));
+        s.total.no_handshake = 1;
+        assert!(text(&s, false).contains("degraded"));
+        assert!(text(&s, true).contains("incomplete evidence"));
+        s.omitted = 1;
+        assert!(text(&s, false).contains("incomplete evidence"));
+        s = TcpAttemptSnapshot::default();
+        s.total.superseded = 1;
+        assert!(text(&s, false).contains("incomplete evidence"));
+    }
+
+    #[test]
+    fn worst_destination_is_not_hidden_by_healthy_ipv6_or_recovered_anomalies() {
+        let bad = AttemptCounts {
+            completed: 36,
+            established: 31,
+            no_handshake: 5,
+            anomalous: 5,
+            ..Default::default()
+        };
+        let recovered = AttemptCounts {
+            completed: 36,
+            established: 36,
+            anomalous: 4,
+            recovered_anomalies: 4,
+            ..Default::default()
+        };
+        let healthy = AttemptCounts {
+            completed: 72,
+            established: 72,
+            ..Default::default()
+        };
+        let s = TcpAttemptSnapshot {
+            total: AttemptCounts {
+                completed: 144,
+                established: 139,
+                no_handshake: 5,
+                anomalous: 9,
+                recovered_anomalies: 4,
+                ..Default::default()
+            },
+            destinations: [
+                ("192.0.2.10:443".parse().unwrap(), bad),
+                ("192.0.2.20:443".parse().unwrap(), recovered),
+                ("[2001:db8::1]:443".parse().unwrap(), healthy),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let rendered = text(&s, false);
+        assert!(rendered.contains("Worst: 192.0.2.10:443"));
+        assert!(rendered.contains("5/36 failed"));
+        assert!(rendered.contains("4 recovered"));
+        assert!(
+            tcp_handshake_lines(&s, false)
+                .iter()
+                .all(|line| line.width() <= usize::from(SYSTEM_PANEL_WIDTH) - 3)
+        );
+    }
+
+    #[test]
+    fn ranking_prefers_failure_fraction_then_sample_evidence() {
+        let mut s = TcpAttemptSnapshot::default();
+        for (address, completed, failures) in [
+            ("192.0.2.1:443", 100, 15),
+            ("192.0.2.2:443", 10, 5),
+            ("192.0.2.3:443", 20, 10),
+            ("192.0.2.4:443", 100, 14),
+            ("192.0.2.5:443", 100, 13),
+        ] {
+            s.destinations.insert(
+                address.parse().unwrap(),
+                AttemptCounts {
+                    completed,
+                    no_handshake: failures,
+                    ..Default::default()
+                },
+            );
+        }
+        assert!(text(&s, false).contains("Worst: 192.0.2.3:443"));
     }
 }

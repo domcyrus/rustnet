@@ -1,5 +1,5 @@
 ---
-source: src/ui/mod.rs
+source: src/ui/snapshot_tests.rs
 expression: output
 ---
                                                                                                     
@@ -18,9 +18,9 @@ expression: output
     │                                                                                        ▐ │    
     │ ▎ Overview Actions                                                                     ▐ │    
     │   i               Show or hide System sidebar on wide terminals                        ▐ │    
-    │   Enter           Open the selected connection in Details                              ▐ │    
-    │   /               Enter filter mode                                                    ▐ │    
-    │   Esc             Clear the active filter                                              ▐ │    
+    │   Enter           Open the selected connection in Details                                │    
+    │   /               Enter filter mode                                                      │    
+    │   Esc             Clear the active filter                                                │    
     │   c               Copy the selected remote address                                       │    
     │   p               Toggle service names and port numbers                                  │    
     │   d               Toggle hostnames and IP addresses                                      │    
@@ -32,9 +32,9 @@ expression: output
     │   System section  Scroll with j/k, Page Up/Down, or the mouse wheel                      │    
     │   r               Reset grouping, sorting, filter, and history                           │    
     │                                                                                          │    
-    │ ▎ Connection Display                                                                     │    
-    │   Full color  Active connection                                                          │    
-    │   Countdown   Idle; the ▎ stripe and ↓/↑ countdown run yellow to red until removal       │    
-    │   Gray        Historic closed connection                                                 │    
-    │   ~name       Hostname inferred from an observed DNS response                            │    
+    │ ▎ TCP Handshake Health                                                                   │    
+    │   Window & Scope  Outbound SYNs over fixed 5m (ignores Host window/filters; excludes     │    
+    │ inbound/midstream)                                                                       │    
+    │   Outcomes        Established (SYN-ACK + ACK), Reset (peer RST+ACK), No handshake        │    
+    │ (10s, not proof of loss), Superseded                                                     │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯

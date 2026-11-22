@@ -35,7 +35,10 @@ impl UiState {
                 &["Traffic", "Health", "Distribution"],
                 self.graph_section as usize,
             ),
-            4 => (&["Sockets", "Interfaces", "DNS"], self.host_view as usize),
+            4 => (
+                &["Findings", "Sockets", "Interfaces", "DNS resolvers"],
+                self.host_view as usize,
+            ),
             _ => (&[], 0),
         }
     }
@@ -74,7 +77,15 @@ impl UiState {
                     GraphSection::Distribution,
                 ][index]
             }
-            4 => self.host_view = [HostView::Sockets, HostView::Interfaces, HostView::Dns][index],
+            4 => {
+                self.return_to_finding = false;
+                self.host_view = [
+                    HostView::Findings,
+                    HostView::Sockets,
+                    HostView::Interfaces,
+                    HostView::Dns,
+                ][index];
+            }
             _ => {}
         }
     }
@@ -128,13 +139,31 @@ pub(super) fn draw_selector(
     if !state.section_navigation || labels.is_empty() || area.height == 0 {
         return area;
     }
-    let width =
-        labels.iter().map(|label| label.len()).sum::<usize>() + labels.len().saturating_sub(1) * 3;
+    let badge = if state.selected_tab == 4 {
+        state.health_badge.get()
+    } else {
+        Default::default()
+    };
+    let findings_suffix = (badge.attention_count() > 0).then(|| {
+        Span::styled(
+            format!(" ({})", badge.attention_count()),
+            super::theme::fg(badge.level().color()),
+        )
+    });
+    let width = labels.iter().map(|label| label.len()).sum::<usize>()
+        + findings_suffix.as_ref().map_or(0, Span::width)
+        + labels.len().saturating_sub(1) * 3;
     let mut strip = TabStrip::new(Span::raw(""));
     if width <= usize::from(area.width) {
         for (index, label) in labels.iter().enumerate() {
+            let mut spans = vec![tab_strip::title(*label, index == selected)];
+            if index == 0
+                && let Some(suffix) = &findings_suffix
+            {
+                spans.push(suffix.clone());
+            }
             strip.push(
-                vec![tab_strip::title(*label, index == selected)],
+                spans,
                 index == selected,
                 if index == 0 { 0 } else { 3 },
                 ClickAction::SelectSection(index),
@@ -147,15 +176,17 @@ pub(super) fn draw_selector(
             0,
             ClickAction::SelectSection((selected + labels.len() - 1) % labels.len()),
         );
-        strip.push(
-            vec![tab_strip::title(
-                format!("{} {}/{}", labels[selected], selected + 1, labels.len()),
-                true,
-            )],
+        let mut center = vec![tab_strip::title(labels[selected], true)];
+        if selected == 0
+            && let Some(suffix) = findings_suffix
+        {
+            center.push(suffix);
+        }
+        center.push(tab_strip::title(
+            format!(" {}/{}", selected + 1, labels.len()),
             true,
-            2,
-            ClickAction::SelectSection(selected),
-        );
+        ));
+        strip.push(center, true, 2, ClickAction::SelectSection(selected));
         strip.push(
             vec![tab_strip::title(">", false)],
             false,

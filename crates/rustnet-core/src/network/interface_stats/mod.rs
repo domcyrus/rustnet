@@ -26,6 +26,7 @@ pub use windows::capture_interface_alias;
 #[derive(Debug, Clone)]
 pub struct InterfaceStats {
     pub interface_name: String,
+    pub is_loopback: bool,
     pub rx_bytes: u64,
     pub tx_bytes: u64,
     pub rx_packets: u64,
@@ -141,6 +142,7 @@ mod tests {
     ) -> InterfaceStats {
         InterfaceStats {
             interface_name: "test".to_string(),
+            is_loopback: false,
             rx_bytes,
             tx_bytes,
             rx_packets,

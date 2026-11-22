@@ -1,5 +1,5 @@
 ---
-source: src/ui/mod.rs
+source: src/ui/snapshot_tests.rs
 expression: output
 ---
                                                                                                     
@@ -13,7 +13,7 @@ expression: output
     │   Page Up/Down  Move through connections by one page                                   ▐ │    
     │   Ctrl+B/F      Move through connections by one page                                   ▐ │    
     │   c             Copy the remote address                                                ▐ │    
-    │   Esc           Return to Overview                                                     ▐ │    
+    │   Esc           Return to the source finding or Overview                               ▐ │    
     │                                                                                        ▐ │    
     │ ▎ Transport Health                                                                     ▐ │    
     │   Window Size     Advertised receive windows: ↓ this host's, ↑ the remote's            ▐ │    

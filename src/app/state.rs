@@ -26,7 +26,7 @@ use crate::network::{
     process_activity::{ProcessActivitySnapshot, ProcessActivityTracker},
     services::ServiceLookup,
     time_window::TimeWindow,
-    tracker::ConnectionTracker,
+    tracker::{ConnectionTracker, TrackerConfig},
     types::{ApplicationProtocol, Connection, DnsQueryType, Protocol, TrafficHistory},
 };
 use rustnet_core::network::filter::ConnectionFilter;
@@ -317,12 +317,16 @@ impl App {
         let should_stop = runtime.stop_token();
 
         let stats = Arc::new(AppStats::with_capture_accounting(config.capture_accounting));
+        let tracker = Arc::new(ConnectionTracker::with_config(TrackerConfig {
+            ignore_localhost_health: config.filter_localhost,
+            ..TrackerConfig::default()
+        }));
         Ok(Self {
             config,
             lifecycle: Mutex::new(AppLifecycle::Created),
             should_stop,
             runtime,
-            tracker: Arc::new(ConnectionTracker::new()),
+            tracker,
             connections_snapshot: Arc::new(RwLock::new(Vec::new())),
             snapshot_generation: Arc::new(AtomicU64::new(0)),
             show_historic: Arc::new(AtomicBool::new(false)),
@@ -545,6 +549,12 @@ impl App {
             .collect()
     }
 
+    pub(crate) fn get_tcp_attempt_snapshot(
+        &self,
+    ) -> Arc<crate::network::tcp_attempts::TcpAttemptSnapshot> {
+        self.tracker.tcp_attempt_snapshot_at(SystemTime::now())
+    }
+
     /// Return passive DNS analytics for the latest rolling window.
     pub(crate) fn get_dns_analytics_snapshot(&self) -> DnsAnalyticsSnapshot {
         self.tracker.dns_analytics_snapshot()
@@ -553,6 +563,22 @@ impl App {
     pub(crate) fn get_dns_analytics_for_window(&self, window: TimeWindow) -> DnsAnalyticsSnapshot {
         self.tracker
             .dns_analytics_snapshot_for_window_at(std::time::SystemTime::now(), window)
+    }
+
+    pub(crate) fn should_filter_loopback_interface(&self, interface_name: &str) -> bool {
+        if !self.config.filter_localhost {
+            return false;
+        }
+        let is_loopback = self
+            .interface_stats
+            .get(interface_name)
+            .is_some_and(|stat| stat.is_loopback);
+        if !is_loopback {
+            return false;
+        }
+        self.get_current_interface()
+            .as_deref()
+            .is_none_or(|captured| captured != interface_name)
     }
 
     pub(crate) fn get_interface_errors(
@@ -570,6 +596,20 @@ impl App {
             tracker.snapshot(SystemTime::now(), window),
             tracker.since_clear(),
         )
+    }
+
+    pub(crate) fn get_health_interface_errors(
+        &self,
+        window: crate::network::time_window::TimeWindow,
+    ) -> (
+        HashMap<String, crate::network::interface_stats::InterfaceErrorCounts>,
+        bool,
+    ) {
+        let (mut errors, since_clear) = self.get_interface_errors(window);
+        if self.config.filter_localhost {
+            errors.retain(|name, _| !self.should_filter_loopback_interface(name));
+        }
+        (errors, since_clear)
     }
 
     pub(crate) fn get_network_event_snapshot(
@@ -1187,6 +1227,7 @@ mod activity_reset_tests {
     fn interface_sample(timestamp: SystemTime, rx_bytes: u64, tx_bytes: u64) -> InterfaceStats {
         InterfaceStats {
             interface_name: "eth0".to_string(),
+            is_loopback: false,
             rx_bytes,
             tx_bytes,
             rx_packets: 0,
@@ -1548,5 +1589,134 @@ mod lifecycle_tests {
         let (generation, connections) = app.get_filtered_connections_with_generation("");
         assert_eq!(generation, 1_000);
         assert_eq!(connections[0].remote_addr.port(), 1_000);
+    }
+
+    #[test]
+    fn filter_localhost_gates_app_health_counters_and_loopback_interface_errors() {
+        use crate::network::parser::{TcpFlags, TcpHeaderInfo};
+        use crate::network::types::TcpState;
+
+        let make_app = |filter_localhost: bool| {
+            App::new(Config {
+                filter_localhost,
+                resolve_dns: false,
+                disable_geoip: true,
+                ..Config::default()
+            })
+            .expect("test app")
+        };
+
+        let make_tcp = |local: &str, remote: &str, syn: bool, rst: bool, is_outgoing: bool| {
+            let mut packet = ParsedPacket::new(
+                Protocol::Tcp,
+                local.parse().unwrap(),
+                remote.parse().unwrap(),
+                ProtocolState::Tcp(TcpState::SynSent),
+                is_outgoing,
+                60,
+                None,
+                None,
+            );
+            packet.tcp_header = Some(TcpHeaderInfo {
+                seq: 1,
+                ack: if rst { 2 } else { 0 },
+                window: 65_535,
+                flags: TcpFlags {
+                    fin: false,
+                    syn,
+                    rst,
+                    ack: rst,
+                },
+                payload_len: 0,
+                window_scale: None,
+            });
+            packet
+        };
+
+        let now = SystemTime::now();
+        let filtered = make_app(true);
+        filtered.ingest_packet_at_for_test(
+            &make_tcp("127.0.0.1:40000", "127.0.0.1:8080", true, false, true),
+            now,
+        );
+        filtered.ingest_packet_at_for_test(
+            &make_tcp("127.0.0.1:40000", "127.0.0.1:8080", false, true, false),
+            now + Duration::from_millis(5),
+        );
+        assert_eq!(filtered.get_tcp_attempt_snapshot().total.completed, 0);
+        assert_eq!(
+            filtered
+                .get_network_event_snapshot(TimeWindow::SinceStartup)
+                .total
+                .observed()
+                .count(),
+            0
+        );
+
+        let unfiltered = make_app(false);
+        unfiltered.ingest_packet_at_for_test(
+            &make_tcp("127.0.0.1:40000", "127.0.0.1:8080", true, false, true),
+            now,
+        );
+        unfiltered.ingest_packet_at_for_test(
+            &make_tcp("127.0.0.1:40000", "127.0.0.1:8080", false, true, false),
+            now + Duration::from_millis(5),
+        );
+        assert_eq!(unfiltered.get_tcp_attempt_snapshot().total.reset, 1);
+        assert_eq!(
+            unfiltered
+                .get_network_event_snapshot(TimeWindow::SinceStartup)
+                .total
+                .get(crate::network::types::NetworkEventKind::TcpReset)
+                .received,
+            1
+        );
+
+        // Seed loopback + non-loopback interface drop deltas.
+        let sample = |name: &str, is_loopback: bool, rx_dropped: u64, timestamp: SystemTime| {
+            InterfaceStats {
+                interface_name: name.to_string(),
+                is_loopback,
+                rx_bytes: 100,
+                tx_bytes: 100,
+                rx_packets: 10,
+                tx_packets: 10,
+                rx_errors: 0,
+                tx_errors: 0,
+                rx_dropped,
+                tx_dropped: 0,
+                collisions: 0,
+                timestamp,
+            }
+        };
+        let seed_drops = |target: &App| {
+            let earlier = now - Duration::from_secs(10);
+            target.set_interface_stats_for_test("lo", sample("lo", true, 0, earlier));
+            target.set_interface_stats_for_test("eth0", sample("eth0", false, 0, earlier));
+            target.set_interface_stats_for_test("lo", sample("lo", true, 4, now));
+            target.set_interface_stats_for_test("eth0", sample("eth0", false, 2, now));
+        };
+
+        seed_drops(&filtered);
+        filtered.set_current_interface_for_test(Some("any".to_string()));
+        // Host > Interfaces retains lo; Findings > Interface drops excludes it.
+        let (all_errors, _) = filtered.get_interface_errors(TimeWindow::SinceStartup);
+        assert!(all_errors.contains_key("lo"));
+        let (health_errors, _) = filtered.get_health_interface_errors(TimeWindow::SinceStartup);
+        assert!(!health_errors.contains_key("lo"));
+        assert_eq!(health_errors["eth0"].rx_dropped, 2);
+
+        // Explicitly capturing on `lo` includes `lo` even without --show-localhost.
+        filtered.set_current_interface_for_test(Some("lo".to_string()));
+        let (explicit_lo_errors, _) =
+            filtered.get_health_interface_errors(TimeWindow::SinceStartup);
+        assert_eq!(explicit_lo_errors["lo"].rx_dropped, 4);
+
+        // --show-localhost includes `lo` under `any`.
+        seed_drops(&unfiltered);
+        unfiltered.set_current_interface_for_test(Some("any".to_string()));
+        let (unfiltered_health_errors, _) =
+            unfiltered.get_health_interface_errors(TimeWindow::SinceStartup);
+        assert_eq!(unfiltered_health_errors["lo"].rx_dropped, 4);
     }
 }

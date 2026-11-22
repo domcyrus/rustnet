@@ -168,7 +168,14 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             if clipboard {
                 hints.push(Hint::action("c", "copy remote addr"));
             }
-            hints.push(Hint::action("esc", "back"));
+            hints.push(Hint::action(
+                "esc",
+                if ui_state.return_to_finding {
+                    "findings"
+                } else {
+                    "back"
+                },
+            ));
             hints
         }
         // Activity
@@ -235,24 +242,54 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             hints.push(Hint::action("esc", "back"));
             hints
         }
-        // Host
+        4 if ui_state.host_view == HostView::Findings => {
+            let cursor = ui_state.health_cursor.borrow();
+            let expanded = cursor
+                .target
+                .as_ref()
+                .is_some_and(|t| ui_state.expanded_findings.contains(&t.finding()));
+            let mut hints = vec![
+                Hint::action("↑/↓", "select"),
+                Hint::action("space", if expanded { "collapse" } else { "expand" }),
+            ];
+            if cursor.link.is_some() {
+                hints.push(Hint::action("enter", "open"));
+            }
+            if clipboard && cursor.copyable {
+                hints.push(Hint::action("c", "copy"));
+            }
+            if ui_state.health_scroll.can_scroll() {
+                hints.push(Hint::action("pgup/dn", "page"));
+            }
+            hints.push(Hint::action("w", "window"));
+            hints.push(Hint::action("esc", "back"));
+            hints
+        }
         4 => {
-            // Only advertise scrolling when the
-            // table actually outgrew its pane.
             let scroll = match ui_state.host_view {
                 HostView::Sockets => &ui_state.host_sockets_scroll,
                 HostView::Interfaces => &ui_state.interfaces_scroll,
                 HostView::Dns => &ui_state.dns_questions_scroll,
+                HostView::Findings => unreachable!("handled by guarded Findings arm"),
             };
             let mut hints = Vec::new();
             if scroll.can_scroll() {
                 hints.push(Hint::action("j/k", "scroll"));
             }
-            hints.push(Hint::action("w", "window"));
+            if ui_state.host_view != HostView::Sockets {
+                hints.push(Hint::action("w", "window"));
+            }
             if ui_state.host_view == HostView::Dns {
                 hints.push(Hint::action("o", "sort"));
             }
-            hints.push(Hint::action("esc", "back"));
+            hints.push(Hint::action(
+                "esc",
+                if ui_state.return_to_finding {
+                    "findings"
+                } else {
+                    "back"
+                },
+            ));
             hints
         }
         _ => vec![Hint::action("esc", "back")],

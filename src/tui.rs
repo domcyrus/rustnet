@@ -150,8 +150,17 @@ where
         // Handle input events, draining any queued burst (mouse motion,
         // key auto-repeat) before the next iteration so a flood of
         // events costs one redraw instead of one redraw per event.
+        let rendered_tab = ui_state.selected_tab;
         let mut poll_timeout = timeout;
         'events: while crossterm::event::poll(poll_timeout)? {
+            // Evidence links and pane bounds come from the last frame. Rebuild them
+            // before a queued click or key can act on a different view or folded tree.
+            if needs_redraw
+                && (ui_state.selected_tab != rendered_tab
+                    || (ui_state.selected_tab == 4 && ui_state.host_view == ui::HostView::Findings))
+            {
+                break 'events;
+            }
             poll_timeout = Duration::ZERO;
             let event = crossterm::event::read()?;
             match event {
@@ -208,6 +217,9 @@ where
                                     ui::ClickAction::SelectSection(index) => {
                                         ui_state.select_section(index);
                                     }
+                                    ui::ClickAction::OpenFinding(finding) => {
+                                        ui_state.open_finding(finding);
+                                    }
                                     ui::ClickAction::SelectActivityProcess(identity) => {
                                         ui_state.activity_list().borrow_mut().selected =
                                             Some(identity);
@@ -216,7 +228,7 @@ where
                                         }
                                     }
                                     ui::ClickAction::SwitchTab(tab_idx) => {
-                                        ui_state.selected_tab = tab_idx;
+                                        ui_state.jump_to_tab(tab_idx);
                                     }
                                     ui::ClickAction::SelectConnection(conn_idx) => {
                                         if ui_state.grouping_enabled {
@@ -235,7 +247,7 @@ where
                                                     }
                                                     ui::GroupedRow::Connection { .. } => {
                                                         // Double-click connection: open Details tab
-                                                        ui_state.selected_tab = 1;
+                                                        ui_state.jump_to_tab(1);
                                                     }
                                                 }
                                             }
@@ -243,7 +255,7 @@ where
                                             ui_state.set_selected_by_index(&connections, conn_idx);
                                             if is_double_click {
                                                 // Double-click connection in flat view: open Details tab
-                                                ui_state.selected_tab = 1;
+                                                ui_state.jump_to_tab(1);
                                             }
                                         }
                                     }
@@ -369,17 +381,6 @@ where
                             | (KeyCode::Char('['), KeyModifiers::NONE) => {
                                 ui_state.prev_tab();
                             }
-
-                            // Direct-jump shortcuts to each tab (mirrors the
-                            // numeric-jump convention used by htop, tmux, etc.).
-                            // Tab indices match `TAB_TITLES` in
-                            // `ui::widgets::tabs_bar`: Overview, Details,
-                            // Activity, Graph, Host.
-                            (KeyCode::Char('1'), KeyModifiers::NONE) => ui_state.jump_to_tab(0),
-                            (KeyCode::Char('2'), KeyModifiers::NONE) => ui_state.jump_to_tab(1),
-                            (KeyCode::Char('3'), KeyModifiers::NONE) => ui_state.jump_to_tab(2),
-                            (KeyCode::Char('4'), KeyModifiers::NONE) => ui_state.jump_to_tab(3),
-                            (KeyCode::Char('5'), KeyModifiers::NONE) => ui_state.jump_to_tab(4),
 
                             // Help overlay, kept because `h` is the universal
                             // mnemonic for help across less / man / vim / tmux.

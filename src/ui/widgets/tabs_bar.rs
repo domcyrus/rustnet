@@ -13,11 +13,14 @@ use ratatui::{Frame, layout::Rect, text::Span};
 
 use crate::ui::{ClickAction, ClickableRegions, UiState, theme};
 
-pub(crate) const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Activity", "Graph", "Host"];
+pub(crate) const TAB_TITLES: [&str; 5] =
+    ["Overview", "Details", "Activity", "Graph", "Health & Host"];
 /// Total number of tabs (kept in sync with `TAB_TITLES`).
 pub(crate) const TAB_COUNT: usize = TAB_TITLES.len();
-/// Index of the Overview tab, the only tab with an activity dot so far.
+/// Index of the Overview tab (shows an activity dot when filtering).
 const OVERVIEW_TAB_INDEX: usize = 0;
+/// Index of the Health & Host tab (shows a severity indicator when findings need attention).
+const HEALTH_TAB_INDEX: usize = 4;
 
 /// Height of the tab bar in rows (titles + underline).
 pub(crate) const TABS_BAR_HEIGHT: u16 = super::tab_strip::HEIGHT;
@@ -91,19 +94,23 @@ pub(in crate::ui) fn draw_tabs(
     area: Rect,
     click_regions: &mut ClickableRegions,
 ) {
-    let mut strip = super::tab_strip::TabStrip::new(Span::styled(BRAND, theme::primary()));
+    let mut strip = super::tab_strip::TabStrip::new(Span::styled(
+        if area.width < 24 { "" } else { BRAND },
+        theme::primary(),
+    ));
 
     // Keep every view reachable when the terminal is narrow. Preserve the
     // numbered shortcuts while reducing gaps, then labels to their shortcut numbers.
-    let tab_gap = if area.width < 72 { 1 } else { TAB_GAP };
-    let short_labels = area.width < 60;
-    let numbers_only = area.width < 46;
+    let tab_gap = if area.width < 84 { 1 } else { TAB_GAP };
+    let short_labels = area.width < 68;
+    let numbers_only = area.width < 48;
+    let health_badge = ui_state.health_badge.get();
     for (i, title) in TAB_TITLES.iter().enumerate() {
         // Numbered titles: the 1-5 jump shortcut becomes discoverable.
         let title = if numbers_only {
             ""
         } else if short_labels {
-            ["Ovr", "Dtl", "Act", "Graph", "Host"][i]
+            ["Ovr", "Dtl", "Act", "Graph", "Health"][i]
         } else {
             title
         };
@@ -130,6 +137,14 @@ pub(in crate::ui) fn draw_tabs(
         }
         if dotted {
             title_spans.push(Span::styled(ACTIVITY_DOT, theme::fg(theme::accent())));
+        }
+        if i == HEALTH_TAB_INDEX && health_badge.attention_count() > 0 {
+            let (glyph, color) = if health_badge.errors > 0 {
+                (" !", theme::err())
+            } else {
+                (" •", theme::warn())
+            };
+            title_spans.push(Span::styled(glyph, theme::fg(color)));
         }
 
         strip.push(title_spans, active, tab_gap, ClickAction::SwitchTab(i));

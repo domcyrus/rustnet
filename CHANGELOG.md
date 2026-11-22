@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
 
 ### Changed
+- Skip TCP attempt mutex locking on steady-state established packets when no handshakes are pending (#734)
+- Keep Overview's TCP handshake summary on one compact line while quiet or healthy, expanding when issues appear, and make sidebar DNS/TCP health rows jump directly to Findings (#734)
+- Show a severity indicator on `5 Health & Host` in the tab bar, attention counts on `Findings`, and trailing action chips on linked evidence rows (#734)
+- Reduce TCP attempt lookups and reclaim expired entries before counting capacity omissions (#734)
+- Reuse unchanged TCP health snapshots, preserve exact expiry deadlines, and select recent issues without sorting all retained attempts (#734)
+- Share TCP destination ranking and health help between Overview and Findings (#734)
 - Skip process ownership accounting work on the default packet ingestion path (#721)
 - Speed up executable-path conversion in headless snapshots while preserving path encoding (#721)
 - Retain only directory traversal privileges in the Windows sandbox while preserving token groups and integrity level (#721)
@@ -23,12 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
+- Sort findings by severity while preserving the selected finding and evidence position (#734)
+- Align health colors across Findings, Overview, Details and host inventory, and leave zero error counts neutral (#734)
+- Combine Findings, Sockets, Interfaces and DNS resolvers in 5 Health & Host, with a single expandable list, item-by-item navigation and return links (#734)
+- Track outbound TCP attempts with inline destination evidence, matching connection Details and a five-minute headless JSON summary (#734)
+- Show inline TCP handshake health and the worst affected destination in Overview, with recovered-anomaly counts and contextual help (#734)
 - Add headless automation controls, opt-in full metadata and capture accounting, and guarded Linux executable retention (#721)
 - Add opt-in incremental headless JSONL with sequence checks, bounded baselines, and periodic full snapshots for resynchronization (#719)
-- Add shared Host timeframes for network events and interface errors, keeping cumulative totals visible
+- Add shared observation windows for network events and interface errors, keeping cumulative totals visible
 - Show per-resolver DNS health, retries, pending age, selectable 60s/5m/1h/since-startup windows, and 15-minute recent issue evidence in Host
 - Log cached local listening/bound port status on incoming new TCP/UDP connections (#682)
-- Show observed TCP resets and ICMP errors in Host, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
+- Show observed TCP resets and ICMP errors in Health, with sent/received counts and best-effort TCP/UDP error correlation in Details (#683)
 - Retire observed TCP/UDP flows after confirmed socket disappearance on macOS, Windows, and FreeBSD; keep timeout fallback for incomplete or restricted inventories (#684)
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 

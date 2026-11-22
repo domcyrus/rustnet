@@ -14,7 +14,7 @@ use std::time::SystemTime;
 
 /// Walk the `getifaddrs` list and build stats from every `AF_LINK` entry.
 fn collect_af_link_stats(
-    extract: impl Fn(&libc::if_data, String) -> InterfaceStats,
+    extract: impl Fn(&libc::if_data, String, bool) -> InterfaceStats,
 ) -> Result<Vec<InterfaceStats>, io::Error> {
     unsafe {
         let mut ifap: *mut libc::ifaddrs = ptr::null_mut();
@@ -32,9 +32,10 @@ fn collect_af_link_stats(
                 && addr.sa_family as i32 == libc::AF_LINK
             {
                 let name = CStr::from_ptr(ifa.ifa_name).to_string_lossy().to_string();
+                let is_loopback = (ifa.ifa_flags & (libc::IFF_LOOPBACK as u32)) != 0;
 
                 if let Some(if_data) = (ifa.ifa_data as *const libc::if_data).as_ref() {
-                    stats.push(extract(if_data, name));
+                    stats.push(extract(if_data, name, is_loopback));
                 }
             }
 
@@ -77,12 +78,13 @@ impl InterfaceStatsProvider for MacOSStatsProvider {
     fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error> {
         // Apple's if_data carries u32 counters; widen them and sanitize the
         // error/drop fields (may contain garbage on virtual interfaces).
-        collect_af_link_stats(|if_data, name| {
+        collect_af_link_stats(|if_data, name, is_loopback| {
             let total_rx_packets = if_data.ifi_ipackets;
             let total_tx_packets = if_data.ifi_opackets;
 
             InterfaceStats {
                 interface_name: name,
+                is_loopback,
                 rx_bytes: if_data.ifi_ibytes as u64,
                 tx_bytes: if_data.ifi_obytes as u64,
                 rx_packets: total_rx_packets as u64,
@@ -109,8 +111,9 @@ pub struct FreeBSDStatsProvider;
 impl InterfaceStatsProvider for FreeBSDStatsProvider {
     fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error> {
         // FreeBSD's if_data counters are already u64.
-        collect_af_link_stats(|if_data, name| InterfaceStats {
+        collect_af_link_stats(|if_data, name, is_loopback| InterfaceStats {
             interface_name: name,
+            is_loopback,
             rx_bytes: if_data.ifi_ibytes,
             tx_bytes: if_data.ifi_obytes,
             rx_packets: if_data.ifi_ipackets,

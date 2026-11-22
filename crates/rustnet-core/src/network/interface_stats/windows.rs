@@ -99,8 +99,12 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
                     continue;
                 }
 
+                // IANA softwareLoopback interface type (IF_TYPE_SOFTWARE_LOOPBACK).
+                const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24;
+
                 let stat = InterfaceStats {
                     interface_name: name.clone(),
+                    is_loopback: row.Type == IF_TYPE_SOFTWARE_LOOPBACK,
                     rx_bytes: row.InOctets,
                     tx_bytes: row.OutOctets,
                     rx_packets: row.InUcastPkts + row.InNUcastPkts,

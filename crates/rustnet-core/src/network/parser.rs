@@ -94,6 +94,18 @@ impl ParsedPacket {
     pub fn connection_key(&self) -> ConnectionKey {
         ConnectionKey::new(self.protocol, self.local_addr, self.remote_addr)
     }
+
+    /// Whether this packet represents loopback-only traffic (`127.0.0.0/8` or
+    /// `::1` on both endpoints), including ICMP errors quoting a loopback flow.
+    #[inline]
+    pub fn is_loopback(&self) -> bool {
+        (self.local_addr.ip().is_loopback() && self.remote_addr.ip().is_loopback())
+            || self.icmp_error.as_ref().is_some_and(|error| {
+                error.quoted_connection.is_some_and(|key| {
+                    key.local_addr.ip().is_loopback() && key.remote_addr.ip().is_loopback()
+                })
+            })
+    }
 }
 
 /// Shared test constructors so each test module builds only the fields its

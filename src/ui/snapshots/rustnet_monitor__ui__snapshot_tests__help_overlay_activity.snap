@@ -1,5 +1,5 @@
 ---
-source: src/ui/mod.rs
+source: src/ui/snapshot_tests.rs
 expression: output
 ---
                                                                                                     
@@ -27,7 +27,7 @@ expression: output
     │   Scope            All captured traffic; Overview filters do not apply                   │    
     │   Attribution      Mapped share of retained traffic, not the 60s window                  │    
     │   Conns            Active connections / retained connections                             │    
-    │   Interfaces       Browse interface counters in Host (5)                                 │    
+    │   Interfaces       Browse counters in Health & Host > Interfaces                         │    
     │   60s coverage     Captured connection traffic divided by interface traffic              │    
     │   Retained         Active traffic plus recently closed connections                       │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯
