@@ -685,12 +685,7 @@ pub(in crate::ui) fn mirrored_wave_panel(
     }
 }
 
-fn render_mirrored_y_axis(
-    f: &mut Frame,
-    area: Rect,
-    max_val: f64,
-    orientation: WaveOrientation,
-) {
+fn render_mirrored_y_axis(f: &mut Frame, area: Rect, max_val: f64, orientation: WaveOrientation) {
     if area.width == 0 || area.height == 0 {
         return;
     }
