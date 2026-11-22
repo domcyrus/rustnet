@@ -112,7 +112,7 @@ impl HealthInputs {
     fn collect(app: &App, stats: &AppStats, window: TimeWindow) -> Self {
         let tcp = app.get_tcp_attempt_snapshot();
         let events = app.get_network_event_snapshot(window);
-        let (interfaces, interfaces_since_clear) = app.get_interface_errors(window);
+        let (interfaces, interfaces_since_clear) = app.get_health_interface_errors(window);
         let dns = app.get_dns_analytics_for_window(window);
         let capture_error = app.capture_error();
         let queue = stats.packets_dropped.load(Relaxed);

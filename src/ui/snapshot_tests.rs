@@ -1013,6 +1013,7 @@ fn host_interface_columns_expand_and_keep_large_values_aligned() {
         name,
         InterfaceStats {
             interface_name: name.into(),
+            is_loopback: false,
             rx_bytes: 0,
             tx_bytes: 0,
             rx_packets: u64::MAX,
@@ -2000,6 +2001,7 @@ fn host_interfaces_keep_rate_digits_and_scroll_every_record() {
             name,
             InterfaceStats {
                 interface_name: name.to_string(),
+                is_loopback: false,
                 rx_bytes: 1,
                 tx_bytes: 1,
                 rx_packets: 123456789,
@@ -2167,6 +2169,7 @@ fn host_interface_windows_preserve_os_totals_and_clear_observed_counts() {
     let now = SystemTime::now();
     let mut stat = InterfaceStats {
         interface_name: "test0".into(),
+        is_loopback: false,
         rx_bytes: 0,
         tx_bytes: 0,
         rx_packets: 900,
@@ -3165,6 +3168,7 @@ fn host_interface_details() {
         "eth0",
         InterfaceStats {
             interface_name: "eth0".to_string(),
+            is_loopback: false,
             rx_bytes: 1_500_000_000,
             tx_bytes: 250_000_000,
             rx_packets: 1_200_000,

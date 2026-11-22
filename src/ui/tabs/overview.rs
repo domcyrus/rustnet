@@ -1648,7 +1648,11 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
             all_interface_stats
                 .into_iter()
                 .filter(|s| {
-                    s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0
+                    !app.should_filter_loopback_interface(&s.interface_name)
+                        && (s.rx_bytes > 0
+                            || s.tx_bytes > 0
+                            || s.rx_packets > 0
+                            || s.tx_packets > 0)
                 })
                 .collect()
         } else {
@@ -1660,7 +1664,10 @@ fn interface_error_lines(app: &App, max_interfaces: usize) -> Vec<Line<'static>>
     } else {
         all_interface_stats
             .into_iter()
-            .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
+            .filter(|s| {
+                !app.should_filter_loopback_interface(&s.interface_name)
+                    && (s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
+            })
             .collect()
     };
 

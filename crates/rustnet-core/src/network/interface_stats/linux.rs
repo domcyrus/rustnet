@@ -21,6 +21,7 @@ impl LinuxStatsProvider {
 
         Ok(InterfaceStats {
             interface_name: interface.to_string(),
+            is_loopback: is_loopback_interface(interface),
             rx_bytes: read_stat(&base_path, "rx_bytes")?,
             tx_bytes: read_stat(&base_path, "tx_bytes")?,
             rx_packets: read_stat(&base_path, "rx_packets")?,
@@ -53,6 +54,21 @@ impl InterfaceStatsProvider for LinuxStatsProvider {
     }
 }
 
+/// Read `/sys/class/net/<interface>/flags` and test `IFF_LOOPBACK` (`0x8`),
+/// falling back to the standard `"lo"` name if flags cannot be read.
+fn is_loopback_interface(interface: &str) -> bool {
+    const IFF_LOOPBACK: u32 = 0x8;
+    let path = format!("/sys/class/net/{interface}/flags");
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| {
+            let trimmed = content.trim();
+            let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+            u32::from_str_radix(hex, 16).ok()
+        })
+        .map_or(interface == "lo", |flags| (flags & IFF_LOOPBACK) != 0)
+}
+
 /// Read a single statistic from sysfs
 fn read_stat(base_path: &str, stat_name: &str) -> Result<u64, io::Error> {
     let path = format!("{}/{}", base_path, stat_name);
@@ -78,6 +94,7 @@ mod tests {
         match result {
             Ok(stats) => {
                 assert_eq!(stats.interface_name, "lo");
+                assert!(stats.is_loopback);
             }
             Err(e) => {
                 // Acceptable errors: NotFound or PermissionDenied

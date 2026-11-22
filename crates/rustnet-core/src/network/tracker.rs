@@ -167,6 +167,11 @@ pub struct TrackerConfig {
     /// wire shortly before the connection appeared. Purely passive; consumers
     /// that don't display hostnames can set this to `false`.
     pub dns_attribution: bool,
+    /// Whether loopback-only packets (`127.0.0.0/8` or `::1` on both endpoints)
+    /// are excluded from aggregate health and latency counters (`tcp_attempts`,
+    /// `network_events`, `rtt`). Passive DNS analytics and attribution stay
+    /// active so local stub resolvers such as `127.0.0.53:53` keep working.
+    pub ignore_localhost_health: bool,
 }
 
 impl Default for TrackerConfig {
@@ -177,6 +182,7 @@ impl Default for TrackerConfig {
             max_quic_mappings: 10_000,
             keep_historic: true,
             dns_attribution: true,
+            ignore_localhost_health: false,
         }
     }
 }
@@ -402,6 +408,17 @@ impl ConnectionTracker {
         (outcome, attributed)
     }
 
+    /// Whether this tracker suppresses loopback-only packets from aggregate
+    /// health and latency counters.
+    pub fn ignores_localhost_health(&self) -> bool {
+        self.config.ignore_localhost_health
+    }
+
+    #[inline]
+    fn suppress_localhost_health(&self, parsed: &ParsedPacket) -> bool {
+        self.config.ignore_localhost_health && parsed.is_loopback()
+    }
+
     fn ingest_at_impl(
         &self,
         parsed: &ParsedPacket,
@@ -419,7 +436,12 @@ impl ConnectionTracker {
             _ => {}
         }
 
-        let timings = self.measure_timings(parsed, now);
+        let suppress_health = self.suppress_localhost_health(parsed);
+        let timings = if suppress_health {
+            PacketTimings::default()
+        } else {
+            self.measure_timings(parsed, now)
+        };
         if parsed.protocol == Protocol::Udp
             && let Some(dpi) = &parsed.dpi_result
             && let ApplicationProtocol::Dns(dns) = &dpi.application
@@ -448,7 +470,8 @@ impl ConnectionTracker {
 
         let outcome = self.ingest_update(parsed, now, timings, |connection| {
             observe_owner(connection.map(|(_, attributed)| attributed));
-            if parsed.protocol == Protocol::Tcp
+            if !suppress_health
+                && parsed.protocol == Protocol::Tcp
                 && let Some(tcp) = &parsed.tcp_header
                 && ((parsed.is_outgoing
                     && tcp.flags.syn
@@ -519,7 +542,7 @@ impl ConnectionTracker {
             let observation = (conn.created_at, conn.pid.is_some());
             drop(conn);
             observe(Some(observation));
-            return self.finish_ingest(key, false, deltas);
+            return self.finish_ingest(key, false, deltas, self.suppress_localhost_health(parsed));
         }
 
         if self.is_recent_late_packet(key, parsed, now) {
@@ -555,10 +578,12 @@ impl ConnectionTracker {
         } else {
             return;
         };
-        self.network_events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record(kind, parsed.is_outgoing, now);
+        if !self.suppress_localhost_health(parsed) {
+            self.network_events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record(kind, parsed.is_outgoing, now);
+        }
 
         if let Some(error) = &parsed.icmp_error
             && let Some(key) = error.quoted_connection
@@ -805,7 +830,7 @@ impl ConnectionTracker {
         drop(conn);
         observe(Some(observation));
 
-        self.finish_ingest(key, created, deltas)
+        self.finish_ingest(key, created, deltas, self.suppress_localhost_health(parsed))
     }
 
     /// Finish an update after releasing the connection's shard guard. RTT
@@ -815,11 +840,13 @@ impl ConnectionTracker {
         key: ConnectionKey,
         created: bool,
         deltas: TcpMergeEvents,
+        suppress_health: bool,
     ) -> IngestOutcome {
         // Feed completed data round trips into the aggregate view, so the
         // average RTT reflects established connections rather than only the
         // handshakes of freshly opened ones.
-        if let Some(rtt) = deltas.rtt_sample
+        if !suppress_health
+            && let Some(rtt) = deltas.rtt_sample
             && let Ok(mut tracker) = self.rtt.lock()
         {
             tracker.record_data_rtt(rtt);
@@ -3153,6 +3180,145 @@ mod tests {
         assert_eq!(
             tracker.dns_analytics_snapshot_at(dns_at + Duration::from_millis(15)),
             DnsAnalyticsSnapshot::default()
+        );
+    }
+
+    #[test]
+    fn ignore_localhost_health_suppresses_loopback_health_counters_but_keeps_dns_stubs() {
+        use crate::network::parser::ParsedIcmpError;
+        use crate::network::types::IcmpError;
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            ignore_localhost_health: true,
+            ..TrackerConfig::default()
+        });
+        let t0 = SystemTime::now();
+
+        // IPv4 and IPv6 loopback TCP handshakes ending in RST must not count in
+        // TCP attempt findings or network events.
+        for (local, remote) in [
+            (
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 40_001),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080),
+            ),
+            (
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 40_002),
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8080),
+            ),
+        ] {
+            let mut syn = tcp_packet(true, false, false, false, true);
+            syn.local_addr = local;
+            syn.remote_addr = remote;
+            tracker.ingest_at(&syn, t0);
+
+            let mut rst = tcp_packet(false, true, false, true, false);
+            rst.local_addr = local;
+            rst.remote_addr = remote;
+            rst.tcp_header.as_mut().unwrap().ack = 1_001;
+            tracker.ingest_at(&rst, t0 + Duration::from_millis(5));
+        }
+
+        // Loopback ICMP error (both direct loopback and non-loopback outer
+        // quoting a loopback flow) must not count in network events.
+        let mut icmp_loopback = loopback_echo_packet(1, 1, false);
+        icmp_loopback.icmp_error = Some(Box::new(ParsedIcmpError {
+            error: IcmpError {
+                ipv6: false,
+                message_type: 3,
+                code: 3,
+                kind: NetworkEventKind::PortUnreachable,
+                reporter: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                mtu: None,
+            },
+            quoted_connection: None,
+        }));
+        tracker.ingest_at(&icmp_loopback, t0 + Duration::from_millis(6));
+
+        let mut icmp_quoted_loopback = icmp_echo_packet(2, 1, false, false);
+        icmp_quoted_loopback.icmp_error = Some(Box::new(ParsedIcmpError {
+            error: IcmpError {
+                ipv6: false,
+                message_type: 3,
+                code: 3,
+                kind: NetworkEventKind::PortUnreachable,
+                reporter: "192.0.2.1".parse().unwrap(),
+                mtu: None,
+            },
+            quoted_connection: Some(ConnectionKey::new(
+                Protocol::Udp,
+                "127.0.0.1:41000".parse().unwrap(),
+                "127.0.0.1:9000".parse().unwrap(),
+            )),
+        }));
+        tracker.ingest_at(&icmp_quoted_loopback, t0 + Duration::from_millis(7));
+
+        // Loopback SYN/SYN-ACK and loopback ping must not pollute aggregate RTT.
+        let mut lo_syn = tcp_packet(true, false, false, false, true);
+        lo_syn.local_addr = "127.0.0.1:40010".parse().unwrap();
+        lo_syn.remote_addr = "127.0.0.1:8081".parse().unwrap();
+        tracker.ingest_at(&lo_syn, t0);
+        let mut lo_syn_ack = tcp_packet(true, true, false, false, false);
+        lo_syn_ack.local_addr = lo_syn.local_addr;
+        lo_syn_ack.remote_addr = lo_syn.remote_addr;
+        tracker.ingest_at(&lo_syn_ack, t0 + Duration::from_millis(1));
+        tracker.ingest_at(&loopback_echo_packet(9, 1, false), t0);
+        tracker.ingest_at(
+            &loopback_echo_packet(9, 1, true),
+            t0 + Duration::from_millis(1),
+        );
+
+        let attempts = tracker.tcp_attempt_snapshot_at(t0 + Duration::from_secs(10));
+        assert_eq!(attempts.total.completed, 0);
+        assert_eq!(attempts.pending, 0);
+        assert_eq!(tracker.network_event_counts().observed().count(), 0);
+        assert!(tracker.take_average_rtt(60).is_none());
+
+        // Loopback DNS stub traffic (e.g. systemd-resolved at 127.0.0.53:53)
+        // stays visible in DNS analytics and still feeds passive attribution.
+        let stub_client: SocketAddr = "127.0.0.1:53123".parse().unwrap();
+        let stub_server: SocketAddr = "127.0.0.53:53".parse().unwrap();
+        let mut stub_query = dns_packet(42, true, false, 0);
+        stub_query.local_addr = stub_client;
+        stub_query.remote_addr = stub_server;
+        tracker.ingest_at(&stub_query, t0 + Duration::from_millis(10));
+
+        let answered_ip: IpAddr = "203.0.113.80".parse().unwrap();
+        let mut stub_reply = dns_answer_packet(42, "example.com", &[answered_ip]);
+        stub_reply.local_addr = stub_client;
+        stub_reply.remote_addr = stub_server;
+        tracker.ingest_at(&stub_reply, t0 + Duration::from_millis(25));
+
+        let dns_snapshot = tracker.dns_analytics_snapshot_at(t0 + Duration::from_millis(25));
+        assert_eq!(dns_snapshot.lookups, 1);
+        assert_eq!(dns_snapshot.answered, 1);
+        assert!(
+            tracker.take_average_rtt(60).is_none(),
+            "loopback DNS latency should stay in dns_analytics without polluting aggregate RTT"
+        );
+
+        let ext = tracker.ingest_at(&plain_udp_packet(), t0 + Duration::from_millis(30));
+        assert_eq!(
+            tracker
+                .connections()
+                .get(&ext.key)
+                .and_then(|conn| conn.attributed_hostname.as_ref().map(|a| a.name.clone())),
+            Some("example.com".to_string())
+        );
+
+        // Non-loopback health signals still record normally.
+        tracker.ingest_at(&tcp_packet(true, false, false, false, true), t0);
+        let mut remote_rst = tcp_packet(false, true, false, true, false);
+        remote_rst.tcp_header.as_mut().unwrap().ack = 1_001;
+        tracker.ingest_at(&remote_rst, t0 + Duration::from_millis(20));
+        let attempts = tracker.tcp_attempt_snapshot_at(t0 + Duration::from_secs(1));
+        assert_eq!(attempts.total.reset, 1);
+        assert_eq!(
+            tracker
+                .network_event_counts()
+                .get(NetworkEventKind::TcpReset)
+                .received,
+            1
         );
     }
 }

@@ -294,12 +294,12 @@ RustNet automatically detects TUN/TAP interfaces and adjusts packet parsing acco
 
 #### `--no-localhost` / `--show-localhost`
 
-Control whether localhost (127.0.0.1/::1) connections are displayed.
+Control whether localhost (`127.0.0.0/8` and `::1`) traffic is shown and counted.
 
-- **Default**: Localhost connections are filtered out (`--no-localhost`)
-- **Override**: Use `--show-localhost` to see localhost connections
+- **Default**: Localhost connections are filtered out (`--no-localhost`). Loopback traffic is also excluded from TCP handshake findings, TCP resets/ICMP event counts, TCP retransmit/loss totals, aggregate RTT, and loopback interface drop findings (unless capturing explicitly on a loopback interface such as `-i lo` / `-i lo0`). Passive DNS analytics and hostname attribution remain active for local stub resolvers (such as `127.0.0.53:53`).
+- **Override**: Use `--show-localhost` to include localhost connections and loopback health counters.
 
-This is useful for reducing noise in the connection list, as most users don't need to monitor local IPC connections.
+This is useful for reducing noise in the connection list and health summaries, as most users don't need to monitor local IPC traffic.
 
 #### `-r, --refresh-interval <MILLISECONDS>`
 

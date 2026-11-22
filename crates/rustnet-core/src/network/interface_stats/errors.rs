@@ -117,6 +117,7 @@ mod tests {
     fn stat(seconds: u64, count: u64) -> InterfaceStats {
         InterfaceStats {
             interface_name: "test0".into(),
+            is_loopback: false,
             rx_bytes: 0,
             tx_bytes: 0,
             rx_packets: 0,
