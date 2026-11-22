@@ -13,7 +13,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{UiState, theme};
+use crate::ui::{UiState, cell_borders, theme};
 
 /// Height of the filter line in rows.
 pub(crate) const FILTER_INPUT_HEIGHT: u16 = 1;
@@ -37,6 +37,14 @@ pub(in crate::ui) fn draw_filter_input(f: &mut Frame, ui_state: &UiState, area: 
         Span::raw(query),
     ]);
     let hint_line = Line::from(Span::styled(hint, theme::fg(theme::muted()))).right_aligned();
+
+    cell_borders::edge(
+        Rect::new(area.x, area.y, area.width, area.height.min(1)),
+        cell_borders::BOTTOM,
+        theme::accent(),
+        1,
+        false,
+    );
 
     // Hint first, query second: when the terminal is too narrow for both,
     // the query (rendered later) wins the overlap.

@@ -350,7 +350,9 @@ const TRAFFIC_MIN_HEIGHT: u16 = 4;
 /// Compact Security keeps its heading and overall sandbox status visible.
 const COMPACT_SECURITY_HEIGHT: u16 = 2;
 const NETWORK_STATS_HEIGHT: u16 = 6;
-const SECTION_GAP_HEIGHT: u16 = 1;
+fn section_gap_height() -> u16 {
+    u16::from(!crate::ui::cell_borders::enabled())
+}
 
 /// The sidebar has `SYSTEM_PANEL_WIDTH` minus the rule and padding to play
 /// with, so labels here are kept short enough that `Detection: <label>` stays
@@ -407,7 +409,7 @@ fn security_details_fit(area_height: u16, stats_height: u16, full_security_heigh
     let required_height = stats_height
         .saturating_add(NETWORK_STATS_HEIGHT)
         .saturating_add(TRAFFIC_MIN_HEIGHT)
-        .saturating_add(SECTION_GAP_HEIGHT * 3)
+        .saturating_add(section_gap_height() * 3)
         .saturating_add(full_security_height);
     area_height >= required_height
 }
@@ -788,6 +790,17 @@ fn group_header_row<'a>(
 /// Render a single-row horizontal rule between sections, styled with the
 /// theme border color so it matches every other rule in the chrome.
 fn render_section_separator(f: &mut Frame, area: Rect) {
+    if crate::ui::cell_borders::enabled() {
+        // A zero-height layout gap marks the top edge of the next section.
+        crate::ui::cell_borders::edge(
+            Rect::new(area.x, area.y, area.width, 1),
+            crate::ui::cell_borders::TOP,
+            theme::border(),
+            0,
+            false,
+        );
+        return;
+    }
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -962,8 +975,16 @@ fn draw_stats_panel(
     let inner_area = if scroll.is_some() {
         section_header(f, area, section_title(" System"))
     } else {
+        let native = crate::ui::cell_borders::enabled();
+        crate::ui::cell_borders::edge(
+            Rect::new(area.x, area.y, 1, area.height),
+            crate::ui::cell_borders::LEFT,
+            theme::border(),
+            0,
+            false,
+        );
         let panel = Block::default()
-            .borders(Borders::LEFT)
+            .borders(if native { Borders::NONE } else { Borders::LEFT })
             .border_style(theme::fg(theme::border()))
             .padding(Padding::horizontal(1));
         let inner = panel.inner(area);
@@ -1149,11 +1170,11 @@ fn draw_stats_panel(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(stats_height), // Statistics (1 heading + content)
-            Constraint::Length(SECTION_GAP_HEIGHT),
+            Constraint::Length(section_gap_height()),
             Constraint::Length(NETWORK_STATS_HEIGHT),
-            Constraint::Length(SECTION_GAP_HEIGHT),
+            Constraint::Length(section_gap_height()),
             Constraint::Min(TRAFFIC_MIN_HEIGHT),
-            Constraint::Length(SECTION_GAP_HEIGHT),
+            Constraint::Length(section_gap_height()),
             Constraint::Length(security_height),
         ])
         .split(inner_area);
@@ -1499,7 +1520,7 @@ fn draw_interface_stats_with_graph(
             Constraint::Length(1), // Heading
             Constraint::Length(3), // Traffic sparklines
             Constraint::Length(
-                SECTION_GAP_HEIGHT.min(area.height.saturating_sub(TRAFFIC_MIN_HEIGHT)),
+                section_gap_height().min(area.height.saturating_sub(TRAFFIC_MIN_HEIGHT)),
             ),
             Constraint::Min(0), // Interface details
         ])

@@ -5200,3 +5200,84 @@ fn profile_details_rendering() {
         );
     }
 }
+
+#[test]
+fn native_cell_borders_reclaim_tab_rows_without_shifting_mouse_targets() {
+    let app = test_app();
+    let connections: Vec<_> = (0..50)
+        .map(|i| local_tcp(1000 + i, &format!("proc{i:02}")))
+        .collect();
+    for (width, height, gained) in [(80, 24, 2), (140, 40, 1)] {
+        let mut fallback = UiState::default();
+        render_app(&app, &mut fallback, &connections, None, width, height);
+        cell_borders::with_support(|| {
+            let mut native = UiState::default();
+            native.set_selected_by_index(&connections, connections.len() - 1);
+            let (_, regions) =
+                render_app_frame(&app, &mut native, &connections, None, width, height);
+            assert_eq!(native.visible_rows, fallback.visible_rows + gained);
+            let rows = connection_table::table_rows_area(regions.scroll_area.unwrap());
+            for offset in 0..rows.height {
+                assert!(
+                    matches!(regions.hit_test(0, rows.y + offset), Some(ClickAction::SelectConnection(index)) if *index == native.scroll_offset + usize::from(offset))
+                );
+            }
+            assert!(matches!(
+                regions.hit_test(12, 0),
+                Some(ClickAction::SwitchTab(0))
+            ));
+            assert!(!matches!(
+                regions.hit_test(12, 1),
+                Some(ClickAction::SwitchTab(_))
+            ));
+            let mut commands = Vec::new();
+            cell_borders::paint(&mut commands).unwrap();
+            let commands = String::from_utf8(commands).unwrap();
+            // The selected last row gets a bottom edge at its actual table
+            // coordinate; it must never outline the filter or status bar.
+            assert!(commands.contains(&format!(
+                "\x1b[{};1H\x1bP1+bcell-border;set;48;",
+                rows.bottom()
+            )));
+        });
+    }
+}
+
+#[test]
+fn native_cell_border_overview() {
+    cell_borders::with_support(|| {
+        let app = test_app();
+        let connections = overview_connections();
+        let mut state = UiState {
+            show_system_panel: false,
+            ..UiState::default()
+        };
+        let output = render_app(&app, &mut state, &connections, None, 100, 18);
+        assert_app_snapshot!(output);
+    });
+}
+
+#[test]
+fn native_cell_border_views_survive_resize_filter_and_help() {
+    cell_borders::with_support(|| {
+        let app = test_app();
+        let connections = overview_connections();
+        for tab in 0..TAB_COUNT {
+            let mut state = UiState {
+                selected_tab: tab,
+                ..UiState::default()
+            };
+            for (width, height) in [(140, 40), (80, 24), (40, 12), (1, 1), (80, 24)] {
+                for help in [false, true] {
+                    state.show_help = help;
+                    state.filter_mode = !help;
+                    let output = render_app(&app, &mut state, &connections, None, width, height);
+                    assert_eq!(output.lines().count(), usize::from(height));
+                    let mut commands = Vec::new();
+                    cell_borders::paint(&mut commands).unwrap();
+                    assert!(commands.ends_with(b"\x1b8"));
+                }
+            }
+        }
+    });
+}

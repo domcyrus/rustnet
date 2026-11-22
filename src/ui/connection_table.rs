@@ -920,6 +920,21 @@ pub(in crate::ui) fn render_row_table(
 
     // Scrollbar tracks the row region (below header + margin).
     let rows_area = table_rows_area(area);
+    if let Some(index) = selected.and_then(|index| index.checked_sub(scroll_offset))
+        && index < usize::from(rows_area.height)
+        && scroll_offset + index < total_rows
+    {
+        super::cell_borders::outline(
+            Rect::new(
+                table_area.x,
+                rows_area.y + index as u16,
+                table_area.width,
+                1,
+            ),
+            theme::accent(),
+            1,
+        );
+    }
     draw_scrollbar(f, rows_area, total_rows, scroll_offset, visible_rows);
 
     click_regions.scroll_area = Some(area);

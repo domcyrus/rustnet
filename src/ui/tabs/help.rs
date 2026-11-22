@@ -7,7 +7,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Padding, Paragraph, Wrap},
+    widgets::{Block, Clear, Padding, Paragraph, Wrap},
 };
 
 use crate::ui::{
@@ -640,7 +640,8 @@ pub(in crate::ui) fn draw_help_overlay(
     let width = overlay_width(area);
     // Room the text really gets: borders (2) + horizontal padding (2) +
     // the gutter (2) that keeps text clear of the scrollbar thumb.
-    let text_width = width.saturating_sub(6);
+    let native_borders = crate::ui::cell_borders::enabled();
+    let text_width = width.saturating_sub(if native_borders { 4 } else { 6 });
     // Wrap-aware extent: on narrow popups lines wrap, so the popup height
     // and the scroll range must count rendered rows, not source lines,
     // or the tail of the help would be unreachable.
@@ -656,8 +657,17 @@ pub(in crate::ui) fn draw_help_overlay(
         return Ok(());
     }
 
-    let base_block =
-        panel_block(format!(" Help · {} ", context.title())).padding(Padding::horizontal(1));
+    let base_block = if native_borders {
+        // Keep one title row, but let the outline occupy cell edges.
+        Block::default().padding(Padding {
+            left: 1,
+            right: 1,
+            top: 1,
+            bottom: 0,
+        })
+    } else {
+        panel_block(format!(" Help · {} ", context.title())).padding(Padding::horizontal(1))
+    };
     let base_block = help_shadow(
         base_block,
         crate::ui::POPUP_SHADOW.load(std::sync::atomic::Ordering::Relaxed),
@@ -677,8 +687,22 @@ pub(in crate::ui) fn draw_help_overlay(
         fade_scroll_edges(&mut lines, scroll, inner.height);
     }
 
+    crate::ui::cell_borders::occlude(popup);
     f.render_widget(Clear, popup);
     f.render_widget(base_block, popup);
+    if native_borders {
+        crate::ui::cell_borders::outline(popup, theme::border(), 2);
+        f.render_widget(
+            Paragraph::new(format!(" Help · {} ", context.title()))
+                .style(theme::bold_fg(theme::heading())),
+            Rect::new(
+                popup.x + popup.width.min(1),
+                popup.y,
+                popup.width.saturating_sub(2),
+                1,
+            ),
+        );
+    }
     let text_area = Rect {
         width: inner.width.saturating_sub(2),
         ..inner

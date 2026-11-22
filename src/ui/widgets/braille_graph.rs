@@ -14,7 +14,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{format::format_rate, theme};
+use crate::ui::{cell_borders, format::format_rate, theme};
 
 /// Width of rate values in wave-panel headers. This fits values through
 /// `999.99 GiB/s` and keeps both the trend glyph and `peak` label anchored as
@@ -302,6 +302,57 @@ fn format_peak_rate(rate: f64) -> String {
     format!("peak {rate:>HEADER_RATE_WIDTH$}")
 }
 
+/// Reference lines sit on cell edges, leaving every braille dot intact.
+/// Average uses the same 2-second value labelled in the panel header.
+fn draw_reference_edges(plot: Rect, average: Option<f64>, ceiling: f64) {
+    if !cell_borders::enabled() || plot.is_empty() {
+        return;
+    }
+    cell_borders::edge(
+        Rect::new(plot.x, plot.y, 1, plot.height),
+        cell_borders::LEFT,
+        theme::border(),
+        0,
+        false,
+    );
+    for offset in [0, plot.height / 2, plot.height] {
+        let (y, mask) = if offset == plot.height {
+            (plot.bottom() - 1, cell_borders::BOTTOM)
+        } else {
+            (plot.y + offset, cell_borders::TOP)
+        };
+        cell_borders::edge(
+            Rect::new(plot.x, y, plot.width, 1),
+            mask,
+            theme::faint(),
+            0,
+            false,
+        );
+    }
+    if let Some(average) = average.filter(|v| v.is_finite() && *v >= 0.0)
+        && ceiling.is_finite()
+        && ceiling > 0.0
+    {
+        // Quantize to the nearest cell edge on the same linear scale as the
+        // wave. The exact value remains in the header, so it is not mistaken
+        // for an extra measurement at the quantized position.
+        let offset =
+            ((1.0 - (average / ceiling).clamp(0.0, 1.0)) * f64::from(plot.height)).round() as u16;
+        let (y, mask) = if offset == plot.height {
+            (plot.bottom() - 1, cell_borders::BOTTOM)
+        } else {
+            (plot.y + offset, cell_borders::TOP)
+        };
+        cell_borders::edge(
+            Rect::new(plot.x, y, plot.width, 1),
+            mask,
+            theme::muted(),
+            1,
+            true,
+        );
+    }
+}
+
 /// Keep plotted peaks visible while retaining the history scale's gradual decay.
 /// Each direction has its own labeled linear scale.
 pub(in crate::ui) fn rate_ceilings(rx: &[u64], tx: &[u64], scales: (f64, f64)) -> (f64, f64) {
@@ -446,13 +497,21 @@ pub(in crate::ui) fn wave_panel(
         wave,
     );
     f.render_widget(Paragraph::new(lines), plot);
+    let visible_average = options
+        .average
+        .filter(|_| inline_average || combine_average || average_height > 0);
+    draw_reference_edges(plot, visible_average, max_val);
     if axis_width > 0 && plot.height > 0 {
         let label_width = usize::from(axis_width - 1);
         let ceiling = crate::ui::format::format_rate_compact(max_val, "0B");
         let ceiling = crate::ui::format::truncate_with_ellipsis(&ceiling, label_width);
         let midpoint_row = plot.height / 2;
-        let midpoint_ratio =
-            1.0 - f64::from(midpoint_row) / f64::from(plot.height.saturating_sub(1).max(1));
+        let midpoint_denominator = if cell_borders::enabled() {
+            plot.height
+        } else {
+            plot.height.saturating_sub(1).max(1)
+        };
+        let midpoint_ratio = 1.0 - f64::from(midpoint_row) / f64::from(midpoint_denominator);
         let midpoint_value = max_val * midpoint_ratio;
         let midpoint = crate::ui::format::format_rate_compact(midpoint_value, "0B");
         let midpoint = crate::ui::format::truncate_with_ellipsis(&midpoint, label_width);
@@ -467,7 +526,11 @@ pub(in crate::ui) fn wave_panel(
                 } else {
                     ""
                 };
-                Line::styled(format!("{label:>label_width$}│"), theme::fg(theme::muted()))
+                let separator = if cell_borders::enabled() { " " } else { "│" };
+                Line::styled(
+                    format!("{label:>label_width$}{separator}"),
+                    theme::fg(theme::muted()),
+                )
             })
             .collect();
         f.render_widget(
@@ -535,6 +598,45 @@ pub(in crate::ui) fn trend_glyph(samples: &[u64]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cell_edge_references_preserve_braille_and_use_the_labelled_linear_scale() {
+        use crate::ui::test_support::render;
+        let samples = [0, 2048, 4096, 1024];
+        let draw = || {
+            render(80, 10, |f| {
+                cell_borders::begin_frame(f.area());
+                wave_panel(
+                    f,
+                    f.area(),
+                    &samples,
+                    "RX",
+                    WavePanelOptions::new(0.0, 4)
+                        .with_max_val(4096.0)
+                        .with_average(Some(2048.0)),
+                    theme::rx_wave,
+                );
+            })
+        };
+        let fallback = draw();
+        cell_borders::with_support(|| {
+            let native = draw();
+            let dots = |text: &str| {
+                text.chars()
+                    .filter(|ch| ('\u{2800}'..='\u{28ff}').contains(ch))
+                    .collect::<String>()
+            };
+            assert_eq!(dots(&native), dots(&fallback));
+            assert!(native.contains("2s avg"));
+            let mut out = Vec::new();
+            cell_borders::paint(&mut out).unwrap();
+            let out = String::from_utf8(out).unwrap();
+            assert!(out.contains(";style=dashed"));
+            // One header row leaves nine plot rows. Half scale rounds to the
+            // fifth edge below the plot's top (screen row 7, one-based).
+            assert!(out.contains("\x1b[7;7H\x1bP1+bcell-border;set;3;32;"));
+        });
+    }
 
     #[test]
     fn raw_plot_keeps_peak_and_fixed_totals_row() {

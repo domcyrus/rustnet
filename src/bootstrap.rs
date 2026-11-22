@@ -162,6 +162,11 @@ pub fn run() -> Result<()> {
             spec.adapt_to_light_background();
         }
         ui::set_theme(ui::Theme::resolve(&spec, ui::detect_truecolor()));
+        let cell_borders = matches.get_one::<String>("cell-borders").map_or(
+            user_config.cell_borders == config::CellBordersMode::Auto,
+            |mode| mode == "auto",
+        );
+        ui::cell_borders::configure(cell_borders);
     }
 
     if matches.get_flag("no-geoip") {

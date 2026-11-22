@@ -1,4 +1,4 @@
-//! Top tab bar: a borderless two-row strip: the brand + numbered tab
+//! Top tab bar: a borderless strip (one row with native cell borders): the brand + numbered tab
 //! titles on the first row, and an underline rule on the second with a
 //! heavy accent segment under the active tab. The heavy ━ vs light ─
 //! glyph difference keeps the active tab readable under NO_COLOR.
@@ -20,7 +20,9 @@ pub(crate) const TAB_COUNT: usize = TAB_TITLES.len();
 const OVERVIEW_TAB_INDEX: usize = 0;
 
 /// Height of the tab bar in rows (titles + underline).
-pub(crate) const TABS_BAR_HEIGHT: u16 = super::tab_strip::HEIGHT;
+pub(crate) fn tabs_bar_height() -> u16 {
+    super::tab_strip::height()
+}
 
 const BRAND: &str = " rustnet ";
 /// Gap between tab titles, in cells.

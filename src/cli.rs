@@ -193,6 +193,13 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("cell-borders")
+                .long("cell-borders")
+                .value_name("MODE")
+                .value_parser(["auto", "off"])
+                .help("Experimental cell-edge borders: auto probes terminal support, off uses the standard layout (default). Overrides ui.cell_borders in the config file"),
+        )
+        .arg(
             Arg::new("theme")
                 .long("theme")
                 .value_name("PRESET")
