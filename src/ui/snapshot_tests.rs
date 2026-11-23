@@ -4550,7 +4550,13 @@ fn compact_graph_keeps_live_rates_and_all_tcp_states_visible() {
     for label in ["RX", "TX", "OPENED", "CLOSED", "8.00 KiB/s", "4.00 KiB/s"] {
         assert!(traffic.contains(label), "{label}: {traffic}");
     }
-    assert_eq!(traffic.matches("-60s").count(), 2);
+    // Default mirrored view shares one center time horizon; split view keeps two.
+    assert!(traffic.contains("0┼"));
+    assert_eq!(traffic.matches("-60s").count(), 1);
+    state.graph_mirrored = false;
+    let split = render_app(&app, &mut state, &connections, None, 80, 24);
+    assert_eq!(split.matches("-60s").count(), 2);
+    state.graph_mirrored = true;
     state.graph_section = GraphSection::Health;
     let health = render_app(&app, &mut state, &connections, None, 80, 24);
     for label in [

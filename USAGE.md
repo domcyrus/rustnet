@@ -414,6 +414,11 @@ the configured grouping preference. These settings do not affect headless output
 group_by_process = true
 ```
 
+**Unreleased.** To start Graph with separate RX and TX plots, set
+`mirrored_traffic_graph = false` under `[view]` in `config.toml`. The default is
+`true`. Pressing `r` in Overview resets view settings, including the graph layout,
+to their configured values.
+
 For an optional Help shadow, add `[ui]` with `popup_shadow = true` to the same
 config file (default: `false`). `NO_COLOR` or `--no-color` disables the shadow.
 
@@ -548,6 +553,10 @@ System sidebar on wider terminals. Press `h` for the active view's controls.
 Graph uses the selected capture interface's counters. `any` and macOS default
 `pktap` show all-interface totals, which can count the same traffic more than once.
 Missing counters leave RX/TX plots unavailable until sampling resumes.
+
+**Unreleased.** Graph defaults to a mirrored traffic chart. RX rises above the
+shared time axis and TX extends below it. While Traffic is visible, press `m`
+to switch between mirrored and split layouts for the current session.
 
 Graph and Details preserve sampled bursts on independent automatic linear RX/TX
 scales in bytes per second (KiB/MiB/GiB are binary units). Compare numeric readings

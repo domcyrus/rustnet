@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use crossterm::event::{KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -107,6 +107,14 @@ impl Component for GraphTab {
         Ok(())
     }
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        if key.code == KeyCode::Char('m')
+            && key.modifiers == KeyModifiers::NONE
+            && (!ctx.ui_state.graph_compact.get()
+                || ctx.ui_state.graph_section == GraphSection::Traffic)
+        {
+            ctx.ui_state.graph_mirrored = !ctx.ui_state.graph_mirrored;
+            return Some(Vec::new());
+        }
         if ctx.ui_state.graph_compact.get() && ctx.ui_state.graph_section != GraphSection::Health {
             return None;
         }
@@ -154,6 +162,7 @@ fn draw_graph_tab(
                 f,
                 &traffic_history,
                 traffic_scope,
+                ui_state.graph_mirrored,
                 inner,
             )),
             GraphSection::Health => {
@@ -177,13 +186,20 @@ fn draw_graph_tab(
         f,
         &traffic_history,
         traffic_scope,
+        ui_state.graph_mirrored,
         sections[0],
     ));
     draw_health_panels(f, app, &traffic_history, &analytics, ui_state, sections[1]);
     draw_distribution_panels(f, &analytics, sections[2], &ui_state.bar_animations);
 }
 
-fn draw_traffic_panels(f: &mut Frame, history: &TrafficHistory, scope: &str, area: Rect) -> bool {
+fn draw_traffic_panels(
+    f: &mut Frame,
+    history: &TrafficHistory,
+    scope: &str,
+    mirrored: bool,
+    area: Rect,
+) -> bool {
     let narrow = area.width < 100;
     let panels = Layout::default()
         .direction(if narrow {
@@ -198,7 +214,7 @@ fn draw_traffic_panels(f: &mut Frame, history: &TrafficHistory, scope: &str, are
             [Constraint::Percentage(70), Constraint::Percentage(30)]
         })
         .split(area);
-    draw_traffic_chart(f, history, scope, panels[0]);
+    draw_traffic_chart(f, history, scope, mirrored, panels[0]);
     draw_connection_lifecycle(f, history, panels[1]);
     history.has_enough_data()
         && panels
@@ -256,10 +272,16 @@ fn draw_distribution_panels(
     draw_top_processes(f, &analytics.process_traffic, panels[1]);
 }
 
-/// Draw the RX/TX traffic waves: two stacked braille area graphs with
-/// a vertical gradient (bright crest, saturated base), each header
-/// showing the current rate, a trend arrow, and the 60s peak.
-fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, scope: &str, area: Rect) {
+/// Draw the RX/TX traffic waves: mirrored around a shared center time axis
+/// (RX up, TX down) or stacked as two separate braille area graphs, with each
+/// direction keeping its own header, trend arrow, 60s peak, and linear scale.
+fn draw_traffic_chart(
+    f: &mut Frame,
+    history: &TrafficHistory,
+    scope: &str,
+    mirrored: bool,
+    area: Rect,
+) {
     let inner = section_header(
         f,
         area,
@@ -268,6 +290,42 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, scope: &str, area
 
     if !history.has_enough_traffic_data() {
         draw_placeholder(f, inner, "Waiting for traffic data...");
+        return;
+    }
+
+    let frac = history.scroll_fraction();
+    let window = history.capacity();
+    let (rx, tx) = history.get_raw_traffic_data();
+    let (rx_ceiling, tx_ceiling) = braille_graph::rate_ceilings(
+        &rx,
+        &tx,
+        (history.rx_graph_ceiling(), history.tx_graph_ceiling()),
+    );
+    let average = history.recent_average();
+    if mirrored {
+        braille_graph::mirrored_wave_panel(
+            f,
+            inner,
+            braille_graph::MirroredSeries {
+                samples: &rx,
+                label: "↓ RX",
+                max_val: rx_ceiling,
+                average: average.map(|rates| rates.0),
+                header_color: theme::rx(),
+                wave: theme::rx_wave,
+            },
+            braille_graph::MirroredSeries {
+                samples: &tx,
+                label: "↑ TX",
+                max_val: tx_ceiling,
+                average: average.map(|rates| rates.1),
+                header_color: theme::tx(),
+                wave: theme::tx_wave,
+            },
+            frac,
+            window,
+            60,
+        );
         return;
     }
 
@@ -282,15 +340,6 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, scope: &str, area
         ])
         .split(inner);
 
-    let frac = history.scroll_fraction();
-    let window = history.capacity();
-    let (rx, tx) = history.get_raw_traffic_data();
-    let (rx_ceiling, tx_ceiling) = braille_graph::rate_ceilings(
-        &rx,
-        &tx,
-        (history.rx_graph_ceiling(), history.tx_graph_ceiling()),
-    );
-    let average = history.recent_average();
     braille_graph::wave_panel(
         f,
         halves[0],
@@ -962,5 +1011,56 @@ mod tests {
         assert_eq!(format_lifecycle_rate(0), "0/s");
         assert_eq!(format_lifecycle_rate(2), "0.2/s");
         assert_eq!(format_lifecycle_rate(20), "2/s");
+    }
+
+    #[test]
+    fn m_key_toggles_between_mirrored_and_split_traffic_views() {
+        use crate::network::types::ConnectionLifecycleSample;
+        use crate::test_support::test_app;
+        use crate::ui::test_support::{empty_ctx, render};
+
+        let app = test_app();
+        let mut history = TrafficHistory::new(60);
+        for _ in 0..4 {
+            history.add_sample_with_lifecycle(
+                8192,
+                2048,
+                ConnectionLifecycleSample::default(),
+                0,
+                0,
+                None,
+            );
+        }
+        app.set_traffic_history_for_test(history);
+
+        let mut ui_state = UiState {
+            selected_tab: 3,
+            ..Default::default()
+        };
+        assert!(ui_state.graph_mirrored);
+        let mirrored = render(140, 40, |f| {
+            draw_graph_tab(f, &app, &[], &ui_state, f.area());
+        });
+        assert!(mirrored.contains("0┼"));
+
+        let regions = ClickableRegions::default();
+        let m_key = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
+        let mut ctx = empty_ctx(&app, &mut ui_state, &regions);
+        assert!(GraphTab.handle_key(m_key, &mut ctx).is_some());
+        assert!(!ui_state.graph_mirrored);
+
+        let split = render(140, 40, |f| {
+            draw_graph_tab(f, &app, &[], &ui_state, f.area());
+        });
+        assert!(!split.contains("0┼"));
+        assert!(split.contains("↓ RX Now"));
+        assert!(split.contains("↑ TX Now"));
+
+        // Compact non-Traffic sections leave `m` unclaimed.
+        ui_state.graph_compact.set(true);
+        ui_state.graph_section = GraphSection::Health;
+        let mut ctx = empty_ctx(&app, &mut ui_state, &regions);
+        assert!(GraphTab.handle_key(m_key, &mut ctx).is_none());
+        assert!(!ui_state.graph_mirrored);
     }
 }

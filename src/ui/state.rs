@@ -657,6 +657,11 @@ pub struct UiState {
     pub(super) health_badge: Cell<super::tabs::health::HealthBadge>,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
+    /// Render the Graph tab's RX/TX traffic waves mirrored around a shared
+    /// center time axis (RX up, TX down) instead of stacked separately.
+    pub graph_mirrored: bool,
+    /// Configured mirrored-graph preference restored by reset view.
+    pub default_graph_mirrored: bool,
     pub graph_states_scroll: PaneScroll,
     /// Whether the last Graph frame showed only the selected section.
     pub graph_compact: Cell<bool>,
@@ -733,6 +738,8 @@ impl Default for UiState {
             return_to_finding: false,
             health_badge: Cell::new(super::tabs::health::HealthBadge::default()),
             graph_section: GraphSection::default(),
+            graph_mirrored: true,
+            default_graph_mirrored: true,
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),
             graph_animation_visible: Cell::new(false),
@@ -793,6 +800,8 @@ impl UiState {
         Self {
             grouping_enabled: config.group_by_process,
             default_grouping_enabled: config.group_by_process,
+            graph_mirrored: config.mirrored_traffic_graph,
+            default_graph_mirrored: config.mirrored_traffic_graph,
             ..Self::default()
         }
     }
@@ -1075,6 +1084,7 @@ impl UiState {
     /// Reset all view settings to defaults (grouping, sort, filter, historic).
     pub fn reset_view(&mut self) {
         self.grouping_enabled = self.default_grouping_enabled;
+        self.graph_mirrored = self.default_graph_mirrored;
         self.expanded_groups.clear();
         self.selected_group = None;
         self.sort_column = SortColumn::default();
