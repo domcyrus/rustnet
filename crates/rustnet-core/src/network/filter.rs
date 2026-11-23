@@ -209,12 +209,17 @@ impl ConnectionFilter {
     }
 
     pub fn matches(&self, connection: &Connection) -> bool {
+        self.matches_with_service(connection, connection.service_name.as_deref())
+    }
+
+    /// Match a live record with the service label resolved for its table row.
+    pub fn matches_with_service(&self, connection: &Connection, service: Option<&str>) -> bool {
         if self.criteria.is_empty() {
             return true;
         }
 
         self.criteria.iter().all(|criterion| match criterion {
-            FilterCriteria::General(fv) => self.matches_general(connection, fv),
+            FilterCriteria::General(fv) => self.matches_general(connection, service, fv),
             FilterCriteria::Port(pm) => {
                 match_port(connection.local_addr.port(), pm)
                     || match_port(connection.remote_addr.port(), pm)
@@ -234,13 +239,7 @@ impl ConnectionFilter {
                 fv,
             ),
             FilterCriteria::Pid(pid) => pid.is_some() && connection.pid == *pid,
-            FilterCriteria::Service(fv) => {
-                if let Some(ref service_name) = connection.service_name {
-                    match_text(service_name, fv)
-                } else {
-                    false
-                }
-            }
+            FilterCriteria::Service(fv) => service.is_some_and(|name| match_text(name, fv)),
             FilterCriteria::Sni(fv) => self.matches_sni(connection, fv),
             FilterCriteria::Application(fv) => self.matches_application(connection, fv),
             FilterCriteria::State(fv) => match_text(&connection.state(), fv),
@@ -280,7 +279,12 @@ impl ConnectionFilter {
 
     /// General text search across basic connection info, process, service,
     /// DPI details, the DNS-attributed hostname and ARP vendor names.
-    fn matches_general(&self, connection: &Connection, fv: &FilterValue) -> bool {
+    fn matches_general(
+        &self,
+        connection: &Connection,
+        service: Option<&str>,
+        fv: &FilterValue,
+    ) -> bool {
         let (arp_sender_vendor, arp_target_vendor) = match connection.protocol_state {
             ProtocolState::Arp(ref arp_info) => (
                 arp_info.sender_vendor.as_deref(),
@@ -296,7 +300,7 @@ impl ConnectionFilter {
                 fv,
                 [
                     connection.process_name.as_deref(),
-                    connection.service_name.as_deref(),
+                    service,
                     connection
                         .attributed_hostname
                         .as_ref()

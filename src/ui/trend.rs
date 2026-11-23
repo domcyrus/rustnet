@@ -1,13 +1,9 @@
 //! Per-connection throughput trend: the short history behind the
 //! connection tables' Trend column, and the sparkline it renders as.
 //!
-//! The UI snapshot carries connections without their raw rate samples
-//! (see `RateTracker::clone_without_samples`), and the cached
-//! `current_*_rate_bps` fields are 10-second sliding averages that would
-//! flatten every burst. So the history is kept here, UI-side: once per
-//! [`SAMPLE_INTERVAL`] the cumulative byte counters of every live
-//! connection are diffed against the previous sample, which yields true
-//! per-interval rates at the cost of two `u64`s and a few floats per row.
+//! The UI reads cumulative counters from live flows once per second.
+//! Snapshot refreshes and input can run at different cadences. The
+//! cached 10-second rate averages would flatten short exchanges.
 //!
 //! The sparkline is an eighth-block bar per sample, newest at the right
 //! edge, scaled to the row's own peak (with a floor so a trickle draws
@@ -19,20 +15,19 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::network::types::Connection;
+use crate::network::tracker::HistoricKey;
+use crate::network::types::{Connection, ConnectionKey};
 use crate::ui::{process_group_label, theme};
 
 /// Samples kept per connection: exactly the cells the Trend column draws.
 pub(in crate::ui) const TREND_SAMPLES: usize = 8;
 /// Spacing between samples; also the column's time resolution.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
-/// Series not seen in this long (closed, or filtered out) are dropped.
-const EVICT_AFTER: Duration = Duration::from_secs(30);
 /// Minimum scale ceiling. Rows peaking below it share this ceiling, so a
 /// connection trickling a few bytes per second draws low bars rather
 /// than being stretched to full height by per-row normalization.
@@ -63,124 +58,134 @@ struct Series {
     last_seen: Instant,
 }
 
-impl Series {
-    /// A fresh series holds the counters as a baseline and no samples, so
-    /// bytes moved before the connection was first seen never show up as
-    /// a spike.
-    fn new(bytes_received: u64, bytes_sent: u64, now: Instant) -> Self {
-        Self {
-            samples: VecDeque::with_capacity(TREND_SAMPLES),
-            bytes_received,
-            bytes_sent,
-            last_seen: now,
-        }
+fn push_sample(samples: &mut VecDeque<TrendSample>, sample: TrendSample) {
+    if samples.len() == TREND_SAMPLES {
+        samples.pop_front();
     }
-
-    /// Append the average rate since this series was last sampled. Using
-    /// the series' own clock (not the global one) keeps a connection that
-    /// was briefly filtered out from reporting its whole gap as one burst.
-    fn push(&mut self, bytes_received: u64, bytes_sent: u64, now: Instant) -> Option<TrendSample> {
-        let secs = now.saturating_duration_since(self.last_seen).as_secs_f64();
-        if secs <= 0.0 {
-            return None;
-        }
-        let sample = TrendSample {
-            rx_bps: bytes_received.saturating_sub(self.bytes_received) as f64 / secs,
-            tx_bps: bytes_sent.saturating_sub(self.bytes_sent) as f64 / secs,
-        };
-        if self.samples.len() == TREND_SAMPLES {
-            self.samples.pop_front();
-        }
-        self.samples.push_back(sample);
-        self.bytes_received = bytes_received;
-        self.bytes_sent = bytes_sent;
-        self.last_seen = now;
-        Some(sample)
-    }
+    samples.push_back(sample);
 }
 
 #[derive(Debug)]
 struct GroupSeries {
     samples: VecDeque<TrendSample>,
+    total: TrendSample,
     last_seen: Instant,
 }
 
-impl GroupSeries {
-    fn push(&mut self, sample: TrendSample, now: Instant) {
-        if self.samples.len() == TREND_SAMPLES {
-            self.samples.pop_front();
-        }
-        self.samples.push_back(sample);
-        self.last_seen = now;
-    }
+fn flow_key(conn: &Connection) -> HistoricKey {
+    HistoricKey::for_connection(ConnectionKey::from_connection(conn), conn)
 }
 
 /// Rolling per-connection and per-process-group rate history.
 #[derive(Debug, Default)]
 pub struct TrendHistory {
-    series: HashMap<String, Series>,
+    series: HashMap<HistoricKey, Series>,
     groups: HashMap<String, GroupSeries>,
-    last_sample: Option<Instant>,
+    // Use monotonic time for rates and wall time only to compare flow births.
+    last_sample: Option<(Instant, SystemTime)>,
 }
 
 impl TrendHistory {
-    /// Sample the live connections in `connections`. Cheap to call on
-    /// every data refresh: calls closer than [`SAMPLE_INTERVAL`] to the
-    /// previous sample are ignored, so every row advances in lockstep and
-    /// the sparklines scroll together.
-    pub fn record(&mut self, connections: &[Connection], now: Instant) {
-        if self
-            .last_sample
-            .is_some_and(|last| now.saturating_duration_since(last) < SAMPLE_INTERVAL)
-        {
-            return;
-        }
-        self.last_sample = Some(now);
-
-        // Sum each member connection's per-interval delta into its process
-        // group so a closing or newly opened connection never causes a
-        // negative jump or pre-existing-bytes spike on the group header.
-        let mut group_totals: HashMap<&str, TrendSample> = HashMap::new();
-        for conn in connections.iter().filter(|conn| !conn.is_historic) {
-            let (received, sent) = (conn.bytes_received, conn.bytes_sent);
-            match self.series.entry(conn.key()) {
-                Entry::Occupied(mut entry) => {
-                    if let Some(sample) = entry.get_mut().push(received, sent, now) {
-                        let agg = group_totals.entry(process_group_label(conn)).or_default();
-                        agg.rx_bps += sample.rx_bps;
-                        agg.tx_bps += sample.tx_bps;
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(Series::new(received, sent, now));
-                }
-            }
-        }
-        for (group, sample) in group_totals {
-            self.groups
-                .entry(group.to_owned())
-                .or_insert_with(|| GroupSeries {
-                    samples: VecDeque::with_capacity(TREND_SAMPLES),
-                    last_seen: now,
-                })
-                .push(sample, now);
-        }
-        self.series
-            .retain(|_, series| now.saturating_duration_since(series.last_seen) < EVICT_AFTER);
-        self.groups
-            .retain(|_, group| now.saturating_duration_since(group.last_seen) < EVICT_AFTER);
+    pub(crate) fn time_until_sample(&self, now: Instant) -> Duration {
+        self.last_sample.map_or(Duration::ZERO, |(last, _)| {
+            SAMPLE_INTERVAL.saturating_sub(now.saturating_duration_since(last))
+        })
     }
 
-    /// Drop all recorded series (e.g. after clearing all connections).
+    /// Read the live source only when a sample is due. After a missed tick
+    /// (e.g. system sleep), restart with a baseline instead of joining bars
+    /// across a gap for which we have no per-second observations.
+    pub(crate) fn record(
+        &mut self,
+        now: Instant,
+        wall_now: SystemTime,
+        visit_live: impl FnOnce(&mut dyn FnMut(&Connection)),
+    ) -> bool {
+        if !self.time_until_sample(now).is_zero() {
+            return false;
+        }
+        let mut previous = self.last_sample.replace((now, wall_now));
+        if previous.is_some_and(|(last, _)| now.duration_since(last) >= SAMPLE_INTERVAL * 2) {
+            self.series.clear();
+            self.groups.clear();
+            previous = None;
+        }
+        let seconds = previous.map(|(last, _)| now.duration_since(last).as_secs_f64());
+        visit_live(&mut |conn| {
+            if conn.is_historic {
+                return;
+            }
+            let (series, baseline) = match self.series.entry(flow_key(conn)) {
+                Entry::Occupied(entry) => {
+                    let series = entry.into_mut();
+                    let counters = (series.bytes_received, series.bytes_sent);
+                    (series, Some(counters))
+                }
+                Entry::Vacant(entry) => {
+                    let born_this_interval = previous.is_some_and(|(_, wall_last)| {
+                        wall_last < conn.created_at && conn.created_at <= wall_now
+                    });
+                    let series = entry.insert(Series {
+                        samples: VecDeque::with_capacity(TREND_SAMPLES),
+                        bytes_received: 0,
+                        bytes_sent: 0,
+                        last_seen: now,
+                    });
+                    (series, born_this_interval.then_some((0, 0)))
+                }
+            };
+            series.last_seen = now;
+            series.bytes_received = conn.bytes_received;
+            series.bytes_sent = conn.bytes_sent;
+            let (Some((received, sent)), Some(seconds)) = (baseline, seconds) else {
+                return;
+            };
+            let sample = TrendSample {
+                rx_bps: conn.bytes_received.saturating_sub(received) as f64 / seconds,
+                tx_bps: conn.bytes_sent.saturating_sub(sent) as f64 / seconds,
+            };
+            push_sample(&mut series.samples, sample);
+
+            let label = process_group_label(conn);
+            let group = match self.groups.get_mut(label) {
+                Some(group) => group,
+                None => self
+                    .groups
+                    .entry(label.to_owned())
+                    .or_insert_with(|| GroupSeries {
+                        samples: VecDeque::with_capacity(TREND_SAMPLES),
+                        total: TrendSample::default(),
+                        last_seen: now,
+                    }),
+            };
+            group.total.rx_bps += sample.rx_bps;
+            group.total.tx_bps += sample.tx_bps;
+            group.last_seen = now;
+        });
+
+        // Reappearing rows start fresh rather than displaying bars from before
+        // a filter or a period with no live group members.
+        self.series.retain(|_, series| series.last_seen == now);
+        self.groups.retain(|_, group| {
+            if group.last_seen != now {
+                return false;
+            }
+            push_sample(&mut group.samples, std::mem::take(&mut group.total));
+            true
+        });
+        true
+    }
+
     pub(in crate::ui) fn clear(&mut self) {
         self.series.clear();
         self.groups.clear();
         self.last_sample = None;
     }
 
-    /// Samples for the connection with `key`, oldest first.
-    pub(in crate::ui) fn samples(&self, key: &str) -> Option<&VecDeque<TrendSample>> {
-        self.series.get(key).map(|series| &series.samples)
+    pub(in crate::ui) fn samples(&self, conn: &Connection) -> Option<&VecDeque<TrendSample>> {
+        self.series
+            .get(&flow_key(conn))
+            .map(|series| &series.samples)
     }
 
     /// Aggregate samples for the process group `group_name`, oldest first.
@@ -253,6 +258,21 @@ mod tests {
     use super::*;
     use crate::test_support::local_tcp;
 
+    struct Clock(Instant, SystemTime);
+
+    impl Clock {
+        fn new() -> Self {
+            Self(Instant::now(), SystemTime::now())
+        }
+
+        fn record(&self, history: &mut TrendHistory, rows: &[Connection], millis: u64) {
+            let offset = Duration::from_millis(millis);
+            history.record(self.0 + offset, self.1 + offset, |visit| {
+                rows.iter().for_each(visit)
+            });
+        }
+    }
+
     fn text(line: &Line<'_>) -> String {
         line.spans
             .iter()
@@ -276,20 +296,20 @@ mod tests {
         let mut conn = local_tcp(40000, "curl");
         conn.bytes_received = 10_000;
         conn.bytes_sent = 5_000;
-        let t0 = Instant::now();
+        let clock = Clock::new();
 
         // First sight is a baseline only: earlier bytes are not a spike.
-        history.record(std::slice::from_ref(&conn), t0);
-        assert!(history.samples(&conn.key()).unwrap().is_empty());
+        clock.record(&mut history, std::slice::from_ref(&conn), 0);
+        assert!(history.samples(&conn).unwrap().is_empty());
 
-        conn.bytes_received += 4_096;
-        conn.bytes_sent += 1_024;
+        conn.bytes_received += 2_560;
+        conn.bytes_sent += 640;
         // Too soon: ignored, so rows advance in lockstep.
-        history.record(std::slice::from_ref(&conn), t0 + Duration::from_millis(500));
-        assert!(history.samples(&conn.key()).unwrap().is_empty());
+        clock.record(&mut history, std::slice::from_ref(&conn), 500);
+        assert!(history.samples(&conn).unwrap().is_empty());
 
-        history.record(std::slice::from_ref(&conn), t0 + Duration::from_secs(2));
-        let samples = history.samples(&conn.key()).unwrap();
+        clock.record(&mut history, std::slice::from_ref(&conn), 1250);
+        let samples = history.samples(&conn).unwrap();
         assert_eq!(
             samples.iter().copied().collect::<Vec<_>>(),
             vec![TrendSample {
@@ -303,15 +323,12 @@ mod tests {
     fn history_is_capped_to_the_column_width() {
         let mut history = TrendHistory::default();
         let mut conn = local_tcp(40001, "wget");
-        let t0 = Instant::now();
+        let clock = Clock::new();
         for second in 0..(TREND_SAMPLES as u64 + 5) {
             conn.bytes_received += 100 * second;
-            history.record(
-                std::slice::from_ref(&conn),
-                t0 + Duration::from_secs(second),
-            );
+            clock.record(&mut history, std::slice::from_ref(&conn), second * 1000);
         }
-        let samples = history.samples(&conn.key()).unwrap();
+        let samples = history.samples(&conn).unwrap();
         assert_eq!(samples.len(), TREND_SAMPLES);
         // The oldest samples rolled off; the newest is the last delta.
         let last = (TREND_SAMPLES as u64 + 4) * 100;
@@ -324,14 +341,148 @@ mod tests {
         let gone = local_tcp(40002, "gone");
         let mut historic = local_tcp(40003, "old");
         historic.is_historic = true;
-        let t0 = Instant::now();
+        let clock = Clock::new();
 
-        history.record(&[gone.clone(), historic.clone()], t0);
-        assert!(history.samples(&gone.key()).is_some());
-        assert!(history.samples(&historic.key()).is_none());
+        clock.record(&mut history, &[gone.clone(), historic.clone()], 0);
+        assert!(history.samples(&gone).is_some());
+        assert!(history.samples(&historic).is_none());
 
-        history.record(&[], t0 + EVICT_AFTER + Duration::from_secs(1));
-        assert!(history.samples(&gone.key()).is_none());
+        clock.record(&mut history, &[], 1000);
+        assert!(history.samples(&gone).is_none());
+    }
+
+    #[test]
+    fn reused_tuple_starts_a_new_generation_in_the_row_and_group() {
+        let mut history = TrendHistory::default();
+        let mut old = local_tcp(41000, "curl");
+        let clock = Clock::new();
+        clock.record(&mut history, std::slice::from_ref(&old), 0);
+        old.bytes_received = 8192;
+        clock.record(&mut history, std::slice::from_ref(&old), 1000);
+
+        let mut new = old.clone();
+        new.created_at = clock.1 + Duration::from_millis(1500);
+        new.bytes_received = 128;
+        // The table can render the replacement before the next sample.
+        assert!(history.samples(&new).is_none());
+        clock.record(&mut history, std::slice::from_ref(&new), 2000);
+        assert_eq!(history.samples(&new), Some(&series(&[128.0])));
+        assert!(history.samples(&old).is_none());
+        assert_eq!(
+            history.group_samples("curl"),
+            Some(&series(&[8192.0, 128.0]))
+        );
+    }
+
+    #[test]
+    fn first_interval_counts_a_finished_exchange_but_baselines_older_flows() {
+        use crate::network::types::{Protocol, ProtocolState};
+        let mut history = TrendHistory::default();
+        let clock = Clock::new();
+        clock.record(&mut history, &[], 0);
+        let mut dns = Connection::new(
+            Protocol::Udp,
+            "127.0.0.1:41001".parse().unwrap(),
+            "192.0.2.1:53".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        dns.created_at = clock.1 + Duration::from_millis(250);
+        dns.bytes_sent = 64;
+        dns.bytes_received = 256;
+        dns.process_name = Some("resolver".into());
+        let mut older = local_tcp(41002, "resolver");
+        older.created_at = clock.1 - Duration::from_secs(30);
+        older.bytes_received = 1_000_000;
+        let rows = [dns, older];
+        clock.record(&mut history, &rows, 1000);
+        clock.record(&mut history, &rows, 2000);
+        let expected = VecDeque::from([
+            TrendSample {
+                rx_bps: 256.0,
+                tx_bps: 64.0,
+            },
+            TrendSample::default(),
+        ]);
+        assert_eq!(history.samples(&rows[0]), Some(&expected));
+        assert_eq!(history.group_samples("resolver"), Some(&expected));
+        assert_eq!(history.samples(&rows[1]), Some(&series(&[0.0])));
+    }
+
+    #[test]
+    fn slow_snapshot_refresh_and_extra_input_do_not_distort_the_eight_second_window() {
+        use crate::app::{App, Config};
+        use crate::network::parser::ParsedPacket;
+        use crate::network::types::{Protocol, ProtocolState};
+        let app = App::new(Config {
+            refresh_interval: 5000,
+            ..crate::test_support::test_config()
+        })
+        .unwrap();
+        let packet = ParsedPacket::new(
+            Protocol::Udp,
+            "127.0.0.1:41003".parse().unwrap(),
+            "192.0.2.1:53".parse().unwrap(),
+            ProtocolState::Udp,
+            true,
+            128,
+            Some("resolver".into()),
+            None,
+        );
+        let clock = Clock::new();
+        let mut history = TrendHistory::default();
+        let read_live = |visit: &mut dyn FnMut(&Connection)| {
+            app.visit_live_connections("service:domain", visit)
+        };
+        history.record(clock.0, clock.1, read_live);
+        for second in 1..=8 {
+            let offset = Duration::from_secs(second);
+            let between = offset - Duration::from_millis(250);
+            app.ingest_packet_at_for_test(&packet, clock.1 + between);
+            // Input between ticks must not even read the source.
+            assert!(
+                !history.record(clock.0 + between, clock.1 + between, |_| panic!(
+                    "early sample"
+                ))
+            );
+            if second == 5 {
+                app.visit_live_connections("", |c| {
+                    app.set_connections_snapshot_for_test(vec![c.clone()])
+                });
+            }
+            assert!(history.record(clock.0 + offset, clock.1 + offset, read_live));
+        }
+        let displayed = app.get_connections();
+        assert_eq!(displayed[0].bytes_sent, 5 * 128);
+        let expected = VecDeque::from(
+            [TrendSample {
+                rx_bps: 0.0,
+                tx_bps: 128.0,
+            }; 8],
+        );
+        assert_eq!(history.samples(&displayed[0]), Some(&expected));
+        assert_eq!(history.group_samples("resolver"), Some(&expected));
+        app.visit_live_connections("service:ssh", |_| panic!("filtered connection sampled"));
+    }
+
+    #[test]
+    fn a_filter_gap_or_missed_tick_restarts_the_window() {
+        let mut history = TrendHistory::default();
+        let mut conn = local_tcp(41004, "wget");
+        let clock = Clock::new();
+        clock.record(&mut history, std::slice::from_ref(&conn), 0);
+        conn.bytes_received = 1000;
+        clock.record(&mut history, std::slice::from_ref(&conn), 1000);
+        clock.record(&mut history, &[], 2000);
+        conn.bytes_received += 1000;
+        clock.record(&mut history, std::slice::from_ref(&conn), 3000);
+        assert!(history.samples(&conn).unwrap().is_empty());
+        assert!(history.group_samples("wget").is_none());
+        conn.bytes_received += 100;
+        clock.record(&mut history, std::slice::from_ref(&conn), 4000);
+        assert_eq!(history.samples(&conn), Some(&series(&[100.0])));
+        clock.record(&mut history, std::slice::from_ref(&conn), 14000);
+        assert!(history.samples(&conn).unwrap().is_empty());
+        assert!(history.group_samples("wget").is_none());
     }
 
     #[test]
@@ -386,20 +537,17 @@ mod tests {
         let mut second = local_tcp(40011, "firefox");
         first.bytes_received = 5_000;
         second.bytes_received = 9_000;
-        let t0 = Instant::now();
+        let clock = Clock::new();
 
         // Tick 0: baselines only, no group sample yet.
-        history.record(&[first.clone(), second.clone()], t0);
+        clock.record(&mut history, &[first.clone(), second.clone()], 0);
         assert!(history.group_samples("firefox").is_none());
 
         // Tick 1: sum both live members' deltas into one group sample.
         first.bytes_received += 1_500;
         second.bytes_received += 500;
         second.bytes_sent += 250;
-        history.record(
-            &[first.clone(), second.clone()],
-            t0 + Duration::from_secs(1),
-        );
+        clock.record(&mut history, &[first.clone(), second.clone()], 1000);
         let group = history.group_samples("firefox").unwrap();
         assert_eq!(
             group.iter().copied().collect::<Vec<_>>(),
@@ -410,7 +558,7 @@ mod tests {
         );
 
         history.clear();
-        assert!(history.samples(&first.key()).is_none());
+        assert!(history.samples(&first).is_none());
         assert!(history.group_samples("firefox").is_none());
     }
 }

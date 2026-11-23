@@ -612,7 +612,7 @@ fn trend_cell<'a>(
     if conn.is_historic {
         return Cell::from("");
     }
-    let samples = ui_state.trend_history.samples(&conn.key());
+    let samples = ui_state.trend_history.samples(conn);
     let on_tint = selected && theme::selection_has_bg();
     Cell::from(trend_line(samples, paint.colored(), on_tint))
 }

@@ -1,7 +1,7 @@
 //! Interactive event loop and rendering orchestration.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use log::{error, info};
@@ -81,11 +81,6 @@ where
                 ui_state.sort_column,
                 ui_state.sort_ascending,
             );
-            // Self-throttled to one sample per second, so refreshing more
-            // often (or on input) never distorts the Trend sparklines.
-            ui_state
-                .trend_history
-                .record(&connections, std::time::Instant::now());
             grouped_rows = if ui_state.grouping_enabled {
                 ui::compute_grouped_rows(&connections, &ui_state.expanded_groups)
             } else {
@@ -106,6 +101,13 @@ where
             needs_regroup = false;
             needs_redraw = true;
         }
+
+        let sampled = ui_state
+            .trend_history
+            .record(Instant::now(), SystemTime::now(), |visit| {
+                app.visit_live_connections(&ui_state.filter_query, visit);
+            });
+        needs_redraw |= sampled && ui_state.selected_tab <= 1 && !ui_state.show_help;
 
         // Draw the UI, but only when something warrants it: immediately
         // after input or a data change, otherwise at the idle heartbeat.
@@ -138,12 +140,12 @@ where
             needs_redraw = false;
         }
 
-        // Sleep until the next data tick or redraw heartbeat, whichever
-        // comes first, unless an event arrives earlier.
+        // Wake for the next data tick, trend sample, redraw, or input event.
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::from_secs(0))
-            .min(redraw_interval(app.is_loading(), &ui_state).saturating_sub(last_draw.elapsed()));
+            .min(redraw_interval(app.is_loading(), &ui_state).saturating_sub(last_draw.elapsed()))
+            .min(ui_state.trend_history.time_until_sample(Instant::now()));
 
         if let Some((_, time)) = &ui_state.clipboard_message
             && time.elapsed().as_secs() >= 3

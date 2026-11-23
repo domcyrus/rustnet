@@ -679,7 +679,7 @@ pub struct UiState {
     pub graph_animation_visible: Cell<bool>,
     pub(crate) bar_animations: super::widgets::glow_bar::BarAnimations,
     /// Per-connection rate history behind the connection tables' Trend
-    /// column, sampled by the main loop on each data refresh.
+    /// column, sampled from live counters on the one-second UI timer.
     pub(crate) trend_history: super::trend::TrendHistory,
     /// Scroll state for the Host tab's DNS question table.
     pub dns_questions_scroll: PaneScroll,

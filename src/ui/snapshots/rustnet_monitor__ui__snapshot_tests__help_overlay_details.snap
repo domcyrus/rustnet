@@ -19,7 +19,7 @@ expression: output
     │   Window Size     Advertised receive windows: ↓ this host's, ↑ the remote's            ▐ │    
     │   unknown window  Scaling is announced only in a handshake rustnet did not see         ▐ │    
     │   Initial RTT     Blank without a captured handshake; Live RTT still measures          ▐ │    
-    │                                                                                        ▐ │    
+    │                                                                                          │    
     │ ▎ Connection Display                                                                     │    
     │   Full color  Active connection                                                          │    
     │   Countdown   Idle; the ▎ stripe and ↓/↑ countdown run yellow to red until removal       │    

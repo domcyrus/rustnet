@@ -4,6 +4,7 @@
 use anyhow::Result;
 use dashmap::DashMap;
 use log::{debug, info, warn};
+use rustnet_core::network::filter::ConnectionFilter;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -130,6 +131,12 @@ fn sample_process_activity(
     });
 }
 
+fn lookup_service<'a>(lookup: &'a ServiceLookup, conn: &Connection) -> Option<&'a str> {
+    lookup
+        .lookup(conn.remote_addr.port(), conn.protocol)
+        .or_else(|| lookup.lookup(conn.local_addr.port(), conn.protocol))
+}
+
 /// Build the same deterministic, service-enriched connection view used by
 /// interactive and headless frontends. Calling this after workers have joined
 /// captures the fully drained tracker state for final machine output.
@@ -141,15 +148,7 @@ pub(super) fn build_connection_snapshot(
 ) -> Vec<Connection> {
     let enrich_and_filter = |connection: &mut Connection| {
         if connection.service_name.is_none() {
-            if let Some(service) =
-                service_lookup.lookup(connection.remote_addr.port(), connection.protocol)
-            {
-                connection.service_name = Some(service.to_string());
-            } else if let Some(service) =
-                service_lookup.lookup(connection.local_addr.port(), connection.protocol)
-            {
-                connection.service_name = Some(service.to_string());
-            }
+            connection.service_name = lookup_service(service_lookup, connection).map(str::to_owned);
         }
         passes_localhost_filter(connection, filter_localhost)
     };
@@ -193,6 +192,30 @@ fn publish_sample_if_current(
 }
 
 impl App {
+    /// Visit the live counters with the same visibility and service labels as
+    /// the connection table, even between publications of its UI snapshot.
+    pub(crate) fn visit_live_connections(&self, query: &str, mut visit: impl FnMut(&Connection)) {
+        let filter = (!query.trim().is_empty()).then(|| ConnectionFilter::parse(query));
+        let hide_ptr = self.hide_ptr_lookups();
+        for entry in self.tracker.connections().iter() {
+            let conn = entry.value();
+            if !passes_localhost_filter(conn, self.config.filter_localhost)
+                || (hide_ptr && is_ptr_lookup(conn))
+            {
+                continue;
+            }
+            if filter.as_ref().is_none_or(|filter| {
+                let service = conn
+                    .service_name
+                    .as_deref()
+                    .or_else(|| lookup_service(&self.service_lookup, conn));
+                filter.matches_with_service(conn, service)
+            }) {
+                visit(conn);
+            }
+        }
+    }
+
     pub(super) fn start_snapshot_provider(
         &mut self,
         tracker: Arc<ConnectionTracker>,
