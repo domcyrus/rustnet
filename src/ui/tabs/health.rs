@@ -19,13 +19,15 @@ use crate::network::{
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, HandlerContext, HostView, UiState,
     section_header, section_title, theme, try_handle_pane_wheel,
-    widgets::scrollbar::draw_scrollbar,
+    widgets::{badge::pill, scrollbar::draw_scrollbar},
 };
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use log::info;
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Color,
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
@@ -102,7 +104,6 @@ struct HealthInputs {
     drops: u64,
     errors: u64,
     tcp_status: &'static str,
-    tcp_level: HealthLevel,
     dns_status: &'static str,
     dns_level: HealthLevel,
     levels: [(Finding, HealthLevel); 5],
@@ -142,7 +143,15 @@ impl HealthInputs {
             ),
             (
                 Finding::Interfaces,
-                HealthLevel::observed(errors > 0, drops > 0),
+                if errors > 0 {
+                    HealthLevel::Error
+                } else if drops > 0 {
+                    HealthLevel::Warning
+                } else if interfaces.is_empty() {
+                    HealthLevel::Muted
+                } else {
+                    HealthLevel::Healthy
+                },
             ),
             (
                 Finding::Dns,
@@ -154,7 +163,13 @@ impl HealthInputs {
             ),
             (
                 Finding::Capture,
-                HealthLevel::observed(capture_error.is_some(), reported > 0 || queue > 0),
+                if capture_error.is_some() {
+                    HealthLevel::Error
+                } else if reported > 0 || queue > 0 {
+                    HealthLevel::Warning
+                } else {
+                    HealthLevel::Healthy
+                },
             ),
         ];
         Self {
@@ -174,7 +189,6 @@ impl HealthInputs {
             drops,
             errors,
             tcp_status,
-            tcp_level,
             dns_status,
             dns_level,
             levels,
@@ -364,6 +378,24 @@ fn fold(state: &mut UiState, finding: Finding, expand: bool) {
 
 fn health_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
     let state = &mut ctx.ui_state;
+    if matches!(
+        (key.code, key.modifiers),
+        (KeyCode::Char('t'), KeyModifiers::NONE)
+    ) {
+        state.show_historic = !state.show_historic;
+        state.scroll_offset = 0;
+        state.grouped_scroll_offset = 0;
+        ctx.app.toggle_show_historic();
+        info!(
+            "Historic connections: {}",
+            if state.show_historic {
+                "showing"
+            } else {
+                "hidden"
+            }
+        );
+        return Some(vec![Effect::RefreshData]);
+    }
     let rows = &ctx.click_regions.health_rows;
     let page = usize::from(state.health_scroll.viewport_rows()).max(1);
     let cursor = state.health_cursor.get_mut();
@@ -498,28 +530,44 @@ fn network_event_lines(
     } else {
         "since startup"
     };
-    rows.text(Line::styled(
-        format!("{label} / total ({total_label}) · captured packets"),
-        theme::fg(theme::muted()),
-    ));
-    let mut observed = events.total.observed().peekable();
-    if observed.peek().is_none() {
-        rows.text(Line::styled(
+    let observed: Vec<_> = events.total.observed().collect();
+    if observed.is_empty() {
+        rows.body(Line::styled(
+            format!("{label} / total ({total_label}) · captured packets"),
+            theme::fg(theme::muted()),
+        ));
+        rows.footer(Line::styled(
             "No resets or ICMP errors observed",
             theme::fg(theme::muted()),
         ));
         return;
     }
-    if !compact {
-        rows.text(Line::styled(
+    if compact {
+        rows.body(Line::styled(
+            format!("{label} / total ({total_label}) · captured packets"),
+            theme::fg(theme::muted()),
+        ));
+    } else {
+        const NAME_COL: usize = 36;
+        const COUNT_COL: usize = 20;
+        let header_name = format!("Event ({label} / {total_label})");
+        rows.body(Line::styled(
             format!(
-                "{:<42}{:>26}{:>26}",
-                "", "Sent: window / total", "Received: window / total"
+                "{:<NAME_COL$}{:>COUNT_COL$}{:>COUNT_COL$}",
+                header_name,
+                format!("Sent ({label} / total)"),
+                format!("Recv ({label} / total)"),
             ),
             theme::fg(theme::muted()),
         ));
+        rows.body(Line::styled(
+            "─".repeat(NAME_COL + COUNT_COL * 2),
+            theme::fg(theme::faint()),
+        ));
     }
-    for (kind, total) in observed {
+    let last_idx = observed.len().saturating_sub(1);
+    for (idx, (kind, total)) in observed.into_iter().enumerate() {
+        let is_last = idx == last_idx;
         let sel = events.selected.get(kind);
         let name_color = if sel.sent > 0 || sel.received > 0 {
             theme::warn()
@@ -528,23 +576,35 @@ fn network_event_lines(
         };
         let mut line = Line::from(Span::styled(kind.to_string(), theme::fg(name_color)));
         if compact {
-            rows.item(HealthTarget::Event(kind), line);
-            rows.text(Line::from(vec![
-                Span::raw("  Sent "),
-                count_span(sel.sent, theme::warn()),
-                Span::raw(format!(" / {}   Received ", total.sent)),
-                count_span(sel.received, theme::warn()),
-                Span::raw(format!(" / {}", total.received)),
-            ]));
+            rows.child(HealthTarget::Event(kind), is_last, line);
+            rows.child_detail(
+                is_last,
+                Line::from(vec![
+                    Span::styled("Sent ", theme::fg(theme::muted())),
+                    count_span(sel.sent, theme::warn()),
+                    Span::styled(
+                        format!(" / {}   Received ", total.sent),
+                        theme::fg(theme::muted()),
+                    ),
+                    count_span(sel.received, theme::warn()),
+                    Span::styled(format!(" / {}", total.received), theme::fg(theme::muted())),
+                ]),
+            );
         } else {
-            line.push_span(" ".repeat(42usize.saturating_sub(line.width())));
+            const NAME_COL: usize = 36;
+            const COUNT_COL: usize = 20;
+            line.push_span(" ".repeat(NAME_COL.saturating_sub(line.width())));
             for (win, tot) in [(sel.sent, total.sent), (sel.received, total.received)] {
-                let text_len = format!("{win} / {tot}").len();
-                line.push_span(" ".repeat(26usize.saturating_sub(text_len)));
-                line.push_span(count_span(win, theme::warn()));
-                line.push_span(format!(" / {tot}"));
+                let text = format!("{win} / {tot}");
+                line.push_span(" ".repeat(COUNT_COL.saturating_sub(text.len())));
+                if win == 0 && tot == 0 {
+                    line.push_span(Span::styled(text, theme::fg(theme::faint())));
+                } else {
+                    line.push_span(count_span(win, theme::warn()));
+                    line.push_span(Span::styled(format!(" / {tot}"), theme::fg(theme::muted())));
+                }
             }
-            rows.item(HealthTarget::Event(kind), line);
+            rows.child(HealthTarget::Event(kind), is_last, line);
         }
     }
 }
@@ -612,23 +672,31 @@ impl Component for HealthTab {
             })
             .collect();
 
+        let compact = area.width < 100;
+        let content_width = usize::from(area.width.saturating_sub(2)).max(1);
         let mut rows = FindingRows {
             window_label: window.label_since_clear(data.events.since_clear),
             badge: data.badge(),
             ..Default::default()
         };
-        for (finding, _) in order {
-            let (summary, window_label) = finding_summary(&data, finding, window);
+        let last_finding = order.len().saturating_sub(1);
+        for (idx, (finding, severity)) in order.into_iter().enumerate() {
             let expanded = state.expanded_findings.contains(&finding);
-            let marker = if expanded { "▾" } else { "▸" };
-            let mut heading = Line::from(vec![
-                Span::raw(format!("{marker} {} ", finding.name())),
-                Span::styled(format!("({window_label})  "), theme::fg(theme::muted())),
-            ]);
-            heading.extend(summary.spans);
-            rows.item(HealthTarget::Finding(finding), heading);
+            let heading = finding_heading(
+                &data,
+                finding,
+                severity,
+                window,
+                expanded,
+                compact,
+                content_width,
+            );
+            rows.heading(HealthTarget::Finding(finding), heading);
             if expanded {
-                append_finding_details(&data, finding, window, area.width < 100, &mut rows);
+                append_finding_details(&data, finding, window, compact, &mut rows);
+                if idx < last_finding {
+                    rows.spacer();
+                }
             }
         }
         rows.draw(f, area, ctx, regions);
@@ -636,104 +704,217 @@ impl Component for HealthTab {
     }
 }
 
+fn severity_icon(level: HealthLevel) -> Span<'static> {
+    let glyph = match level {
+        HealthLevel::Error => "✕ ",
+        HealthLevel::Warning => "▲ ",
+        HealthLevel::Healthy => "● ",
+        HealthLevel::Muted => "○ ",
+    };
+    Span::styled(glyph, theme::fg(level.color()))
+}
+
+fn finding_heading(
+    data: &HealthInputs,
+    finding: Finding,
+    severity: HealthLevel,
+    window: TimeWindow,
+    expanded: bool,
+    compact: bool,
+    content_width: usize,
+) -> Line<'static> {
+    const NAME_COL: usize = 17;
+    const STATUS_COL: usize = 14;
+
+    let (status_text, status_level, summary, window_label) =
+        finding_summary(data, finding, severity, window);
+    let marker = if expanded { "▾" } else { "▸" };
+    let align_cols = content_width >= 70;
+    let name_text = if align_cols {
+        format!("{:<NAME_COL$}", finding.name())
+    } else {
+        format!("{}  ", finding.name())
+    };
+    let mut heading = Line::from(vec![
+        Span::styled(format!("{marker} "), theme::fg(theme::muted())),
+        Span::styled(name_text, theme::bold_fg(theme::heading())),
+        severity_icon(severity),
+    ]);
+    let status_spans = match status_level {
+        HealthLevel::Error | HealthLevel::Warning => pill(status_text, status_level.color()),
+        HealthLevel::Healthy | HealthLevel::Muted => {
+            vec![Span::styled(status_text, theme::fg(status_level.color()))]
+        }
+    };
+    let status_width: usize = status_spans.iter().map(Span::width).sum();
+    heading.extend(status_spans);
+
+    if !summary.spans.is_empty() {
+        let gap = if align_cols {
+            STATUS_COL.saturating_sub(status_width).max(2)
+        } else {
+            2
+        };
+        heading.push_span(Span::raw(" ".repeat(gap)));
+        heading.extend(summary.spans);
+    }
+
+    let win_text = format!("({window_label})");
+    // Account for the 2-cell selection gutter added during draw.
+    let used = 2 + heading.width();
+    if !compact && used + 2 + win_text.len() <= content_width {
+        heading.push_span(Span::raw(" ".repeat(content_width - used - win_text.len())));
+    } else {
+        heading.push_span(Span::raw("  "));
+    }
+    heading.push_span(Span::styled(win_text, theme::fg(theme::muted())));
+    heading
+}
+
 fn finding_summary(
     data: &HealthInputs,
     finding: Finding,
+    severity: HealthLevel,
     window: TimeWindow,
-) -> (Line<'static>, &'static str) {
+) -> (&'static str, HealthLevel, Line<'static>, &'static str) {
     match finding {
         Finding::Tcp => {
             let c = &data.tcp.total;
-            let mut line = Line::from(Span::styled(
-                data.tcp_status,
-                theme::fg(data.tcp_level.color()),
-            ));
+            let mut spans = Vec::new();
             if c.completed > 0 {
                 let fail_color = if c.reset > 0 {
                     theme::err()
                 } else {
                     theme::warn()
                 };
-                line.extend([
-                    Span::raw(" · "),
-                    count_span(c.reset + c.no_handshake, fail_color),
-                    Span::raw(format!("/{} reset or incomplete · ", c.completed)),
-                    count_span(c.anomalous, theme::warn()),
-                    Span::raw(" anomalous"),
-                ]);
+                spans.push(count_span(c.reset + c.no_handshake, fail_color));
+                spans.push(Span::styled(
+                    format!("/{} reset or incomplete", c.completed),
+                    theme::fg(theme::muted()),
+                ));
+                if c.anomalous > 0 {
+                    spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+                    spans.push(count_span(c.anomalous, theme::warn()));
+                    spans.push(Span::styled(" anomalous", theme::fg(theme::muted())));
+                }
             }
             if data.tcp.pending > 0 {
-                line.push_span(format!(" · {} pending", data.tcp.pending));
+                if !spans.is_empty() {
+                    spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+                }
+                spans.push(Span::raw(format!("{} ", data.tcp.pending)));
+                spans.push(Span::styled("pending", theme::fg(theme::muted())));
             }
-            (line, "5m")
+            (data.tcp_status, severity, Line::from(spans), "5m")
         }
-        Finding::Events => (
-            Line::from(vec![
-                Span::raw("RST "),
-                count_span(data.resets_sent, theme::warn()),
-                Span::raw(" sent / "),
-                count_span(data.resets_received, theme::warn()),
-                Span::raw(" received · "),
-                count_span(data.icmp, theme::warn()),
-                Span::raw(" ICMP"),
-            ]),
-            window.label_since_clear(data.events.since_clear),
-        ),
-        Finding::Interfaces => {
-            let mut line = if data.interfaces.is_empty() {
-                Line::from(Span::styled(
-                    "Waiting for interface statistics",
-                    theme::fg(theme::muted()),
-                ))
+        Finding::Events => {
+            let status = if severity == HealthLevel::Warning {
+                "observed"
             } else {
-                Line::from(vec![
-                    count_span(data.drops, theme::warn()),
-                    Span::raw(" drops observed"),
-                ])
+                "quiet"
             };
-            if data.errors > 0 {
-                line.extend([
-                    Span::raw(" · "),
-                    count_span(data.errors, theme::err()),
-                    Span::raw(" errors"),
+            (
+                status,
+                severity,
+                Line::from(vec![
+                    Span::styled("RST ", theme::fg(theme::muted())),
+                    count_span(data.resets_sent, theme::warn()),
+                    Span::styled(" sent / ", theme::fg(theme::muted())),
+                    count_span(data.resets_received, theme::warn()),
+                    Span::styled(" recv · ", theme::fg(theme::muted())),
+                    count_span(data.icmp, theme::warn()),
+                    Span::styled(" ICMP", theme::fg(theme::muted())),
+                ]),
+                window.label_since_clear(data.events.since_clear),
+            )
+        }
+        Finding::Interfaces => {
+            let (status, line) = if data.interfaces.is_empty() {
+                (
+                    "waiting",
+                    Line::from(Span::styled(
+                        "Waiting for interface statistics",
+                        theme::fg(theme::muted()),
+                    )),
+                )
+            } else {
+                let status = match severity {
+                    HealthLevel::Error => "errors",
+                    HealthLevel::Warning => "drops",
+                    _ => "clear",
+                };
+                let mut line = Line::from(vec![
+                    count_span(data.drops, theme::warn()),
+                    Span::styled(" drops observed", theme::fg(theme::muted())),
                 ]);
-            }
-            (line, window.label_since_clear(data.interfaces_since_clear))
+                if data.errors > 0 {
+                    line.extend([
+                        Span::styled(" · ", theme::fg(theme::faint())),
+                        count_span(data.errors, theme::err()),
+                        Span::styled(" errors", theme::fg(theme::muted())),
+                    ]);
+                }
+                (status, line)
+            };
+            (
+                status,
+                severity,
+                line,
+                window.label_since_clear(data.interfaces_since_clear),
+            )
         }
         Finding::Dns => {
             let mut line = Line::from(vec![
-                Span::styled(data.dns_status, theme::fg(data.dns_level.color())),
-                Span::raw(format!(" · {} replies · ", data.dns.answered)),
+                Span::raw(format!("{} ", data.dns.answered)),
+                Span::styled("replies · ", theme::fg(theme::muted())),
                 count_span(data.dns.timeouts as u64, theme::err()),
-                Span::raw(" timeouts"),
+                Span::styled(" timeouts", theme::fg(theme::muted())),
             ]);
             let error_replies = data.dns.failures.saturating_sub(data.dns.timeouts);
             if error_replies > 0 {
                 line.extend([
-                    Span::raw(" · "),
+                    Span::styled(" · ", theme::fg(theme::faint())),
                     count_span(error_replies as u64, theme::err()),
-                    Span::raw(" error replies"),
+                    Span::styled(" error replies", theme::fg(theme::muted())),
                 ]);
             }
-            (line, data.dns.window_label())
+            (
+                data.dns_status,
+                data.dns_level,
+                line,
+                data.dns.window_label(),
+            )
         }
-        Finding::Capture => (
-            if data.capture_error.is_some() {
-                Line::from(Span::styled("Capture failed", theme::fg(theme::err())))
+        Finding::Capture => {
+            let (status, line) = if data.capture_error.is_some() {
+                ("Capture failed", Line::default())
             } else {
-                Line::from(vec![
-                    count_span(data.reported, theme::warn()),
-                    Span::raw(" reported drops · "),
-                    count_span(data.queue, theme::warn()),
-                    Span::raw(" queue drops"),
-                ])
-            },
-            if data.events.since_clear {
-                "since clear"
-            } else {
-                "since startup"
-            },
-        ),
+                let status = if severity == HealthLevel::Warning {
+                    "drops"
+                } else {
+                    "healthy"
+                };
+                (
+                    status,
+                    Line::from(vec![
+                        count_span(data.reported, theme::warn()),
+                        Span::styled(" reported drops · ", theme::fg(theme::muted())),
+                        count_span(data.queue, theme::warn()),
+                        Span::styled(" queue drops", theme::fg(theme::muted())),
+                    ]),
+                )
+            };
+            (
+                status,
+                severity,
+                line,
+                if data.events.since_clear {
+                    "since clear"
+                } else {
+                    "since startup"
+                },
+            )
+        }
     }
 }
 
@@ -745,115 +926,263 @@ fn append_finding_details(
     rows: &mut FindingRows,
 ) {
     match finding {
-        Finding::Tcp => tcp_attempt_lines(&data.tcp, rows),
+        Finding::Tcp => tcp_attempt_lines(&data.tcp, compact, rows),
         Finding::Events => network_event_lines(&data.events, window, compact, rows),
         Finding::Dns => {
             let failed = data.capture_error.is_some();
-            rows.text(Line::styled(
+            rows.body(Line::styled(
                 super::host::dns_guidance(&data.dns, failed),
                 theme::fg(theme::muted()),
             ));
             for resolver in &data.dns.resolvers {
-                rows.item(
+                rows.child(
                     HealthTarget::Resolver(Some(resolver.address)),
+                    false,
                     super::host::resolver_line(resolver, failed, data.dns.approximate_latency),
                 );
             }
             if data.dns.resolvers.is_empty() {
-                rows.item(
+                rows.child(
                     HealthTarget::Resolver(None),
+                    false,
                     Line::styled("No observed resolvers", theme::fg(theme::muted())),
                 );
             }
-            rows.text(Line::styled(
-                format!(
-                    "Recent issues (15m, {} retained)",
-                    data.dns.recent_issues.len()
-                ),
-                theme::fg(theme::muted()),
-            ));
-            for (i, issue) in data.dns.recent_issues.iter().enumerate() {
-                let duplicate = data.dns.recent_issues[i + 1..]
-                    .iter()
-                    .filter(|other| *other == issue)
-                    .count();
-                rows.item(
-                    HealthTarget::DnsIssue(issue.clone(), duplicate),
-                    super::host::dns_issue_line(issue, None),
-                );
-            }
-            if data.dns.truncated {
-                rows.text(Line::styled(
-                    "Incomplete DNS evidence",
-                    theme::fg(theme::warn()),
-                ));
+            let issues_heading = format!(
+                "Recent issues (15m, {} retained)",
+                data.dns.recent_issues.len()
+            );
+            if data.dns.recent_issues.is_empty() && !data.dns.truncated {
+                rows.footer(Line::styled(issues_heading, theme::fg(theme::muted())));
+            } else {
+                rows.body(Line::styled(issues_heading, theme::fg(theme::muted())));
+                let last_issue = data.dns.recent_issues.len().saturating_sub(1);
+                let outer_rail = data.dns.truncated;
+                for (i, issue) in data.dns.recent_issues.iter().enumerate() {
+                    let duplicate = data.dns.recent_issues[i + 1..]
+                        .iter()
+                        .filter(|other| *other == issue)
+                        .count();
+                    rows.grand_child(
+                        HealthTarget::DnsIssue(issue.clone(), duplicate),
+                        outer_rail,
+                        i == last_issue,
+                        super::host::dns_issue_line(issue, None),
+                    );
+                }
+                if data.dns.truncated {
+                    rows.footer(Line::styled(
+                        "Incomplete DNS evidence",
+                        theme::fg(theme::warn()),
+                    ));
+                }
             }
         }
         Finding::Interfaces => {
             let mut interfaces: Vec<_> = data.interfaces.iter().collect();
             interfaces.sort_unstable_by_key(|(name, _)| *name);
             if interfaces.is_empty() {
-                rows.item(
+                rows.child(
                     HealthTarget::Interface(None),
+                    true,
                     Line::styled("No interface samples available", theme::fg(theme::muted())),
                 );
+                return;
             }
-            for (name, c) in interfaces {
-                rows.item(
-                    HealthTarget::Interface(Some(name.clone())),
+            if !compact {
+                const NAME_COL: usize = 16;
+                const NUM_COL: usize = 11;
+                rows.body(Line::styled(
+                    format!(
+                        "{:<NAME_COL$}{:>NUM_COL$}{:>NUM_COL$}{:>NUM_COL$}{:>NUM_COL$}",
+                        "Interface", "RX drops", "TX drops", "RX errors", "TX errors"
+                    ),
+                    theme::fg(theme::muted()),
+                ));
+                rows.body(Line::styled(
+                    "─".repeat(NAME_COL + NUM_COL * 4),
+                    theme::fg(theme::faint()),
+                ));
+            }
+            let last_idx = interfaces.len().saturating_sub(1);
+            for (idx, (name, c)) in interfaces.into_iter().enumerate() {
+                let is_last = idx == last_idx;
+                let line = if compact {
                     Line::from(vec![
-                        Span::raw(format!("{name}  RX drops ")),
+                        Span::styled(name.clone(), theme::bold_fg(theme::heading())),
+                        Span::styled("  RX drops ", theme::fg(theme::muted())),
                         count_span(c.rx_dropped, theme::warn()),
-                        Span::raw(" · TX drops "),
+                        Span::styled(" · TX drops ", theme::fg(theme::muted())),
                         count_span(c.tx_dropped, theme::warn()),
-                        Span::raw(" · RX errors "),
+                        Span::styled(" · RX err ", theme::fg(theme::muted())),
                         count_span(c.rx_errors, theme::err()),
-                        Span::raw(" · TX errors "),
+                        Span::styled(" · TX err ", theme::fg(theme::muted())),
                         count_span(c.tx_errors, theme::err()),
-                    ]),
-                );
+                    ])
+                } else {
+                    const NAME_COL: usize = 16;
+                    const NUM_COL: usize = 11;
+                    let mut spans = vec![Span::styled(
+                        format!("{:<NAME_COL$}", name),
+                        theme::bold_fg(theme::heading()),
+                    )];
+                    for (val, color) in [
+                        (c.rx_dropped, theme::warn()),
+                        (c.tx_dropped, theme::warn()),
+                        (c.rx_errors, theme::err()),
+                        (c.tx_errors, theme::err()),
+                    ] {
+                        let text = val.to_string();
+                        spans.push(Span::raw(" ".repeat(NUM_COL.saturating_sub(text.len()))));
+                        if val == 0 {
+                            spans.push(Span::styled(text, theme::fg(theme::faint())));
+                        } else {
+                            spans.push(Span::styled(text, theme::fg(color)));
+                        }
+                    }
+                    Line::from(spans)
+                };
+                rows.child(HealthTarget::Interface(Some(name.clone())), is_last, line);
             }
         }
         Finding::Capture => {
             if let Some(error) = &data.capture_error {
-                rows.item(
+                rows.child(
                     HealthTarget::Capture("Capture failed"),
+                    false,
                     Line::styled(error.clone(), theme::fg(theme::err())),
                 );
             }
-            for (name, value) in [
+            let metrics = [
                 ("Capture backend drops", data.capture),
                 ("Interface-reported drops", data.iface),
                 ("Processing queue drops", data.queue),
-            ] {
-                rows.item(
+            ];
+            let last_idx = metrics.len().saturating_sub(1);
+            for (idx, (name, value)) in metrics.into_iter().enumerate() {
+                rows.child(
                     HealthTarget::Capture(name),
+                    idx == last_idx,
                     Line::from(vec![
-                        Span::raw(format!("{name} ")),
-                        count_span(value, theme::warn()),
+                        Span::styled(format!("{name:<26}"), theme::fg(theme::muted())),
+                        if value == 0 {
+                            Span::styled("0", theme::fg(theme::faint()))
+                        } else {
+                            count_span(value, theme::warn())
+                        },
                     ]),
                 );
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RowKind {
+    Heading,
+    Spacer,
+    Body,
+    Child { is_last: bool },
+    ChildDetail { parent_is_last: bool },
+    GrandChild { outer_rail: bool, is_last: bool },
+    GrandChildNote { outer_rail: bool },
+    Footer,
+}
+
+impl RowKind {
+    fn rail(self) -> &'static str {
+        match self {
+            Self::Heading | Self::Spacer => "",
+            Self::Body => "│  ",
+            Self::Child { is_last: false } => "├─ ",
+            Self::Child { is_last: true } | Self::Footer => "└─ ",
+            Self::ChildDetail {
+                parent_is_last: false,
+            } => "│    ",
+            Self::ChildDetail {
+                parent_is_last: true,
+            } => "     ",
+            Self::GrandChild {
+                outer_rail: true,
+                is_last: false,
+            } => "│  ├─ ",
+            Self::GrandChild {
+                outer_rail: true,
+                is_last: true,
+            }
+            | Self::GrandChildNote { outer_rail: true } => "│  └─ ",
+            Self::GrandChild {
+                outer_rail: false,
+                is_last: false,
+            } => "   ├─ ",
+            Self::GrandChild {
+                outer_rail: false,
+                is_last: true,
+            }
+            | Self::GrandChildNote { outer_rail: false } => "   └─ ",
         }
     }
 }
 
 #[derive(Default)]
 struct FindingRows {
-    lines: Vec<Line<'static>>,
+    lines: Vec<(RowKind, Line<'static>)>,
     targets: Vec<(usize, HealthTarget)>,
     window_label: &'static str,
     badge: HealthBadge,
 }
 
 impl FindingRows {
-    fn item(&mut self, target: HealthTarget, line: impl Into<Line<'static>>) {
+    fn push_item(&mut self, kind: RowKind, target: HealthTarget, line: impl Into<Line<'static>>) {
         self.targets.push((self.lines.len(), target));
-        self.text(line);
+        self.lines.push((kind, line.into()));
     }
 
-    fn text(&mut self, line: impl Into<Line<'static>>) {
-        self.lines.push(line.into());
+    fn heading(&mut self, target: HealthTarget, line: impl Into<Line<'static>>) {
+        self.push_item(RowKind::Heading, target, line);
+    }
+
+    fn child(&mut self, target: HealthTarget, is_last: bool, line: impl Into<Line<'static>>) {
+        self.push_item(RowKind::Child { is_last }, target, line);
+    }
+
+    fn grand_child(
+        &mut self,
+        target: HealthTarget,
+        outer_rail: bool,
+        is_last: bool,
+        line: impl Into<Line<'static>>,
+    ) {
+        self.push_item(
+            RowKind::GrandChild {
+                outer_rail,
+                is_last,
+            },
+            target,
+            line,
+        );
+    }
+
+    fn body(&mut self, line: impl Into<Line<'static>>) {
+        self.lines.push((RowKind::Body, line.into()));
+    }
+
+    fn child_detail(&mut self, parent_is_last: bool, line: impl Into<Line<'static>>) {
+        self.lines
+            .push((RowKind::ChildDetail { parent_is_last }, line.into()));
+    }
+
+    fn grand_child_note(&mut self, outer_rail: bool, line: impl Into<Line<'static>>) {
+        self.lines
+            .push((RowKind::GrandChildNote { outer_rail }, line.into()));
+    }
+
+    fn footer(&mut self, line: impl Into<Line<'static>>) {
+        self.lines.push((RowKind::Footer, line.into()));
+    }
+
+    fn spacer(&mut self) {
+        self.lines.push((RowKind::Spacer, Line::default()));
     }
 
     fn header_line(&self, cursor: &HealthCursor, selected: usize) -> Line<'static> {
@@ -920,9 +1249,10 @@ impl FindingRows {
         let mut next = self.targets.into_iter().enumerate().peekable();
         let mut starts = Vec::with_capacity(self.lines.len());
         let mut top = 0usize;
-        for (index, line) in self.lines.iter_mut().enumerate() {
+        for (index, (kind, line)) in self.lines.iter_mut().enumerate() {
             let item = next.next_if(|(_, (line_index, _))| *line_index == index);
             let mut link_badge: Option<String> = None;
+            let rail = kind.rail();
             if let Some((idx, (_, target))) = &item {
                 let is_selected = *idx == selected;
                 if let Some(label) = target.link(ctx.connections) {
@@ -940,25 +1270,42 @@ impl FindingRows {
                     line.push_span(Span::styled(badge.clone(), theme::fg(color)));
                     link_badge = Some(badge);
                 } else if matches!(target, HealthTarget::Attempt { .. }) {
-                    let hint = match (state.has_active_filter(), state.show_historic) {
-                        (true, false) => " · Details unavailable (filter active / history off)",
-                        (true, true) => " · Details unavailable (filtered)",
-                        (false, false) => " · Details unavailable (press t for history)",
-                        (false, true) => " · Details unavailable",
-                    };
-                    line.push_span(Span::styled(hint, theme::fg(theme::muted())));
+                    if is_selected {
+                        let hint = match (state.has_active_filter(), state.show_historic) {
+                            (true, false) => {
+                                "  Details unavailable (filter active · press t for history)"
+                            }
+                            (true, true) => "  Details unavailable (filtered)",
+                            (false, false) => "  Details unavailable (press t for history)",
+                            (false, true) => "  Details unavailable",
+                        };
+                        line.push_span(Span::styled(hint, theme::fg(theme::muted())));
+                    } else {
+                        let tag = match (state.has_active_filter(), state.show_historic) {
+                            (true, false) => "  filtered · history off",
+                            (true, true) => "  filtered",
+                            (false, false) => "  history off",
+                            (false, true) => "  —",
+                        };
+                        line.push_span(Span::styled(tag, theme::fg(theme::faint())));
+                    }
+                }
+                if !rail.is_empty() {
+                    line.spans
+                        .insert(0, Span::styled(rail, theme::fg(theme::faint())));
                 }
                 let marker = if is_selected { "▌ " } else { "  " };
                 line.spans
                     .insert(0, Span::styled(marker, theme::fg(theme::accent())));
-                if !matches!(target, HealthTarget::Finding(_)) {
-                    line.spans.insert(0, Span::raw("  "));
-                }
                 if is_selected {
-                    highlight_line(line);
+                    highlight_line(line, usize::from(width));
                 }
-            } else {
-                line.spans.insert(0, Span::raw("    "));
+            } else if !matches!(kind, RowKind::Spacer) {
+                if !rail.is_empty() {
+                    line.spans
+                        .insert(0, Span::styled(rail, theme::fg(theme::faint())));
+                }
+                line.spans.insert(0, Span::raw("  "));
             }
             starts.push(top);
             let height = if line.width() <= usize::from(width) {
@@ -994,7 +1341,11 @@ impl FindingRows {
             width: inner.width.saturating_sub(2),
             ..inner
         };
-        let visible = self.lines.drain(first..end).collect::<Vec<_>>();
+        let visible = self
+            .lines
+            .drain(first..end)
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>();
         f.render_widget(
             Paragraph::new(visible)
                 .wrap(Wrap { trim: false })
@@ -1045,84 +1396,159 @@ fn find_link_rect(buf: &ratatui::buffer::Buffer, rect: Rect, badge: &str) -> Opt
     None
 }
 
-fn highlight_line(line: &mut Line<'_>) {
+fn highlight_line(line: &mut Line<'_>, width: usize) {
     let selection = theme::row_highlight();
+    let pad = width.saturating_sub(line.width());
+    if pad > 0 {
+        line.push_span(Span::raw(" ".repeat(pad)));
+    }
     line.style = line.style.patch(selection);
     if selection.fg.is_some() {
         for span in &mut line.spans {
-            span.style = span.style.patch(selection);
+            if span.style.bg.is_none() {
+                span.style = span.style.patch(selection);
+            }
         }
     }
 }
 
-fn outcome_counts(counts: &AttemptCounts, indent: &'static str) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(indent),
-        count_span(counts.established, theme::ok()),
-        Span::raw(" established, "),
-        count_span(counts.reset, theme::err()),
-        Span::raw(" reset, "),
-        count_span(counts.no_handshake, theme::warn()),
-        Span::raw(" no handshake, "),
-        count_span(counts.superseded, theme::warn()),
-        Span::raw(" superseded"),
-    ])
-}
-
-fn format_remaining(remaining: Duration) -> String {
-    let secs = remaining.as_secs();
-    if secs >= 60 {
-        format!("{}m {:02}s left", secs / 60, secs % 60)
-    } else if secs > 0 {
-        format!("{secs}s left")
-    } else {
-        "<1s left".to_owned()
+/// Compact proportional bar showing established / incomplete / reset ratio.
+fn tcp_health_bar(counts: &AttemptCounts, width: usize) -> Vec<Span<'static>> {
+    if width == 0 || counts.completed == 0 {
+        return Vec::new();
     }
+    let total = counts.completed as f64;
+    let warn_count = counts.no_handshake.saturating_add(counts.superseded);
+    let mut err_cells = ((counts.reset as f64 / total) * width as f64).round() as usize;
+    let mut warn_cells = ((warn_count as f64 / total) * width as f64).round() as usize;
+    if counts.reset > 0 && err_cells == 0 {
+        err_cells = 1;
+    }
+    if warn_count > 0 && warn_cells == 0 {
+        warn_cells = 1;
+    }
+    let fail_cells = (err_cells + warn_cells).min(width);
+    err_cells = err_cells.min(fail_cells);
+    warn_cells = fail_cells.saturating_sub(err_cells);
+    let ok_cells = if counts.established > 0 {
+        width.saturating_sub(fail_cells)
+    } else {
+        0
+    };
+    let rem = width.saturating_sub(ok_cells + warn_cells + err_cells);
+
+    let mut spans = Vec::with_capacity(4);
+    if ok_cells > 0 {
+        spans.push(Span::styled("█".repeat(ok_cells), theme::fg(theme::ok())));
+    }
+    if warn_cells > 0 {
+        spans.push(Span::styled(
+            "▓".repeat(warn_cells),
+            theme::fg(theme::warn()),
+        ));
+    }
+    if err_cells > 0 {
+        spans.push(Span::styled("▒".repeat(err_cells), theme::fg(theme::err())));
+    }
+    if rem > 0 {
+        spans.push(Span::styled("·".repeat(rem), theme::fg(theme::faint())));
+    }
+    spans
 }
 
-fn anomaly_detail_line(issue: &TcpAttempt) -> Option<Line<'static>> {
-    let mut spans = Vec::new();
-    for (label, count, color) in [
-        ("SYN retries", issue.syn_retries, theme::warn()),
-        ("unexpected ACKs", issue.unexpected_acks, theme::warn()),
-        ("invalid SYN-ACKs", issue.invalid_syn_acks, theme::err()),
-        ("local resets", issue.local_resets, theme::warn()),
+fn push_nonzero_outcomes(counts: &AttemptCounts, spans: &mut Vec<Span<'static>>) {
+    for (count, label, color) in [
+        (counts.established, "established", theme::ok()),
+        (counts.reset, "reset", theme::err()),
+        (counts.no_handshake, "no handshake", theme::warn()),
+        (counts.superseded, "superseded", theme::warn()),
     ] {
         if count == 0 {
             continue;
         }
-        spans.push(if spans.is_empty() {
-            Span::raw("      ")
-        } else {
-            Span::styled(" · ", theme::fg(theme::muted()))
-        });
-        spans.push(Span::styled(format!("{label} "), theme::fg(theme::muted())));
+        if !spans.is_empty() {
+            spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+        }
         spans.push(count_span(count, color));
+        spans.push(Span::styled(format!(" {label}"), theme::fg(theme::muted())));
     }
-    (!spans.is_empty()).then(|| Line::from(spans))
 }
 
-fn tcp_attempt_lines(snapshot: &TcpAttemptSnapshot, rows: &mut FindingRows) {
+fn format_remaining_compact(remaining: Duration) -> String {
+    let secs = remaining.as_secs();
+    if secs >= 60 {
+        format!("{}m {:02}s", secs / 60, secs % 60)
+    } else if secs > 0 {
+        format!("{secs}s")
+    } else {
+        "<1s".to_owned()
+    }
+}
+
+fn compact_anomaly_parts(issue: &TcpAttempt) -> Vec<(String, Color)> {
+    let mut parts = Vec::new();
+    for (count, label, color) in [
+        (issue.syn_retries, "SYN retry", theme::warn()),
+        (issue.unexpected_acks, "unexp ACK", theme::warn()),
+        (issue.invalid_syn_acks, "bad SYN-ACK", theme::err()),
+        (issue.local_resets, "local RST", theme::warn()),
+    ] {
+        if count > 0 {
+            parts.push((format!("{count}× {label}"), color));
+        }
+    }
+    parts
+}
+
+fn tcp_attempt_lines(snapshot: &TcpAttemptSnapshot, compact: bool, rows: &mut FindingRows) {
     let c = &snapshot.total;
-    rows.text(Line::styled(
-        format!("{} completed, {} pending", c.completed, snapshot.pending),
-        theme::fg(theme::muted()),
-    ));
-    rows.text(outcome_counts(c, ""));
+    if c.completed > 0 {
+        let bar_width = if compact { 12 } else { 22 };
+        let mut summary = tcp_health_bar(c, bar_width);
+        summary.push(Span::raw("  "));
+        let mut breakdown = Vec::new();
+        push_nonzero_outcomes(c, &mut breakdown);
+        if snapshot.pending > 0 {
+            if !breakdown.is_empty() {
+                breakdown.push(Span::styled(" · ", theme::fg(theme::faint())));
+            }
+            breakdown.push(Span::raw(format!("{} ", snapshot.pending)));
+            breakdown.push(Span::styled("pending", theme::fg(theme::muted())));
+        }
+        summary.extend(breakdown);
+        rows.body(Line::from(summary));
+    } else {
+        rows.body(Line::styled(
+            format!("{} completed, {} pending", c.completed, snapshot.pending),
+            theme::fg(theme::muted()),
+        ));
+    }
+
     let mut destinations: Vec<_> = snapshot
         .destinations
         .iter()
         .filter(|(_, c)| c.is_affected())
         .collect();
     destinations.sort_by(|a, b| super::compare_tcp_destinations(*b, *a));
-    rows.text(Line::styled(
-        if destinations.is_empty() {
-            "No affected destinations in the last 5 min"
-        } else {
-            "Affected destinations · issues expire after 5 min"
-        },
-        theme::fg(theme::muted()),
-    ));
+    if destinations.is_empty() {
+        if snapshot.omitted > 0 {
+            rows.body(Line::styled(
+                format!(
+                    "Incomplete evidence: {} capacity omissions since clear",
+                    snapshot.omitted
+                ),
+                theme::fg(theme::warn()),
+            ));
+        }
+        rows.footer(Line::styled(
+            "No affected destinations in the last 5 min",
+            theme::fg(theme::muted()),
+        ));
+        return;
+    }
+
+    rows.body(Line::default());
+
     let mut issues_by_dest: HashMap<SocketAddr, Vec<&TcpAttempt>> = HashMap::new();
     for issue in &snapshot.recent_issues {
         issues_by_dest
@@ -1130,87 +1556,184 @@ fn tcp_attempt_lines(snapshot: &TcpAttemptSnapshot, rows: &mut FindingRows) {
             .or_default()
             .push(issue);
     }
+
+    let has_omitted = snapshot.omitted > 0;
+    let has_note = c.no_handshake + c.anomalous > 0;
+    let has_footer = has_omitted || has_note;
+    let last_dest = destinations.len().saturating_sub(1);
     let now = SystemTime::now();
-    for (address, c) in destinations {
+
+    for (dest_idx, (address, dc)) in destinations.into_iter().enumerate() {
         let issues = issues_by_dest.get(address).map_or(&[][..], Vec::as_slice);
-        let fail_color = if c.reset > 0 {
+        let outer_rail = dest_idx < last_dest || has_footer;
+        let fail_count = dc.reset + dc.no_handshake;
+        let fail_color = if dc.reset > 0 {
             theme::err()
         } else {
             theme::warn()
         };
-        rows.item(
-            HealthTarget::Destination(*address),
-            Line::from(vec![
-                Span::raw(format!("{address}  ")),
-                count_span(c.reset + c.no_handshake, fail_color),
-                Span::raw(format!("/{} reset or incomplete, ", c.completed)),
-                count_span(c.anomalous, theme::warn()),
-                Span::raw(" anomalous, "),
-                count_span(c.syn_retries, theme::warn()),
-                Span::raw(" SYN retries"),
-            ]),
-        );
-        rows.text(outcome_counts(c, "  "));
-        if issues.is_empty() {
-            rows.text(Line::styled(
-                "    No matching attempt in the 32 most recent issues",
+
+        let mut dest_spans = vec![
+            Span::styled(address.to_string(), theme::bold_fg(theme::heading())),
+            Span::raw("  "),
+        ];
+        if fail_count > 0 {
+            dest_spans.push(count_span(fail_count, fail_color));
+            let fail_label = if dc.reset == 0 {
+                " no handshake"
+            } else if dc.no_handshake == 0 {
+                " reset"
+            } else {
+                " reset or incomplete"
+            };
+            dest_spans.push(Span::styled(
+                format!("/{}{fail_label}", dc.completed),
                 theme::fg(theme::muted()),
             ));
+            if dc.reset > 0 && dc.no_handshake > 0 {
+                dest_spans.push(Span::styled(" (", theme::fg(theme::muted())));
+                dest_spans.push(count_span(dc.reset, theme::err()));
+                dest_spans.push(Span::styled(" reset, ", theme::fg(theme::muted())));
+                dest_spans.push(count_span(dc.no_handshake, theme::warn()));
+                dest_spans.push(Span::styled(" no handshake)", theme::fg(theme::muted())));
+            }
         }
-        for issue in issues {
+        if dc.established > 0 {
+            if fail_count > 0 {
+                dest_spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+            }
+            dest_spans.push(count_span(dc.established, theme::ok()));
+            dest_spans.push(Span::styled(" established", theme::fg(theme::muted())));
+        }
+        if dc.superseded > 0 {
+            dest_spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+            dest_spans.push(count_span(dc.superseded, theme::warn()));
+            dest_spans.push(Span::styled(" superseded", theme::fg(theme::muted())));
+        }
+        if dc.anomalous > 0 {
+            dest_spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+            dest_spans.push(count_span(dc.anomalous, theme::warn()));
+            dest_spans.push(Span::styled(" anomalous", theme::fg(theme::muted())));
+        }
+        if dc.syn_retries > 0 {
+            dest_spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+            dest_spans.push(count_span(dc.syn_retries, theme::warn()));
+            dest_spans.push(Span::styled(" SYN retries", theme::fg(theme::muted())));
+        }
+        if !compact && dest_idx == 0 {
+            dest_spans.push(Span::styled(
+                "   · expires after 5m",
+                theme::fg(theme::faint()),
+            ));
+        }
+        rows.child(
+            HealthTarget::Destination(*address),
+            !outer_rail,
+            Line::from(dest_spans),
+        );
+
+        if issues.is_empty() {
+            rows.grand_child_note(
+                outer_rail,
+                Line::styled(
+                    "No matching attempt in the 32 most recent issues",
+                    theme::fg(theme::muted()),
+                ),
+            );
+            continue;
+        }
+
+        let last_issue = issues.len().saturating_sub(1);
+        for (issue_idx, issue) in issues.iter().enumerate() {
             let (outcome, color) = match issue.outcome {
-                AttemptOutcome::Established => ("established after anomaly", theme::warn()),
-                AttemptOutcome::NoHandshake => ("no handshake observed", theme::warn()),
+                AttemptOutcome::Established => ("estab w/ anomaly", theme::warn()),
+                AttemptOutcome::NoHandshake => ("no handshake", theme::warn()),
                 AttemptOutcome::Reset => ("reset", theme::err()),
                 AttemptOutcome::Superseded => ("superseded", theme::warn()),
             };
             let expires_at = issue.finished_at + crate::network::tcp_attempts::WINDOW;
-            let remaining = expires_at.duration_since(now).unwrap_or_default();
-            rows.item(
+            let remaining =
+                format_remaining_compact(expires_at.duration_since(now).unwrap_or_default());
+            let time_str = chrono::DateTime::<chrono::Local>::from(issue.finished_at)
+                .format("%H:%M:%S")
+                .to_string();
+            let local_str = issue.key.local_addr.to_string();
+            let anomalies = compact_anomaly_parts(issue);
+
+            let mut spans = vec![
+                Span::styled(format!("{time_str}  "), theme::fg(theme::muted())),
+                Span::styled(outcome, theme::fg(color)),
+            ];
+            if compact {
+                spans.push(Span::raw(format!("  {local_str}  ")));
+                spans.push(Span::styled(remaining, theme::fg(theme::muted())));
+                for (text, a_color) in anomalies {
+                    spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+                    spans.push(Span::styled(text, theme::fg(a_color)));
+                }
+            } else {
+                const OUTCOME_COL: usize = 16;
+                const LOCAL_COL: usize = 20;
+                const ANOMALY_COL: usize = 14;
+                spans.push(Span::raw(
+                    " ".repeat(OUTCOME_COL.saturating_sub(outcome.len()).max(2)),
+                ));
+                let local_pad = LOCAL_COL.saturating_sub(local_str.len()).max(2);
+                spans.push(Span::raw(local_str));
+                spans.push(Span::raw(" ".repeat(local_pad)));
+                if anomalies.is_empty() {
+                    spans.push(Span::styled("—", theme::fg(theme::faint())));
+                    spans.push(Span::raw(" ".repeat(ANOMALY_COL.saturating_sub(1))));
+                } else {
+                    let mut anomaly_width = 0usize;
+                    for (i, (text, a_color)) in anomalies.into_iter().enumerate() {
+                        if i > 0 {
+                            spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+                            anomaly_width += 3;
+                        }
+                        anomaly_width += text.chars().count();
+                        spans.push(Span::styled(text, theme::fg(a_color)));
+                    }
+                    spans.push(Span::raw(
+                        " ".repeat(ANOMALY_COL.saturating_sub(anomaly_width).max(2)),
+                    ));
+                }
+                spans.push(Span::styled(
+                    format!("{remaining:<6}"),
+                    theme::fg(theme::muted()),
+                ));
+            }
+            rows.grand_child(
                 HealthTarget::Attempt {
                     key: issue.key,
                     created: issue.connection_created_at,
                     seq: issue.initial_sequence,
                     started: issue.started_at,
                 },
-                Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "{}  ",
-                            chrono::DateTime::<chrono::Local>::from(issue.finished_at)
-                                .format("%H:%M:%S")
-                        ),
-                        theme::fg(theme::muted()),
-                    ),
-                    Span::styled(outcome, theme::fg(color)),
-                    Span::raw(format!("  {} ", issue.key.local_addr)),
-                    Span::styled(
-                        format!(
-                            "· expires {} ({})",
-                            chrono::DateTime::<chrono::Local>::from(expires_at).format("%H:%M:%S"),
-                            format_remaining(remaining),
-                        ),
-                        theme::fg(theme::muted()),
-                    ),
-                ]),
+                outer_rail,
+                issue_idx == last_issue,
+                Line::from(spans),
             );
-            if let Some(detail) = anomaly_detail_line(issue) {
-                rows.text(detail);
-            }
         }
     }
-    if snapshot.omitted > 0 {
-        rows.text(Line::styled(
+
+    if has_omitted {
+        let line = Line::styled(
             format!(
-                "  Incomplete evidence: {} capacity omissions since clear",
+                "Incomplete evidence: {} capacity omissions since clear",
                 snapshot.omitted
             ),
             theme::fg(theme::warn()),
-        ));
+        );
+        if has_note {
+            rows.body(line);
+        } else {
+            rows.footer(line);
+        }
     }
-    if c.no_handshake + c.anomalous > 0 {
-        rows.text(Line::styled(
-            "  Missing capture packets or local cancellation can also prevent observed completion.",
+    if has_note {
+        rows.footer(Line::styled(
+            "Missing capture packets or local cancellation can also prevent observed completion.",
             theme::fg(theme::muted()),
         ));
     }
@@ -1240,7 +1763,7 @@ mod tcp_attempt_tests {
             );
         }
         let mut rows = FindingRows::default();
-        tcp_attempt_lines(&snapshot, &mut rows);
+        tcp_attempt_lines(&snapshot, false, &mut rows);
         let expected = [3, 2, 1, 4, 5]
             .map(|ip| HealthTarget::Destination(SocketAddr::from(([192, 0, 2, ip], 443))));
         assert_eq!(
@@ -1307,22 +1830,53 @@ mod tcp_attempt_tests {
             ..Default::default()
         };
         let mut rows = FindingRows::default();
-        tcp_attempt_lines(&snapshot, &mut rows);
+        tcp_attempt_lines(&snapshot, false, &mut rows);
         let text = rows
             .lines
             .iter()
-            .map(ToString::to_string)
+            .map(|(_, line)| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("3 completed, 2 pending"));
+        assert!(text.contains("1 established"));
         assert!(text.contains("2 no handshake"));
+        assert!(text.contains("2 pending"));
         assert!(text.contains("198.51.100.1:443  2/3"));
         assert!(text.contains("4 capacity omissions"));
         assert!(text.contains("Missing capture packets or local cancellation"));
     }
 
     #[test]
-    fn anomaly_detail_line_omits_zero_counters() {
+    fn recovered_anomaly_keeps_the_destination_sample_size() {
+        let address = "198.51.100.1:443".parse().unwrap();
+        let counts = AttemptCounts {
+            completed: 100,
+            established: 100,
+            anomalous: 1,
+            recovered_anomalies: 1,
+            ..Default::default()
+        };
+        let snapshot = TcpAttemptSnapshot {
+            total: counts.clone(),
+            destinations: [(address, counts)].into(),
+            ..Default::default()
+        };
+        let mut rows = FindingRows::default();
+        tcp_attempt_lines(&snapshot, false, &mut rows);
+        let (row, _) = rows
+            .targets
+            .iter()
+            .find(|(_, target)| *target == HealthTarget::Destination(address))
+            .unwrap();
+        assert!(
+            rows.lines[*row]
+                .1
+                .to_string()
+                .contains("100 established · 1 anomalous")
+        );
+    }
+
+    #[test]
+    fn compact_anomaly_parts_omits_zero_counters() {
         let addr: SocketAddr = "192.0.2.1:443".parse().unwrap();
         let issue = TcpAttempt {
             key: ConnectionKey::new(crate::network::types::Protocol::Tcp, addr, addr),
@@ -1338,10 +1892,10 @@ mod tcp_attempt_tests {
             invalid_syn_acks: 0,
             local_resets: 0,
         };
-        let text = anomaly_detail_line(&issue).unwrap().to_string();
-        assert!(text.contains("SYN retries 2"));
-        assert!(text.contains("unexpected ACKs 1"));
-        assert!(!text.contains("invalid SYN-ACKs"));
-        assert!(!text.contains("local resets"));
+        let parts: Vec<String> = compact_anomaly_parts(&issue)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(parts, vec!["2× SYN retry", "1× unexp ACK"]);
     }
 }

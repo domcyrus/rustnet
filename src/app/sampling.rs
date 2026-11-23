@@ -5,8 +5,8 @@ use anyhow::Result;
 use dashmap::DashMap;
 use log::{debug, info, warn};
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::{
@@ -176,6 +176,22 @@ fn snapshot_retained_connections(
     })
 }
 
+/// A history toggle or clear can publish a newer snapshot while the worker samples.
+fn publish_sample_if_current(
+    snapshot: &RwLock<Vec<Connection>>,
+    generation: &AtomicU64,
+    sampled_generation: u64,
+    sample: Vec<Connection>,
+) -> bool {
+    let mut published = snapshot.write().unwrap();
+    if generation.load(Ordering::Relaxed) != sampled_generation {
+        return false;
+    }
+    *published = sample;
+    generation.fetch_add(1, Ordering::Release);
+    true
+}
+
 impl App {
     pub(super) fn start_snapshot_provider(
         &mut self,
@@ -205,6 +221,7 @@ impl App {
                 let start = Instant::now();
                 let total_connections = tracker.connections().len();
 
+                let sampled_generation = snapshot_generation.load(Ordering::Acquire);
                 let snapshot_data = build_connection_snapshot(
                     &tracker,
                     &service_lookup,
@@ -231,11 +248,14 @@ impl App {
 
                 let ui_publish_due =
                     last_ui_publish.is_none_or(|published| published.elapsed() >= refresh_interval);
-                if ui_publish_due {
-                    let mut published = snapshot.write().unwrap();
-                    *published = snapshot_data;
-                    snapshot_generation.fetch_add(1, Ordering::Release);
-                    drop(published);
+                if ui_publish_due
+                    && publish_sample_if_current(
+                        &snapshot,
+                        &snapshot_generation,
+                        sampled_generation,
+                        snapshot_data,
+                    )
+                {
                     last_ui_publish = Some(Instant::now());
 
                     // Counts active connections only.
@@ -564,6 +584,43 @@ mod live_rate_sampling_tests {
     use crate::network::types::{
         ApplicationProtocol, ConnectionKey, DnsInfo, DnsQueryType, DpiInfo, Protocol, ProtocolState,
     };
+
+    #[test]
+    fn in_flight_sample_cannot_undo_a_history_toggle() {
+        let app = App::new(crate::test_support::test_config()).unwrap();
+        let mut historic = Connection::new(
+            Protocol::Udp,
+            "192.0.2.1:40000".parse().unwrap(),
+            "198.51.100.1:53".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        historic.is_historic = true;
+        let key = ConnectionKey::from_connection(&historic);
+        app.tracker
+            .historic()
+            .insert(HistoricKey::for_connection(key, &historic), historic);
+
+        for include_historic in [true, false] {
+            // Stage a worker sample, then toggle history before the worker publishes it.
+            let sampled_generation = app.snapshot_generation();
+            let stale = build_connection_snapshot(
+                &app.tracker,
+                &app.service_lookup,
+                false,
+                app.show_historic.load(Ordering::Relaxed),
+            );
+            assert_eq!(stale.len(), usize::from(!include_historic));
+            app.toggle_show_historic();
+            assert!(!publish_sample_if_current(
+                &app.connections_snapshot,
+                &app.snapshot_generation,
+                sampled_generation,
+                stale,
+            ));
+            assert_eq!(app.snapshot_generation(), sampled_generation + 1);
+            assert_eq!(app.get_connections().len(), usize::from(include_historic));
+        }
+    }
 
     #[test]
     fn connection_snapshot_blocks_archival_until_both_tables_are_scanned() {

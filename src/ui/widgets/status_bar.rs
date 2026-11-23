@@ -273,6 +273,7 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             if ui_state.health_scroll.can_scroll() {
                 hints.push(Hint::action("pgup/dn", "page"));
             }
+            hints.push(Hint::mode("t", "history", ui_state.show_historic));
             hints.push(Hint::action("w", "window"));
             hints.push(Hint::action("esc", "back"));
             hints

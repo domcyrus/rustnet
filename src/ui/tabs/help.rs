@@ -396,6 +396,10 @@ const FINDING_KEYS: &[HelpRow] = &[
     ),
     ("c", "Copy the selected address, domain, or interface"),
     (
+        "t",
+        "Toggle historic connections so closed TCP attempts can open in Details",
+    ),
+    (
         "Click",
         "Toggle a heading, select an item, or follow its trailing link",
     ),

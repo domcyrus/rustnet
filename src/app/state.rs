@@ -851,12 +851,31 @@ impl App {
     }
 
     pub(crate) fn toggle_show_historic(&self) {
-        let prev = self.show_historic.load(Ordering::Relaxed);
-        self.show_historic.store(!prev, Ordering::Relaxed);
+        let next = !self.show_historic.load(Ordering::Relaxed);
+        self.show_historic.store(next, Ordering::Relaxed);
+        self.publish_connection_snapshot(next);
     }
 
     pub(crate) fn set_show_historic(&self, value: bool) {
         self.show_historic.store(value, Ordering::Relaxed);
+    }
+
+    /// Rebuild and publish the UI connection snapshot immediately so toggling
+    /// history from Overview or Findings takes effect without waiting for the
+    /// next periodic snapshot tick.
+    fn publish_connection_snapshot(&self, include_historic: bool) {
+        let snapshot = build_connection_snapshot(
+            &self.tracker,
+            &self.service_lookup,
+            self.config.filter_localhost,
+            include_historic,
+        );
+        let mut published = self
+            .connections_snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *published = snapshot;
+        self.snapshot_generation.fetch_add(1, Ordering::Release);
     }
 
     /// Seed the UI snapshot directly. Tests only.
