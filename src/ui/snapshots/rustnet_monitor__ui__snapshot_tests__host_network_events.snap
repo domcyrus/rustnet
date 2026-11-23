@@ -7,20 +7,21 @@ expression: output
 Findings (1)   Sockets   Interfaces   DNS resolvers                                                                                         
 ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Findings  window: 60s · 1 warning ────────────────────────────────────────────────────────────────────────────────────────────────────────
-▌ ▾ Resets and ICMP (60s)  RST 1 sent / 0 received · 0 ICMP                                                                                 
-    60s / total (since startup) · captured packets                                                                                          
-                                                    Sent: window / total  Received: window / total                                          
-    TCP reset                                                      1 / 1                     0 / 0                                          
-    ICMP port unreachable                                          0 / 0                     0 / 1                                          
-    ICMP destination unreachable                                   0 / 0                     0 / 1                                          
-    ICMP administratively prohibited                               0 / 0                     0 / 1                                          
-    ICMP packet too big / frag needed                              0 / 0                     0 / 1                                          
-    ICMP time exceeded                                             0 / 0                     0 / 1                                          
-    ICMP parameter problem                                         0 / 0                     0 / 1                                          
-  ▸ TCP handshakes (5m)  not observed                                                                                                       
-  ▸ Interface drops (60s)  Waiting for interface statistics                                                                                 
-  ▸ DNS replies (60s)  not observed · 0 replies · 0 timeouts                                                                                
-  ▸ Capture quality (since startup)  0 reported drops · 0 queue drops                                                                       
+▌ ▾ Resets and ICMP  ▲ [observed]    RST 1 sent / 0 recv · 0 ICMP                                                                    (60s)  
+  │  Event (60s / since startup)           Sent (60s / total)  Recv (60s / total)                                                           
+  │  ────────────────────────────────────────────────────────────────────────────                                                           
+  ├─ TCP reset                                          1 / 1               0 / 0                                                           
+  ├─ ICMP port unreachable                              0 / 0               0 / 1                                                           
+  ├─ ICMP destination unreachable                       0 / 0               0 / 1                                                           
+  ├─ ICMP administratively prohibited                   0 / 0               0 / 1                                                           
+  ├─ ICMP packet too big / frag needed                  0 / 0               0 / 1                                                           
+  ├─ ICMP time exceeded                                 0 / 0               0 / 1                                                           
+  └─ ICMP parameter problem                             0 / 0               0 / 1                                                           
+                                                                                                                                            
+  ▸ TCP handshakes   ○ not observed                                                                                                   (5m)  
+  ▸ Interface drops  ○ waiting       Waiting for interface statistics                                                                (60s)  
+  ▸ DNS replies      ○ not observed  0 replies · 0 timeouts                                                                          (60s)  
+  ▸ Capture quality  ● healthy       0 reported drops · 0 queue drops                                                      (since startup)  
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -30,5 +31,4 @@ Findings (1)   Sockets   Interfaces   DNS resolvers
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-                                                                                                                                            
- v/V section  ↑/↓ select  space collapse  w window  esc back                                                                 h help  q quit
+ v/V section  ↑/↓ select  space collapse  t history  w window  esc back                                                      h help  q quit
