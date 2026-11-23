@@ -72,6 +72,12 @@ When you open a PR, our CI pipeline will automatically run checks including:
 
 Please address failures in applicable CI checks before merging. You can open a PR for feedback while checks are pending.
 
+### Test-sign the 64-bit Windows executable
+
+1. In the RustNet SignPath project, link the GitHub.com trusted build system to this repository. Create the `windows-x64-exe` artifact configuration using [the XML](.github/signpath/windows-x64-exe.xml). Give the CI user submitter access to the policy that uses the self-signed test certificate.
+2. In GitHub under **Settings > Secrets and variables > Actions**, save the CI token as the secret `SIGNPATH_API_TOKEN`. Set the repository variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_TEST_SIGNING_POLICY_SLUG`, and `SIGNPATH_TEST_CERT_THUMBPRINT` (the test certificate's SHA-1 thumbprint, 40 hex digits without spaces).
+3. Under **Actions > Test-sign Windows x64 > Run workflow**, select `main`. Approve the request in SignPath if the test policy requires it. Download `rustnet-windows-x64-test-signed-<attempt>` from the run to get the verified executable. Test artifacts are available for seven days.
+
 ## Dependency Policy
 
 Please be conservative with dependencies:

@@ -91,6 +91,12 @@ PR を作成すると、CI パイプラインで次のようなチェックが�
 
 マージ前に、該当する CI チェックの失敗を解消してください。チェックの完了前でも、フィードバックを求めて PR を作成できます。
 
+### 64 ビット Windows 実行ファイルのテスト署名
+
+1. RustNet の SignPath プロジェクトで、信頼済みビルドシステム GitHub.com をこのリポジトリに関連付けます。[この XML ファイル](.github/signpath/windows-x64-exe.xml)を使って `windows-x64-exe` という成果物構成を作成し、自己署名のテスト証明書を使うポリシーに署名を申請する権限を CI ユーザーに付与します。
+2. GitHub の **Settings > Secrets and variables > Actions** で、CI トークンをシークレット `SIGNPATH_API_TOKEN` に保存します。リポジトリ変数 `SIGNPATH_ORGANIZATION_ID`、`SIGNPATH_PROJECT_SLUG`、`SIGNPATH_TEST_SIGNING_POLICY_SLUG`、`SIGNPATH_TEST_CERT_THUMBPRINT`（テスト証明書の SHA-1 拇印。空白を含まない 40 桁の十六進数）を設定します。
+3. **Actions > Test-sign Windows x64 > Run workflow** で `main` を選びます。テストポリシーで承認が必要な場合は、SignPath で申請を承認します。実行結果から `rustnet-windows-x64-test-signed-<attempt>` をダウンロードすると、署名を検証済みの実行ファイルを取得できます。テスト成果物の保存期間は 7 日です。
+
 ## 依存関係の方針<a id="dependency-policy"></a>
 
 依存関係の追加は慎重に判断してください。
