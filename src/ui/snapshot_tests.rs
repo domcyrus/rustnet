@@ -2407,6 +2407,9 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
         };
         let (closed, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
         assert!(closed.contains("▌ ▸ TCP handshakes"));
+        if width == 140 {
+            assert!(closed.contains("1/1 reset or incomplete"), "{closed}");
+        }
         assert!(!closed.contains("Open Details"));
         let mut ctx = HandlerContext {
             connections: &connections,
@@ -2799,6 +2802,15 @@ fn dns_timeout_and_inventory_links_keep_the_source_item() {
         &dns_test_packet(42, "build.example", DnsQueryType::A, false, None),
         SystemTime::now() - Duration::from_secs(20),
     );
+    seed_dns_lookup(
+        &app,
+        43,
+        "ok.example",
+        DnsQueryType::A,
+        0,
+        SystemTime::now() - Duration::from_secs(2),
+        Duration::from_millis(10),
+    );
     for width in [60, 140] {
         let mut state = UiState {
             selected_tab: 4,
@@ -2814,6 +2826,8 @@ fn dns_timeout_and_inventory_links_keep_the_source_item() {
             .unwrap();
         };
         let (index, regions) = frame(&mut state);
+        assert!(index.contains("1 error"), "{index}");
+        assert!(index.contains("✕ responsive"), "{index}");
         assert_eq!(
             state
                 .health_cursor

@@ -104,7 +104,6 @@ struct HealthInputs {
     drops: u64,
     errors: u64,
     tcp_status: &'static str,
-    tcp_level: HealthLevel,
     dns_status: &'static str,
     dns_level: HealthLevel,
     levels: [(Finding, HealthLevel); 5],
@@ -144,7 +143,15 @@ impl HealthInputs {
             ),
             (
                 Finding::Interfaces,
-                HealthLevel::observed(errors > 0, drops > 0),
+                if errors > 0 {
+                    HealthLevel::Error
+                } else if drops > 0 {
+                    HealthLevel::Warning
+                } else if interfaces.is_empty() {
+                    HealthLevel::Muted
+                } else {
+                    HealthLevel::Healthy
+                },
             ),
             (
                 Finding::Dns,
@@ -156,7 +163,13 @@ impl HealthInputs {
             ),
             (
                 Finding::Capture,
-                HealthLevel::observed(capture_error.is_some(), reported > 0 || queue > 0),
+                if capture_error.is_some() {
+                    HealthLevel::Error
+                } else if reported > 0 || queue > 0 {
+                    HealthLevel::Warning
+                } else {
+                    HealthLevel::Healthy
+                },
             ),
         ];
         Self {
@@ -176,7 +189,6 @@ impl HealthInputs {
             drops,
             errors,
             tcp_status,
-            tcp_level,
             dns_status,
             dns_level,
             levels,
@@ -668,9 +680,17 @@ impl Component for HealthTab {
             ..Default::default()
         };
         let last_finding = order.len().saturating_sub(1);
-        for (idx, (finding, _)) in order.into_iter().enumerate() {
+        for (idx, (finding, severity)) in order.into_iter().enumerate() {
             let expanded = state.expanded_findings.contains(&finding);
-            let heading = finding_heading(&data, finding, window, expanded, compact, content_width);
+            let heading = finding_heading(
+                &data,
+                finding,
+                severity,
+                window,
+                expanded,
+                compact,
+                content_width,
+            );
             rows.heading(HealthTarget::Finding(finding), heading);
             if expanded {
                 append_finding_details(&data, finding, window, compact, &mut rows);
@@ -697,6 +717,7 @@ fn severity_icon(level: HealthLevel) -> Span<'static> {
 fn finding_heading(
     data: &HealthInputs,
     finding: Finding,
+    severity: HealthLevel,
     window: TimeWindow,
     expanded: bool,
     compact: bool,
@@ -705,7 +726,8 @@ fn finding_heading(
     const NAME_COL: usize = 17;
     const STATUS_COL: usize = 14;
 
-    let (status_text, status_level, summary, window_label) = finding_summary(data, finding, window);
+    let (status_text, status_level, summary, window_label) =
+        finding_summary(data, finding, severity, window);
     let marker = if expanded { "▾" } else { "▸" };
     let align_cols = content_width >= 70;
     let name_text = if align_cols {
@@ -716,7 +738,7 @@ fn finding_heading(
     let mut heading = Line::from(vec![
         Span::styled(format!("{marker} "), theme::fg(theme::muted())),
         Span::styled(name_text, theme::bold_fg(theme::heading())),
-        severity_icon(status_level),
+        severity_icon(severity),
     ]);
     let status_spans = match status_level {
         HealthLevel::Error | HealthLevel::Warning => pill(status_text, status_level.color()),
@@ -752,6 +774,7 @@ fn finding_heading(
 fn finding_summary(
     data: &HealthInputs,
     finding: Finding,
+    severity: HealthLevel,
     window: TimeWindow,
 ) -> (&'static str, HealthLevel, Line<'static>, &'static str) {
     match finding {
@@ -766,7 +789,7 @@ fn finding_summary(
                 };
                 spans.push(count_span(c.reset + c.no_handshake, fail_color));
                 spans.push(Span::styled(
-                    format!("/{} failed", c.completed),
+                    format!("/{} reset or incomplete", c.completed),
                     theme::fg(theme::muted()),
                 ));
                 if c.anomalous > 0 {
@@ -782,18 +805,17 @@ fn finding_summary(
                 spans.push(Span::raw(format!("{} ", data.tcp.pending)));
                 spans.push(Span::styled("pending", theme::fg(theme::muted())));
             }
-            (data.tcp_status, data.tcp_level, Line::from(spans), "5m")
+            (data.tcp_status, severity, Line::from(spans), "5m")
         }
         Finding::Events => {
-            let active = data.resets_sent > 0 || data.resets_received > 0 || data.icmp > 0;
-            let (status, level) = if active {
-                ("observed", HealthLevel::Warning)
+            let status = if severity == HealthLevel::Warning {
+                "observed"
             } else {
-                ("quiet", HealthLevel::Muted)
+                "quiet"
             };
             (
                 status,
-                level,
+                severity,
                 Line::from(vec![
                     Span::styled("RST ", theme::fg(theme::muted())),
                     count_span(data.resets_sent, theme::warn()),
@@ -807,22 +829,19 @@ fn finding_summary(
             )
         }
         Finding::Interfaces => {
-            let (status, level, line) = if data.interfaces.is_empty() {
+            let (status, line) = if data.interfaces.is_empty() {
                 (
                     "waiting",
-                    HealthLevel::Muted,
                     Line::from(Span::styled(
                         "Waiting for interface statistics",
                         theme::fg(theme::muted()),
                     )),
                 )
             } else {
-                let (status, level) = if data.errors > 0 {
-                    ("errors", HealthLevel::Error)
-                } else if data.drops > 0 {
-                    ("drops", HealthLevel::Warning)
-                } else {
-                    ("clear", HealthLevel::Healthy)
+                let status = match severity {
+                    HealthLevel::Error => "errors",
+                    HealthLevel::Warning => "drops",
+                    _ => "clear",
                 };
                 let mut line = Line::from(vec![
                     count_span(data.drops, theme::warn()),
@@ -835,11 +854,11 @@ fn finding_summary(
                         Span::styled(" errors", theme::fg(theme::muted())),
                     ]);
                 }
-                (status, level, line)
+                (status, line)
             };
             (
                 status,
-                level,
+                severity,
                 line,
                 window.label_since_clear(data.interfaces_since_clear),
             )
@@ -867,17 +886,16 @@ fn finding_summary(
             )
         }
         Finding::Capture => {
-            let (status, level, line) = if data.capture_error.is_some() {
-                ("Capture failed", HealthLevel::Error, Line::default())
+            let (status, line) = if data.capture_error.is_some() {
+                ("Capture failed", Line::default())
             } else {
-                let (status, level) = if data.reported > 0 || data.queue > 0 {
-                    ("drops", HealthLevel::Warning)
+                let status = if severity == HealthLevel::Warning {
+                    "drops"
                 } else {
-                    ("healthy", HealthLevel::Healthy)
+                    "healthy"
                 };
                 (
                     status,
-                    level,
                     Line::from(vec![
                         count_span(data.reported, theme::warn()),
                         Span::styled(" reported drops · ", theme::fg(theme::muted())),
@@ -888,7 +906,7 @@ fn finding_summary(
             };
             (
                 status,
-                level,
+                severity,
                 line,
                 if data.events.since_clear {
                     "since clear"
@@ -1566,7 +1584,7 @@ fn tcp_attempt_lines(snapshot: &TcpAttemptSnapshot, compact: bool, rows: &mut Fi
             } else if dc.no_handshake == 0 {
                 " reset"
             } else {
-                " failed"
+                " reset or incomplete"
             };
             dest_spans.push(Span::styled(
                 format!("/{}{fail_label}", dc.completed),
@@ -1580,10 +1598,12 @@ fn tcp_attempt_lines(snapshot: &TcpAttemptSnapshot, compact: bool, rows: &mut Fi
                 dest_spans.push(Span::styled(" no handshake)", theme::fg(theme::muted())));
             }
         }
-        if dc.established > 0 && fail_count > 0 {
-            dest_spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+        if dc.established > 0 {
+            if fail_count > 0 {
+                dest_spans.push(Span::styled(" · ", theme::fg(theme::faint())));
+            }
             dest_spans.push(count_span(dc.established, theme::ok()));
-            dest_spans.push(Span::styled(" ok", theme::fg(theme::muted())));
+            dest_spans.push(Span::styled(" established", theme::fg(theme::muted())));
         }
         if dc.superseded > 0 {
             dest_spans.push(Span::styled(" · ", theme::fg(theme::faint())));
@@ -1591,9 +1611,7 @@ fn tcp_attempt_lines(snapshot: &TcpAttemptSnapshot, compact: bool, rows: &mut Fi
             dest_spans.push(Span::styled(" superseded", theme::fg(theme::muted())));
         }
         if dc.anomalous > 0 {
-            if fail_count > 0 || dc.superseded > 0 {
-                dest_spans.push(Span::styled(" · ", theme::fg(theme::faint())));
-            }
+            dest_spans.push(Span::styled(" · ", theme::fg(theme::faint())));
             dest_spans.push(count_span(dc.anomalous, theme::warn()));
             dest_spans.push(Span::styled(" anomalous", theme::fg(theme::muted())));
         }
@@ -1825,6 +1843,36 @@ mod tcp_attempt_tests {
         assert!(text.contains("198.51.100.1:443  2/3"));
         assert!(text.contains("4 capacity omissions"));
         assert!(text.contains("Missing capture packets or local cancellation"));
+    }
+
+    #[test]
+    fn recovered_anomaly_keeps_the_destination_sample_size() {
+        let address = "198.51.100.1:443".parse().unwrap();
+        let counts = AttemptCounts {
+            completed: 100,
+            established: 100,
+            anomalous: 1,
+            recovered_anomalies: 1,
+            ..Default::default()
+        };
+        let snapshot = TcpAttemptSnapshot {
+            total: counts.clone(),
+            destinations: [(address, counts)].into(),
+            ..Default::default()
+        };
+        let mut rows = FindingRows::default();
+        tcp_attempt_lines(&snapshot, false, &mut rows);
+        let (row, _) = rows
+            .targets
+            .iter()
+            .find(|(_, target)| *target == HealthTarget::Destination(address))
+            .unwrap();
+        assert!(
+            rows.lines[*row]
+                .1
+                .to_string()
+                .contains("100 established · 1 anomalous")
+        );
     }
 
     #[test]
