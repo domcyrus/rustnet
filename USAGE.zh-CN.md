@@ -400,6 +400,10 @@ Unix），并在背景报告为浅色时将这些灰色层级加深为 ANSI Dark
 group_by_process = true
 ```
 
+**开发版。** 如需让 Graph 在启动时分别绘制 RX 和 TX，请在 `config.toml` 的
+`[view]` 下设置 `mirrored_traffic_graph = false`。默认值为 `true`。
+在 Overview 中按 `r` 可将图表布局等视图设置恢复为配置文件中的值。
+
 如需帮助浮层阴影，在同一配置文件的 `[ui]` 下设置 `popup_shadow = true`
 （默认为 `false`）。`NO_COLOR` 或 `--no-color` 会禁用阴影。
 
@@ -1043,6 +1047,9 @@ Host 的 Sockets 和 Interfaces 在表格放不下时使用换行记录。
 
 Graph 使用所选捕获接口的计数器。`any` 和 macOS 默认的 `pktap` 汇总所有接口，
 可能重复计算同一流量。计数器不可用时，RX/TX 图暂停，恢复采样后继续。
+
+**开发版。** Graph 默认使用镜像布局，RX 从共用时间轴向上延伸，TX 向下延伸。
+显示 Traffic 区域时，按 `m` 可在镜像布局和分图布局之间切换，仅对当前会话生效。
 
 Graph 和 Details 保留采样到的突发流量，RX/TX 分别使用自动线性刻度，单位为字节/秒
 （KiB/MiB/GiB 使用二进制单位）。比较方向时请看数值。空间允许时，标题显示当前速率、
