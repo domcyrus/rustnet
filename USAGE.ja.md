@@ -11,7 +11,7 @@
 権限の設定は[インストールガイド（英語）](INSTALL.md)を参照してください。
 `rustnet` で起動し、必要なら `-i <interface>` でキャプチャ対象を指定します。
 
-- `1`～`5` または Tab / Shift+Tab：Overview、Details、Activity、Graph、Health & Host の切り替え。
+- `1`～`5` または Tab / Shift+Tab：Overview、Details、Activity、Graph、Health & Host の切り替え。`Alt+←` / `Alt+→`：表示したタブを戻る／進む。
 - `/`：接続の絞り込み。Enter：選択した接続の詳細。Esc：戻る。
 - `h`：現在の画面のヘルプ。`q`：終了。
 

@@ -527,14 +527,15 @@ rustnet --kubernetes on
 - `Tab` - Next tab
 - `Shift+Tab` - Previous tab
 - `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Health & Host
+- `Alt+Left` / `Alt+Right` - Go back / forward through the tabs you visited
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
 - `h` - Toggle a help overlay containing controls for the active tab
 
 The help overlay keeps the active tab visible underneath it and only lists
 controls and concepts that apply to that tab. Tab navigation (`Tab`,
-`Shift+Tab`, `1`-`5`) stays available while the overlay is open, and a mouse
-click anywhere dismisses it.
+`Shift+Tab`, `1`-`5`, `Alt+Left` / `Alt+Right`) stays available while the
+overlay is open, and a mouse click anywhere dismisses it.
 
 ### Compact terminals
 

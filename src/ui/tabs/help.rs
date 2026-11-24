@@ -138,7 +138,8 @@ impl Component for HelpOverlay {
             | (KeyCode::Tab, _)
             | (KeyCode::BackTab, _)
             | (KeyCode::Char('[' | ']'), KeyModifiers::NONE)
-            | (KeyCode::Char('1'..='5'), KeyModifiers::NONE) => None,
+            | (KeyCode::Char('1'..='5'), KeyModifiers::NONE)
+            | (KeyCode::Left | KeyCode::Right, KeyModifiers::ALT) => None,
             _ => {
                 let page = ctx.ui_state.help_scroll.viewport_rows() as usize;
                 try_handle_pane_scroll(key, page, &mut ctx.ui_state.help_scroll)
@@ -182,6 +183,7 @@ const GLOBAL_KEYS: &[HelpRow] = &[
         "1-5",
         "Jump to Overview, Details, Activity, Graph, or Health & Host",
     ),
+    ("Alt+←, Alt+→", "Back or forward through visited tabs"),
     ("x", "Clear all connections (press twice)"),
     ("h, Esc", "Close this help overlay"),
     ("q", "Quit application (press twice to confirm)"),
@@ -1053,6 +1055,8 @@ mod tests {
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
             KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
             KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
         ] {
             assert!(
                 HelpOverlay.handle_key(key, &mut ctx).is_none(),
