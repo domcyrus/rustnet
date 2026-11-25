@@ -21,7 +21,7 @@ expression: output
     │   S                     Reverse the sort direction                                     ▐ │    
     │   Esc                   Back one level; from applications return to Overview           ▐ │    
     │                                                                                        ▐ │    
-    │ ▎ Activity Concepts                                                                    ▐ │    
+    │ ▎ Activity Concepts                                                                      │    
     │   2s Avg TX/RX     Sort and show averaged rates with s for steadier ordering             │    
     │   Applications     Traffic grouped by process name; PIDs are inside details              │    
     │   Scope            All captured traffic; Overview filters do not apply                   │    

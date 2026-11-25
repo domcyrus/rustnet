@@ -4,7 +4,7 @@
 //! read these to know what to draw.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use crate::network::time_window::TimeWindow;
 use ratatui::layout::Rect;
@@ -587,6 +587,9 @@ impl ClickableRegions {
     }
 }
 
+/// How many earlier tabs Alt+Left can step back through.
+const TAB_HISTORY_LEN: usize = 16;
+
 /// UI state for managing the interface
 pub struct UiState {
     /// Interface and link-layer fields actually visible in the current header.
@@ -654,6 +657,10 @@ pub struct UiState {
     pub(super) health_cursor: RefCell<super::tabs::health::HealthCursor>,
     pub(super) expanded_findings: HashSet<super::tabs::health::Finding>,
     pub(super) return_to_finding: bool,
+    /// Tabs left by user navigation, most recent last.
+    pub(super) tab_back: VecDeque<usize>,
+    /// Tabs stepped back from; any other tab switch clears it.
+    pub(super) tab_forward: Vec<usize>,
     pub(super) health_badge: Cell<super::tabs::health::HealthBadge>,
     /// Selected Graph section, preserved across terminal resizes.
     pub graph_section: GraphSection,
@@ -736,6 +743,8 @@ impl Default for UiState {
             health_cursor: Default::default(),
             expanded_findings: Default::default(),
             return_to_finding: false,
+            tab_back: VecDeque::new(),
+            tab_forward: Vec::new(),
             health_badge: Cell::new(super::tabs::health::HealthBadge::default()),
             graph_section: GraphSection::default(),
             graph_mirrored: true,
@@ -1019,6 +1028,39 @@ impl UiState {
         if target >= TAB_COUNT {
             return;
         }
+        self.record_tab_change(target);
+        self.show_tab(target);
+    }
+
+    /// Remember the current tab for `go_back` before switching to `target`.
+    fn record_tab_change(&mut self, target: usize) {
+        if target == self.selected_tab {
+            return;
+        }
+        if self.tab_back.len() == TAB_HISTORY_LEN {
+            self.tab_back.pop_front();
+        }
+        self.tab_back.push_back(self.selected_tab);
+        self.tab_forward.clear();
+    }
+
+    /// Return to the tab shown before the last switch (Alt+Left).
+    pub fn go_back(&mut self) {
+        if let Some(target) = self.tab_back.pop_back() {
+            self.tab_forward.push(self.selected_tab);
+            self.show_tab(target);
+        }
+    }
+
+    /// Undo the last `go_back` (Alt+Right).
+    pub fn go_forward(&mut self) {
+        if let Some(target) = self.tab_forward.pop() {
+            self.tab_back.push_back(self.selected_tab);
+            self.show_tab(target);
+        }
+    }
+
+    fn show_tab(&mut self, target: usize) {
         self.selected_tab = target;
         self.return_to_finding = false;
         if self.show_help {
@@ -1543,6 +1585,66 @@ mod tests {
         assert_eq!(ui.selected_tab, TAB_COUNT - 1);
         ui.prev_tab();
         assert_eq!(ui.selected_tab, TAB_COUNT - 2);
+    }
+
+    #[test]
+    fn go_back_and_forward_walk_tab_history() {
+        let mut ui = UiState::default();
+        ui.jump_to_tab(1);
+        ui.next_tab();
+        ui.jump_to_tab(4);
+        ui.jump_to_tab(4);
+        ui.go_back();
+        assert_eq!(ui.selected_tab, 2);
+        ui.go_back();
+        assert_eq!(ui.selected_tab, 1);
+        ui.go_forward();
+        assert_eq!(ui.selected_tab, 2);
+        ui.go_forward();
+        assert_eq!(ui.selected_tab, 4);
+        // Past either end is a no-op.
+        ui.go_forward();
+        assert_eq!(ui.selected_tab, 4);
+        for _ in 0..4 {
+            ui.go_back();
+        }
+        assert_eq!(ui.selected_tab, 0);
+        // A new switch drops the forward history.
+        ui.jump_to_tab(3);
+        ui.go_forward();
+        assert_eq!(ui.selected_tab, 3);
+        ui.go_back();
+        assert_eq!(ui.selected_tab, 0);
+    }
+
+    #[test]
+    fn tab_history_drops_return_to_finding() {
+        // Like 1-5, a tab reached through history no longer sends Esc back
+        // to Findings: the selected connection may have changed since.
+        let mut ui = UiState::default();
+        ui.jump_to_tab(4);
+        ui.jump_to_tab(1);
+        ui.return_to_finding = true;
+        ui.go_back();
+        assert_eq!(ui.selected_tab, 4);
+        assert!(!ui.return_to_finding);
+        ui.return_to_finding = true;
+        ui.go_forward();
+        assert_eq!(ui.selected_tab, 1);
+        assert!(!ui.return_to_finding);
+    }
+
+    #[test]
+    fn tab_history_is_bounded() {
+        let mut ui = UiState::default();
+        for _ in 0..TAB_HISTORY_LEN + 5 {
+            ui.next_tab();
+        }
+        assert_eq!(ui.tab_back.len(), TAB_HISTORY_LEN);
+        while !ui.tab_back.is_empty() {
+            ui.go_back();
+        }
+        assert_eq!(ui.tab_forward.len(), TAB_HISTORY_LEN);
     }
 
     #[test]

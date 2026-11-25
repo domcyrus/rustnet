@@ -28,6 +28,6 @@ expression: output
     │   Tab, ]        Next tab                                                               ▐ │    
     │   Shift+Tab, [  Previous tab                                                           ▐ │    
     │   1-5           Jump to Overview, Details, Activity, Graph, or Health & Host             │    
+    │   Alt+←, Alt+→  Back or forward through visited tabs                                     │    
     │   x             Clear all connections (press twice)                                      │    
-    │   h, Esc        Close this help overlay                                                  │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯

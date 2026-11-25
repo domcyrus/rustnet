@@ -404,7 +404,7 @@ where
                                     ui_state.clear_filter();
                                     needs_data_refresh = true;
                                 } else if ui_state.selected_tab != 0 {
-                                    ui_state.selected_tab = 0;
+                                    ui_state.jump_to_tab(0);
                                 }
                             }
 

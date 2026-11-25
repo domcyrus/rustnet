@@ -76,7 +76,7 @@ impl Component for ActivityTab {
                 state.show_historic = true;
                 ctx.app.set_show_historic(true);
                 state.overview_section = crate::ui::OverviewSection::Connections;
-                state.selected_tab = 0;
+                state.jump_to_tab(0);
                 state.scroll_offset = 0;
                 state.grouped_scroll_offset = 0;
                 state.selected_group = None;
@@ -121,7 +121,7 @@ impl Component for ActivityTab {
                 if state.activity_view == ActivityView::Processes {
                     state.activity_view = ActivityView::ApplicationDetails;
                 } else {
-                    state.selected_tab = 0;
+                    state.jump_to_tab(0);
                 }
             }
             (KeyCode::Enter, _) => state.open_activity_details(),

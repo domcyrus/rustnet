@@ -6114,3 +6114,64 @@ fn profile_details_rendering() {
         );
     }
 }
+
+#[test]
+fn alt_arrows_walk_tab_history_from_any_tab() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let app = test_app();
+    let regions = ClickableRegions::default();
+    // Overview claims plain Left/Right for group folding; Alt+arrows must
+    // still reach the history.
+    let mut state = UiState {
+        grouping_enabled: true,
+        ..Default::default()
+    };
+    let alt = |code, state: &mut UiState| {
+        let tab = state.selected_tab;
+        dispatch_key(
+            tab,
+            KeyEvent::new(code, KeyModifiers::ALT),
+            &mut test_support::empty_ctx(&app, state, &regions),
+        )
+        .unwrap();
+    };
+    state.jump_to_tab(3);
+    alt(KeyCode::Left, &mut state);
+    assert_eq!(state.selected_tab, 0);
+    alt(KeyCode::Right, &mut state);
+    assert_eq!(state.selected_tab, 3);
+
+    // macOS terminals (Ghostty, Terminal.app, iTerm2) send Esc b / Esc f for Option+Left/Right.
+    alt(KeyCode::Char('b'), &mut state);
+    assert_eq!(state.selected_tab, 0);
+    alt(KeyCode::Char('f'), &mut state);
+    assert_eq!(state.selected_tab, 3);
+
+    state.show_help = true;
+    alt(KeyCode::Left, &mut state);
+    assert_eq!(state.selected_tab, 0);
+    assert!(state.show_help);
+    alt(KeyCode::Char('f'), &mut state);
+    assert_eq!(state.selected_tab, 3);
+    assert!(state.show_help);
+    alt(KeyCode::Char('b'), &mut state);
+    assert_eq!(state.selected_tab, 0);
+    assert!(state.show_help);
+
+    // While typing a filter the arrows belong to the input.
+    state.show_help = false;
+    state.filter_mode = true;
+    let tab = state.selected_tab;
+    dispatch_key(
+        tab,
+        KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+        &mut test_support::empty_ctx(&app, &mut state, &regions),
+    );
+    assert_eq!(state.selected_tab, 0);
+    dispatch_key(
+        tab,
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+        &mut test_support::empty_ctx(&app, &mut state, &regions),
+    );
+    assert_eq!(state.selected_tab, 0);
+}
