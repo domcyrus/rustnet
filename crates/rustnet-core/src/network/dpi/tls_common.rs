@@ -211,6 +211,7 @@ pub(in crate::network::dpi) fn parse_sni_header(data: &[u8]) -> Option<SniHeader
 
 pub(in crate::network::dpi) fn version_from_bytes(major: u8, minor: u8) -> Option<TlsVersion> {
     match (major, minor) {
+        (0x03, 0x00) => Some(TlsVersion::Ssl30),
         (0x03, 0x01) => Some(TlsVersion::Tls10),
         (0x03, 0x02) => Some(TlsVersion::Tls11),
         (0x03, 0x03) => Some(TlsVersion::Tls12),
@@ -221,6 +222,7 @@ pub(in crate::network::dpi) fn version_from_bytes(major: u8, minor: u8) -> Optio
 
 fn version_to_priority(version: TlsVersion) -> u8 {
     match version {
+        TlsVersion::Ssl30 => 0,
         TlsVersion::Tls10 => 1,
         TlsVersion::Tls11 => 2,
         TlsVersion::Tls12 => 3,

@@ -39,6 +39,7 @@ pub fn make_packet(local_port: u16, seq: u32) -> ParsedPacket {
         },
         payload_len: 1400,
         window_scale: None,
+        mss: None,
     });
     packet
 }

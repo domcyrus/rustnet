@@ -19,15 +19,22 @@ use crate::network::{
     capture::CapturedPacket,
     dns::DnsResolver,
     dns_analytics::DnsAnalyticsSnapshot,
+    findings::{FindingsInput, FindingsReport, evaluate_findings},
     geoip::{GeoIpConfig, GeoIpResolver},
-    interface_stats::{InterfaceRates, InterfaceStats, InterfaceTrafficWindow},
-    neighbors::NeighborEntry,
+    interface_stats::{
+        InterfaceErrorCounts, InterfaceRates, InterfaceStats, InterfaceTrafficWindow,
+    },
+    neighbors::{NeighborChange, NeighborEntry},
     oui::OuiLookup,
     process_activity::{ProcessActivitySnapshot, ProcessActivityTracker},
     services::ServiceLookup,
+    tcp_attempts::TcpAttemptSnapshot,
     time_window::TimeWindow,
     tracker::{ConnectionTracker, TrackerConfig},
-    types::{ApplicationProtocol, Connection, DnsQueryType, Protocol, TrafficHistory},
+    types::{
+        ApplicationProtocol, Connection, DnsQueryType, NetworkEventSnapshot, Protocol,
+        TrafficHistory,
+    },
 };
 use rustnet_core::network::filter::ConnectionFilter;
 
@@ -62,6 +69,40 @@ pub(super) fn is_ptr_lookup(connection: &Connection) -> bool {
         Some(ApplicationProtocol::Dns(dns_info))
             if dns_info.query_type == Some(DnsQueryType::PTR)
     )
+}
+
+/// Evidence used by both the detailed Findings view and the headless report.
+pub(crate) struct FindingsEvidence {
+    pub tcp: Arc<TcpAttemptSnapshot>,
+    pub events: NetworkEventSnapshot,
+    pub interfaces: HashMap<String, InterfaceErrorCounts>,
+    pub interfaces_since_clear: bool,
+    pub dns: DnsAnalyticsSnapshot,
+    pub capture_error: Option<String>,
+    pub queue: u64,
+    pub capture: u64,
+    pub iface: u64,
+    neighbors: Vec<NeighborChange>,
+    window: TimeWindow,
+}
+
+impl FindingsEvidence {
+    pub(crate) fn report(&self, connections: &[Connection]) -> FindingsReport {
+        evaluate_findings(&FindingsInput {
+            connections,
+            tcp_attempts: &self.tcp,
+            network_events: &self.events,
+            dns: &self.dns,
+            interfaces: &self.interfaces,
+            interfaces_since_clear: self.interfaces_since_clear,
+            neighbor_changes: &self.neighbors,
+            window: self.window,
+            capture_error: self.capture_error.as_deref(),
+            capture_drops: self.capture,
+            interface_drops: self.iface,
+            queue_drops: self.queue,
+        })
+    }
 }
 
 /// Main application state
@@ -838,6 +879,27 @@ impl App {
     /// observed.
     pub(crate) fn lookup_neighbor(&self, ip: std::net::IpAddr) -> Option<NeighborEntry> {
         self.tracker.neighbor(&ip)
+    }
+
+    pub(crate) fn findings_evidence(
+        &self,
+        stats: &AppStats,
+        window: TimeWindow,
+    ) -> FindingsEvidence {
+        let (interfaces, interfaces_since_clear) = self.get_health_interface_errors(window);
+        FindingsEvidence {
+            tcp: self.get_tcp_attempt_snapshot(),
+            events: self.get_network_event_snapshot(window),
+            interfaces,
+            interfaces_since_clear,
+            dns: self.get_dns_analytics_for_window(window),
+            capture_error: self.capture_error(),
+            queue: stats.packets_dropped.load(Ordering::Relaxed),
+            capture: stats.capture_packets_dropped.load(Ordering::Relaxed),
+            iface: stats.interface_packets_dropped.load(Ordering::Relaxed),
+            neighbors: self.tracker.recent_neighbor_changes(),
+            window,
+        }
     }
 
     /// Get GeoIP database availability status.
@@ -1648,6 +1710,7 @@ mod lifecycle_tests {
                 },
                 payload_len: 0,
                 window_scale: None,
+                mss: None,
             });
             packet
         };

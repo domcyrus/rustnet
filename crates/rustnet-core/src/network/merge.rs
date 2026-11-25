@@ -92,6 +92,8 @@ struct TcpSegment {
     is_rst: bool,
     /// Window-scale verdict from this segment's options (SYN only).
     window_scale: Option<SynWindowScale>,
+    /// Maximum Segment Size from this segment's options (SYN only).
+    mss: Option<u16>,
 }
 
 /// The analytics view of one packet's TCP header.
@@ -110,6 +112,7 @@ fn tcp_segment_from(parsed: &ParsedPacket, tcp_header: &TcpHeaderInfo) -> TcpSeg
         is_fin: tcp_header.flags.fin,
         is_rst: tcp_header.flags.rst,
         window_scale: tcp_header.window_scale,
+        mss: tcp_header.mss,
     }
 }
 
@@ -131,6 +134,7 @@ fn analyze_tcp_segment(
         is_fin,
         is_rst,
         window_scale,
+        mss,
     } = segment;
     let mut events = TcpMergeEvents::default();
     // Read before this segment overwrites it: RFC 5681 asks whether the
@@ -142,7 +146,7 @@ fn analyze_tcp_segment(
     // consume a sequence number, so a resent bare one has this same shape.
     let one_byte_data = payload_len == 1 && !is_syn && !is_fin && !is_rst;
 
-    // Learn each side's window-scale shift from its SYN. Only a fully
+    // Learn each side's window-scale shift and MSS from its SYN. Only a fully
     // examined SYN without the option turns scaling off (RFC 7323); a SYN
     // whose options could not be examined (truncated capture, malformed
     // options) proves nothing, and a complete retransmitted SYN may still
@@ -158,6 +162,13 @@ fn analyze_tcp_segment(
             }
             Some(SynWindowScale::Absent) => analytics.window_scaling_disabled = true,
             Some(SynWindowScale::Unknown) | None => {}
+        }
+        if let Some(mss) = mss {
+            if is_outgoing {
+                analytics.mss_out.get_or_insert(mss);
+            } else {
+                analytics.mss_in.get_or_insert(mss);
+            }
         }
     }
 
@@ -732,6 +743,26 @@ pub(crate) fn merge_tls_info(dst: &mut Option<TlsInfo>, src: &Option<TlsInfo>) -
         dst_tls.cipher_suite = src_tls.cipher_suite;
         updated = true;
     }
+    if let Some(alert) = src_tls.alert
+        && dst_tls.alert != Some(alert)
+    {
+        // Keep a fatal alert over a subsequent warning, otherwise record the
+        // latest observed unencrypted alert.
+        let keep_existing = matches!(
+            (dst_tls.alert, alert.level),
+            (
+                Some(crate::network::types::TlsAlert {
+                    level: crate::network::types::TlsAlertLevel::Fatal,
+                    ..
+                }),
+                crate::network::types::TlsAlertLevel::Warning
+            )
+        );
+        if !keep_existing {
+            dst_tls.alert = Some(alert);
+            updated = true;
+        }
+    }
 
     updated
 }
@@ -742,6 +773,7 @@ fn merge_http_info(old_info: &mut HttpInfo, new_info: &HttpInfo) {
     set_if_absent(&mut old_info.path, &new_info.path);
     set_if_absent(&mut old_info.host, &new_info.host);
     set_if_absent(&mut old_info.user_agent, &new_info.user_agent);
+    old_info.has_basic_auth |= new_info.has_basic_auth;
     // Keep the numeric code and observed token from the same first response.
     if old_info.status_code.is_none() && old_info.status_token.is_none() {
         old_info.status_code = new_info.status_code;
@@ -1003,6 +1035,7 @@ mod tests {
             status_code: code,
             status_token: token.map(str::to_string),
             user_agent: None,
+            has_basic_auth: false,
         };
         let mut request = make_http(None, None);
         let response = make_http(Some(200), Some("+200"));
@@ -1165,6 +1198,7 @@ mod tests {
                 },
                 payload_len: 60, // Simulated payload length
                 window_scale: None,
+                mss: None,
             },
         );
         packet.is_outgoing = is_outgoing;
@@ -1214,12 +1248,14 @@ mod tests {
             sni: Some("exa[PARTIAL]".to_string()),
             alpn: vec!["h3".to_string()],
             cipher_suite: None,
+            alert: None,
         });
         let src = Some(TlsInfo {
             version: Some(TlsVersion::Tls13),
             sni: Some("example.com".to_string()),
             alpn: Vec::new(),
             cipher_suite: None,
+            alert: None,
         });
 
         assert!(merge_tls_info(&mut dst, &src));
@@ -1234,6 +1270,7 @@ mod tests {
             sni: Some("other.example".to_string()),
             alpn: Vec::new(),
             cipher_suite: None,
+            alert: None,
         });
         assert!(!merge_tls_info(&mut dst, &other));
         assert_eq!(dst.unwrap().sni.as_deref(), Some("example.com"));
@@ -1246,12 +1283,14 @@ mod tests {
             sni: None,
             alpn: Vec::new(),
             cipher_suite: Some(0x1301),
+            alert: None,
         });
         let src = Some(TlsInfo {
             version: Some(TlsVersion::Tls13),
             sni: Some("example.com".to_string()),
             alpn: Vec::new(),
             cipher_suite: Some(0x1302),
+            alert: None,
         });
 
         assert!(merge_tls_info(&mut dst, &src));
@@ -1494,6 +1533,7 @@ mod tests {
             is_fin: false,
             is_rst: false,
             window_scale: None,
+            mss: None,
         }
     }
 
@@ -1648,6 +1688,7 @@ mod tests {
                 },
                 payload_len: 0,
                 window_scale: Some(SynWindowScale::Present(shift)),
+                mss: None,
             },
         );
         packet.is_outgoing = is_outgoing;

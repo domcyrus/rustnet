@@ -9,6 +9,8 @@ use serde::Serialize;
 use serde_json::value::RawValue;
 
 use crate::app::{App, AppStats, StopReport};
+use crate::network::findings::FindingsReport;
+use crate::network::time_window::TimeWindow;
 use crate::network::types::{AttributionSource, Connection, ConnectionKey};
 
 use super::{SCHEMA_VERSION, TerminationReason};
@@ -27,6 +29,8 @@ pub(super) struct SnapshotEnvelope<C = ConnectionSnapshots> {
     sandbox: SandboxSnapshot,
     stats: StatsSnapshot,
     tcp_attempts: TcpAttemptSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    findings: Option<FindingsSnapshot>,
     filter: Option<String>,
     connection_count: usize,
     connections: C,
@@ -42,6 +46,7 @@ impl<C> SnapshotEnvelope<C> {
             sandbox: self.sandbox,
             stats: self.stats,
             tcp_attempts: self.tcp_attempts,
+            findings: self.findings,
             filter: self.filter,
             connection_count: self.connection_count,
             connections,
@@ -64,6 +69,13 @@ impl SnapshotEnvelope {
         let (generation, connections) =
             app.get_filtered_connections_with_generation(filter.unwrap_or_default());
         let connection_count = connections.len();
+        let stats = app.get_stats();
+        let findings = full_details.then(|| {
+            FindingsSnapshot::from_report(
+                &app.findings_evidence(&stats, TimeWindow::FiveMinutes)
+                    .report(&connections),
+            )
+        });
         let connections = if full_details {
             let resolver = app.get_dns_resolver();
             let mut snapshots: Vec<_> = connections
@@ -112,8 +124,9 @@ impl SnapshotEnvelope {
                     stop_report,
                 ),
                 sandbox: SandboxSnapshot::from_app(app),
-                stats: StatsSnapshot::from_stats(&app.get_stats()),
+                stats: StatsSnapshot::from_stats(&stats),
                 tcp_attempts: TcpAttemptSummary::from(app.get_tcp_attempt_snapshot().as_ref()),
+                findings,
                 filter: filter.map(str::to_string),
                 connection_count,
                 connections,
@@ -985,6 +998,7 @@ mod tests {
                     sni: Some("example.org".into()),
                     alpn: vec!["h2".into()],
                     cipher_suite: Some(0x1301),
+                    alert: None,
                 }),
             }),
         });
@@ -1689,6 +1703,181 @@ mod tcp_attempt_json_tests {
         assert_eq!(
             value["recent_issues"][0]["last_unexpected_acknowledgment"],
             999999
+        );
+    }
+}
+
+#[derive(Serialize)]
+struct FindingsSnapshot {
+    summary: FindingsSummarySnapshot,
+    items: Vec<FindingEntrySnapshot>,
+}
+
+#[derive(Serialize)]
+struct FindingsSummarySnapshot {
+    errors: usize,
+    warnings: usize,
+    total_attention: usize,
+}
+
+#[derive(Serialize)]
+struct FindingEntrySnapshot {
+    id: &'static str,
+    category: &'static str,
+    title: &'static str,
+    severity: &'static str,
+    summary: String,
+    hint: &'static str,
+    window: &'static str,
+    affected_count: usize,
+    observations: Vec<FindingObservationSnapshot>,
+}
+
+#[derive(Serialize)]
+struct FindingObservationSnapshot {
+    severity: &'static str,
+    subject: String,
+    detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    process_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_addr: Option<String>,
+}
+
+impl FindingsSnapshot {
+    fn from_report(report: &FindingsReport) -> Self {
+        Self {
+            summary: FindingsSummarySnapshot {
+                errors: report.summary.errors,
+                warnings: report.summary.warnings,
+                total_attention: report.summary.attention_count(),
+            },
+            items: report
+                .entries
+                .iter()
+                .map(|entry| FindingEntrySnapshot {
+                    id: entry.id.as_str(),
+                    category: entry.id.category().as_str(),
+                    title: entry.id.title(),
+                    severity: entry.severity.as_str(),
+                    summary: entry.summary.clone(),
+                    hint: entry.id.hint(),
+                    window: entry.window_label,
+                    affected_count: entry.affected_count,
+                    observations: entry
+                        .observations
+                        .iter()
+                        .map(|obs| FindingObservationSnapshot {
+                            severity: obs.severity.as_str(),
+                            subject: obs.subject.clone(),
+                            detail: obs.detail.clone(),
+                            process_name: obs.process_name.clone(),
+                            pid: obs.pid,
+                            remote_addr: obs.remote_addr.map(|addr| addr.to_string()),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod findings_json_tests {
+    use super::*;
+    use crate::app::Config;
+    use crate::network::types::{
+        ApplicationProtocol, DpiInfo, HttpInfo, HttpVersion, HttpsInfo, Protocol, ProtocolState,
+        TcpState, TlsAlert, TlsAlertLevel, TlsInfo, TlsVersion,
+    };
+
+    #[test]
+    fn full_details_exports_structured_findings_while_compact_omits_them() {
+        let app = App::new(Config {
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .unwrap();
+
+        let mut tls = Connection::new(
+            Protocol::Tcp,
+            "192.168.1.10:50100".parse().unwrap(),
+            "198.51.100.20:443".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        tls.process_name = Some("legacy-client".into());
+        tls.pid = Some(777);
+        tls.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Https(HttpsInfo {
+                tls_info: Some(TlsInfo {
+                    version: Some(TlsVersion::Tls10),
+                    sni: Some("old.example".into()),
+                    alert: Some(TlsAlert {
+                        level: TlsAlertLevel::Fatal,
+                        description: 40,
+                    }),
+                    ..TlsInfo::new()
+                }),
+            }),
+        });
+
+        let mut http = Connection::new(
+            Protocol::Tcp,
+            "192.168.1.10:50101".parse().unwrap(),
+            "198.51.100.21:80".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        http.process_name = Some("curl".into());
+        http.pid = Some(888);
+        http.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Http(HttpInfo {
+                version: HttpVersion::Http11,
+                method: Some("GET".into()),
+                host: Some("intranet.local".into()),
+                path: Some("/admin".into()),
+                status_code: Some(503),
+                status_token: Some("503".into()),
+                user_agent: None,
+                has_basic_auth: true,
+            }),
+        });
+        app.set_connections_snapshot_for_test(vec![tls, http]);
+
+        let (_, compact) =
+            SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, false);
+        assert!(
+            serde_json::to_value(compact)
+                .unwrap()
+                .get("findings")
+                .is_none()
+        );
+
+        let (_, full) = SnapshotEnvelope::new(&app, None, RuntimePhase::Running, None, None, true);
+        let findings = &serde_json::to_value(full).unwrap()["findings"];
+        assert_eq!(findings["summary"]["errors"], 2);
+        assert_eq!(findings["summary"]["warnings"], 1);
+        let items = findings["items"].as_array().unwrap();
+        let tls_item = items.iter().find(|i| i["id"] == "tls_health").unwrap();
+        assert_eq!(tls_item["observations"][0]["process_name"], "legacy-client");
+        assert!(
+            tls_item["observations"][0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("handshake_failure")
+        );
+        assert_eq!(
+            items.iter().find(|i| i["id"] == "http_errors").unwrap()["severity"],
+            "error"
+        );
+        assert_eq!(
+            items
+                .iter()
+                .find(|i| i["id"] == "cleartext_protocols")
+                .unwrap()["severity"],
+            "warning"
         );
     }
 }

@@ -461,6 +461,7 @@ mod tests {
             flags: parse_tcp_flags(flags),
             payload_len: 0,
             window_scale: None,
+            mss: None,
         }
     }
     fn send(

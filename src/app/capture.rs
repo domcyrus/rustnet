@@ -2036,6 +2036,7 @@ mod connection_lifecycle_tests {
             flags,
             payload_len: 0,
             window_scale: None,
+            mss: None,
         });
         packet
     }

@@ -23,6 +23,12 @@ use schema::{ConnectionCache, RuntimePhase, SnapshotEnvelope};
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) fn full_snapshot_for_test(app: &App) -> serde_json::Value {
+    let (_, snapshot) = SnapshotEnvelope::new(app, None, RuntimePhase::Running, None, None, true);
+    serde_json::to_value(snapshot).unwrap()
+}
+
 /// Default full-snapshot output schema.
 pub const SCHEMA_VERSION: u8 = 1;
 

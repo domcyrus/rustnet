@@ -13,6 +13,7 @@ pub mod dns_analytics;
 pub(crate) mod dns_attribution;
 pub mod dpi;
 pub mod filter;
+pub mod findings;
 mod gateway;
 pub mod geoip;
 pub mod interface_stats;

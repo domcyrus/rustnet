@@ -2307,6 +2307,7 @@ fn host_network_events() {
         },
         payload_len: 0,
         window_scale: None,
+        mss: None,
     });
     packet.is_outgoing = true;
     app.ingest_packet_at_for_test(&packet, SystemTime::now());
@@ -2360,6 +2361,7 @@ fn evidence_syn(conn: &Connection, seq: u32) -> ParsedPacket {
         window: 100,
         payload_len: 0,
         window_scale: None,
+        mss: None,
         flags: TcpFlags {
             syn: true,
             fin: false,
@@ -2368,6 +2370,54 @@ fn evidence_syn(conn: &Connection, seq: u32) -> ParsedPacket {
         },
     });
     syn
+}
+
+#[test]
+fn findings_tab_and_headless_agree_on_clean_and_incomplete_capture() {
+    let app = test_app();
+    let mut state = UiState {
+        selected_tab: 4,
+        ..Default::default()
+    };
+    let conn = local_tcp(50123, "client");
+    let mut packet = evidence_syn(&conn, 17);
+    let now = SystemTime::now();
+    app.ingest_packet_at_for_test(&packet, now);
+    packet.is_outgoing = false;
+    packet.protocol_state = ProtocolState::Tcp(TcpState::Closed);
+    let header = packet.tcp_header.as_mut().unwrap();
+    header.flags.syn = false;
+    header.flags.ack = true;
+    header.flags.rst = true;
+    header.ack = 18;
+    app.ingest_packet_at_for_test(&packet, now);
+
+    for (capture_error, tcp_status, tcp_severity, capture_severity) in [
+        (None, "degraded", "error", "healthy"),
+        (Some("stopped"), "incomplete evidence", "warning", "error"),
+    ] {
+        app.set_capture_error_for_test(capture_error);
+        let rendered = render_app(&app, &mut state, &[], None, 140, 40);
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.contains("TCP handshakes") && line.contains(tcp_status)),
+            "{rendered}"
+        );
+        let json = crate::headless::full_snapshot_for_test(&app);
+        let report = &json["findings"];
+        let items = report["items"].as_array().unwrap();
+        for (id, severity) in [
+            ("tcp_handshakes", tcp_severity),
+            ("capture_quality", capture_severity),
+        ] {
+            let item = items.iter().find(|item| item["id"] == id).unwrap();
+            assert_eq!(item["severity"], severity);
+        }
+        let badge = state.health_badge.get();
+        assert_eq!(report["summary"]["errors"], badge.errors);
+        assert_eq!(report["summary"]["warnings"], badge.warnings);
+    }
 }
 
 #[test]
@@ -5476,6 +5526,7 @@ fn dpi_variants_full() -> Vec<crate::network::types::ApplicationProtocol> {
         sni: Some("github.com".to_string()),
         alpn: vec!["h2".to_string(), "http/1.1".to_string()],
         cipher_suite: Some(0x1301),
+        alert: None,
     };
     let mut quic = QuicInfo::new(0x0000_0001);
     quic.packet_type = QuicPacketType::OneRtt;
@@ -5492,6 +5543,7 @@ fn dpi_variants_full() -> Vec<crate::network::types::ApplicationProtocol> {
             status_code: Some(200),
             status_token: None,
             user_agent: Some("curl/8.9.0".to_string()),
+            has_basic_auth: false,
         }),
         ApplicationProtocol::Https(HttpsInfo {
             tls_info: Some(tls_info),

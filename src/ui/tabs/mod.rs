@@ -12,6 +12,7 @@ pub(super) mod overview;
 
 use super::theme;
 use crate::network::dns_analytics::DnsHealth;
+use crate::network::findings::{self, FindingSeverity};
 use crate::network::tcp_attempts::{AttemptCounts, TcpAttemptSnapshot};
 use ratatui::{
     style::{Color, Style},
@@ -63,14 +64,6 @@ impl HealthLevel {
         }
     }
 
-    fn attention_order(self) -> u8 {
-        match self {
-            Self::Error => 0,
-            Self::Warning => 1,
-            Self::Healthy | Self::Muted => 2,
-        }
-    }
-
     fn observed(error: bool, warning: bool) -> Self {
         if error {
             Self::Error
@@ -82,43 +75,28 @@ impl HealthLevel {
     }
 }
 
-/// Use the same evidence and palette in Findings and the Overview sidebar.
-fn tcp_handshake_status(
-    snapshot: &TcpAttemptSnapshot,
-    capture_incomplete: bool,
-) -> (&'static str, HealthLevel) {
-    let c = &snapshot.total;
-    if capture_incomplete || snapshot.omitted > 0 {
-        ("incomplete evidence", HealthLevel::Warning)
-    } else if c.reset > 0 {
-        ("degraded", HealthLevel::Error)
-    } else if c.no_handshake > 0 {
-        ("degraded", HealthLevel::Warning)
-    } else if c.recovered_anomalies > 0 {
-        ("recovered anomalies", HealthLevel::Warning)
-    } else if c.superseded > 0 {
-        ("incomplete evidence", HealthLevel::Warning)
-    } else if snapshot.pending > 0 {
-        ("checking", HealthLevel::Muted)
-    } else if c.established > 0 {
-        ("healthy", HealthLevel::Healthy)
-    } else {
-        ("not observed", HealthLevel::Muted)
+impl From<FindingSeverity> for HealthLevel {
+    fn from(severity: FindingSeverity) -> Self {
+        match severity {
+            FindingSeverity::Error => Self::Error,
+            FindingSeverity::Warning => Self::Warning,
+            FindingSeverity::Healthy => Self::Healthy,
+            FindingSeverity::Muted => Self::Muted,
+        }
     }
 }
 
-fn dns_health_status(health: DnsHealth, capture_failed: bool) -> (&'static str, HealthLevel) {
-    if capture_failed {
-        return ("unknown (capture stopped)", HealthLevel::Warning);
-    }
-    match health {
-        DnsHealth::NotObserved => ("not observed", HealthLevel::Muted),
-        DnsHealth::Checking => ("checking", HealthLevel::Muted),
-        DnsHealth::Responsive => ("responsive", HealthLevel::Healthy),
-        DnsHealth::Degraded => ("degraded", HealthLevel::Warning),
-        DnsHealth::Failing => ("failing", HealthLevel::Error),
-        DnsHealth::NoReplies => ("no replies", HealthLevel::Error),
-    }
+fn tcp_handshake_status(
+    snapshot: &TcpAttemptSnapshot,
+    incomplete: bool,
+) -> (&'static str, HealthLevel) {
+    let (label, severity) = findings::tcp_handshake_status(snapshot, incomplete);
+    (label, severity.into())
+}
+
+fn dns_health_status(health: DnsHealth, failed: bool) -> (&'static str, HealthLevel) {
+    let (label, severity) = findings::dns_health_status(health, failed);
+    (label, severity.into())
 }
 
 /// Color an observed count, leaving zero quiet beside the values that need attention.

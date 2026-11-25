@@ -1,5 +1,5 @@
 use super::tls_common::{self, TlsParseOptions};
-use crate::network::types::{HttpsInfo, TlsInfo};
+use crate::network::types::{HttpsInfo, TlsAlert, TlsInfo};
 use log::debug;
 
 pub(super) fn is_tls_handshake(payload: &[u8]) -> bool {
@@ -9,11 +9,24 @@ pub(super) fn is_tls_handshake(payload: &[u8]) -> bool {
 
     // TLS record header:
     // - Content type (1 byte): 0x16 for handshake
-    // - Version (2 bytes): 0x0301-0x0304 for TLS 1.0-1.3
+    // - Version (2 bytes): 0x0300-0x0304 for SSL 3.0 / TLS 1.0-1.3
     // - Length (2 bytes)
     payload[0] == 0x16 && // Handshake content type
         payload[1] == 0x03 && // Major version 3
-        (payload[2] >= 0x01 && payload[2] <= 0x04) // Minor version 1-4
+        payload[2] <= 0x04 // Minor version 0-4
+}
+
+/// Unencrypted TLS alert record (`content_type == 0x15`, length == 2, valid
+/// warning/fatal level byte). Encrypted alerts carry MAC/AEAD overhead so
+/// their record length exceeds 2 bytes.
+pub(super) fn is_tls_alert(payload: &[u8]) -> bool {
+    payload.len() >= 7
+        && payload[0] == 0x15
+        && payload[1] == 0x03
+        && payload[2] <= 0x04
+        && payload[3] == 0x00
+        && payload[4] == 0x02
+        && TlsAlert::from_bytes(payload[5], payload[6]).is_some()
 }
 
 pub(super) fn analyze_https(payload: &[u8]) -> Option<HttpsInfo> {
@@ -26,6 +39,16 @@ pub(super) fn analyze_https(payload: &[u8]) -> Option<HttpsInfo> {
 
     // Record layer version (kept even for non-handshake records)
     info.version = tls_common::version_from_bytes(payload[1], payload[2]);
+
+    if payload[0] == 0x15 {
+        let record_length = u16::from_be_bytes([payload[3], payload[4]]) as usize;
+        if record_length == 2 && payload.len() >= 7 {
+            info.alert = TlsAlert::from_bytes(payload[5], payload[6]);
+        }
+        return Some(HttpsInfo {
+            tls_info: Some(info),
+        });
+    }
 
     if payload[0] != 0x16 {
         // Not a handshake record - still extract version
@@ -135,5 +158,30 @@ mod tests {
         assert_eq!(info.version, Some(TlsVersion::Tls12));
         assert_eq!(info.sni, None);
         assert!(info.alpn.is_empty());
+        assert_eq!(info.alert, None);
+    }
+
+    #[test]
+    fn test_analyze_https_cleartext_tls_alert() {
+        use crate::network::types::{TlsAlert, TlsAlertLevel};
+
+        // Fatal handshake_failure (level=2, desc=40) over TLS 1.2 record layer.
+        let payload = [0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 40];
+        assert!(is_tls_alert(&payload));
+        let info = analyze_https(&payload).unwrap().tls_info.unwrap();
+        assert_eq!(
+            info.alert,
+            Some(TlsAlert {
+                level: TlsAlertLevel::Fatal,
+                description: 40,
+            })
+        );
+        assert_eq!(info.alert.unwrap().description_name(), "handshake_failure");
+
+        // Encrypted alert (length > 2) must not be misread as cleartext alert.
+        let encrypted = [0x15, 0x03, 0x03, 0x00, 0x1a, 0x02, 40];
+        assert!(!is_tls_alert(&encrypted));
+        let info = analyze_https(&encrypted).unwrap().tls_info.unwrap();
+        assert_eq!(info.alert, None);
     }
 }

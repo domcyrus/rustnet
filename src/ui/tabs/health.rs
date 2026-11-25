@@ -2,15 +2,14 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, atomic::Ordering::Relaxed},
     time::{Duration, SystemTime},
 };
 
 use super::{HealthLevel, count_span, dns_health_status, tcp_handshake_status};
-use crate::app::{App, AppStats};
+use crate::app::{App, AppStats, FindingsEvidence};
 use crate::network::{
-    dns_analytics::{DnsAnalyticsSnapshot, DnsIssue},
-    interface_stats::InterfaceErrorCounts,
+    dns_analytics::DnsIssue,
+    findings::{ConnectionRef, FindingEntry, FindingId, FindingsReport},
     process_activity::process_group_label,
     tcp_attempts::{AttemptCounts, AttemptOutcome, TcpAttempt, TcpAttemptSnapshot},
     time_window::TimeWindow,
@@ -39,6 +38,7 @@ pub enum Finding {
     Interfaces,
     Dns,
     Capture,
+    Extended(FindingId),
 }
 
 impl Finding {
@@ -57,6 +57,20 @@ impl Finding {
             Self::Interfaces => "Interface drops",
             Self::Dns => "DNS replies",
             Self::Capture => "Capture quality",
+            Self::Extended(id) => id.title(),
+        }
+    }
+}
+
+impl From<FindingId> for Finding {
+    fn from(id: FindingId) -> Self {
+        match id {
+            FindingId::TcpHandshakes => Self::Tcp,
+            FindingId::ResetsAndIcmp => Self::Events,
+            FindingId::InterfaceDrops => Self::Interfaces,
+            FindingId::DnsReplies => Self::Dns,
+            FindingId::CaptureQuality => Self::Capture,
+            _ => Self::Extended(id),
         }
     }
 }
@@ -76,27 +90,12 @@ impl HealthBadge {
     pub(in crate::ui) fn level(self) -> HealthLevel {
         HealthLevel::observed(self.errors > 0, self.warnings > 0)
     }
-
-    fn record(&mut self, level: HealthLevel) {
-        match level {
-            HealthLevel::Error => self.errors += 1,
-            HealthLevel::Warning => self.warnings += 1,
-            HealthLevel::Healthy | HealthLevel::Muted => {}
-        }
-    }
 }
 
-/// Single snapshot of all five finding sources and their derived severities.
-struct HealthInputs {
-    tcp: Arc<TcpAttemptSnapshot>,
-    events: NetworkEventSnapshot,
-    interfaces: HashMap<String, InterfaceErrorCounts>,
-    interfaces_since_clear: bool,
-    dns: DnsAnalyticsSnapshot,
-    capture_error: Option<String>,
-    queue: u64,
-    capture: u64,
-    iface: u64,
+/// The report and its underlying evidence, collected once for this frame.
+pub(in crate::ui) struct HealthInputs {
+    evidence: FindingsEvidence,
+    report: FindingsReport,
     reported: u64,
     resets_sent: u64,
     resets_received: u64,
@@ -106,82 +105,45 @@ struct HealthInputs {
     tcp_status: &'static str,
     dns_status: &'static str,
     dns_level: HealthLevel,
-    levels: [(Finding, HealthLevel); 5],
 }
 
 impl HealthInputs {
-    fn collect(app: &App, stats: &AppStats, window: TimeWindow) -> Self {
-        let tcp = app.get_tcp_attempt_snapshot();
-        let events = app.get_network_event_snapshot(window);
-        let (interfaces, interfaces_since_clear) = app.get_health_interface_errors(window);
-        let dns = app.get_dns_analytics_for_window(window);
-        let capture_error = app.capture_error();
-        let queue = stats.packets_dropped.load(Relaxed);
-        let capture = stats.capture_packets_dropped.load(Relaxed);
-        let iface = stats.interface_packets_dropped.load(Relaxed);
-        let reported = capture.saturating_add(iface);
-        let resets = events.selected.get(NetworkEventKind::TcpReset);
-        let icmp = events
+    pub(in crate::ui) fn collect(
+        app: &App,
+        stats: &AppStats,
+        connections: &[Connection],
+        window: TimeWindow,
+    ) -> Self {
+        let evidence = app.findings_evidence(stats, window);
+        let report = evidence.report(connections);
+        let reported = evidence.capture.saturating_add(evidence.iface);
+        let resets = evidence.events.selected.get(NetworkEventKind::TcpReset);
+        let icmp = evidence
+            .events
             .selected
             .observed()
             .filter(|(k, _)| *k != NetworkEventKind::TcpReset)
             .map(|(_, c)| c.sent + c.received)
             .sum();
-        let drops = interfaces
+        let drops = evidence
+            .interfaces
             .values()
             .map(|c| c.rx_dropped + c.tx_dropped)
             .sum();
-        let errors = interfaces.values().map(|c| c.rx_errors + c.tx_errors).sum();
-        let (tcp_status, tcp_level) =
-            tcp_handshake_status(&tcp, capture_error.is_some() || reported > 0 || queue > 0);
-        let (dns_status, dns_level) = dns_health_status(dns.health, capture_error.is_some());
-        let levels = [
-            (Finding::Tcp, tcp_level),
-            (
-                Finding::Events,
-                HealthLevel::observed(false, resets.sent > 0 || resets.received > 0 || icmp > 0),
-            ),
-            (
-                Finding::Interfaces,
-                if errors > 0 {
-                    HealthLevel::Error
-                } else if drops > 0 {
-                    HealthLevel::Warning
-                } else if interfaces.is_empty() {
-                    HealthLevel::Muted
-                } else {
-                    HealthLevel::Healthy
-                },
-            ),
-            (
-                Finding::Dns,
-                if dns.failures > 0 {
-                    HealthLevel::Error
-                } else {
-                    dns_level
-                },
-            ),
-            (
-                Finding::Capture,
-                if capture_error.is_some() {
-                    HealthLevel::Error
-                } else if reported > 0 || queue > 0 {
-                    HealthLevel::Warning
-                } else {
-                    HealthLevel::Healthy
-                },
-            ),
-        ];
+        let errors = evidence
+            .interfaces
+            .values()
+            .map(|c| c.rx_errors + c.tx_errors)
+            .sum();
+        let (tcp_status, _) = tcp_handshake_status(
+            &evidence.tcp,
+            evidence.capture_error.is_some() || reported > 0 || evidence.queue > 0,
+        );
+        let (dns_status, dns_level) =
+            dns_health_status(evidence.dns.health, evidence.capture_error.is_some());
         Self {
-            tcp,
-            events,
-            interfaces,
-            interfaces_since_clear,
-            dns,
-            capture_error,
-            queue,
-            capture,
-            iface,
+            evidence,
+            report,
             reported,
             resets_sent: resets.sent,
             resets_received: resets.received,
@@ -191,21 +153,19 @@ impl HealthInputs {
             tcp_status,
             dns_status,
             dns_level,
-            levels,
         }
     }
 
-    fn badge(&self) -> HealthBadge {
-        let mut badge = HealthBadge::default();
-        for &(_, level) in &self.levels {
-            badge.record(level);
+    pub(in crate::ui) fn badge(&self) -> HealthBadge {
+        HealthBadge {
+            errors: self.report.summary.errors,
+            warnings: self.report.summary.warnings,
         }
-        badge
     }
-}
 
-pub(in crate::ui) fn health_badge(app: &App, stats: &AppStats, window: TimeWindow) -> HealthBadge {
-    HealthInputs::collect(app, stats, window).badge()
+    fn extended_entry(&self, id: FindingId) -> Option<&FindingEntry> {
+        self.report.entries.iter().find(|entry| entry.id == id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +183,12 @@ pub(in crate::ui) enum HealthTarget {
     Interface(Option<String>),
     Event(NetworkEventKind),
     Capture(&'static str),
+    FlowObservation(FindingId, ConnectionRef),
+    Note {
+        finding: FindingId,
+        subject: String,
+        occurrence: usize,
+    },
 }
 
 impl HealthTarget {
@@ -234,28 +200,36 @@ impl HealthTarget {
             Self::Interface(_) => Finding::Interfaces,
             Self::Event(_) => Finding::Events,
             Self::Capture(_) => Finding::Capture,
+            Self::FlowObservation(finding, _) | Self::Note { finding, .. } => {
+                Finding::Extended(*finding)
+            }
         }
     }
 
     fn connection(&self, connections: &[Connection]) -> Option<usize> {
-        let Self::Attempt {
-            key,
-            created: Some(created),
-            ..
-        } = self
-        else {
-            return None;
+        let (key, created) = match self {
+            Self::Attempt {
+                key,
+                created: Some(created),
+                ..
+            } => (*key, *created),
+            Self::FlowObservation(_, conn_ref) => (conn_ref.key, conn_ref.created_at),
+            _ => return None,
         };
         connections
             .iter()
-            .position(|c| c.created_at == *created && ConnectionKey::from_connection(c) == *key)
+            .position(|c| c.created_at == created && ConnectionKey::from_connection(c) == key)
     }
 
     fn link(&self, connections: &[Connection]) -> Option<&'static str> {
         match self {
             Self::Resolver(_) | Self::DnsIssue(..) => Some("Open DNS resolvers"),
             Self::Interface(_) => Some("Open interface counters"),
-            Self::Attempt { .. } if self.connection(connections).is_some() => Some("Open Details"),
+            Self::Attempt { .. } | Self::FlowObservation(..)
+                if self.connection(connections).is_some() =>
+            {
+                Some("Open Details")
+            }
             _ => None,
         }
     }
@@ -271,6 +245,8 @@ impl HealthTarget {
                     .unwrap_or_else(|| issue.resolver.to_string()),
             ),
             Self::Interface(Some(name)) => Some(name.clone()),
+            Self::FlowObservation(_, conn) => Some(conn.key.remote_addr.to_string()),
+            Self::Note { subject, .. } => Some(subject.clone()),
             _ => None,
         }
     }
@@ -284,7 +260,7 @@ impl HealthTarget {
             }
             Self::Resolver(_) | Self::DnsIssue(..) => HostView::Dns,
             Self::Interface(_) => HostView::Interfaces,
-            Self::Attempt { .. } => {
+            Self::Attempt { .. } | Self::FlowObservation(..) => {
                 if let Some(i) = self.connection(ctx.connections) {
                     state.set_selected_by_index(ctx.connections, i);
                     state.jump_to_tab(1);
@@ -661,29 +637,30 @@ impl Component for HealthTab {
         regions.findings_area = area;
         let state = ctx.ui_state;
         let window = state.host_window;
-        let data = HealthInputs::collect(ctx.app, ctx.stats, window);
+        let data = ctx.health;
 
-        let mut order = data.levels;
-        order.sort_by_key(|(_, level)| level.attention_order());
-        state.health_cursor.borrow_mut().attention_findings = order
+        state.health_cursor.borrow_mut().attention_findings = data
+            .report
+            .entries
             .iter()
-            .filter_map(|&(finding, level)| {
-                matches!(level, HealthLevel::Error | HealthLevel::Warning).then_some(finding)
-            })
+            .filter(|entry| entry.severity.is_attention())
+            .map(|entry| entry.id.into())
             .collect();
 
         let compact = area.width < 100;
         let content_width = usize::from(area.width.saturating_sub(2)).max(1);
         let mut rows = FindingRows {
-            window_label: window.label_since_clear(data.events.since_clear),
+            window_label: window.label_since_clear(data.evidence.events.since_clear),
             badge: data.badge(),
             ..Default::default()
         };
-        let last_finding = order.len().saturating_sub(1);
-        for (idx, (finding, severity)) in order.into_iter().enumerate() {
+        let last_finding = data.report.entries.len().saturating_sub(1);
+        for (idx, entry) in data.report.entries.iter().enumerate() {
+            let finding = entry.id.into();
+            let severity = entry.severity.into();
             let expanded = state.expanded_findings.contains(&finding);
             let heading = finding_heading(
-                &data,
+                data,
                 finding,
                 severity,
                 window,
@@ -693,7 +670,7 @@ impl Component for HealthTab {
             );
             rows.heading(HealthTarget::Finding(finding), heading);
             if expanded {
-                append_finding_details(&data, finding, window, compact, &mut rows);
+                append_finding_details(data, finding, window, compact, &mut rows);
                 if idx < last_finding {
                     rows.spacer();
                 }
@@ -779,7 +756,7 @@ fn finding_summary(
 ) -> (&'static str, HealthLevel, Line<'static>, &'static str) {
     match finding {
         Finding::Tcp => {
-            let c = &data.tcp.total;
+            let c = &data.evidence.tcp.total;
             let mut spans = Vec::new();
             if c.completed > 0 {
                 let fail_color = if c.reset > 0 {
@@ -798,11 +775,11 @@ fn finding_summary(
                     spans.push(Span::styled(" anomalous", theme::fg(theme::muted())));
                 }
             }
-            if data.tcp.pending > 0 {
+            if data.evidence.tcp.pending > 0 {
                 if !spans.is_empty() {
                     spans.push(Span::styled(" · ", theme::fg(theme::faint())));
                 }
-                spans.push(Span::raw(format!("{} ", data.tcp.pending)));
+                spans.push(Span::raw(format!("{} ", data.evidence.tcp.pending)));
                 spans.push(Span::styled("pending", theme::fg(theme::muted())));
             }
             (data.tcp_status, severity, Line::from(spans), "5m")
@@ -825,11 +802,11 @@ fn finding_summary(
                     count_span(data.icmp, theme::warn()),
                     Span::styled(" ICMP", theme::fg(theme::muted())),
                 ]),
-                window.label_since_clear(data.events.since_clear),
+                window.label_since_clear(data.evidence.events.since_clear),
             )
         }
         Finding::Interfaces => {
-            let (status, line) = if data.interfaces.is_empty() {
+            let (status, line) = if data.evidence.interfaces.is_empty() {
                 (
                     "waiting",
                     Line::from(Span::styled(
@@ -860,17 +837,21 @@ fn finding_summary(
                 status,
                 severity,
                 line,
-                window.label_since_clear(data.interfaces_since_clear),
+                window.label_since_clear(data.evidence.interfaces_since_clear),
             )
         }
         Finding::Dns => {
             let mut line = Line::from(vec![
-                Span::raw(format!("{} ", data.dns.answered)),
+                Span::raw(format!("{} ", data.evidence.dns.answered)),
                 Span::styled("replies · ", theme::fg(theme::muted())),
-                count_span(data.dns.timeouts as u64, theme::err()),
+                count_span(data.evidence.dns.timeouts as u64, theme::err()),
                 Span::styled(" timeouts", theme::fg(theme::muted())),
             ]);
-            let error_replies = data.dns.failures.saturating_sub(data.dns.timeouts);
+            let error_replies = data
+                .evidence
+                .dns
+                .failures
+                .saturating_sub(data.evidence.dns.timeouts);
             if error_replies > 0 {
                 line.extend([
                     Span::styled(" · ", theme::fg(theme::faint())),
@@ -882,11 +863,11 @@ fn finding_summary(
                 data.dns_status,
                 data.dns_level,
                 line,
-                data.dns.window_label(),
+                data.evidence.dns.window_label(),
             )
         }
         Finding::Capture => {
-            let (status, line) = if data.capture_error.is_some() {
+            let (status, line) = if data.evidence.capture_error.is_some() {
                 ("Capture failed", Line::default())
             } else {
                 let status = if severity == HealthLevel::Warning {
@@ -899,7 +880,7 @@ fn finding_summary(
                     Line::from(vec![
                         count_span(data.reported, theme::warn()),
                         Span::styled(" reported drops · ", theme::fg(theme::muted())),
-                        count_span(data.queue, theme::warn()),
+                        count_span(data.evidence.queue, theme::warn()),
                         Span::styled(" queue drops", theme::fg(theme::muted())),
                     ]),
                 )
@@ -908,12 +889,24 @@ fn finding_summary(
                 status,
                 severity,
                 line,
-                if data.events.since_clear {
+                if data.evidence.events.since_clear {
                     "since clear"
                 } else {
                     "since startup"
                 },
             )
+        }
+        Finding::Extended(id) => {
+            if let Some(entry) = data.extended_entry(id) {
+                (
+                    entry.severity.as_str(),
+                    severity,
+                    Line::styled(entry.summary.clone(), theme::fg(theme::muted())),
+                    entry.window_label,
+                )
+            } else {
+                ("quiet", HealthLevel::Muted, Line::default(), "active")
+            }
         }
     }
 }
@@ -926,22 +919,26 @@ fn append_finding_details(
     rows: &mut FindingRows,
 ) {
     match finding {
-        Finding::Tcp => tcp_attempt_lines(&data.tcp, compact, rows),
-        Finding::Events => network_event_lines(&data.events, window, compact, rows),
+        Finding::Tcp => tcp_attempt_lines(&data.evidence.tcp, compact, rows),
+        Finding::Events => network_event_lines(&data.evidence.events, window, compact, rows),
         Finding::Dns => {
-            let failed = data.capture_error.is_some();
+            let failed = data.evidence.capture_error.is_some();
             rows.body(Line::styled(
-                super::host::dns_guidance(&data.dns, failed),
+                super::host::dns_guidance(&data.evidence.dns, failed),
                 theme::fg(theme::muted()),
             ));
-            for resolver in &data.dns.resolvers {
+            for resolver in &data.evidence.dns.resolvers {
                 rows.child(
                     HealthTarget::Resolver(Some(resolver.address)),
                     false,
-                    super::host::resolver_line(resolver, failed, data.dns.approximate_latency),
+                    super::host::resolver_line(
+                        resolver,
+                        failed,
+                        data.evidence.dns.approximate_latency,
+                    ),
                 );
             }
-            if data.dns.resolvers.is_empty() {
+            if data.evidence.dns.resolvers.is_empty() {
                 rows.child(
                     HealthTarget::Resolver(None),
                     false,
@@ -950,16 +947,16 @@ fn append_finding_details(
             }
             let issues_heading = format!(
                 "Recent issues (15m, {} retained)",
-                data.dns.recent_issues.len()
+                data.evidence.dns.recent_issues.len()
             );
-            if data.dns.recent_issues.is_empty() && !data.dns.truncated {
+            if data.evidence.dns.recent_issues.is_empty() && !data.evidence.dns.truncated {
                 rows.footer(Line::styled(issues_heading, theme::fg(theme::muted())));
             } else {
                 rows.body(Line::styled(issues_heading, theme::fg(theme::muted())));
-                let last_issue = data.dns.recent_issues.len().saturating_sub(1);
-                let outer_rail = data.dns.truncated;
-                for (i, issue) in data.dns.recent_issues.iter().enumerate() {
-                    let duplicate = data.dns.recent_issues[i + 1..]
+                let last_issue = data.evidence.dns.recent_issues.len().saturating_sub(1);
+                let outer_rail = data.evidence.dns.truncated;
+                for (i, issue) in data.evidence.dns.recent_issues.iter().enumerate() {
+                    let duplicate = data.evidence.dns.recent_issues[i + 1..]
                         .iter()
                         .filter(|other| *other == issue)
                         .count();
@@ -970,7 +967,7 @@ fn append_finding_details(
                         super::host::dns_issue_line(issue, None),
                     );
                 }
-                if data.dns.truncated {
+                if data.evidence.dns.truncated {
                     rows.footer(Line::styled(
                         "Incomplete DNS evidence",
                         theme::fg(theme::warn()),
@@ -979,7 +976,7 @@ fn append_finding_details(
             }
         }
         Finding::Interfaces => {
-            let mut interfaces: Vec<_> = data.interfaces.iter().collect();
+            let mut interfaces: Vec<_> = data.evidence.interfaces.iter().collect();
             interfaces.sort_unstable_by_key(|(name, _)| *name);
             if interfaces.is_empty() {
                 rows.child(
@@ -1046,7 +1043,7 @@ fn append_finding_details(
             }
         }
         Finding::Capture => {
-            if let Some(error) = &data.capture_error {
+            if let Some(error) = &data.evidence.capture_error {
                 rows.child(
                     HealthTarget::Capture("Capture failed"),
                     false,
@@ -1054,9 +1051,9 @@ fn append_finding_details(
                 );
             }
             let metrics = [
-                ("Capture backend drops", data.capture),
-                ("Interface-reported drops", data.iface),
-                ("Processing queue drops", data.queue),
+                ("Capture backend drops", data.evidence.capture),
+                ("Interface-reported drops", data.evidence.iface),
+                ("Processing queue drops", data.evidence.queue),
             ];
             let last_idx = metrics.len().saturating_sub(1);
             for (idx, (name, value)) in metrics.into_iter().enumerate() {
@@ -1071,6 +1068,45 @@ fn append_finding_details(
                             count_span(value, theme::warn())
                         },
                     ]),
+                );
+            }
+        }
+        Finding::Extended(id) => {
+            let Some(entry) = data.extended_entry(id) else {
+                rows.footer(Line::styled(
+                    "No active observations",
+                    theme::fg(theme::muted()),
+                ));
+                return;
+            };
+            rows.body(Line::styled(entry.id.hint(), theme::fg(theme::muted())));
+            for (index, obs) in entry.observations.iter().enumerate() {
+                let color = HealthLevel::from(obs.severity).color();
+                let mut spans = vec![
+                    Span::styled(obs.subject.clone(), theme::fg(color)),
+                    Span::raw(format!("  {}", obs.detail)),
+                ];
+                if let Some(proc_name) = &obs.process_name {
+                    let proc_label = match obs.pid {
+                        Some(pid) => format!(" · {proc_name} ({pid})"),
+                        None => format!(" · {proc_name}"),
+                    };
+                    spans.push(Span::styled(proc_label, theme::fg(theme::muted())));
+                }
+                rows.child(
+                    match &obs.connection {
+                        Some(conn) => HealthTarget::FlowObservation(id, conn.clone()),
+                        None => HealthTarget::Note {
+                            finding: id,
+                            subject: obs.subject.clone(),
+                            occurrence: entry.observations[index + 1..]
+                                .iter()
+                                .filter(|other| other.subject == obs.subject)
+                                .count(),
+                        },
+                    },
+                    index + 1 == entry.observations.len(),
+                    Line::from(spans),
                 );
             }
         }
@@ -1897,5 +1933,97 @@ mod tcp_attempt_tests {
             .map(|(text, _)| text)
             .collect();
         assert_eq!(parts, vec!["2× SYN retry", "1× unexp ACK"]);
+    }
+
+    #[test]
+    fn extended_findings_link_to_connection_details_and_update_badge() {
+        use crate::app::Config;
+        use crate::network::types::{
+            ApplicationProtocol, DpiInfo, HttpsInfo, Protocol, ProtocolState, TcpState, TlsAlert,
+            TlsAlertLevel, TlsInfo, TlsVersion,
+        };
+
+        let app = App::new(Config {
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .unwrap();
+        let stats = app.get_stats();
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            "192.168.1.10:50200".parse().unwrap(),
+            "198.51.100.30:443".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        conn.process_name = Some("openssl".into());
+        conn.pid = Some(901);
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Https(HttpsInfo {
+                tls_info: Some(TlsInfo {
+                    version: Some(TlsVersion::Tls10),
+                    sni: Some("broken.example".into()),
+                    alpn: vec![],
+                    cipher_suite: None,
+                    alert: Some(TlsAlert {
+                        level: TlsAlertLevel::Fatal,
+                        description: 42,
+                    }),
+                }),
+            }),
+        });
+        let conns = vec![conn.clone()];
+        let data = HealthInputs::collect(&app, &stats, &conns, TimeWindow::FiveMinutes);
+        assert_eq!(data.badge().errors, 1);
+        let mut rows = FindingRows::default();
+        append_finding_details(
+            &data,
+            Finding::Extended(FindingId::TlsHealth),
+            TimeWindow::FiveMinutes,
+            false,
+            &mut rows,
+        );
+        assert_eq!(rows.targets.len(), 1);
+        assert_eq!(rows.targets[0].1.link(&conns), Some("Open Details"));
+        let rendered = rows
+            .lines
+            .iter()
+            .map(|(_, line)| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("bad_certificate"), "{rendered}");
+        assert!(rendered.contains("openssl (901)"), "{rendered}");
+
+        // Inserting a row ahead of the selection must preserve the Details link.
+        let selected = rows.targets[0].1.clone();
+        let mut other = conn.clone();
+        other.local_addr.set_port(50201);
+        let mut cursor = HealthCursor::default();
+        cursor.select(selected.clone());
+        let reordered = [other, conn];
+        let refreshed = HealthInputs::collect(&app, &stats, &reordered, TimeWindow::FiveMinutes);
+        let mut rows = FindingRows::default();
+        append_finding_details(
+            &refreshed,
+            Finding::Extended(FindingId::TlsHealth),
+            TimeWindow::FiveMinutes,
+            false,
+            &mut rows,
+        );
+        assert_eq!(cursor.resolve(&rows.targets), 1);
+        assert_eq!(cursor.target, Some(selected));
+        assert_eq!(rows.targets[1].1.connection(&reordered), Some(1));
+
+        let mut historic = reordered[1].clone();
+        historic.is_historic = true;
+        let history = HealthInputs::collect(
+            &app,
+            &stats,
+            std::slice::from_ref(&historic),
+            TimeWindow::FiveMinutes,
+        );
+        assert_eq!(history.badge().errors, 0);
+        assert!(history.extended_entry(FindingId::TlsHealth).is_none());
+        assert_eq!(rows.targets[1].1.connection(&[historic]), Some(0));
     }
 }

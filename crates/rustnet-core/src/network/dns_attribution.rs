@@ -756,6 +756,7 @@ mod tests {
                     sni: Some("sni.example".into()),
                     alpn: vec![],
                     cipher_suite: None,
+                    alert: None,
                 }),
             }),
         });
@@ -787,6 +788,7 @@ mod tests {
                     sni: Some("partial[PARTIAL]".into()),
                     alpn: vec![],
                     cipher_suite: None,
+                    alert: None,
                 }),
             }),
         });
