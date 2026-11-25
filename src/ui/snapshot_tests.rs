@@ -2409,6 +2409,9 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
         };
         let (closed, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
         assert!(closed.contains("▌ ▸ TCP handshakes"));
+        if width == 140 {
+            assert!(closed.contains("1/1 reset or incomplete"), "{closed}");
+        }
         assert!(!closed.contains("Open Details"));
         let mut ctx = HandlerContext {
             connections: &connections,
@@ -2422,10 +2425,7 @@ fn host_tcp_evidence_links_only_to_the_observed_connection() {
             key(KeyCode::Char(' '), &mut ctx);
         }
         let (open, regions) = render_app_frame(&app, &mut state, &connections, None, width, 50);
-        assert!(
-            open.contains("no handshake") && open.contains("observed"),
-            "{open}"
-        );
+        assert!(open.contains("no handshake"), "{open}");
         let link = regions
             .health_rows
             .iter()
@@ -2562,6 +2562,108 @@ fn host_tcp_details_opens_each_same_timestamp_generation() {
         assert_eq!(state.selected_tab, 1);
         assert_eq!(state.get_selected_index(&connections), Some(i));
     }
+}
+
+#[test]
+fn host_tcp_findings_t_key_toggles_history_and_enables_details_link() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app();
+    let conn = local_tcp(50124, "client");
+    let captured = SystemTime::now() - Duration::from_secs(2);
+    // Ingest two SYN+RST generations on the same 4-tuple so the first is archived as historic.
+    for seq in [17, 33] {
+        let mut packet = evidence_syn(&conn, seq);
+        app.ingest_packet_at_for_test(&packet, captured);
+        packet.is_outgoing = false;
+        packet.protocol_state = ProtocolState::Tcp(TcpState::Closed);
+        let header = packet.tcp_header.as_mut().unwrap();
+        header.flags.syn = false;
+        header.flags.ack = true;
+        header.flags.rst = true;
+        header.ack = seq + 1;
+        app.ingest_packet_at_for_test(&packet, captured);
+    }
+    // Publish initial snapshot with show_historic = false (only the live generation is present).
+    assert_eq!(app.stop().panicked_workers, 0);
+    let connections = app.get_connections();
+    assert_eq!(connections.len(), 1);
+
+    let mut state = UiState {
+        selected_tab: 4,
+        expanded_findings: [tabs::health::Finding::Tcp].into(),
+        ..Default::default()
+    };
+    let (_, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 50);
+    let attempts: Vec<_> = regions
+        .health_rows
+        .iter()
+        .filter_map(|(t, _)| {
+            matches!(t, tabs::health::HealthTarget::Attempt { .. }).then_some(t.clone())
+        })
+        .collect();
+    assert_eq!(attempts.len(), 2);
+
+    // Select the archived (historic) attempt: without history enabled, Details is unavailable.
+    let historic_target = attempts
+        .into_iter()
+        .find(|target| {
+            state.health_cursor.get_mut().target = Some(target.clone());
+            let (frame, _) = render_app_frame(&app, &mut state, &connections, None, 140, 50);
+            frame.contains("press t for history")
+        })
+        .expect("archived TCP attempt should prompt to press t for history");
+    state.health_cursor.get_mut().target = Some(historic_target.clone());
+    let (before_toggle, regions) = render_app_frame(&app, &mut state, &connections, None, 140, 50);
+    assert!(before_toggle.contains("Details unavailable (press t for history)"));
+
+    // Press `t` directly in Findings: toggles history, refreshes snapshot immediately, and enables Details.
+    let mut ctx = HandlerContext {
+        connections: &connections,
+        ..test_support::empty_ctx(&app, &mut state, &regions)
+    };
+    let effects = dispatch_key(
+        4,
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        &mut ctx,
+    )
+    .unwrap();
+    assert!(matches!(effects.as_slice(), [Effect::RefreshData]));
+    assert!(state.show_historic);
+
+    let refreshed = app.get_connections();
+    assert_eq!(refreshed.len(), 2);
+    let (after_toggle, regions) = render_app_frame(&app, &mut state, &refreshed, None, 140, 50);
+    assert!(after_toggle.contains("[Open Details ↵]"), "{after_toggle}");
+
+    // Pressing Enter now opens the historic connection in Details.
+    let mut ctx = HandlerContext {
+        connections: &refreshed,
+        ..test_support::empty_ctx(&app, &mut state, &regions)
+    };
+    dispatch_key(
+        4,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut ctx,
+    )
+    .unwrap();
+    assert_eq!(state.selected_tab, 1);
+    assert!(refreshed[state.get_selected_index(&refreshed).unwrap()].is_historic);
+
+    // Pressing `t` again in Findings turns history back off.
+    state.jump_to_tab(4);
+    let (_, regions) = render_app_frame(&app, &mut state, &refreshed, None, 140, 50);
+    let mut ctx = HandlerContext {
+        connections: &refreshed,
+        ..test_support::empty_ctx(&app, &mut state, &regions)
+    };
+    dispatch_key(
+        4,
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        &mut ctx,
+    )
+    .unwrap();
+    assert!(!state.show_historic);
+    assert_eq!(app.get_connections().len(), 1);
 }
 
 #[test]
@@ -2702,6 +2804,15 @@ fn dns_timeout_and_inventory_links_keep_the_source_item() {
         &dns_test_packet(42, "build.example", DnsQueryType::A, false, None),
         SystemTime::now() - Duration::from_secs(20),
     );
+    seed_dns_lookup(
+        &app,
+        43,
+        "ok.example",
+        DnsQueryType::A,
+        0,
+        SystemTime::now() - Duration::from_secs(2),
+        Duration::from_millis(10),
+    );
     for width in [60, 140] {
         let mut state = UiState {
             selected_tab: 4,
@@ -2717,6 +2828,8 @@ fn dns_timeout_and_inventory_links_keep_the_source_item() {
             .unwrap();
         };
         let (index, regions) = frame(&mut state);
+        assert!(index.contains("1 error"), "{index}");
+        assert!(index.contains("✕ responsive"), "{index}");
         assert_eq!(
             state
                 .health_cursor
@@ -2980,10 +3093,7 @@ fn host_attempts_and_endpoints_scroll_independently() {
         assert!(closed.contains("▌ ▸ TCP handshakes"));
         key(KeyCode::Char(' '), &mut state, &regions);
         let (open, regions) = frame(&mut state);
-        assert!(
-            open.contains("no handshake") && open.contains("observed"),
-            "{open}"
-        );
+        assert!(open.contains("no handshake"), "{open}");
         assert!(state.health_scroll.can_scroll());
         key(KeyCode::End, &mut state, &regions);
         let (last, regions) = frame(&mut state);
@@ -4552,7 +4662,13 @@ fn compact_graph_keeps_live_rates_and_all_tcp_states_visible() {
     for label in ["RX", "TX", "OPENED", "CLOSED", "8.00 KiB/s", "4.00 KiB/s"] {
         assert!(traffic.contains(label), "{label}: {traffic}");
     }
-    assert_eq!(traffic.matches("-60s").count(), 2);
+    // Default mirrored view shares one center time horizon; split view keeps two.
+    assert!(traffic.contains("0┼"));
+    assert_eq!(traffic.matches("-60s").count(), 1);
+    state.graph_mirrored = false;
+    let split = render_app(&app, &mut state, &connections, None, 80, 24);
+    assert_eq!(split.matches("-60s").count(), 2);
+    state.graph_mirrored = true;
     state.graph_section = GraphSection::Health;
     let health = render_app(&app, &mut state, &connections, None, 80, 24);
     for label in [

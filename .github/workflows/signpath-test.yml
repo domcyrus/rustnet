@@ -1,0 +1,81 @@
+name: Test-sign Windows x64
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select stable Rust
+        run: rustup default stable
+
+      - name: Build and check the Windows executable
+        uses: ./.github/actions/build-rustnet
+        with:
+          target: x86_64-pc-windows-msvc
+          default-features: 'false'
+
+      - name: Upload unsigned executable
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rustnet-windows-x64-unsigned-${{ github.run_attempt }}
+          path: target/x86_64-pc-windows-msvc/release/rustnet.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  test-sign:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Submit unsigned artifact to SignPath
+        uses: SignPath/github-action-submit-signing-request@a2c5b60d9c75f073142b653c354b632eedce097b # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_TEST_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: windows-x64-exe
+          github-artifact-id: ${{ needs.build.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Verify Authenticode signature with the test certificate
+        shell: pwsh
+        env:
+          TEST_CERT_THUMBPRINT: ${{ vars.SIGNPATH_TEST_CERT_THUMBPRINT }}
+        run: |
+          $exe = 'signed/rustnet.exe'
+          $cert = (Get-AuthenticodeSignature -LiteralPath $exe).SignerCertificate
+          if (!$cert -or $cert.Thumbprint -ne $env:TEST_CERT_THUMBPRINT.Trim()) {
+            throw 'The signer does not match SIGNPATH_TEST_CERT_THUMBPRINT.'
+          }
+          # Trust the pinned self-signed certificate on this disposable runner.
+          $certFile = Join-Path $env:RUNNER_TEMP 'signpath-test.cer'
+          Export-Certificate -Cert $cert -FilePath $certFile | Out-Null
+          Import-Certificate -FilePath $certFile -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          $signature = Get-AuthenticodeSignature -LiteralPath $exe
+          if ($signature.Status -ne 'Valid') {
+            throw "Authenticode verification failed: $($signature.StatusMessage)"
+          }
+          Write-Host "Verified $($cert.Subject) ($($cert.Thumbprint))"
+
+      - name: Upload test-signed executable
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rustnet-windows-x64-test-signed-${{ github.run_attempt }}
+          path: signed/rustnet.exe
+          if-no-files-found: error
+          retention-days: 7

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update ctutils to 0.4.4 for RUSTSEC-2026-0385 and replace yanked clipboard-win 5.4.1 with 5.4.3 (#698)
 
 ### Changed
+- Redesign `5 Health & Host > Findings` with a structured tree accordion: aligned finding columns with severity icons and status pills, faint tree guide rails (`│ ├─ └─`), a TCP handshake health bar, single-line tabular attempt rows with inline anomalies, aligned `Resets and ICMP` / `Interface drops` / `Capture quality` sub-tables, and full-width row selection highlighting
 - Skip TCP attempt mutex locking on steady-state established packets when no handshakes are pending (#734)
 - Keep Overview's TCP handshake summary on one compact line while quiet or healthy, expanding when issues appear, and make sidebar DNS/TCP health rows jump directly to Findings (#734)
 - Show a severity indicator on `5 Health & Host` in the tab bar, attention counts on `Findings`, and trailing action chips on linked evidence rows (#734)
@@ -29,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
+- Mirror the Graph tab's RX/TX traffic waves around a shared center time horizon (RX up, TX down), with `m` to toggle back to the split view and `[view] mirrored_traffic_graph` in `config.toml`
 - Sort findings by severity while preserving the selected finding and evidence position (#734)
 - Align health colors across Findings, Overview, Details and host inventory, and leave zero error counts neutral (#734)
 - Combine Findings, Sockets, Interfaces and DNS resolvers in 5 Health & Host, with a single expandable list, item-by-item navigation and return links (#734)
@@ -44,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Allow pressing `t` directly in `5 Health & Host > Findings` to toggle historic connections immediately (matching the `press t for history` prompt on closed TCP attempts) and show `t history` in the Findings status bar and help overlay
 - Link Windows synchronization APIs explicitly to prevent x86 startup failures and x64 test crashes caused by enclave DLL imports (#731)
 - Remove redundant homepage metadata to prevent Cargo manifest warnings when building from source (#731)
 - Validate complete DNS questions and recognize STUN on port 53 before DNS to prevent false resolver failures (#722)

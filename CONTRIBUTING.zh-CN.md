@@ -72,6 +72,12 @@ RustNet 追求小而快。并不是每个协议或功能都适合放在核心工
 
 请在合并之前解决适用的 CI 检查中的失败项。检查尚未完成时，也可以提交 PR 征求反馈。
 
+### 对 64 位 Windows 可执行文件进行测试签名
+
+1. 在 RustNet 的 SignPath 项目中，将 GitHub.com 受信任构建系统关联到本仓库。使用[此 XML 文件](.github/signpath/windows-x64-exe.xml)创建名为 `windows-x64-exe` 的制品配置。授予 CI 用户向使用自签名测试证书的策略提交签名请求的权限。
+2. 在 GitHub 的 **Settings > Secrets and variables > Actions** 中，将 CI 令牌保存为机密 `SIGNPATH_API_TOKEN`。设置仓库变量 `SIGNPATH_ORGANIZATION_ID`、`SIGNPATH_PROJECT_SLUG`、`SIGNPATH_TEST_SIGNING_POLICY_SLUG` 和 `SIGNPATH_TEST_CERT_THUMBPRINT`（测试证书的 SHA-1 指纹，40 位十六进制数，不含空格）。
+3. 在 **Actions > Test-sign Windows x64 > Run workflow** 中选择 `main`。如果测试策略要求审批，请在 SignPath 中批准请求。从该次运行下载 `rustnet-windows-x64-test-signed-<attempt>` 即可获取签名已验证的可执行文件。测试制品保留七天。
+
 ## 依赖策略<a id="dependency-policy"></a>
 
 请谨慎添加依赖：

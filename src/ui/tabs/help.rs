@@ -396,6 +396,10 @@ const FINDING_KEYS: &[HelpRow] = &[
     ),
     ("c", "Copy the selected address, domain, or interface"),
     (
+        "t",
+        "Toggle historic connections so closed TCP attempts can open in Details",
+    ),
+    (
         "Click",
         "Toggle a heading, select an item, or follow its trailing link",
     ),
@@ -530,6 +534,10 @@ const GRAPH_KEYS: &[HelpRow] = &[
     (
         "2s avg",
         "Time-weighted rate over up to two seconds of observations",
+    ),
+    (
+        "m",
+        "Toggle mirrored (RX up / TX down) and split traffic graphs",
     ),
     (
         "j/k, ↑/↓",

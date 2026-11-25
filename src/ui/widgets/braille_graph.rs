@@ -167,6 +167,7 @@ pub(in crate::ui) fn render(
             frac,
             window,
             scale: WaveScale::Shaped,
+            orientation: WaveOrientation::Up,
         },
         row_color,
     )
@@ -176,6 +177,14 @@ pub(in crate::ui) fn render(
 enum WaveScale {
     Shaped,
     Linear,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum WaveOrientation {
+    /// Grows upward from the bottom edge (baseline at bottom, crest at top).
+    Up,
+    /// Hangs downward from the top edge (baseline at top, crest at bottom).
+    Down,
 }
 
 impl WaveScale {
@@ -209,6 +218,7 @@ struct WaveGeometry {
     frac: f64,
     window: usize,
     scale: WaveScale,
+    orientation: WaveOrientation,
 }
 
 fn render_wave(
@@ -223,6 +233,7 @@ fn render_wave(
         frac,
         window,
         scale,
+        orientation,
     } = geometry;
     if width == 0 || height == 0 || samples.is_empty() {
         return Vec::new();
@@ -260,7 +271,14 @@ fn render_wave(
         // One contour owns the entire fill. A separate outline can leave
         // hollow pockets when its height differs from a smoothed area.
         for y in 0..filled.min(dots_y) {
-            grid[height - 1 - y / 4][x / 2] |= dot_mask(x % 2, 3 - y % 4);
+            match orientation {
+                WaveOrientation::Up => {
+                    grid[height - 1 - y / 4][x / 2] |= dot_mask(x % 2, 3 - y % 4);
+                }
+                WaveOrientation::Down => {
+                    grid[y / 4][x / 2] |= dot_mask(x % 2, y % 4);
+                }
+            }
         }
     }
 
@@ -271,7 +289,10 @@ fn render_wave(
                 .into_iter()
                 .map(|bits| char::from_u32(0x2800 + bits as u32).unwrap_or(' '))
                 .collect();
-            let intensity = 1.0 - i as f64 / height as f64;
+            let intensity = match orientation {
+                WaveOrientation::Up => 1.0 - i as f64 / height as f64,
+                WaveOrientation::Down => 1.0 - (height - 1 - i) as f64 / height as f64,
+            };
             Line::from(Span::styled(text, theme::fg(row_color(intensity))))
         })
         .collect()
@@ -316,6 +337,58 @@ pub(in crate::ui) fn rate_ceilings(rx: &[u64], tx: &[u64], scales: (f64, f64)) -
     (rx, tx)
 }
 
+struct RateHeader<'a> {
+    samples: &'a [u64],
+    label: &'a str,
+    max_val: f64,
+    header_color: Option<Color>,
+    average: Option<f64>,
+    wave: fn(f64) -> Color,
+}
+
+fn render_rate_header(f: &mut Frame, area: Rect, header: RateHeader<'_>) -> (Option<String>, bool) {
+    let RateHeader {
+        samples,
+        label,
+        max_val,
+        header_color,
+        average,
+        wave,
+    } = header;
+    let current = *samples.last().unwrap() as f64;
+    let peak = samples.iter().copied().max().unwrap_or(0) as f64;
+    let speed_ratio = (current / max_val).clamp(0.0, 1.0);
+
+    let value_color = header_color.unwrap_or_else(|| wave(0.35 + 0.65 * speed_ratio));
+    let mut left = vec![
+        Span::styled(
+            format!("{label} Now "),
+            theme::bold_fg(header_color.unwrap_or_else(|| wave(0.4))),
+        ),
+        Span::styled(format_header_rate(current), theme::bold_fg(value_color)),
+    ];
+    if area.width >= 48 {
+        left.push(Span::styled(
+            format!(" {}", trend_glyph(samples)),
+            theme::fg(theme::muted()),
+        ));
+    }
+    let average_text = average.map(|avg| format!("2s avg {}", format_header_rate(avg)));
+    let inline_average = area.width >= 72;
+    if inline_average && let Some(average) = &average_text {
+        left.push(Span::styled(
+            format!("  {average}"),
+            theme::fg(theme::muted()),
+        ));
+    }
+    let right = Span::styled(format_peak_rate(peak), theme::fg(theme::muted()));
+    f.render_widget(
+        Paragraph::new(spread_line(left, right, area.width)),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    (average_text, inline_average)
+}
+
 /// One rate direction as a complete panel: a header line (label, the
 /// current rate, a trend arrow, and the window peak), an optional summary
 /// line, then an area chart with a labeled bytes-per-second scale.
@@ -332,41 +405,19 @@ pub(in crate::ui) fn wave_panel(
         return;
     }
 
-    let current = *samples.last().unwrap() as f64;
     let peak = samples.iter().copied().max().unwrap_or(0) as f64;
     let max_val = options.max_val.unwrap_or(peak).max(1024.0);
-    let speed_ratio = (current / max_val).clamp(0.0, 1.0);
-
-    let value_color = options
-        .header_color
-        .unwrap_or_else(|| wave(0.35 + 0.65 * speed_ratio));
-    let mut left = vec![
-        Span::styled(
-            format!("{label} Now "),
-            theme::bold_fg(options.header_color.unwrap_or_else(|| wave(0.4))),
-        ),
-        Span::styled(format_header_rate(current), theme::bold_fg(value_color)),
-    ];
-    if area.width >= 48 {
-        left.push(Span::styled(
-            format!(" {}", trend_glyph(samples)),
-            theme::fg(theme::muted()),
-        ));
-    }
-    let average_text = options
-        .average
-        .map(|avg| format!("2s avg {}", format_header_rate(avg)));
-    let inline_average = area.width >= 72;
-    if inline_average && let Some(average) = &average_text {
-        left.push(Span::styled(
-            format!("  {average}"),
-            theme::fg(theme::muted()),
-        ));
-    }
-    let right = Span::styled(format_peak_rate(peak), theme::fg(theme::muted()));
-    f.render_widget(
-        Paragraph::new(spread_line(left, right, area.width)),
-        Rect::new(area.x, area.y, area.width, 1),
+    let (average_text, inline_average) = render_rate_header(
+        f,
+        area,
+        RateHeader {
+            samples,
+            label,
+            max_val,
+            header_color: options.header_color,
+            average: options.average,
+            wave,
+        },
     );
 
     let summary_height = u16::from(options.summary.is_some() && area.height >= 3);
@@ -442,6 +493,7 @@ pub(in crate::ui) fn wave_panel(
             frac: options.frac,
             window: options.window,
             scale: WaveScale::Linear,
+            orientation: WaveOrientation::Up,
         },
         wave,
     );
@@ -496,6 +548,221 @@ pub(in crate::ui) fn wave_panel(
             Rect::new(plot.x, plot.bottom(), plot.width, 1),
         );
     }
+}
+
+/// One half of a mirrored RX/TX traffic graph.
+pub(in crate::ui) struct MirroredSeries<'a> {
+    pub samples: &'a [u64],
+    pub label: &'static str,
+    pub max_val: f64,
+    pub average: Option<f64>,
+    pub header_color: Color,
+    pub wave: fn(f64) -> Color,
+}
+
+/// Render two rate histories mirrored around a shared center time horizon:
+/// `upper` (RX) grows upward from the horizon and `lower` (TX) hangs downward
+/// from it. Each half keeps its own header, peak readout, and labeled linear
+/// scale while the shared horizon frees two vertical rows for the waves.
+pub(in crate::ui) fn mirrored_wave_panel(
+    f: &mut Frame,
+    area: Rect,
+    upper: MirroredSeries<'_>,
+    lower: MirroredSeries<'_>,
+    frac: f64,
+    window: usize,
+    time_window_seconds: u64,
+) {
+    if area.height < 2 || area.width == 0 || upper.samples.is_empty() || lower.samples.is_empty() {
+        return;
+    }
+
+    let upper_max = upper.max_val.max(1024.0);
+    let lower_max = lower.max_val.max(1024.0);
+
+    // Top row: RX header; bottom row: TX header.
+    render_rate_header(
+        f,
+        Rect::new(area.x, area.y, area.width, 1),
+        RateHeader {
+            samples: upper.samples,
+            label: upper.label,
+            max_val: upper_max,
+            header_color: Some(upper.header_color),
+            average: upper.average,
+            wave: upper.wave,
+        },
+    );
+    render_rate_header(
+        f,
+        Rect::new(area.x, area.bottom() - 1, area.width, 1),
+        RateHeader {
+            samples: lower.samples,
+            label: lower.label,
+            max_val: lower_max,
+            header_color: Some(lower.header_color),
+            average: lower.average,
+            wave: lower.wave,
+        },
+    );
+
+    let body_height = area.height.saturating_sub(2);
+    if body_height == 0 {
+        return;
+    }
+
+    let has_horizon = body_height >= 3;
+    let wave_rows = body_height.saturating_sub(u16::from(has_horizon));
+    let upper_height = wave_rows.div_ceil(2);
+    let lower_height = wave_rows / 2;
+
+    let axis_width = 6.min(area.width.saturating_sub(1));
+    let plot_x = area.x + axis_width;
+    let plot_width = area.width.saturating_sub(axis_width);
+
+    let upper_y = area.y + 1;
+    if upper_height > 0 && plot_width > 0 {
+        let lines = render_wave(
+            upper.samples,
+            usize::from(plot_width),
+            usize::from(upper_height),
+            WaveGeometry {
+                max_val: upper_max,
+                frac,
+                window,
+                scale: WaveScale::Linear,
+                orientation: WaveOrientation::Up,
+            },
+            upper.wave,
+        );
+        f.render_widget(
+            Paragraph::new(lines),
+            Rect::new(plot_x, upper_y, plot_width, upper_height),
+        );
+        render_mirrored_y_axis(
+            f,
+            Rect::new(area.x, upper_y, axis_width, upper_height),
+            upper_max,
+            WaveOrientation::Up,
+        );
+    }
+
+    let horizon_y = upper_y + upper_height;
+    if has_horizon {
+        render_center_horizon(
+            f,
+            Rect::new(area.x, horizon_y, area.width, 1),
+            axis_width,
+            time_window_seconds,
+        );
+    }
+
+    let lower_y = horizon_y + u16::from(has_horizon);
+    if lower_height > 0 && plot_width > 0 {
+        let lines = render_wave(
+            lower.samples,
+            usize::from(plot_width),
+            usize::from(lower_height),
+            WaveGeometry {
+                max_val: lower_max,
+                frac,
+                window,
+                scale: WaveScale::Linear,
+                orientation: WaveOrientation::Down,
+            },
+            lower.wave,
+        );
+        f.render_widget(
+            Paragraph::new(lines),
+            Rect::new(plot_x, lower_y, plot_width, lower_height),
+        );
+        render_mirrored_y_axis(
+            f,
+            Rect::new(area.x, lower_y, axis_width, lower_height),
+            lower_max,
+            WaveOrientation::Down,
+        );
+    }
+}
+
+fn render_mirrored_y_axis(f: &mut Frame, area: Rect, max_val: f64, orientation: WaveOrientation) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let label_width = usize::from(area.width - 1);
+    let ceiling = crate::ui::format::format_rate_compact(max_val, "0B");
+    let ceiling = crate::ui::format::truncate_with_ellipsis(&ceiling, label_width);
+    let midpoint_row = area.height / 2;
+    let midpoint = crate::ui::format::format_rate_compact(max_val / 2.0, "0B");
+    let midpoint = crate::ui::format::truncate_with_ellipsis(&midpoint, label_width);
+    let ceiling_row = match orientation {
+        WaveOrientation::Up => 0,
+        WaveOrientation::Down => area.height - 1,
+    };
+    let labels: Vec<_> = (0..area.height)
+        .map(|row| {
+            let label = if row == ceiling_row {
+                ceiling.as_str()
+            } else if area.height >= 5 && row == midpoint_row {
+                midpoint.as_str()
+            } else {
+                ""
+            };
+            Line::styled(format!("{label:>label_width$}│"), theme::fg(theme::muted()))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(labels), area);
+}
+
+fn render_center_horizon(f: &mut Frame, area: Rect, axis_width: u16, seconds: u64) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut spans = Vec::new();
+    if axis_width > 0 {
+        let label_width = usize::from(axis_width - 1);
+        let zero = if label_width > 0 { "0" } else { "" };
+        spans.push(Span::styled(
+            format!("{zero:>label_width$}┼"),
+            theme::fg(theme::muted()),
+        ));
+    }
+    let plot_width = usize::from(area.width.saturating_sub(axis_width));
+    if plot_width > 0 {
+        let mut cells = vec![('─', false); plot_width];
+        let left = format!("-{seconds}s");
+        let middle = format!("-{}s", seconds / 2);
+        let stamp = |cells: &mut [(char, bool)], offset: usize, text: &str| {
+            for (slot, ch) in cells.iter_mut().skip(offset).zip(text.chars()) {
+                *slot = (ch, true);
+            }
+        };
+        if plot_width >= left.len() + 8 {
+            stamp(&mut cells, 1, &format!(" {left} "));
+            stamp(&mut cells, plot_width - 4, " Now");
+            if plot_width >= left.len() + middle.len() + 14 {
+                let mid = format!(" {middle} ");
+                let offset = (plot_width - mid.len()) / 2;
+                stamp(&mut cells, offset, &mid);
+            }
+        }
+        let mut idx = 0;
+        while idx < cells.len() {
+            let is_label = cells[idx].1;
+            let start = idx;
+            while idx < cells.len() && cells[idx].1 == is_label {
+                idx += 1;
+            }
+            let text: String = cells[start..idx].iter().map(|(ch, _)| *ch).collect();
+            let style = if is_label {
+                theme::fg(theme::muted())
+            } else {
+                theme::fg(theme::faint())
+            };
+            spans.push(Span::styled(text, style));
+        }
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Least-squares slope over the last `n` samples; feeds the ↗/→/↘
@@ -593,6 +860,7 @@ mod tests {
                             frac: f64::from(step) / 20.0,
                             window: 120,
                             scale,
+                            orientation: WaveOrientation::Up,
                         },
                         |_| Color::Green,
                     );
@@ -652,6 +920,7 @@ mod tests {
                         frac,
                         window: 120,
                         scale,
+                        orientation: WaveOrientation::Up,
                     },
                     |_| Color::Green,
                 )
@@ -691,6 +960,7 @@ mod tests {
                     frac: 0.3,
                     window: 120,
                     scale: WaveScale::Linear,
+                    orientation: WaveOrientation::Up,
                 },
                 |_| Color::Green,
             );
@@ -943,6 +1213,163 @@ mod tests {
                 format_peak_rate(rate).chars().count(),
                 "peak ".len() + HEADER_RATE_WIDTH
             );
+        }
+    }
+
+    #[test]
+    fn downward_wave_mirrors_upward_dots_and_gradient() {
+        let samples = [0, 2048, 8192, 4096, 1024, 6144];
+        let height = 4;
+        let width = 12;
+        let colors = |t: f64| Color::Rgb((t * 255.0).round() as u8, 0, 0);
+        let up = render_wave(
+            &samples,
+            width,
+            height,
+            WaveGeometry {
+                max_val: 8192.0,
+                frac: 0.0,
+                window: 6,
+                scale: WaveScale::Linear,
+                orientation: WaveOrientation::Up,
+            },
+            colors,
+        );
+        let down = render_wave(
+            &samples,
+            width,
+            height,
+            WaveGeometry {
+                max_val: 8192.0,
+                frac: 0.0,
+                window: 6,
+                scale: WaveScale::Linear,
+                orientation: WaveOrientation::Down,
+            },
+            colors,
+        );
+        assert_eq!(up.len(), height);
+        assert_eq!(down.len(), height);
+        // Gradient rows mirror vertically (crest at top for Up, bottom for Down).
+        for i in 0..height {
+            assert_eq!(up[i].spans[0].style, down[height - 1 - i].spans[0].style);
+        }
+        // Every braille dot (x, y) in Up matches (x, dots_y - 1 - y) in Down.
+        let bits = |lines: &[Line<'_>]| -> Vec<Vec<u32>> {
+            lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .flat_map(|s| s.content.chars())
+                        .map(|c| u32::from(c) - 0x2800)
+                        .collect()
+                })
+                .collect()
+        };
+        let up_bits = bits(&up);
+        let down_bits = bits(&down);
+        let dots_y = height * 4;
+        for x in 0..width * 2 {
+            for y in 0..dots_y {
+                let u = up_bits[y / 4][x / 2] & u32::from(dot_mask(x % 2, y % 4)) != 0;
+                let my = dots_y - 1 - y;
+                let d = down_bits[my / 4][x / 2] & u32::from(dot_mask(x % 2, my % 4)) != 0;
+                assert_eq!(u, d, "mismatch at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn mirrored_panel_renders_both_headers_shared_horizon_and_scales() {
+        use crate::ui::test_support::render;
+
+        let rx = [0, 4096, 8192, 6144, 4096, 8192];
+        let tx = [0, 1024, 2048, 1024, 512, 2048];
+        let text = render(80, 11, |f| {
+            mirrored_wave_panel(
+                f,
+                f.area(),
+                MirroredSeries {
+                    samples: &rx,
+                    label: "↓ RX",
+                    max_val: 8192.0,
+                    average: Some(6144.0),
+                    header_color: theme::rx(),
+                    wave: theme::rx_wave,
+                },
+                MirroredSeries {
+                    samples: &tx,
+                    label: "↑ TX",
+                    max_val: 2048.0,
+                    average: Some(1024.0),
+                    header_color: theme::tx(),
+                    wave: theme::tx_wave,
+                },
+                0.0,
+                6,
+                60,
+            );
+        });
+        let rows: Vec<_> = text.lines().collect();
+        assert_eq!(rows.len(), 11);
+        assert!(rows[0].contains("↓ RX Now") && rows[0].contains("8.00 KiB/s"));
+        assert!(rows[10].contains("↑ TX Now") && rows[10].contains("2.00 KiB/s"));
+        // Row 5 is the shared center horizon between 4 RX rows (1..=4) and 4 TX rows (6..=9).
+        assert!(rows[5].contains("0┼"));
+        assert!(rows[5].contains("-60s"));
+        assert!(rows[5].contains("-30s"));
+        assert!(rows[5].trim_end().ends_with("Now"));
+        // Independent Y-axis ceilings sit at outer edges (row 1 for RX, row 9 for TX).
+        assert!(rows[1].contains("8Ki│"));
+        assert!(rows[9].contains("2Ki│"));
+        // Braille waves appear both above and below the horizon.
+        assert!(
+            rows[1..5]
+                .iter()
+                .any(|row| row.chars().any(|c| ('⠁'..='⣿').contains(&c)))
+        );
+        assert!(
+            rows[6..10]
+                .iter()
+                .any(|row| row.chars().any(|c| ('⠁'..='⣿').contains(&c)))
+        );
+    }
+
+    #[test]
+    fn mirrored_panel_handles_tiny_areas_without_panicking() {
+        use crate::ui::test_support::render;
+
+        let rx = [1024, 2048, 4096];
+        let tx = [512, 1024, 2048];
+        for width in [0, 1, 5, 12, 22, 48, 80] {
+            for height in [0, 1, 2, 3, 4, 5, 6, 12] {
+                let _ = render(width.max(1), height.max(1), |f| {
+                    mirrored_wave_panel(
+                        f,
+                        Rect::new(0, 0, width, height),
+                        MirroredSeries {
+                            samples: &rx,
+                            label: "↓ RX",
+                            max_val: 4096.0,
+                            average: Some(2048.0),
+                            header_color: theme::rx(),
+                            wave: theme::rx_wave,
+                        },
+                        MirroredSeries {
+                            samples: &tx,
+                            label: "↑ TX",
+                            max_val: 2048.0,
+                            average: Some(1024.0),
+                            header_color: theme::tx(),
+                            wave: theme::tx_wave,
+                        },
+                        0.25,
+                        60,
+                        60,
+                    );
+                });
+            }
         }
     }
 }

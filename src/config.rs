@@ -15,6 +15,7 @@
 //!
 //! [view]
 //! group_by_process = true
+//! mirrored_traffic_graph = true
 //! ```
 //!
 //! Loading never fails: a missing file yields the defaults silently, and an
@@ -38,10 +39,20 @@ struct RawConfig {
     view: RawView,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(default)]
 struct RawView {
     group_by_process: bool,
+    mirrored_traffic_graph: bool,
+}
+
+impl Default for RawView {
+    fn default() -> Self {
+        Self {
+            group_by_process: false,
+            mirrored_traffic_graph: true,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -60,12 +71,25 @@ struct RawUi {
 
 /// Parsed user configuration. Override values are validated later by
 /// `ThemeSpec::set_token`, not here.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct UserConfig {
     pub theme: Option<String>,
     pub popup_shadow: bool,
     pub overrides: Vec<(String, String)>,
     pub group_by_process: bool,
+    pub mirrored_traffic_graph: bool,
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            theme: None,
+            popup_shadow: false,
+            overrides: Vec::new(),
+            group_by_process: false,
+            mirrored_traffic_graph: true,
+        }
+    }
 }
 
 /// Load the user configuration. Never panics, never fails: missing file is
@@ -140,6 +164,7 @@ fn parse(contents: &str) -> Result<UserConfig, String> {
         popup_shadow: raw.ui.popup_shadow,
         overrides: raw.theme.overrides.into_iter().collect(),
         group_by_process: raw.view.group_by_process,
+        mirrored_traffic_graph: raw.view.mirrored_traffic_graph,
     })
 }
 
@@ -298,6 +323,16 @@ selection_bg = "#3b4261"
         assert!(config.popup_shadow);
         assert_eq!(config.theme.as_deref(), Some("nord"));
         assert!(parse("[view]\ngroup_by_process = \"true\"").is_err());
+    }
+
+    #[test]
+    fn mirrored_traffic_graph_defaults_to_true_and_accepts_booleans() {
+        for input in ["", "[view]", "[view]\nmirrored_traffic_graph = true"] {
+            assert!(parse(input).unwrap().mirrored_traffic_graph);
+        }
+        let off = parse("[view]\nmirrored_traffic_graph = false").unwrap();
+        assert!(!off.mirrored_traffic_graph);
+        assert!(parse("[view]\nmirrored_traffic_graph = \"no\"").is_err());
     }
 
     #[test]

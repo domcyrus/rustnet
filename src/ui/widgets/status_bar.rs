@@ -233,6 +233,18 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
         3 => {
             let mut hints = Vec::new();
 
+            if !ui_state.graph_compact.get()
+                || ui_state.graph_section == crate::ui::GraphSection::Traffic
+            {
+                hints.push(Hint::action(
+                    "m",
+                    if ui_state.graph_mirrored {
+                        "split"
+                    } else {
+                        "mirror"
+                    },
+                ));
+            }
             if (!ui_state.graph_compact.get()
                 || ui_state.graph_section == crate::ui::GraphSection::Health)
                 && ui_state.graph_states_scroll.can_scroll()
@@ -261,6 +273,7 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             if ui_state.health_scroll.can_scroll() {
                 hints.push(Hint::action("pgup/dn", "page"));
             }
+            hints.push(Hint::mode("t", "history", ui_state.show_historic));
             hints.push(Hint::action("w", "window"));
             hints.push(Hint::action("esc", "back"));
             hints
