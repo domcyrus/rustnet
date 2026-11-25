@@ -333,12 +333,28 @@ impl FindingAcc {
         }
     }
 
-    fn push(&mut self, obs: FindingObservation) {
-        self.severity.escalate(obs.severity);
+    /// Count every match, but build only the examples that will be retained.
+    fn record(
+        &mut self,
+        severity: FindingSeverity,
+        build: impl FnOnce(FindingSeverity) -> FindingObservation,
+    ) {
+        self.severity.escalate(severity);
         self.affected_count += 1;
         if self.observations.len() < MAX_OBSERVATIONS {
-            self.observations.push(obs);
+            self.observations.push(build(severity));
         }
+    }
+
+    fn record_connection<S: Into<String>>(
+        &mut self,
+        severity: FindingSeverity,
+        conn: &Connection,
+        detail: impl FnOnce() -> S,
+    ) {
+        self.record(severity, |severity| {
+            FindingObservation::for_conn(severity, conn, detail())
+        });
     }
 
     fn finish(self, summary: impl Into<String>, window_label: &'static str) -> FindingEntry {
@@ -427,22 +443,21 @@ pub fn evaluate_extended_findings(
                         http_4xx += 1;
                         FindingSeverity::Warning
                     };
-                    let detail = match (&h.method, &h.path) {
+                    http.record_connection(sev, conn, || match (&h.method, &h.path) {
                         (Some(m), Some(p)) => {
                             let short: String = p.chars().take(48).collect();
                             format!("HTTP {code} ({m} {short})")
                         }
                         (Some(m), None) => format!("HTTP {code} ({m})"),
                         _ => format!("HTTP {code}"),
-                    };
-                    http.push(FindingObservation::for_conn(sev, conn, detail));
+                    });
                 }
                 if h.has_basic_auth {
-                    cleartext.push(FindingObservation::for_conn(
+                    cleartext.record_connection(
                         FindingSeverity::Warning,
                         conn,
-                        "HTTP Basic authorization over plaintext",
-                    ));
+                        || "HTTP Basic authorization over plaintext",
+                    );
                 }
             }
             ApplicationProtocol::Dhcp(d)
@@ -452,30 +467,26 @@ pub fn evaluate_extended_findings(
                 ) =>
             {
                 dhcp_errors += 1;
-                let host = d
-                    .hostname
-                    .as_deref()
-                    .map(|h| format!(" ({h})"))
-                    .unwrap_or_default();
-                lan.push(FindingObservation::for_conn(
-                    FindingSeverity::Error,
-                    conn,
-                    format!("DHCP {} observed{host}", d.message_type),
-                ));
+                lan.record_connection(FindingSeverity::Error, conn, || {
+                    let host = d
+                        .hostname
+                        .as_deref()
+                        .map(|h| format!(" ({h})"))
+                        .unwrap_or_default();
+                    format!("DHCP {} observed{host}", d.message_type)
+                });
             }
             ApplicationProtocol::WireGuard(wg)
                 if wg.packet_type == WireGuardPacketType::HandshakeInitiation
                     && conn.packets_sent >= TUNNEL_UNANSWERED_PACKETS
                     && conn.packets_received == 0 =>
             {
-                tunnel.push(FindingObservation::for_conn(
-                    FindingSeverity::Warning,
-                    conn,
+                tunnel.record_connection(FindingSeverity::Warning, conn, || {
                     format!(
                         "WireGuard handshake unanswered ({} sent, 0 received)",
                         conn.packets_sent
-                    ),
-                ));
+                    )
+                });
             }
             ApplicationProtocol::OpenVpn(ovpn)
                 if matches!(
@@ -485,32 +496,30 @@ pub fn evaluate_extended_findings(
                 ) && conn.packets_sent >= TUNNEL_UNANSWERED_PACKETS
                     && conn.packets_received == 0 =>
             {
-                tunnel.push(FindingObservation::for_conn(
-                    FindingSeverity::Warning,
-                    conn,
+                tunnel.record_connection(FindingSeverity::Warning, conn, || {
                     format!(
                         "OpenVPN reset unanswered ({} sent, 0 received)",
                         conn.packets_sent
-                    ),
-                ));
+                    )
+                });
             }
             ApplicationProtocol::Ftp(f)
                 if f.username.is_some() || f.command.as_deref() == Some("PASS") =>
             {
-                cleartext.push(FindingObservation::for_conn(
+                cleartext.record_connection(
                     FindingSeverity::Warning,
                     conn,
-                    "FTP cleartext login sequence",
-                ));
+                    || "FTP cleartext login sequence",
+                );
             }
             ApplicationProtocol::Snmp(s)
                 if matches!(s.version, SnmpVersion::V1 | SnmpVersion::V2c) =>
             {
-                cleartext.push(FindingObservation::for_conn(
+                cleartext.record_connection(
                     FindingSeverity::Warning,
                     conn,
-                    "SNMP v1/v2c plaintext community protocol",
-                ));
+                    || "SNMP v1/v2c plaintext community protocol",
+                );
             }
             _ => {}
         }
@@ -523,19 +532,21 @@ pub fn evaluate_extended_findings(
         } else {
             FindingSeverity::Warning
         };
-        let subject = if is_gw {
-            format!("{} (gateway)", change.ip)
-        } else {
-            change.ip.to_string()
-        };
-        lan.push(FindingObservation::note(
-            sev,
-            subject,
-            format!(
-                "MAC changed {} -> {}",
-                change.previous_mac, change.current_mac
-            ),
-        ));
+        lan.record(sev, |sev| {
+            let subject = if is_gw {
+                format!("{} (gateway)", change.ip)
+            } else {
+                change.ip.to_string()
+            };
+            FindingObservation::note(
+                sev,
+                subject,
+                format!(
+                    "MAC changed {} -> {}",
+                    change.previous_mac, change.current_mac
+                ),
+            )
+        });
     }
 
     let tcp_summary = join_counts(&[
@@ -606,7 +617,6 @@ fn inspect_tcp_flow(
     let Some(tcp) = conn.tcp_analytics.as_ref() else {
         return;
     };
-    let mut reasons = Vec::new();
     let mut sev = FindingSeverity::Muted;
 
     let zw = tcp
@@ -617,10 +627,6 @@ fn inspect_tcp_flow(
         sev.escalate(FindingSeverity::observed(
             zw >= ZERO_WINDOW_ERROR_COUNT,
             true,
-        ));
-        reasons.push(format!(
-            "zero window ({} peer / {} local)",
-            tcp.zero_window_in_count, tcp.zero_window_out_count
         ));
     }
 
@@ -639,32 +645,44 @@ fn inspect_tcp_flow(
         let severe = conn.packets_sent >= 20
             && tcp.retransmit_count.saturating_mul(100) / conn.packets_sent >= 10;
         sev.escalate(FindingSeverity::observed(severe, true));
-        if tcp.retransmit_count > 0 {
-            reasons.push(format!("{} retransmits", tcp.retransmit_count));
-        }
-        if tcp.fast_retransmit_count > 0 {
-            reasons.push(format!("{} fast retransmits", tcp.fast_retransmit_count));
-        }
-        if high_ooo {
-            reasons.push(format!("{} out-of-order", tcp.out_of_order_count));
-        }
     }
 
     let loopback = conn.local_addr.ip().is_loopback() && conn.remote_addr.ip().is_loopback();
-    if !loopback
-        && let Some(mss) = [tcp.mss_out, tcp.mss_in]
-            .into_iter()
-            .flatten()
-            .filter(|&m| m > 0 && m < LOW_MSS_THRESHOLD)
-            .min()
-    {
+    let low_mss = [tcp.mss_out, tcp.mss_in]
+        .into_iter()
+        .flatten()
+        .filter(|&m| !loopback && m > 0 && m < LOW_MSS_THRESHOLD)
+        .min();
+    if low_mss.is_some() {
         *low_mss_flows += 1;
         sev.escalate(FindingSeverity::Warning);
-        reasons.push(format!("low MSS {mss} B"));
     }
 
-    if !reasons.is_empty() {
-        acc.push(FindingObservation::for_conn(sev, conn, reasons.join(" · ")));
+    if sev.is_attention() {
+        acc.record_connection(sev, conn, || {
+            let mut reasons = Vec::new();
+            if zw > 0 {
+                reasons.push(format!(
+                    "zero window ({} peer / {} local)",
+                    tcp.zero_window_in_count, tcp.zero_window_out_count
+                ));
+            }
+            if high_retrans || high_ooo {
+                if tcp.retransmit_count > 0 {
+                    reasons.push(format!("{} retransmits", tcp.retransmit_count));
+                }
+                if tcp.fast_retransmit_count > 0 {
+                    reasons.push(format!("{} fast retransmits", tcp.fast_retransmit_count));
+                }
+                if high_ooo {
+                    reasons.push(format!("{} out-of-order", tcp.out_of_order_count));
+                }
+            }
+            if let Some(mss) = low_mss {
+                reasons.push(format!("low MSS {mss} B"));
+            }
+            reasons.join(" · ")
+        });
     }
 }
 
@@ -675,31 +693,35 @@ fn inspect_tls(
     alerts: &mut usize,
     legacy: &mut usize,
 ) {
-    let mut reasons = Vec::new();
+    let alert = tls.alert.filter(|a| a.description != 0);
+    let legacy_version = tls.version.filter(|v| v.is_legacy());
     let mut sev = FindingSeverity::Muted;
 
-    if let Some(alert) = tls.alert
-        && alert.description != 0
-    {
+    if let Some(alert) = alert {
         *alerts += 1;
         sev.escalate(FindingSeverity::observed(
             alert.level == TlsAlertLevel::Fatal,
             true,
         ));
-        reasons.push(format!("TLS alert: {alert}"));
     }
-    if let Some(version) = tls.version
-        && version.is_legacy()
-    {
+    if let Some(version) = legacy_version {
         *legacy += 1;
         sev.escalate(FindingSeverity::observed(
             version == TlsVersion::Ssl30,
             true,
         ));
-        reasons.push(format!("deprecated {version}"));
     }
-    if !reasons.is_empty() {
-        acc.push(FindingObservation::for_conn(sev, conn, reasons.join(" · ")));
+    if sev.is_attention() {
+        acc.record_connection(sev, conn, || {
+            let mut reasons = Vec::new();
+            if let Some(alert) = alert {
+                reasons.push(format!("TLS alert: {alert}"));
+            }
+            if let Some(version) = legacy_version {
+                reasons.push(format!("deprecated {version}"));
+            }
+            reasons.join(" · ")
+        });
     }
 }
 
@@ -721,11 +743,13 @@ fn eval_dns_nxdomain_burst(dns: &DnsAnalyticsSnapshot) -> FindingEntry {
                 .then_with(|| a.name.cmp(&b.name))
         });
         for q in offenders {
-            acc.push(FindingObservation::note(
-                FindingSeverity::Warning,
-                q.name.clone(),
-                format!("{} NXDOMAIN / {} lookups", q.nxdomain, q.lookups),
-            ));
+            acc.record(FindingSeverity::Warning, |severity| {
+                FindingObservation::note(
+                    severity,
+                    q.name.clone(),
+                    format!("{} NXDOMAIN / {} lookups", q.nxdomain, q.lookups),
+                )
+            });
         }
         acc.affected_count = dns.nxdomain;
     }
@@ -793,19 +817,24 @@ fn eval_tcp_handshakes(input: &FindingsInput<'_>) -> FindingEntry {
         if !counts.is_affected() {
             continue;
         }
-        let mut obs = FindingObservation::note(
+        acc.record(
             FindingSeverity::observed(counts.reset > 0, true),
-            addr.to_string(),
-            format!(
-                "{}/{} reset or incomplete, {} anomalous, {} SYN retries",
-                counts.reset + counts.no_handshake,
-                counts.completed,
-                counts.anomalous,
-                counts.syn_retries,
-            ),
+            |severity| {
+                let mut obs = FindingObservation::note(
+                    severity,
+                    addr.to_string(),
+                    format!(
+                        "{}/{} reset or incomplete, {} anomalous, {} SYN retries",
+                        counts.reset + counts.no_handshake,
+                        counts.completed,
+                        counts.anomalous,
+                        counts.syn_retries,
+                    ),
+                );
+                obs.remote_addr = Some(addr);
+                obs
+            },
         );
-        obs.remote_addr = Some(addr);
-        acc.push(obs);
     }
 
     acc.severity = tcp_handshake_status(snap, incomplete).1;
@@ -834,11 +863,13 @@ fn eval_resets_and_icmp(input: &FindingsInput<'_>) -> FindingEntry {
         if kind != NetworkEventKind::TcpReset {
             icmp = icmp.saturating_add(counts.sent + counts.received);
         }
-        acc.push(FindingObservation::note(
-            FindingSeverity::Warning,
-            kind.to_string(),
-            format!("sent {} / received {}", counts.sent, counts.received),
-        ));
+        acc.record(FindingSeverity::Warning, |severity| {
+            FindingObservation::note(
+                severity,
+                kind.to_string(),
+                format!("sent {} / received {}", counts.sent, counts.received),
+            )
+        });
     }
     acc.finish(
         format!(
@@ -865,14 +896,16 @@ fn eval_interface_drops(input: &FindingsInput<'_>) -> FindingEntry {
         drops += d;
         errors += e;
         if d > 0 || e > 0 {
-            acc.push(FindingObservation::note(
-                FindingSeverity::observed(e > 0, d > 0),
-                name.clone(),
-                format!(
-                    "RX/TX drops {}/{} · errors {}/{}",
-                    c.rx_dropped, c.tx_dropped, c.rx_errors, c.tx_errors
-                ),
-            ));
+            acc.record(FindingSeverity::observed(e > 0, d > 0), |severity| {
+                FindingObservation::note(
+                    severity,
+                    name.clone(),
+                    format!(
+                        "RX/TX drops {}/{} · errors {}/{}",
+                        c.rx_dropped, c.tx_dropped, c.rx_errors, c.tx_errors
+                    ),
+                )
+            });
         }
     }
     let summary = if input.interfaces.is_empty() {
@@ -893,16 +926,18 @@ fn eval_dns_replies(input: &FindingsInput<'_>) -> FindingEntry {
     let mut acc = FindingAcc::new(FindingId::DnsReplies);
     for issue in &dns.recent_issues {
         let sev = FindingSeverity::observed(issue.kind != DnsIssueKind::Slow, true);
-        let mut obs = FindingObservation::note(
-            sev,
-            issue
-                .query_name
-                .clone()
-                .unwrap_or_else(|| issue.resolver.to_string()),
-            format!("{} via {}", issue.kind.label(), issue.resolver),
-        );
-        obs.remote_addr = Some(issue.resolver);
-        acc.push(obs);
+        acc.record(sev, |severity| {
+            let mut obs = FindingObservation::note(
+                severity,
+                issue
+                    .query_name
+                    .clone()
+                    .unwrap_or_else(|| issue.resolver.to_string()),
+                format!("{} via {}", issue.kind.label(), issue.resolver),
+            );
+            obs.remote_addr = Some(issue.resolver);
+            obs
+        });
     }
     acc.severity = if dns.failures > 0 {
         FindingSeverity::Error
@@ -926,11 +961,9 @@ fn eval_capture_quality(input: &FindingsInput<'_>) -> FindingEntry {
     let mut acc = FindingAcc::new(FindingId::CaptureQuality);
     acc.severity = FindingSeverity::Healthy;
     if let Some(error) = input.capture_error {
-        acc.push(FindingObservation::note(
-            FindingSeverity::Error,
-            "Capture error",
-            error,
-        ));
+        acc.record(FindingSeverity::Error, |severity| {
+            FindingObservation::note(severity, "Capture error", error)
+        });
     }
     for (label, count) in [
         ("Capture backend drops", input.capture_drops),
@@ -938,11 +971,9 @@ fn eval_capture_quality(input: &FindingsInput<'_>) -> FindingEntry {
         ("Processing queue drops", input.queue_drops),
     ] {
         if count > 0 {
-            acc.push(FindingObservation::note(
-                FindingSeverity::Warning,
-                label,
-                format!("{count} packets dropped"),
-            ));
+            acc.record(FindingSeverity::Warning, |severity| {
+                FindingObservation::note(severity, label, format!("{count} packets dropped"))
+            });
         }
     }
     let mut tcp_total = 0usize;
@@ -988,6 +1019,28 @@ mod tests {
         DhcpInfo, DpiInfo, FtpInfo, FtpMessageType, HttpInfo, HttpVersion, HttpsInfo, SnmpInfo,
         SnmpPduType, TcpState, TlsAlert, WireGuardInfo,
     };
+
+    #[test]
+    fn counts_and_escalates_after_the_example_limit_without_building_more_details() {
+        let mut acc = FindingAcc::new(FindingId::TcpFlowQuality);
+        let conn = tcp_conn("198.51.100.2:443");
+        let mut built = 0;
+        for index in 0..MAX_OBSERVATIONS + 2 {
+            let severity = FindingSeverity::observed(index > MAX_OBSERVATIONS, true);
+            acc.record_connection(severity, &conn, || {
+                built += 1;
+                index.to_string()
+            });
+        }
+        assert_eq!(built, MAX_OBSERVATIONS);
+        assert_eq!(acc.affected_count, MAX_OBSERVATIONS + 2);
+        assert_eq!(acc.severity, FindingSeverity::Error);
+        assert_eq!(acc.observations.len(), MAX_OBSERVATIONS);
+        for (index, observation) in acc.observations.iter().enumerate() {
+            assert_eq!(observation.detail, index.to_string());
+            assert_eq!(observation.severity, FindingSeverity::Warning);
+        }
+    }
 
     fn tcp_conn(remote: &str) -> Connection {
         let mut conn = Connection::new(
