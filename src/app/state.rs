@@ -19,9 +19,10 @@ use crate::network::{
     capture::CapturedPacket,
     dns::DnsResolver,
     dns_analytics::DnsAnalyticsSnapshot,
+    findings::{FindingsInput, FindingsReport, evaluate_findings},
     geoip::{GeoIpConfig, GeoIpResolver},
     interface_stats::{InterfaceRates, InterfaceStats, InterfaceTrafficWindow},
-    neighbors::NeighborEntry,
+    neighbors::{NeighborChange, NeighborEntry},
     oui::OuiLookup,
     process_activity::{ProcessActivitySnapshot, ProcessActivityTracker},
     services::ServiceLookup,
@@ -840,6 +841,41 @@ impl App {
         self.tracker.neighbor(&ip)
     }
 
+    /// Recent ARP/NDP IP-to-MAC changes observed on the local segment.
+    pub(crate) fn recent_neighbor_changes(&self) -> Vec<NeighborChange> {
+        self.tracker.recent_neighbor_changes()
+    }
+
+    /// Evaluate the shared passive diagnostic findings report for `connections`
+    /// over `window`.
+    pub(crate) fn evaluate_findings(
+        &self,
+        connections: &[Connection],
+        window: TimeWindow,
+    ) -> FindingsReport {
+        let tcp_attempts = self.get_tcp_attempt_snapshot();
+        let network_events = self.get_network_event_snapshot(window);
+        let dns = self.get_dns_analytics_for_window(window);
+        let (interfaces, interfaces_since_clear) = self.get_health_interface_errors(window);
+        let neighbor_changes = self.recent_neighbor_changes();
+        let capture_error = self.capture_error();
+        let stats = self.get_stats();
+        evaluate_findings(&FindingsInput {
+            connections,
+            tcp_attempts: &tcp_attempts,
+            network_events: &network_events,
+            dns: &dns,
+            interfaces: &interfaces,
+            interfaces_since_clear,
+            neighbor_changes: &neighbor_changes,
+            window,
+            capture_error: capture_error.as_deref(),
+            capture_drops: stats.capture_packets_dropped.load(Ordering::Relaxed),
+            interface_drops: stats.interface_packets_dropped.load(Ordering::Relaxed),
+            queue_drops: stats.packets_dropped.load(Ordering::Relaxed),
+        })
+    }
+
     /// Get GeoIP database availability status.
     /// Returns (has_location, has_asn, has_city) where has_location is true when
     /// either the country or city database is loaded.
@@ -1629,6 +1665,7 @@ mod lifecycle_tests {
                 },
                 payload_len: 0,
                 window_scale: None,
+                mss: None,
             });
             packet
         };

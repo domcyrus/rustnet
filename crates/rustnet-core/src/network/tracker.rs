@@ -46,7 +46,7 @@ use crate::network::dns_attribution::DnsAttributionCache;
 use crate::network::merge::{
     TcpMergeEvents, create_connection_from_packet, merge_packet_into_connection,
 };
-use crate::network::neighbors::{NeighborCache, NeighborEntry};
+use crate::network::neighbors::{NeighborCache, NeighborChange, NeighborEntry};
 use crate::network::parser::ParsedPacket;
 use crate::network::time_window::TimeWindow;
 use crate::network::types::{
@@ -1311,6 +1311,11 @@ impl ConnectionTracker {
         self.neighbors.get(ip)
     }
 
+    /// Recent IP-to-MAC changes observed on the local segment, newest first.
+    pub fn recent_neighbor_changes(&self) -> Vec<NeighborChange> {
+        self.neighbors.recent_changes()
+    }
+
     /// Average network RTT (in milliseconds) over the last `window_secs`
     /// seconds of handshake, TCP data, and ICMP echo samples. `None` if no
     /// samples are available.
@@ -1397,6 +1402,7 @@ mod tests {
                 flags: TcpFlags { syn, ack, fin, rst },
                 payload_len: 0,
                 window_scale: None,
+                mss: None,
             },
         );
         packet.is_outgoing = is_outgoing;

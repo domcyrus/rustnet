@@ -279,6 +279,10 @@ pub struct TcpAnalytics {
     pub retransmit_count: u64,
     pub out_of_order_count: u64,
     pub fast_retransmit_count: u64,
+    /// Non-SYN, non-RST segments where this host advertised a zero receive window.
+    pub zero_window_out_count: u64,
+    /// Non-SYN, non-RST segments where the peer advertised a zero receive window.
+    pub zero_window_in_count: u64,
 
     // Window tracking. Each end advertises its own receive window, so the
     // two are kept apart: a single last-segment slot flips between them on
@@ -295,6 +299,10 @@ pub struct TcpAnalytics {
     /// A SYN was observed without the window-scale option, so scaling is
     /// disabled for the whole connection.
     pub window_scaling_disabled: bool,
+    /// Maximum Segment Size advertised on the local side's SYN.
+    pub mss_out: Option<u16>,
+    /// Maximum Segment Size advertised on the remote side's SYN.
+    pub mss_in: Option<u16>,
 
     // Continuous RTT estimation. One outbound segment is timed at a time:
     // (sequence end of the timed bytes, capture time it left this host).
@@ -333,8 +341,14 @@ impl TcpAnalytics {
         };
         if is_outgoing {
             self.last_window_out = Some(sample);
+            if !is_syn && window == 0 {
+                self.zero_window_out_count = self.zero_window_out_count.saturating_add(1);
+            }
         } else {
             self.last_window_in = Some(sample);
+            if !is_syn && window == 0 {
+                self.zero_window_in_count = self.zero_window_in_count.saturating_add(1);
+            }
         }
     }
 

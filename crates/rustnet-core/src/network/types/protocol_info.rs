@@ -438,6 +438,9 @@ pub struct HttpInfo {
     /// Original response status token, retained for display without normalization.
     pub status_token: Option<String>,
     pub user_agent: Option<String>,
+    /// `true` when an `Authorization: Basic ...` header was observed on a
+    /// plaintext HTTP flow. The credential bytes themselves are never stored.
+    pub has_basic_auth: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,12 +463,91 @@ pub struct HttpsInfo {
     pub tls_info: Option<TlsInfo>,
 }
 
+/// Severity level byte from an unencrypted TLS alert record (RFC 8446 §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsAlertLevel {
+    Warning,
+    Fatal,
+}
+
+static_names! {
+    TlsAlertLevel {
+        Warning => "warning",
+        Fatal => "fatal",
+    }
+}
+
+/// Unencrypted TLS alert observed on the wire (record content type `0x15`, length 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TlsAlert {
+    pub level: TlsAlertLevel,
+    pub description: u8,
+}
+
+impl TlsAlert {
+    pub fn from_bytes(level: u8, description: u8) -> Option<Self> {
+        let level = match level {
+            1 => TlsAlertLevel::Warning,
+            2 => TlsAlertLevel::Fatal,
+            _ => return None,
+        };
+        Some(Self { level, description })
+    }
+
+    pub fn description_name(self) -> &'static str {
+        match self.description {
+            0 => "close_notify",
+            10 => "unexpected_message",
+            20 => "bad_record_mac",
+            22 => "record_overflow",
+            40 => "handshake_failure",
+            42 => "bad_certificate",
+            43 => "unsupported_certificate",
+            44 => "certificate_revoked",
+            45 => "certificate_expired",
+            46 => "certificate_unknown",
+            47 => "illegal_parameter",
+            48 => "unknown_ca",
+            49 => "access_denied",
+            50 => "decode_error",
+            51 => "decrypt_error",
+            70 => "protocol_version",
+            71 => "insufficient_security",
+            80 => "internal_error",
+            86 => "inappropriate_fallback",
+            90 => "user_canceled",
+            109 => "missing_extension",
+            110 => "unsupported_extension",
+            112 => "unrecognized_name",
+            113 => "bad_certificate_status_response",
+            115 => "unknown_psk_identity",
+            116 => "certificate_required",
+            120 => "no_application_protocol",
+            _ => "unknown_alert",
+        }
+    }
+}
+
+impl std::fmt::Display for TlsAlert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {} ({})",
+            self.level,
+            self.description_name(),
+            self.description
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TlsInfo {
     pub version: Option<TlsVersion>,
     pub sni: Option<String>,
     pub alpn: Vec<String>,
     pub cipher_suite: Option<u16>,
+    /// Unencrypted TLS alert observed on this connection, if any.
+    pub alert: Option<TlsAlert>,
 }
 
 impl TlsInfo {
@@ -488,14 +570,23 @@ impl TlsInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsVersion {
+    Ssl30,
     Tls10,
     Tls11,
     Tls12,
     Tls13,
 }
 
+impl TlsVersion {
+    /// Whether this version is deprecated (RFC 8996: SSL 3.0, TLS 1.0, TLS 1.1).
+    pub const fn is_legacy(self) -> bool {
+        matches!(self, Self::Ssl30 | Self::Tls10 | Self::Tls11)
+    }
+}
+
 static_names! {
     TlsVersion {
+        Ssl30 => "SSL 3.0",
         Tls10 => "TLS 1.0",
         Tls11 => "TLS 1.1",
         Tls12 => "TLS 1.2",

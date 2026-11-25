@@ -14,7 +14,9 @@
 use crate::network::types::{ArpInfo, ArpOperation, NdpNeighbor};
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
+use std::collections::VecDeque;
 use std::net::IpAddr;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -40,6 +42,20 @@ const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 /// cannot turn every dropped packet into a full-table scan.
 const SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Bound on retained IP-to-MAC change observations.
+const MAX_CHANGES: usize = 64;
+
+/// One observed IP-to-MAC change on the local segment (ARP or NDP).
+/// Could reflect legitimate failover/DHCP reuse, proxy ARP, duplicate IP,
+/// or ARP spoofing; kept as a passive observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeighborChange {
+    pub ip: IpAddr,
+    pub previous_mac: String,
+    pub current_mac: String,
+    pub observed_at: SystemTime,
+}
+
 /// One learned neighbor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeighborEntry {
@@ -60,6 +76,9 @@ pub(crate) struct NeighborCache {
     entries: DashMap<IpAddr, NeighborEntry, FxBuildHasher>,
     /// Unix-epoch seconds of the last stale sweep; `0` means never swept.
     last_sweep_epoch_secs: AtomicU64,
+    /// Bounded recent MAC changes for already-known neighbor IPs. Only locked
+    /// when a neighbor's MAC actually changes, never on steady-state traffic.
+    changes: Mutex<VecDeque<NeighborChange>>,
 }
 
 impl NeighborCache {
@@ -89,10 +108,25 @@ impl NeighborCache {
         self.entries.get(ip).map(|entry| entry.clone())
     }
 
+    /// Recent IP-to-MAC changes, newest first.
+    pub(crate) fn recent_changes(&self) -> Vec<NeighborChange> {
+        self.changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .rev()
+            .cloned()
+            .collect()
+    }
+
     /// Forget every learned neighbor. Part of the tracker-wide clear, so the
     /// user-facing reset also recovers from a poisoned or flood-filled table.
     pub(crate) fn clear(&self) {
         self.entries.clear();
+        self.changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     fn learn(&self, ip: IpAddr, mac: &str, vendor: &Option<String>, now: SystemTime) {
@@ -124,6 +158,7 @@ impl NeighborCache {
             }
         }
 
+        let mut recorded_change = None;
         match self.entries.entry(ip) {
             dashmap::Entry::Occupied(mut entry) => {
                 // Packet batches fan out across processor threads, so two
@@ -135,7 +170,13 @@ impl NeighborCache {
                 let entry = entry.get_mut();
                 if entry.last_seen <= now {
                     if entry.mac != mac {
-                        entry.mac = mac.to_string();
+                        let prev = std::mem::replace(&mut entry.mac, mac.to_string());
+                        recorded_change = Some(NeighborChange {
+                            ip,
+                            previous_mac: prev,
+                            current_mac: mac.to_string(),
+                            observed_at: now,
+                        });
                     }
                     if entry.vendor.as_deref() != vendor.as_deref() {
                         entry.vendor = vendor.clone();
@@ -150,6 +191,16 @@ impl NeighborCache {
                     last_seen: now,
                 });
             }
+        }
+        if let Some(change) = recorded_change {
+            let mut changes = self
+                .changes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if changes.len() >= MAX_CHANGES {
+                changes.pop_front();
+            }
+            changes.push_back(change);
         }
     }
 
@@ -429,6 +480,29 @@ mod tests {
         assert!(cache.get(&ip("192.168.0.7")).is_some());
         cache.clear();
         assert!(cache.get(&ip("192.168.0.7")).is_none());
+        assert!(cache.recent_changes().is_empty());
+    }
+
+    #[test]
+    fn mac_change_is_recorded_and_cleared() {
+        let cache = NeighborCache::default();
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let t1 = t0 + Duration::from_secs(5);
+        let addr = ip("192.168.0.1");
+        cache.learn(addr, "aa:bb:cc:dd:ee:01", &None, t0);
+        assert!(cache.recent_changes().is_empty());
+        // Same MAC refresh does not record a change.
+        cache.learn(addr, "aa:bb:cc:dd:ee:01", &None, t1);
+        assert!(cache.recent_changes().is_empty());
+        // Different MAC records the transition.
+        cache.learn(addr, "aa:bb:cc:dd:ee:02", &None, t1);
+        let changes = cache.recent_changes();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].ip, addr);
+        assert_eq!(changes[0].previous_mac, "aa:bb:cc:dd:ee:01");
+        assert_eq!(changes[0].current_mac, "aa:bb:cc:dd:ee:02");
+        cache.clear();
+        assert!(cache.recent_changes().is_empty());
     }
 
     #[test]

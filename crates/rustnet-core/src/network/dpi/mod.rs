@@ -114,8 +114,11 @@ pub(crate) fn analyze_tcp_packet(
         });
     }
 
-    // 2. Check for TLS/HTTPS (port 443 or TLS handshake)
-    if (local_port == PORT_HTTPS || remote_port == PORT_HTTPS || https::is_tls_handshake(payload))
+    // 2. Check for TLS/HTTPS (port 443, TLS handshake, or cleartext TLS alert)
+    if (local_port == PORT_HTTPS
+        || remote_port == PORT_HTTPS
+        || https::is_tls_handshake(payload)
+        || https::is_tls_alert(payload))
         && let Some(tls_result) = https::analyze_https(payload)
     {
         return Some(DpiResult {

@@ -2307,6 +2307,7 @@ fn host_network_events() {
         },
         payload_len: 0,
         window_scale: None,
+        mss: None,
     });
     packet.is_outgoing = true;
     app.ingest_packet_at_for_test(&packet, SystemTime::now());
@@ -2360,6 +2361,7 @@ fn evidence_syn(conn: &Connection, seq: u32) -> ParsedPacket {
         window: 100,
         payload_len: 0,
         window_scale: None,
+        mss: None,
         flags: TcpFlags {
             syn: true,
             fin: false,
@@ -5360,6 +5362,7 @@ fn dpi_variants_full() -> Vec<crate::network::types::ApplicationProtocol> {
         sni: Some("github.com".to_string()),
         alpn: vec!["h2".to_string(), "http/1.1".to_string()],
         cipher_suite: Some(0x1301),
+        alert: None,
     };
     let mut quic = QuicInfo::new(0x0000_0001);
     quic.packet_type = QuicPacketType::OneRtt;
@@ -5376,6 +5379,7 @@ fn dpi_variants_full() -> Vec<crate::network::types::ApplicationProtocol> {
             status_code: Some(200),
             status_token: None,
             user_agent: Some("curl/8.9.0".to_string()),
+            has_basic_auth: false,
         }),
         ApplicationProtocol::Https(HttpsInfo {
             tls_info: Some(tls_info),

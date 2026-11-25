@@ -14,6 +14,7 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
         status_code: None,
         status_token: None,
         user_agent: None,
+        has_basic_auth: false,
     };
 
     let text = String::from_utf8_lossy(payload);
@@ -63,6 +64,12 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
                 info.host = Some(value.to_string());
             } else if key.eq_ignore_ascii_case("user-agent") {
                 info.user_agent = Some(value.to_string());
+            } else if key.eq_ignore_ascii_case("authorization")
+                && value.len() >= 6
+                && value[..6].eq_ignore_ascii_case("basic ")
+            {
+                // Flag cleartext HTTP Basic auth without retaining credentials.
+                info.has_basic_auth = true;
             }
         }
     }
@@ -150,6 +157,19 @@ mod tests {
         assert_eq!(info.method.as_deref(), Some("GET"));
         assert_eq!(info.path.as_deref(), Some("/index.html"));
         assert_eq!(info.host.as_deref(), Some("example.com"));
+        assert!(!info.has_basic_auth);
+    }
+
+    #[test]
+    fn test_http_basic_auth_flagged_without_storing_credentials() {
+        let payload =
+            b"GET /admin HTTP/1.1\r\nHost: intranet.local\r\nAuthorization: Basic dXNlcjpwYXNz\r\n\r\n";
+        let info = analyze_http(payload).unwrap();
+        assert!(info.has_basic_auth);
+
+        let bearer =
+            b"GET /api HTTP/1.1\r\nHost: intranet.local\r\nAuthorization: Bearer tok123\r\n\r\n";
+        assert!(!analyze_http(bearer).unwrap().has_basic_auth);
     }
 
     #[test]

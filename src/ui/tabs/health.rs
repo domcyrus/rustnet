@@ -10,6 +10,9 @@ use super::{HealthLevel, count_span, dns_health_status, tcp_handshake_status};
 use crate::app::{App, AppStats};
 use crate::network::{
     dns_analytics::{DnsAnalyticsSnapshot, DnsIssue},
+    findings::{
+        ConnectionRef, FindingEntry, FindingId, FindingSeverity, evaluate_extended_findings,
+    },
     interface_stats::InterfaceErrorCounts,
     process_activity::process_group_label,
     tcp_attempts::{AttemptCounts, AttemptOutcome, TcpAttempt, TcpAttemptSnapshot},
@@ -37,6 +40,7 @@ pub enum Finding {
     Interfaces,
     Dns,
     Capture,
+    Extended(FindingId),
 }
 
 impl Finding {
@@ -55,7 +59,17 @@ impl Finding {
             Self::Interfaces => "Interface drops",
             Self::Dns => "DNS replies",
             Self::Capture => "Capture quality",
+            Self::Extended(id) => id.title(),
         }
+    }
+}
+
+fn severity_to_health_level(severity: FindingSeverity) -> HealthLevel {
+    match severity {
+        FindingSeverity::Error => HealthLevel::Error,
+        FindingSeverity::Warning => HealthLevel::Warning,
+        FindingSeverity::Healthy => HealthLevel::Healthy,
+        FindingSeverity::Muted => HealthLevel::Muted,
     }
 }
 
@@ -84,7 +98,7 @@ impl HealthBadge {
     }
 }
 
-/// Single snapshot of all five finding sources and their derived severities.
+/// Single snapshot of all finding sources and their derived severities.
 struct HealthInputs {
     tcp: Arc<TcpAttemptSnapshot>,
     events: NetworkEventSnapshot,
@@ -105,15 +119,23 @@ struct HealthInputs {
     tcp_level: HealthLevel,
     dns_status: &'static str,
     dns_level: HealthLevel,
-    levels: [(Finding, HealthLevel); 5],
+    extended: Vec<FindingEntry>,
+    levels: Vec<(Finding, HealthLevel)>,
 }
 
 impl HealthInputs {
-    fn collect(app: &App, stats: &AppStats, window: TimeWindow) -> Self {
+    fn collect(
+        app: &App,
+        stats: &AppStats,
+        connections: &[Connection],
+        window: TimeWindow,
+    ) -> Self {
         let tcp = app.get_tcp_attempt_snapshot();
         let events = app.get_network_event_snapshot(window);
         let (interfaces, interfaces_since_clear) = app.get_health_interface_errors(window);
         let dns = app.get_dns_analytics_for_window(window);
+        let neighbor_changes = app.recent_neighbor_changes();
+        let extended = evaluate_extended_findings(connections, &dns, &neighbor_changes);
         let capture_error = app.capture_error();
         let queue = stats.packets_dropped.load(Relaxed);
         let capture = stats.capture_packets_dropped.load(Relaxed);
@@ -134,7 +156,7 @@ impl HealthInputs {
         let (tcp_status, tcp_level) =
             tcp_handshake_status(&tcp, capture_error.is_some() || reported > 0 || queue > 0);
         let (dns_status, dns_level) = dns_health_status(dns.health, capture_error.is_some());
-        let levels = [
+        let mut levels = vec![
             (Finding::Tcp, tcp_level),
             (
                 Finding::Events,
@@ -157,6 +179,12 @@ impl HealthInputs {
                 HealthLevel::observed(capture_error.is_some(), reported > 0 || queue > 0),
             ),
         ];
+        for entry in &extended {
+            levels.push((
+                Finding::Extended(entry.id),
+                severity_to_health_level(entry.severity),
+            ));
+        }
         Self {
             tcp,
             events,
@@ -177,6 +205,7 @@ impl HealthInputs {
             tcp_level,
             dns_status,
             dns_level,
+            extended,
             levels,
         }
     }
@@ -188,10 +217,19 @@ impl HealthInputs {
         }
         badge
     }
+
+    fn extended_entry(&self, id: FindingId) -> Option<&FindingEntry> {
+        self.extended.iter().find(|entry| entry.id == id)
+    }
 }
 
-pub(in crate::ui) fn health_badge(app: &App, stats: &AppStats, window: TimeWindow) -> HealthBadge {
-    HealthInputs::collect(app, stats, window).badge()
+pub(in crate::ui) fn health_badge(
+    app: &App,
+    stats: &AppStats,
+    connections: &[Connection],
+    window: TimeWindow,
+) -> HealthBadge {
+    HealthInputs::collect(app, stats, connections, window).badge()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +247,13 @@ pub(in crate::ui) enum HealthTarget {
     Interface(Option<String>),
     Event(NetworkEventKind),
     Capture(&'static str),
+    Observation {
+        finding: FindingId,
+        index: usize,
+        subject: String,
+        remote_addr: Option<SocketAddr>,
+        connection: Option<ConnectionRef>,
+    },
 }
 
 impl HealthTarget {
@@ -220,28 +265,37 @@ impl HealthTarget {
             Self::Interface(_) => Finding::Interfaces,
             Self::Event(_) => Finding::Events,
             Self::Capture(_) => Finding::Capture,
+            Self::Observation { finding, .. } => Finding::Extended(*finding),
         }
     }
 
     fn connection(&self, connections: &[Connection]) -> Option<usize> {
-        let Self::Attempt {
-            key,
-            created: Some(created),
-            ..
-        } = self
-        else {
-            return None;
+        let (key, created) = match self {
+            Self::Attempt {
+                key,
+                created: Some(created),
+                ..
+            } => (*key, *created),
+            Self::Observation {
+                connection: Some(conn_ref),
+                ..
+            } => (conn_ref.key, conn_ref.created_at),
+            _ => return None,
         };
         connections
             .iter()
-            .position(|c| c.created_at == *created && ConnectionKey::from_connection(c) == *key)
+            .position(|c| c.created_at == created && ConnectionKey::from_connection(c) == key)
     }
 
     fn link(&self, connections: &[Connection]) -> Option<&'static str> {
         match self {
             Self::Resolver(_) | Self::DnsIssue(..) => Some("Open DNS resolvers"),
             Self::Interface(_) => Some("Open interface counters"),
-            Self::Attempt { .. } if self.connection(connections).is_some() => Some("Open Details"),
+            Self::Attempt { .. } | Self::Observation { .. }
+                if self.connection(connections).is_some() =>
+            {
+                Some("Open Details")
+            }
             _ => None,
         }
     }
@@ -257,6 +311,15 @@ impl HealthTarget {
                     .unwrap_or_else(|| issue.resolver.to_string()),
             ),
             Self::Interface(Some(name)) => Some(name.clone()),
+            Self::Observation {
+                remote_addr,
+                subject,
+                ..
+            } => Some(
+                remote_addr
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|| subject.clone()),
+            ),
             _ => None,
         }
     }
@@ -270,7 +333,7 @@ impl HealthTarget {
             }
             Self::Resolver(_) | Self::DnsIssue(..) => HostView::Dns,
             Self::Interface(_) => HostView::Interfaces,
-            Self::Attempt { .. } => {
+            Self::Attempt { .. } | Self::Observation { .. } => {
                 if let Some(i) = self.connection(ctx.connections) {
                     state.set_selected_by_index(ctx.connections, i);
                     state.jump_to_tab(1);
@@ -601,9 +664,9 @@ impl Component for HealthTab {
         regions.findings_area = area;
         let state = ctx.ui_state;
         let window = state.host_window;
-        let data = HealthInputs::collect(ctx.app, ctx.stats, window);
+        let data = HealthInputs::collect(ctx.app, ctx.stats, ctx.connections, window);
 
-        let mut order = data.levels;
+        let mut order = data.levels.clone();
         order.sort_by_key(|(_, level)| level.attention_order());
         state.health_cursor.borrow_mut().attention_findings = order
             .iter()
@@ -734,6 +797,23 @@ fn finding_summary(
                 "since startup"
             },
         ),
+        Finding::Extended(id) => {
+            if let Some(entry) = data.extended_entry(id) {
+                let color = severity_to_health_level(entry.severity).color();
+                (
+                    Line::from(Span::styled(entry.summary.clone(), theme::fg(color))),
+                    entry.window_label,
+                )
+            } else {
+                (
+                    Line::from(Span::styled(
+                        "no issues observed",
+                        theme::fg(theme::muted()),
+                    )),
+                    "active",
+                )
+            }
+        }
     }
 }
 
@@ -832,6 +912,40 @@ fn append_finding_details(
                         Span::raw(format!("{name} ")),
                         count_span(value, theme::warn()),
                     ]),
+                );
+            }
+        }
+        Finding::Extended(id) => {
+            let Some(entry) = data.extended_entry(id) else {
+                rows.text(Line::styled(
+                    "No active observations",
+                    theme::fg(theme::muted()),
+                ));
+                return;
+            };
+            rows.text(Line::styled(entry.id.hint(), theme::fg(theme::muted())));
+            for (index, obs) in entry.observations.iter().enumerate() {
+                let color = severity_to_health_level(obs.severity).color();
+                let mut spans = vec![
+                    Span::styled(obs.subject.clone(), theme::fg(color)),
+                    Span::raw(format!("  {}", obs.detail)),
+                ];
+                if let Some(proc_name) = &obs.process_name {
+                    let proc_label = match obs.pid {
+                        Some(pid) => format!(" · {proc_name} ({pid})"),
+                        None => format!(" · {proc_name}"),
+                    };
+                    spans.push(Span::styled(proc_label, theme::fg(theme::muted())));
+                }
+                rows.item(
+                    HealthTarget::Observation {
+                        finding: id,
+                        index,
+                        subject: obs.subject.clone(),
+                        remote_addr: obs.remote_addr,
+                        connection: obs.connection.clone(),
+                    },
+                    Line::from(spans),
                 );
             }
         }
@@ -1343,5 +1457,67 @@ mod tcp_attempt_tests {
         assert!(text.contains("unexpected ACKs 1"));
         assert!(!text.contains("invalid SYN-ACKs"));
         assert!(!text.contains("local resets"));
+    }
+
+    #[test]
+    fn extended_findings_link_to_connection_details_and_update_badge() {
+        use crate::app::Config;
+        use crate::network::types::{
+            ApplicationProtocol, DpiInfo, HttpsInfo, Protocol, ProtocolState, TcpState, TlsAlert,
+            TlsAlertLevel, TlsInfo, TlsVersion,
+        };
+
+        let app = App::new(Config {
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .unwrap();
+        let stats = app.get_stats();
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            "192.168.1.10:50200".parse().unwrap(),
+            "198.51.100.30:443".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        conn.process_name = Some("openssl".into());
+        conn.pid = Some(901);
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Https(HttpsInfo {
+                tls_info: Some(TlsInfo {
+                    version: Some(TlsVersion::Tls10),
+                    sni: Some("broken.example".into()),
+                    alpn: vec![],
+                    cipher_suite: None,
+                    alert: Some(TlsAlert {
+                        level: TlsAlertLevel::Fatal,
+                        description: 42,
+                    }),
+                }),
+            }),
+        });
+        let conns = vec![conn];
+        let badge = health_badge(&app, &stats, &conns, TimeWindow::FiveMinutes);
+        assert_eq!(badge.errors, 1);
+
+        let data = HealthInputs::collect(&app, &stats, &conns, TimeWindow::FiveMinutes);
+        let mut rows = FindingRows::default();
+        append_finding_details(
+            &data,
+            Finding::Extended(FindingId::TlsHealth),
+            TimeWindow::FiveMinutes,
+            false,
+            &mut rows,
+        );
+        assert_eq!(rows.targets.len(), 1);
+        assert_eq!(rows.targets[0].1.link(&conns), Some("Open Details"));
+        let rendered = rows
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("bad_certificate"), "{rendered}");
+        assert!(rendered.contains("openssl (901)"), "{rendered}");
     }
 }

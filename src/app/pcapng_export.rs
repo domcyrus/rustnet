@@ -485,6 +485,7 @@ mod pcapng_export_tests {
             },
             payload_len: 0,
             window_scale: None,
+            mss: None,
         });
         let outcome = tracker.ingest_at(&packet, std::time::SystemTime::now());
         let key = outcome.key;

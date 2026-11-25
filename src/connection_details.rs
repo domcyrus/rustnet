@@ -452,6 +452,7 @@ mod http_status_tests {
             status_code: Some(200),
             status_token: None,
             user_agent: None,
+            has_basic_auth: false,
         };
         for token in ["100", "200", "599"] {
             info.status_token = Some(token.to_string());

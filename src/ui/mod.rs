@@ -414,9 +414,12 @@ pub fn draw(
 
     // Refresh the cross-tab health summary before drawing the top tab bar and
     // section selector so both reflect live error/warning indicators.
-    ui_state
-        .health_badge
-        .set(tabs::health::health_badge(app, stats, ui_state.host_window));
+    ui_state.health_badge.set(tabs::health::health_badge(
+        app,
+        stats,
+        connections,
+        ui_state.host_window,
+    ));
 
     draw_tabs(f, ui_state, &capture, chunks[0], click_regions);
 
