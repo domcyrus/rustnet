@@ -26,6 +26,7 @@ pub struct DrawContext<'a> {
     pub ui_state: &'a UiState,
     pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
     pub stats: &'a AppStats,
+    pub(in crate::ui) health: &'a super::tabs::health::HealthInputs,
 }
 
 /// Mutable bundle for event handlers. The component owns the

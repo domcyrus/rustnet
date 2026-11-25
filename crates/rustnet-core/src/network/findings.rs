@@ -6,12 +6,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use crate::network::dns_analytics::{DnsAnalyticsSnapshot, DnsHealth, DnsIssueKind};
 use crate::network::interface_stats::InterfaceErrorCounts;
 use crate::network::neighbors::NeighborChange;
-use crate::network::tcp_attempts::{AttemptOutcome, TcpAttemptSnapshot};
+use crate::network::tcp_attempts::TcpAttemptSnapshot;
 use crate::network::time_window::TimeWindow;
 use crate::network::types::{
     ApplicationProtocol, Connection, ConnectionKey, DhcpMessageType, NetworkEventKind,
@@ -25,7 +25,6 @@ const RETRANSMIT_WARN_COUNT: u64 = 5;
 const RETRANSMIT_HIGH_COUNT: u64 = 10;
 const OUT_OF_ORDER_WARN_COUNT: u64 = 10;
 const ZERO_WINDOW_ERROR_COUNT: u64 = 5;
-const SLOW_HANDSHAKE_THRESHOLD: Duration = Duration::from_millis(1000);
 const NXDOMAIN_BURST_MIN_COUNT: usize = 10;
 const NXDOMAIN_BURST_HIGH_COUNT: usize = 25;
 const NXDOMAIN_BURST_PERCENT: usize = 25;
@@ -401,7 +400,7 @@ pub fn evaluate_extended_findings(
     let mut dhcp_errors = 0usize;
     let mut gateway_ips = HashSet::new();
 
-    for conn in connections {
+    for conn in connections.iter().filter(|conn| !conn.is_historic) {
         if conn.remote_is_gateway {
             gateway_ips.insert(conn.remote_addr.ip());
         }
@@ -739,20 +738,55 @@ fn eval_dns_nxdomain_burst(dns: &DnsAnalyticsSnapshot) -> FindingEntry {
     )
 }
 
+/// Interpret the observed outbound TCP attempts, including gaps in capture coverage.
+pub fn tcp_handshake_status(
+    snapshot: &TcpAttemptSnapshot,
+    capture_incomplete: bool,
+) -> (&'static str, FindingSeverity) {
+    let c = &snapshot.total;
+    if capture_incomplete || snapshot.omitted > 0 {
+        ("incomplete evidence", FindingSeverity::Warning)
+    } else if c.reset > 0 {
+        ("degraded", FindingSeverity::Error)
+    } else if c.no_handshake > 0 {
+        ("degraded", FindingSeverity::Warning)
+    } else if c.recovered_anomalies > 0 {
+        ("recovered anomalies", FindingSeverity::Warning)
+    } else if c.superseded > 0 {
+        ("incomplete evidence", FindingSeverity::Warning)
+    } else if snapshot.pending > 0 {
+        ("checking", FindingSeverity::Muted)
+    } else if c.established > 0 {
+        ("healthy", FindingSeverity::Healthy)
+    } else {
+        ("not observed", FindingSeverity::Muted)
+    }
+}
+
+pub fn dns_health_status(
+    health: DnsHealth,
+    capture_failed: bool,
+) -> (&'static str, FindingSeverity) {
+    if capture_failed {
+        return ("unknown (capture stopped)", FindingSeverity::Warning);
+    }
+    match health {
+        DnsHealth::NotObserved => ("not observed", FindingSeverity::Muted),
+        DnsHealth::Checking => ("checking", FindingSeverity::Muted),
+        DnsHealth::Responsive => ("responsive", FindingSeverity::Healthy),
+        DnsHealth::Degraded => ("degraded", FindingSeverity::Warning),
+        DnsHealth::Failing => ("failing", FindingSeverity::Error),
+        DnsHealth::NoReplies => ("no replies", FindingSeverity::Error),
+    }
+}
+
 fn eval_tcp_handshakes(input: &FindingsInput<'_>) -> FindingEntry {
     let snap = input.tcp_attempts;
     let c = &snap.total;
     let incomplete = input.capture_error.is_some()
         || input.capture_drops > 0
         || input.interface_drops > 0
-        || input.queue_drops > 0
-        || snap.omitted > 0;
-    let slow = snap.recent_issues.iter().any(|a| {
-        a.outcome == AttemptOutcome::Established
-            && a.finished_at
-                .duration_since(a.started_at)
-                .is_ok_and(|d| d >= SLOW_HANDSHAKE_THRESHOLD)
-    });
+        || input.queue_drops > 0;
 
     let mut acc = FindingAcc::new(FindingId::TcpHandshakes);
     for (&addr, counts) in &snap.destinations {
@@ -774,20 +808,7 @@ fn eval_tcp_handshakes(input: &FindingsInput<'_>) -> FindingEntry {
         acc.push(obs);
     }
 
-    acc.severity = if c.reset > 0 {
-        FindingSeverity::Error
-    } else if incomplete
-        || c.no_handshake > 0
-        || c.recovered_anomalies > 0
-        || c.superseded > 0
-        || slow
-    {
-        FindingSeverity::Warning
-    } else if c.established > 0 {
-        FindingSeverity::Healthy
-    } else {
-        FindingSeverity::Muted
-    };
+    acc.severity = tcp_handshake_status(snap, incomplete).1;
     let summary = if c.completed == 0 && snap.pending == 0 {
         "No outbound TCP handshakes observed".to_string()
     } else {
@@ -832,6 +853,9 @@ fn eval_resets_and_icmp(input: &FindingsInput<'_>) -> FindingEntry {
 
 fn eval_interface_drops(input: &FindingsInput<'_>) -> FindingEntry {
     let mut acc = FindingAcc::new(FindingId::InterfaceDrops);
+    if !input.interfaces.is_empty() {
+        acc.severity = FindingSeverity::Healthy;
+    }
     let (mut drops, mut errors) = (0u64, 0u64);
     let mut names: Vec<_> = input.interfaces.keys().collect();
     names.sort_unstable();
@@ -882,15 +906,8 @@ fn eval_dns_replies(input: &FindingsInput<'_>) -> FindingEntry {
     }
     acc.severity = if dns.failures > 0 {
         FindingSeverity::Error
-    } else if input.capture_error.is_some() {
-        FindingSeverity::Warning
     } else {
-        match dns.health {
-            DnsHealth::Failing | DnsHealth::NoReplies => FindingSeverity::Error,
-            DnsHealth::Degraded => FindingSeverity::Warning,
-            DnsHealth::Responsive => FindingSeverity::Healthy,
-            DnsHealth::NotObserved | DnsHealth::Checking => FindingSeverity::Muted,
-        }
+        dns_health_status(dns.health, input.capture_error.is_some()).1
     };
     acc.affected_count = dns.failures + dns.slow_responses;
     acc.finish(
@@ -907,6 +924,7 @@ fn eval_dns_replies(input: &FindingsInput<'_>) -> FindingEntry {
 fn eval_capture_quality(input: &FindingsInput<'_>) -> FindingEntry {
     let reported = input.capture_drops.saturating_add(input.interface_drops);
     let mut acc = FindingAcc::new(FindingId::CaptureQuality);
+    acc.severity = FindingSeverity::Healthy;
     if let Some(error) = input.capture_error {
         acc.push(FindingObservation::note(
             FindingSeverity::Error,
@@ -927,16 +945,16 @@ fn eval_capture_quality(input: &FindingsInput<'_>) -> FindingEntry {
             ));
         }
     }
-    let tcp_total = input
+    let mut tcp_total = 0usize;
+    let mut tcp_mid = 0;
+    for conn in input
         .connections
         .iter()
-        .filter(|c| c.protocol == Protocol::Tcp)
-        .count();
-    let tcp_mid = input
-        .connections
-        .iter()
-        .filter(|c| c.protocol == Protocol::Tcp && c.connection_direction.is_none())
-        .count();
+        .filter(|c| !c.is_historic && c.protocol == Protocol::Tcp)
+    {
+        tcp_total += 1;
+        tcp_mid += usize::from(conn.connection_direction.is_none());
+    }
     if tcp_total >= MIDSTREAM_MIN_TCP_FLOWS && tcp_mid * 2 >= tcp_total {
         acc.observations.push(FindingObservation::note(
             FindingSeverity::Muted,

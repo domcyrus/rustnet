@@ -65,8 +65,10 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
             } else if key.eq_ignore_ascii_case("user-agent") {
                 info.user_agent = Some(value.to_string());
             } else if key.eq_ignore_ascii_case("authorization")
-                && value.len() >= 6
-                && value[..6].eq_ignore_ascii_case("basic ")
+                && value
+                    .as_bytes()
+                    .get(..6)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"basic "))
             {
                 // Flag cleartext HTTP Basic auth without retaining credentials.
                 info.has_basic_auth = true;
@@ -170,6 +172,9 @@ mod tests {
         let bearer =
             b"GET /api HTTP/1.1\r\nHost: intranet.local\r\nAuthorization: Bearer tok123\r\n\r\n";
         assert!(!analyze_http(bearer).unwrap().has_basic_auth);
+
+        let non_ascii = "GET / HTTP/1.1\r\nAuthorization: Basicé\r\n\r\n";
+        assert!(!analyze_http(non_ascii.as_bytes()).unwrap().has_basic_auth);
     }
 
     #[test]

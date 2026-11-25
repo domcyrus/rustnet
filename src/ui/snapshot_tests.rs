@@ -2373,6 +2373,54 @@ fn evidence_syn(conn: &Connection, seq: u32) -> ParsedPacket {
 }
 
 #[test]
+fn findings_tab_and_headless_agree_on_clean_and_incomplete_capture() {
+    let app = test_app();
+    let mut state = UiState {
+        selected_tab: 4,
+        ..Default::default()
+    };
+    let conn = local_tcp(50123, "client");
+    let mut packet = evidence_syn(&conn, 17);
+    let now = SystemTime::now();
+    app.ingest_packet_at_for_test(&packet, now);
+    packet.is_outgoing = false;
+    packet.protocol_state = ProtocolState::Tcp(TcpState::Closed);
+    let header = packet.tcp_header.as_mut().unwrap();
+    header.flags.syn = false;
+    header.flags.ack = true;
+    header.flags.rst = true;
+    header.ack = 18;
+    app.ingest_packet_at_for_test(&packet, now);
+
+    for (capture_error, tcp_status, tcp_severity, capture_severity) in [
+        (None, "degraded", "error", "healthy"),
+        (Some("stopped"), "incomplete evidence", "warning", "error"),
+    ] {
+        app.set_capture_error_for_test(capture_error);
+        let rendered = render_app(&app, &mut state, &[], None, 140, 40);
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.contains("TCP handshakes") && line.contains(tcp_status)),
+            "{rendered}"
+        );
+        let json = crate::headless::full_snapshot_for_test(&app);
+        let report = &json["findings"];
+        let items = report["items"].as_array().unwrap();
+        for (id, severity) in [
+            ("tcp_handshakes", tcp_severity),
+            ("capture_quality", capture_severity),
+        ] {
+            let item = items.iter().find(|item| item["id"] == id).unwrap();
+            assert_eq!(item["severity"], severity);
+        }
+        let badge = state.health_badge.get();
+        assert_eq!(report["summary"]["errors"], badge.errors);
+        assert_eq!(report["summary"]["warnings"], badge.warnings);
+    }
+}
+
+#[test]
 fn host_tcp_evidence_links_only_to_the_observed_connection() {
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,

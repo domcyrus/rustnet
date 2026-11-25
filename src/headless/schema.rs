@@ -69,9 +69,11 @@ impl SnapshotEnvelope {
         let (generation, connections) =
             app.get_filtered_connections_with_generation(filter.unwrap_or_default());
         let connection_count = connections.len();
+        let stats = app.get_stats();
         let findings = full_details.then(|| {
             FindingsSnapshot::from_report(
-                &app.evaluate_findings(&connections, TimeWindow::FiveMinutes),
+                &app.findings_evidence(&stats, TimeWindow::FiveMinutes)
+                    .report(&connections),
             )
         });
         let connections = if full_details {
@@ -122,7 +124,7 @@ impl SnapshotEnvelope {
                     stop_report,
                 ),
                 sandbox: SandboxSnapshot::from_app(app),
-                stats: StatsSnapshot::from_stats(&app.get_stats()),
+                stats: StatsSnapshot::from_stats(&stats),
                 tcp_attempts: TcpAttemptSummary::from(app.get_tcp_attempt_snapshot().as_ref()),
                 findings,
                 filter: filter.map(str::to_string),

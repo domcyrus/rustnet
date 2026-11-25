@@ -23,6 +23,7 @@ pub use output::{
 };
 pub use runtime::{InitStatus, StopReport, WorkerStartupPermit};
 pub use state::App;
+pub(crate) use state::FindingsEvidence;
 pub(crate) use types::ConnectionCounts;
 pub use types::{AppOutputHandles, AppStats, CaptureAccounting, Config};
 
