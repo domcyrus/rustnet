@@ -52,19 +52,17 @@ pub fn dispatch_key(
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
     use crossterm::event::{KeyCode, KeyModifiers};
-    if (!ctx.ui_state.filter_mode || ctx.ui_state.show_help)
-        && let (KeyCode::Char(n @ '1'..='5'), KeyModifiers::NONE) = (key.code, key.modifiers)
-    {
-        ctx.ui_state.jump_to_tab(n as usize - '1' as usize);
-        return Some(Vec::new());
-    }
     if !ctx.ui_state.filter_mode || ctx.ui_state.show_help {
         match (key.code, key.modifiers) {
-            (KeyCode::Left, KeyModifiers::ALT) => {
+            (KeyCode::Char(n @ '1'..='5'), KeyModifiers::NONE) => {
+                ctx.ui_state.jump_to_tab(n as usize - '1' as usize);
+                return Some(Vec::new());
+            }
+            (KeyCode::Left | KeyCode::Char('b'), KeyModifiers::ALT) => {
                 ctx.ui_state.go_back();
                 return Some(Vec::new());
             }
-            (KeyCode::Right, KeyModifiers::ALT) => {
+            (KeyCode::Right | KeyCode::Char('f'), KeyModifiers::ALT) => {
                 ctx.ui_state.go_forward();
                 return Some(Vec::new());
             }

@@ -6141,8 +6141,20 @@ fn alt_arrows_walk_tab_history_from_any_tab() {
     alt(KeyCode::Right, &mut state);
     assert_eq!(state.selected_tab, 3);
 
+    // macOS terminals (Ghostty, Terminal.app, iTerm2) send Esc b / Esc f for Option+Left/Right.
+    alt(KeyCode::Char('b'), &mut state);
+    assert_eq!(state.selected_tab, 0);
+    alt(KeyCode::Char('f'), &mut state);
+    assert_eq!(state.selected_tab, 3);
+
     state.show_help = true;
     alt(KeyCode::Left, &mut state);
+    assert_eq!(state.selected_tab, 0);
+    assert!(state.show_help);
+    alt(KeyCode::Char('f'), &mut state);
+    assert_eq!(state.selected_tab, 3);
+    assert!(state.show_help);
+    alt(KeyCode::Char('b'), &mut state);
     assert_eq!(state.selected_tab, 0);
     assert!(state.show_help);
 
@@ -6153,6 +6165,12 @@ fn alt_arrows_walk_tab_history_from_any_tab() {
     dispatch_key(
         tab,
         KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+        &mut test_support::empty_ctx(&app, &mut state, &regions),
+    );
+    assert_eq!(state.selected_tab, 0);
+    dispatch_key(
+        tab,
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
         &mut test_support::empty_ctx(&app, &mut state, &regions),
     );
     assert_eq!(state.selected_tab, 0);

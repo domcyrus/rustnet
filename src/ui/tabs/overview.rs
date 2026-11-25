@@ -121,8 +121,7 @@ impl Component for OverviewTab {
                 let on_group_header =
                     ctx.ui_state.grouping_enabled && ctx.ui_state.is_group_selected();
                 if !ctx.connections.is_empty() && !on_group_header {
-                    ctx.ui_state.record_tab_change(1);
-                    ctx.ui_state.selected_tab = 1;
+                    ctx.ui_state.jump_to_tab(1);
                 }
                 Some(Vec::new())
             }

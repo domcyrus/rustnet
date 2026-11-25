@@ -1033,8 +1033,7 @@ impl UiState {
     }
 
     /// Remember the current tab for `go_back` before switching to `target`.
-    /// Callers that assign `selected_tab` directly call this first.
-    pub fn record_tab_change(&mut self, target: usize) {
+    fn record_tab_change(&mut self, target: usize) {
         if target == self.selected_tab {
             return;
         }

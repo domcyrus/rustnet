@@ -139,7 +139,9 @@ impl Component for HelpOverlay {
             | (KeyCode::BackTab, _)
             | (KeyCode::Char('[' | ']'), KeyModifiers::NONE)
             | (KeyCode::Char('1'..='5'), KeyModifiers::NONE)
-            | (KeyCode::Left | KeyCode::Right, KeyModifiers::ALT) => None,
+            | (KeyCode::Left | KeyCode::Right | KeyCode::Char('b' | 'f'), KeyModifiers::ALT) => {
+                None
+            }
             _ => {
                 let page = ctx.ui_state.help_scroll.viewport_rows() as usize;
                 try_handle_pane_scroll(key, page, &mut ctx.ui_state.help_scroll)
@@ -1057,6 +1059,8 @@ mod tests {
             KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
             KeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
         ] {
             assert!(
                 HelpOverlay.handle_key(key, &mut ctx).is_none(),
