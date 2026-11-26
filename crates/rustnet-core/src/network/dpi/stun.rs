@@ -123,7 +123,9 @@ fn parse_software_attribute(payload: &[u8], message_length: usize) -> Option<Str
                 // only if the split character is valid in the full value.
                 Err(e) if attr_length > MAX_SOFTWARE_LEN && e.error_len().is_none() => {
                     let cut = e.valid_up_to();
-                    match full.utf8_chunks().next() {
+                    // A UTF-8 character takes at most four bytes from its start.
+                    let end = attr_length.min(cut + 4);
+                    match full[..end].utf8_chunks().next() {
                         Some(chunk) if chunk.valid().len() > cut => &chunk.valid()[..cut],
                         _ => return None,
                     }
@@ -244,11 +246,14 @@ mod tests {
 
     #[test]
     fn test_software_cap_splitting_a_character_keeps_the_prefix() {
-        // 127 characters in 129 bytes: the 128-byte cap cuts the second 'é'.
-        let software = format!("{}éé", "a".repeat(125));
-        let packet = build_stun_packet(2, 0x0001, &build_software_attr(&software));
-        let info = analyze_stun(&packet).expect("should parse");
-        assert_eq!(info.software, Some(format!("{}é", "a".repeat(125))));
+        let prefix = format!("{}é", "a".repeat(125));
+        // Only the first byte of the last character fits under the cap.
+        for last in ['é', '🙂'] {
+            let attr = build_software_attr(&format!("{prefix}{last}"));
+            let packet = build_stun_packet(2, 0x0001, &attr);
+            let info = analyze_stun(&packet).expect("should parse");
+            assert_eq!(info.software.as_deref(), Some(prefix.as_str()));
+        }
     }
 
     #[test]
