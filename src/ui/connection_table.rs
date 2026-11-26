@@ -23,7 +23,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Row, Table};
+use ratatui::widgets::{Cell, Row, Table, TableState};
 
 use std::net::SocketAddr;
 
@@ -942,12 +942,15 @@ pub(in crate::ui) fn preserve_trend_glyphs_on_selection(
     f: &mut Frame,
     table_area: Rect,
     columns: &[Column],
-    selected_visible_row: Option<usize>,
+    state: &TableState,
 ) {
     if theme::selection_has_bg() {
         return;
     }
-    let Some(visible_row) = selected_visible_row else {
+    let Some(visible_row) = state
+        .selected()
+        .and_then(|selected| selected.checked_sub(state.offset()))
+    else {
         return;
     };
     let Some((offset, width)) = trend_column_span(columns) else {
@@ -1011,7 +1014,7 @@ pub(in crate::ui) fn render_row_table(
         visible_rows,
     } = window;
 
-    let mut state = ratatui::widgets::TableState::default();
+    let mut state = TableState::default();
     if let Some(selected_index) = selected {
         state.select(Some(selected_index.saturating_sub(scroll_offset)));
     }
@@ -1024,7 +1027,7 @@ pub(in crate::ui) fn render_row_table(
 
     let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
     f.render_stateful_widget(connections_table, table_area, &mut state);
-    preserve_trend_glyphs_on_selection(f, table_area, columns, state.selected());
+    preserve_trend_glyphs_on_selection(f, table_area, columns, &state);
 
     // Scrollbar tracks the row region (below header + margin).
     let rows_area = table_rows_area(area);
@@ -1706,6 +1709,49 @@ mod tests {
                 let reversed = buf[(x, 2)].modifier.contains(Modifier::REVERSED);
                 assert_eq!(reversed, expect_reversed, "column x={x}");
             }
+        }
+    }
+
+    #[test]
+    fn selected_trend_cell_tracks_table_scroll_offset() {
+        use crate::ui::test_support::render_buffer;
+
+        let ui_state = UiState::default();
+        let columns = select_columns(138, false);
+        let widths = column_constraints(&columns);
+        let (trend_x, trend_width) = trend_column_span(&columns).expect("Trend visible");
+        assert!(!theme::selection_has_bg());
+
+        let conns = [
+            local_tcp(45010, "one"),
+            local_tcp(45011, "two"),
+            local_tcp(45012, "three"),
+        ];
+        // Height 3 = 2 header rows + 1 data row, so selecting index 2 forces
+        // ratatui's TableState::offset() to advance to 2.
+        let area = Rect::new(0, 0, 138, 3);
+        let buf = render_buffer(138, 3, |f| {
+            let rows: Vec<Row> = conns
+                .iter()
+                .enumerate()
+                .map(|(i, conn)| connection_row(conn, &columns, &ui_state, None, None, i == 2))
+                .collect();
+            let mut state = TableState::default();
+            state.select(Some(2));
+            let table = Table::new(rows, &widths)
+                .header(build_header(&columns, &ui_state))
+                .row_highlight_style(theme::row_highlight())
+                .highlight_symbol(Line::styled(SELECTION_BAR, theme::fg(theme::accent())));
+            f.render_stateful_widget(table, area, &mut state);
+            assert_eq!(state.offset(), 2);
+            preserve_trend_glyphs_on_selection(f, area, &columns, &state);
+        });
+        assert!(buf[(2, 2)].modifier.contains(Modifier::REVERSED));
+        for x in trend_x..trend_x + trend_width {
+            assert!(
+                !buf[(x, 2)].modifier.contains(Modifier::REVERSED),
+                "scrolled Trend cell at x={x} should not be reversed"
+            );
         }
     }
 }

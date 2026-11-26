@@ -758,7 +758,7 @@ fn draw_connection_strip(
         .row_highlight_style(theme::row_highlight())
         .highlight_symbol(Line::styled(SELECTION_BAR, theme::fg(theme::accent())));
     f.render_stateful_widget(table, area, &mut state);
-    preserve_trend_glyphs_on_selection(f, area, &columns, state.selected());
+    preserve_trend_glyphs_on_selection(f, area, &columns, &state);
 
     let header_height = 2_u16; // column header (1) + bottom margin (1)
     for (i, conn) in window.iter().enumerate() {

@@ -102,11 +102,14 @@ where
             needs_redraw = true;
         }
 
-        let sampled = ui_state
-            .trend_history
-            .record(Instant::now(), SystemTime::now(), |visit| {
+        let sampled = ui_state.trend_history.record(
+            Instant::now(),
+            SystemTime::now(),
+            &ui_state.filter_query,
+            |visit| {
                 app.visit_live_connections(&ui_state.filter_query, visit);
-            });
+            },
+        );
         needs_redraw |= sampled && ui_state.selected_tab <= 1 && !ui_state.show_help;
 
         // Draw the UI, but only when something warrants it: immediately

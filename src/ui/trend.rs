@@ -28,6 +28,12 @@ use crate::ui::{process_group_label, theme};
 pub(in crate::ui) const TREND_SAMPLES: usize = 8;
 /// Spacing between samples; also the column's time resolution.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+/// Slack before the previous sample's wall clock when classifying a newly
+/// observed flow as born during the current interval. Capture batches stamp
+/// `created_at` from kernel packet timestamps (up to ~100 ms plus parser
+/// queuing), so a flow created just before tick N can first commit to the
+/// tracker after tick N and be observed at tick N+1.
+const BIRTH_BATCH_SLACK: Duration = Duration::from_millis(250);
 /// Minimum scale ceiling. Rows peaking below it share this ceiling, so a
 /// connection trickling a few bytes per second draws low bars rather
 /// than being stretched to full height by per-row normalization.
@@ -81,6 +87,11 @@ fn flow_key(conn: &Connection) -> HistoricKey {
 pub struct TrendHistory {
     series: HashMap<HistoricKey, Series>,
     groups: HashMap<String, GroupSeries>,
+    /// Trimmed filter query backing the current `groups` aggregates.
+    /// Changing it resets `groups` immediately so group sparklines never
+    /// mix pre-filter and post-filter totals, while keeping per-connection
+    /// `series` intact across filter edits.
+    active_filter: String,
     // Use monotonic time for rates and wall time only to compare flow births.
     last_sample: Option<(Instant, SystemTime)>,
 }
@@ -95,12 +106,23 @@ impl TrendHistory {
     /// Read the live source only when a sample is due. After a missed tick
     /// (e.g. system sleep), restart with a baseline instead of joining bars
     /// across a gap for which we have no per-second observations.
+    ///
+    /// Changing `filter_query` clears process-group aggregates immediately so
+    /// group headers never mix pre-filter and post-filter totals, while
+    /// preserving per-connection series across filter edits.
     pub(crate) fn record(
         &mut self,
         now: Instant,
         wall_now: SystemTime,
-        visit_live: impl FnOnce(&mut dyn FnMut(&Connection)),
+        filter_query: &str,
+        visit_live: impl FnOnce(&mut dyn FnMut(&Connection, bool)),
     ) -> bool {
+        let normalized_filter = filter_query.trim();
+        if self.active_filter != normalized_filter {
+            self.groups.clear();
+            self.active_filter.clear();
+            self.active_filter.push_str(normalized_filter);
+        }
         if !self.time_until_sample(now).is_zero() {
             return false;
         }
@@ -111,7 +133,7 @@ impl TrendHistory {
             previous = None;
         }
         let seconds = previous.map(|(last, _)| now.duration_since(last).as_secs_f64());
-        visit_live(&mut |conn| {
+        visit_live(&mut |conn, matches_filter| {
             if conn.is_historic {
                 return;
             }
@@ -123,7 +145,10 @@ impl TrendHistory {
                 }
                 Entry::Vacant(entry) => {
                     let born_this_interval = previous.is_some_and(|(_, wall_last)| {
-                        wall_last < conn.created_at && conn.created_at <= wall_now
+                        let cutoff = wall_last
+                            .checked_sub(BIRTH_BATCH_SLACK)
+                            .unwrap_or(SystemTime::UNIX_EPOCH);
+                        conn.created_at > cutoff
                     });
                     let series = entry.insert(Series {
                         samples: VecDeque::with_capacity(TREND_SAMPLES),
@@ -146,6 +171,9 @@ impl TrendHistory {
             };
             push_sample(&mut series.samples, sample);
 
+            if !matches_filter {
+                return;
+            }
             let label = process_group_label(conn);
             let group = match self.groups.get_mut(label) {
                 Some(group) => group,
@@ -163,8 +191,8 @@ impl TrendHistory {
             group.last_seen = now;
         });
 
-        // Reappearing rows start fresh rather than displaying bars from before
-        // a filter or a period with no live group members.
+        // Evict flows that left the active table and groups with no matching
+        // live members on this tick.
         self.series.retain(|_, series| series.last_seen == now);
         self.groups.retain(|_, group| {
             if group.last_seen != now {
@@ -179,6 +207,7 @@ impl TrendHistory {
     pub(in crate::ui) fn clear(&mut self) {
         self.series.clear();
         self.groups.clear();
+        self.active_filter.clear();
         self.last_sample = None;
     }
 
@@ -267,8 +296,8 @@ mod tests {
 
         fn record(&self, history: &mut TrendHistory, rows: &[Connection], millis: u64) {
             let offset = Duration::from_millis(millis);
-            history.record(self.0 + offset, self.1 + offset, |visit| {
-                rows.iter().for_each(visit)
+            history.record(self.0 + offset, self.1 + offset, "", |visit| {
+                rows.iter().for_each(|row| visit(row, true));
             });
         }
     }
@@ -430,26 +459,32 @@ mod tests {
         );
         let clock = Clock::new();
         let mut history = TrendHistory::default();
-        let read_live = |visit: &mut dyn FnMut(&Connection)| {
+        let read_live = |visit: &mut dyn FnMut(&Connection, bool)| {
             app.visit_live_connections("service:domain", visit)
         };
-        history.record(clock.0, clock.1, read_live);
+        history.record(clock.0, clock.1, "service:domain", read_live);
         for second in 1..=8 {
             let offset = Duration::from_secs(second);
             let between = offset - Duration::from_millis(250);
             app.ingest_packet_at_for_test(&packet, clock.1 + between);
             // Input between ticks must not even read the source.
-            assert!(
-                !history.record(clock.0 + between, clock.1 + between, |_| panic!(
-                    "early sample"
-                ))
-            );
+            assert!(!history.record(
+                clock.0 + between,
+                clock.1 + between,
+                "service:domain",
+                |_| panic!("early sample"),
+            ));
             if second == 5 {
-                app.visit_live_connections("", |c| {
+                app.visit_live_connections("", |c, _| {
                     app.set_connections_snapshot_for_test(vec![c.clone()])
                 });
             }
-            assert!(history.record(clock.0 + offset, clock.1 + offset, read_live));
+            assert!(history.record(
+                clock.0 + offset,
+                clock.1 + offset,
+                "service:domain",
+                read_live,
+            ));
         }
         let displayed = app.get_connections();
         assert_eq!(displayed[0].bytes_sent, 5 * 128);
@@ -461,7 +496,141 @@ mod tests {
         );
         assert_eq!(history.samples(&displayed[0]), Some(&expected));
         assert_eq!(history.group_samples("resolver"), Some(&expected));
-        app.visit_live_connections("service:ssh", |_| panic!("filtered connection sampled"));
+        app.visit_live_connections("service:ssh", |_, matched| {
+            assert!(!matched, "filtered connection matched")
+        });
+    }
+
+    #[test]
+    fn filter_change_resets_group_trends_without_wiping_connection_history() {
+        let mut history = TrendHistory::default();
+        let mut heavy = local_tcp(41010, "firefox");
+        let mut quiet = local_tcp(41011, "firefox");
+        let clock = Clock::new();
+
+        let sample =
+            |history: &mut TrendHistory, millis: u64, query: &str, rows: &[(&Connection, bool)]| {
+                let offset = Duration::from_millis(millis);
+                history.record(clock.0 + offset, clock.1 + offset, query, |visit| {
+                    for &(conn, matched) in rows {
+                        visit(conn, matched);
+                    }
+                })
+            };
+
+        // Tick 0: baseline both connections unfiltered.
+        assert!(sample(
+            &mut history,
+            0,
+            "",
+            &[(&heavy, true), (&quiet, true)]
+        ));
+        // Ticks 1 & 2: heavy moves 10 KiB/s, quiet moves 1 KiB/s.
+        for second in [1000, 2000] {
+            heavy.bytes_received += 10_000;
+            quiet.bytes_received += 1_000;
+            assert!(sample(
+                &mut history,
+                second,
+                "",
+                &[(&heavy, true), (&quiet, true)],
+            ));
+        }
+        assert_eq!(
+            history.group_samples("firefox"),
+            Some(&series(&[11_000.0, 11_000.0]))
+        );
+
+        // Changing the filter between ticks clears the stale unfiltered group
+        // aggregate immediately without touching either connection's history.
+        assert!(!sample(
+            &mut history,
+            2500,
+            "port:80",
+            &[(&heavy, false), (&quiet, true)],
+        ));
+        assert!(history.group_samples("firefox").is_none());
+        assert_eq!(
+            history.samples(&heavy),
+            Some(&series(&[10_000.0, 10_000.0]))
+        );
+        assert_eq!(history.samples(&quiet), Some(&series(&[1_000.0, 1_000.0])));
+
+        // Tick 3: group sums only the matching member while heavy keeps sampling.
+        heavy.bytes_received += 10_000;
+        quiet.bytes_received += 1_000;
+        assert!(sample(
+            &mut history,
+            3000,
+            "port:80",
+            &[(&heavy, false), (&quiet, true)],
+        ));
+        assert_eq!(history.group_samples("firefox"), Some(&series(&[1_000.0])));
+        assert_eq!(
+            history.samples(&heavy),
+            Some(&series(&[10_000.0, 10_000.0, 10_000.0]))
+        );
+
+        // Clearing the filter resets group history again and both connections
+        // contribute immediately on the next tick without re-baselining heavy.
+        assert!(!sample(
+            &mut history,
+            3500,
+            "",
+            &[(&heavy, true), (&quiet, true)],
+        ));
+        assert!(history.group_samples("firefox").is_none());
+        heavy.bytes_received += 10_000;
+        quiet.bytes_received += 1_000;
+        assert!(sample(
+            &mut history,
+            4000,
+            "",
+            &[(&heavy, true), (&quiet, true)],
+        ));
+        assert_eq!(history.group_samples("firefox"), Some(&series(&[11_000.0])));
+    }
+
+    #[test]
+    fn batch_delayed_or_skewed_new_flows_count_their_first_exchange() {
+        let mut history = TrendHistory::default();
+        let clock = Clock::new();
+        clock.record(&mut history, &[], 0);
+
+        // Captured 80 ms before tick 0, committed to tracker after tick 0.
+        let mut delayed = local_tcp(41020, "resolver");
+        delayed.created_at = clock.1 - Duration::from_millis(80);
+        delayed.bytes_received = 512;
+
+        // Slightly ahead of UI wall_now (e.g. minor clock skew).
+        let mut skewed = local_tcp(41021, "resolver");
+        skewed.created_at = clock.1 + Duration::from_millis(1005);
+        skewed.bytes_sent = 256;
+
+        // Long-lived connection outside the slack window must still baseline.
+        let mut older = local_tcp(41022, "resolver");
+        older.created_at = clock.1 - Duration::from_secs(30);
+        older.bytes_received = 1_000_000;
+
+        let rows = [delayed, skewed, older];
+        clock.record(&mut history, &rows, 1000);
+
+        assert_eq!(history.samples(&rows[0]), Some(&series(&[512.0])));
+        assert_eq!(
+            history.samples(&rows[1]),
+            Some(&VecDeque::from([TrendSample {
+                rx_bps: 0.0,
+                tx_bps: 256.0,
+            }]))
+        );
+        assert!(history.samples(&rows[2]).unwrap().is_empty());
+        assert_eq!(
+            history.group_samples("resolver"),
+            Some(&VecDeque::from([TrendSample {
+                rx_bps: 512.0,
+                tx_bps: 256.0,
+            }]))
+        );
     }
 
     #[test]

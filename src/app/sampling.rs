@@ -194,7 +194,14 @@ fn publish_sample_if_current(
 impl App {
     /// Visit the live counters with the same visibility and service labels as
     /// the connection table, even between publications of its UI snapshot.
-    pub(crate) fn visit_live_connections(&self, query: &str, mut visit: impl FnMut(&Connection)) {
+    /// The boolean argument reports whether the connection matches `query`,
+    /// so callers can keep per-connection history continuous across filter
+    /// edits while scoping group aggregates to matching connections.
+    pub(crate) fn visit_live_connections(
+        &self,
+        query: &str,
+        mut visit: impl FnMut(&Connection, bool),
+    ) {
         let filter = (!query.trim().is_empty()).then(|| ConnectionFilter::parse(query));
         let hide_ptr = self.hide_ptr_lookups();
         for entry in self.tracker.connections().iter() {
@@ -204,15 +211,14 @@ impl App {
             {
                 continue;
             }
-            if filter.as_ref().is_none_or(|filter| {
+            let matches_filter = filter.as_ref().is_none_or(|filter| {
                 let service = conn
                     .service_name
                     .as_deref()
                     .or_else(|| lookup_service(&self.service_lookup, conn));
                 filter.matches_with_service(conn, service)
-            }) {
-                visit(conn);
-            }
+            });
+            visit(conn, matches_filter);
         }
     }
 
