@@ -508,6 +508,7 @@ pub fn draw(
 }
 
 mod format;
+pub use format::RateUnit;
 
 #[cfg(test)]
 pub(crate) mod test_support;

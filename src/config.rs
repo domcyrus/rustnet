@@ -16,6 +16,7 @@
 //! [view]
 //! group_by_process = true
 //! mirrored_traffic_graph = true
+//! rate_unit = "bits"
 //! ```
 //!
 //! Loading never fails: a missing file yields the defaults silently, and an
@@ -44,6 +45,7 @@ struct RawConfig {
 struct RawView {
     group_by_process: bool,
     mirrored_traffic_graph: bool,
+    rate_unit: Option<String>,
 }
 
 impl Default for RawView {
@@ -51,6 +53,7 @@ impl Default for RawView {
         Self {
             group_by_process: false,
             mirrored_traffic_graph: true,
+            rate_unit: None,
         }
     }
 }
@@ -78,6 +81,7 @@ pub struct UserConfig {
     pub overrides: Vec<(String, String)>,
     pub group_by_process: bool,
     pub mirrored_traffic_graph: bool,
+    pub rate_unit: Option<String>,
 }
 
 impl Default for UserConfig {
@@ -88,6 +92,7 @@ impl Default for UserConfig {
             overrides: Vec::new(),
             group_by_process: false,
             mirrored_traffic_graph: true,
+            rate_unit: None,
         }
     }
 }
@@ -165,6 +170,7 @@ fn parse(contents: &str) -> Result<UserConfig, String> {
         overrides: raw.theme.overrides.into_iter().collect(),
         group_by_process: raw.view.group_by_process,
         mirrored_traffic_graph: raw.view.mirrored_traffic_graph,
+        rate_unit: raw.view.rate_unit,
     })
 }
 
@@ -333,6 +339,18 @@ selection_bg = "#3b4261"
         let off = parse("[view]\nmirrored_traffic_graph = false").unwrap();
         assert!(!off.mirrored_traffic_graph);
         assert!(parse("[view]\nmirrored_traffic_graph = \"no\"").is_err());
+    }
+
+    #[test]
+    fn rate_unit_defaults_to_none_and_accepts_strings() {
+        for input in ["", "[view]"] {
+            assert_eq!(parse(input).unwrap().rate_unit, None);
+        }
+        for unit in ["bytes", "bits"] {
+            let config = parse(&format!("[view]\nrate_unit = \"{unit}\"")).unwrap();
+            assert_eq!(config.rate_unit.as_deref(), Some(unit));
+        }
+        assert!(parse("[view]\nrate_unit = 123").is_err());
     }
 
     #[test]

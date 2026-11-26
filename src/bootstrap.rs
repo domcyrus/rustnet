@@ -162,6 +162,20 @@ pub fn run() -> Result<()> {
             spec.adapt_to_light_background();
         }
         ui::set_theme(ui::Theme::resolve(&spec, ui::detect_truecolor()));
+
+        // Rate display units: CLI --rate-unit > config file > bytes default.
+        let rate_unit_name = matches
+            .get_one::<String>("rate-unit")
+            .map(String::as_str)
+            .or(user_config.rate_unit.as_deref())
+            .unwrap_or("bytes");
+        let rate_unit = ui::RateUnit::from_name(rate_unit_name).unwrap_or_else(|| {
+            // Only reachable via the config file; clap validates the CLI value.
+            eprintln!("rustnet: unknown rate_unit {rate_unit_name:?} in config, using \"bytes\"");
+            ui::RateUnit::Bytes
+        });
+        user_config.rate_unit = Some(rate_unit.as_str().to_string());
+        info!("Using {rate_unit:?} rate units");
     }
 
     if matches.get_flag("no-geoip") {

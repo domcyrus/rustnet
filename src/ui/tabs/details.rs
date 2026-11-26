@@ -37,7 +37,7 @@ use crate::network::types::{
 };
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, DetailsSection, Effect, GroupedRow,
-    HandlerContext, NONE_PLACEHOLDER,
+    HandlerContext, NONE_PLACEHOLDER, RateUnit,
     connection_table::{
         SELECTION_BAR, build_header, cleanup_remaining, column_constraints, connection_row,
         select_columns, stale_window,
@@ -797,7 +797,7 @@ pub(in crate::ui) fn sectioned_layout(area: Rect, conn: Option<&Connection>) -> 
     area.width < DETAILS_SPLIT_MIN_WIDTH || area.height < dashboard_rows
 }
 
-fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
+fn traffic_details(conn: &Connection, rate_unit: RateUnit) -> DetailsBuilder<'static> {
     let mut traffic = DetailsBuilder::new(theme::fg(theme::label()));
     let rx = theme::fg(theme::rx());
     let tx = theme::fg(theme::tx());
@@ -811,7 +811,7 @@ fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
             if conn.is_historic {
                 "n/a".to_string()
             } else {
-                format_rate(conn.current_incoming_rate_bps).into_owned()
+                format_rate(conn.current_incoming_rate_bps, rate_unit).into_owned()
             },
             rx,
         ),
@@ -820,7 +820,7 @@ fn traffic_details(conn: &Connection) -> DetailsBuilder<'static> {
             if conn.is_historic {
                 "n/a".to_string()
             } else {
-                format_rate(conn.current_outgoing_rate_bps).into_owned()
+                format_rate(conn.current_outgoing_rate_bps, rate_unit).into_owned()
             },
             tx,
         ),
@@ -1532,8 +1532,8 @@ pub(in crate::ui) fn draw_connection_details(
     if !conn.is_historic && moving {
         badges.push(chip(&format!(
             "{} in · {} out",
-            format_rate(conn.current_incoming_rate_bps),
-            format_rate(conn.current_outgoing_rate_bps),
+            format_rate(conn.current_incoming_rate_bps, ui_state.rate_unit),
+            format_rate(conn.current_outgoing_rate_bps, ui_state.rate_unit),
         )));
     }
     if let Some(rtt) = conn.current_rtt() {
@@ -1606,7 +1606,7 @@ pub(in crate::ui) fn draw_connection_details(
         ];
         let selected = ui_state.details_section.index();
         let section = if selected == 5 {
-            let mut traffic = traffic_details(conn);
+            let mut traffic = traffic_details(conn, ui_state.rate_unit);
             traffic
                 .lines
                 .insert(0, Line::from(section_title("Traffic Statistics")));
@@ -1715,17 +1715,20 @@ fn draw_traffic(
     let current_in_rate = if conn.is_historic {
         "n/a".to_string()
     } else {
-        format_rate(conn.current_incoming_rate_bps).into_owned()
+        format_rate(conn.current_incoming_rate_bps, ui_state.rate_unit).into_owned()
     };
     let current_out_rate = if conn.is_historic {
         "n/a".to_string()
     } else {
-        format_rate(conn.current_outgoing_rate_bps).into_owned()
+        format_rate(conn.current_outgoing_rate_bps, ui_state.rate_unit).into_owned()
     };
     let traffic_area = section_header(
         f,
         area,
-        section_title(" Traffic Statistics · smoothed avg · 60s · B/s"),
+        section_title(format!(
+            " Traffic Statistics · smoothed avg · 60s · {}",
+            ui_state.rate_unit.axis_unit_label()
+        )),
     );
 
     // Match the dashboard's two columns and outer gutter.
@@ -1811,7 +1814,8 @@ fn draw_traffic(
             .with_time_axis(60)
             .with_placeholder(placeholder)
             .with_average(average.map(|rates| rates.0))
-            .with_max_val(rx_ceiling),
+            .with_max_val(rx_ceiling)
+            .with_rate_unit(ui_state.rate_unit),
         theme::rx_wave,
     );
     braille_graph::wave_panel(
@@ -1825,7 +1829,8 @@ fn draw_traffic(
             .with_time_axis(60)
             .with_placeholder(placeholder)
             .with_average(average.map(|rates| rates.1))
-            .with_max_val(tx_ceiling),
+            .with_max_val(tx_ceiling)
+            .with_rate_unit(ui_state.rate_unit),
         theme::tx_wave,
     );
 

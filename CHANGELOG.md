@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid allocating static Overview titles and expanded process-group connectors on each render (#412)
 
 ### Added
+- Add `--rate-unit <bytes|bits>` and `[view] rate_unit` in `config.toml` to display live TUI traffic rates in decimal SI bits (`bps`, `kbps`, `Mbps`, `Gbps`) instead of the default binary IEC bytes (`B/s`, `KiB/s`, `MiB/s`, `GiB/s`)
 - Go back and forward through visited tabs with `Alt+Left` / `Alt+Right`
 - Mirror the Graph tab's RX/TX traffic waves around a shared center time horizon (RX up, TX down), with `m` to toggle back to the split view and `[view] mirrored_traffic_graph` in `config.toml`
 - Sort findings by severity while preserving the selected finding and evidence position (#734)
