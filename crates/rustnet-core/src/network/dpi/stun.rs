@@ -113,14 +113,20 @@ fn parse_software_attribute(payload: &[u8], message_length: usize) -> Option<Str
         }
 
         if attr_type == ATTR_SOFTWARE {
-            let value = &payload[offset..offset + attr_length.min(MAX_SOFTWARE_LEN)];
+            let full = &payload[offset..offset + attr_length];
+            let value = &full[..attr_length.min(MAX_SOFTWARE_LEN)];
             let text = match std::str::from_utf8(value) {
                 Ok(s) => s,
                 // The cap counts bytes, but SOFTWARE may hold up to 127
                 // characters (763 bytes, RFC 8489 §14.14), so the cut can
-                // split a multi-byte character: keep the complete ones.
+                // split a multi-byte character: keep the complete ones, but
+                // only if the split character is valid in the full value.
                 Err(e) if attr_length > MAX_SOFTWARE_LEN && e.error_len().is_none() => {
-                    std::str::from_utf8(&value[..e.valid_up_to()]).ok()?
+                    let cut = e.valid_up_to();
+                    match full.utf8_chunks().next() {
+                        Some(chunk) if chunk.valid().len() > cut => &chunk.valid()[..cut],
+                        _ => return None,
+                    }
                 }
                 Err(_) => return None,
             };
@@ -238,11 +244,22 @@ mod tests {
 
     #[test]
     fn test_software_cap_splitting_a_character_keeps_the_prefix() {
-        // 127 ASCII bytes then a 2-byte 'é': the 128-byte cap cuts the 'é'.
-        let software = format!("{}é", "a".repeat(127));
+        // 127 characters in 129 bytes: the 128-byte cap cuts the second 'é'.
+        let software = format!("{}éé", "a".repeat(125));
         let packet = build_stun_packet(2, 0x0001, &build_software_attr(&software));
         let info = analyze_stun(&packet).expect("should parse");
-        assert_eq!(info.software, Some("a".repeat(127)));
+        assert_eq!(info.software, Some(format!("{}é", "a".repeat(125))));
+    }
+
+    #[test]
+    fn test_software_cap_splitting_an_invalid_character_is_rejected() {
+        // The byte after the cap is not a continuation byte, so the lead
+        // byte at the cut does not start a valid character.
+        let mut attr = build_software_attr(&format!("{}éé", "a".repeat(125)));
+        attr[4 + 128] = b'a';
+        let packet = build_stun_packet(2, 0x0001, &attr);
+        let info = analyze_stun(&packet).expect("should parse");
+        assert!(info.software.is_none());
     }
 
     #[test]
