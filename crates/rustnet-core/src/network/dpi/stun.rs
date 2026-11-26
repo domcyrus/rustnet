@@ -113,10 +113,26 @@ fn parse_software_attribute(payload: &[u8], message_length: usize) -> Option<Str
         }
 
         if attr_type == ATTR_SOFTWARE {
-            let effective_len = attr_length.min(MAX_SOFTWARE_LEN);
-            return std::str::from_utf8(&payload[offset..offset + effective_len])
-                .ok()
-                .map(|s| s.trim_end_matches('\0').to_string());
+            let full = &payload[offset..offset + attr_length];
+            let value = &full[..attr_length.min(MAX_SOFTWARE_LEN)];
+            let text = match std::str::from_utf8(value) {
+                Ok(s) => s,
+                // The cap counts bytes, but SOFTWARE may hold up to 127
+                // characters (763 bytes, RFC 8489 §14.14), so the cut can
+                // split a multi-byte character: keep the complete ones, but
+                // only if the split character is valid in the full value.
+                Err(e) if attr_length > MAX_SOFTWARE_LEN && e.error_len().is_none() => {
+                    let cut = e.valid_up_to();
+                    // A UTF-8 character takes at most four bytes from its start.
+                    let end = attr_length.min(cut + 4);
+                    match full[..end].utf8_chunks().next() {
+                        Some(chunk) if chunk.valid().len() > cut => &chunk.valid()[..cut],
+                        _ => return None,
+                    }
+                }
+                Err(_) => return None,
+            };
+            return Some(text.trim_end_matches('\0').to_string());
         }
 
         // Advance to next attribute, padding to 4-byte boundary
@@ -226,6 +242,48 @@ mod tests {
         let packet = build_stun_packet(2, 0x0001, &software_attr);
         let info = analyze_stun(&packet).expect("should parse");
         assert_eq!(info.software, Some("TestAgent/1.0".to_string()));
+    }
+
+    #[test]
+    fn test_software_cap_splitting_a_character_keeps_the_prefix() {
+        let prefix = format!("{}é", "a".repeat(125));
+        // Only the first byte of the last character fits under the cap.
+        for last in ['é', '🙂'] {
+            let attr = build_software_attr(&format!("{prefix}{last}"));
+            let packet = build_stun_packet(2, 0x0001, &attr);
+            let info = analyze_stun(&packet).expect("should parse");
+            assert_eq!(info.software.as_deref(), Some(prefix.as_str()));
+        }
+    }
+
+    #[test]
+    fn test_software_cap_splitting_an_invalid_character_is_rejected() {
+        // The byte after the cap is not a continuation byte, so the lead
+        // byte at the cut does not start a valid character.
+        let mut attr = build_software_attr(&format!("{}éé", "a".repeat(125)));
+        attr[4 + 128] = b'a';
+        let packet = build_stun_packet(2, 0x0001, &attr);
+        let info = analyze_stun(&packet).expect("should parse");
+        assert!(info.software.is_none());
+    }
+
+    #[test]
+    fn test_software_invalid_utf8_is_rejected() {
+        // Short value, and one longer than the cap: neither is a cut character.
+        for software in ["TestAgent".to_string(), "a".repeat(200)] {
+            let mut attr = build_software_attr(&software);
+            attr[4] = 0xFF;
+            let packet = build_stun_packet(2, 0x0001, &attr);
+            let info = analyze_stun(&packet).expect("should parse");
+            assert!(info.software.is_none());
+        }
+
+        // A value under the cap that itself ends mid-character is not a cut.
+        let mut attr = build_software_attr("TestAgenté");
+        attr[3] = 10; // drop the last byte of 'é', leaving a lone 0xC3
+        let packet = build_stun_packet(2, 0x0001, &attr);
+        let info = analyze_stun(&packet).expect("should parse");
+        assert!(info.software.is_none());
     }
 
     #[test]
