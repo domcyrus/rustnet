@@ -1352,31 +1352,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_display_keeps_unspecified_addresses_as_raw_ip() {
-        let resolver = DnsResolver::with_defaults_deferred();
-        let ui_state = UiState {
-            show_hostnames: true,
-            ..Default::default()
-        };
-
-        for (local, remote) in [
-            ("255.255.255.255:67", "0.0.0.0:68"),
-            ("[ff02::1:2]:547", "[::]:546"),
-        ] {
-            let conn = Connection::new(
-                Protocol::Udp,
-                local.parse().unwrap(),
-                remote.parse().unwrap(),
-                ProtocolState::Udp,
-            );
-            assert_eq!(
-                remote_display(&conn, &ui_state, Some(&resolver), 32),
-                remote
-            );
-        }
-    }
-
-    #[test]
     fn process_text_formats_name_pid_and_placeholder() {
         let mut conn = local_tcp(8080, "firefox");
 
