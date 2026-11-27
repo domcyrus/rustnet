@@ -14,7 +14,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{format::format_rate, theme};
+use crate::ui::{RateUnit, format::format_rate, theme};
 
 /// Width of rate values in wave-panel headers. This fits values through
 /// `999.99 GiB/s` and keeps both the trend glyph and `peak` label anchored as
@@ -30,6 +30,7 @@ pub(in crate::ui) struct WavePanelOptions {
     average: Option<f64>,
     time_window_seconds: Option<u64>,
     placeholder: Option<&'static str>,
+    rate_unit: RateUnit,
 }
 
 impl WavePanelOptions {
@@ -43,6 +44,7 @@ impl WavePanelOptions {
             average: None,
             time_window_seconds: None,
             placeholder: None,
+            rate_unit: RateUnit::default(),
         }
     }
 
@@ -73,6 +75,34 @@ impl WavePanelOptions {
 
     pub(in crate::ui) fn with_max_val(mut self, max_val: f64) -> Self {
         self.max_val = Some(max_val);
+        self
+    }
+
+    pub(in crate::ui) fn with_rate_unit(mut self, rate_unit: RateUnit) -> Self {
+        self.rate_unit = rate_unit;
+        self
+    }
+}
+
+pub(in crate::ui) struct MirroredPanelOptions {
+    frac: f64,
+    window: usize,
+    time_window_seconds: u64,
+    rate_unit: RateUnit,
+}
+
+impl MirroredPanelOptions {
+    pub(in crate::ui) fn new(frac: f64, window: usize, time_window_seconds: u64) -> Self {
+        Self {
+            frac,
+            window,
+            time_window_seconds,
+            rate_unit: RateUnit::default(),
+        }
+    }
+
+    pub(in crate::ui) fn with_rate_unit(mut self, rate_unit: RateUnit) -> Self {
+        self.rate_unit = rate_unit;
         self
     }
 }
@@ -313,13 +343,13 @@ pub(in crate::ui) fn spread_line(
     Line::from(left)
 }
 
-fn format_header_rate(rate: f64) -> String {
-    let rate = format_rate(rate);
+fn format_header_rate(rate: f64, rate_unit: RateUnit) -> String {
+    let rate = format_rate(rate, rate_unit);
     format!("{rate:<HEADER_RATE_WIDTH$}")
 }
 
-fn format_peak_rate(rate: f64) -> String {
-    let rate = format_rate(rate);
+fn format_peak_rate(rate: f64, rate_unit: RateUnit) -> String {
+    let rate = format_rate(rate, rate_unit);
     format!("peak {rate:>HEADER_RATE_WIDTH$}")
 }
 
@@ -344,6 +374,7 @@ struct RateHeader<'a> {
     header_color: Option<Color>,
     average: Option<f64>,
     wave: fn(f64) -> Color,
+    rate_unit: RateUnit,
 }
 
 fn render_rate_header(f: &mut Frame, area: Rect, header: RateHeader<'_>) -> (Option<String>, bool) {
@@ -354,6 +385,7 @@ fn render_rate_header(f: &mut Frame, area: Rect, header: RateHeader<'_>) -> (Opt
         header_color,
         average,
         wave,
+        rate_unit,
     } = header;
     let current = *samples.last().unwrap() as f64;
     let peak = samples.iter().copied().max().unwrap_or(0) as f64;
@@ -365,7 +397,10 @@ fn render_rate_header(f: &mut Frame, area: Rect, header: RateHeader<'_>) -> (Opt
             format!("{label} Now "),
             theme::bold_fg(header_color.unwrap_or_else(|| wave(0.4))),
         ),
-        Span::styled(format_header_rate(current), theme::bold_fg(value_color)),
+        Span::styled(
+            format_header_rate(current, rate_unit),
+            theme::bold_fg(value_color),
+        ),
     ];
     if area.width >= 48 {
         left.push(Span::styled(
@@ -373,7 +408,7 @@ fn render_rate_header(f: &mut Frame, area: Rect, header: RateHeader<'_>) -> (Opt
             theme::fg(theme::muted()),
         ));
     }
-    let average_text = average.map(|avg| format!("2s avg {}", format_header_rate(avg)));
+    let average_text = average.map(|avg| format!("2s avg {}", format_header_rate(avg, rate_unit)));
     let inline_average = area.width >= 72;
     if inline_average && let Some(average) = &average_text {
         left.push(Span::styled(
@@ -381,7 +416,7 @@ fn render_rate_header(f: &mut Frame, area: Rect, header: RateHeader<'_>) -> (Opt
             theme::fg(theme::muted()),
         ));
     }
-    let right = Span::styled(format_peak_rate(peak), theme::fg(theme::muted()));
+    let right = Span::styled(format_peak_rate(peak, rate_unit), theme::fg(theme::muted()));
     f.render_widget(
         Paragraph::new(spread_line(left, right, area.width)),
         Rect::new(area.x, area.y, area.width, 1),
@@ -417,6 +452,7 @@ pub(in crate::ui) fn wave_panel(
             header_color: options.header_color,
             average: options.average,
             wave,
+            rate_unit: options.rate_unit,
         },
     );
 
@@ -500,13 +536,15 @@ pub(in crate::ui) fn wave_panel(
     f.render_widget(Paragraph::new(lines), plot);
     if axis_width > 0 && plot.height > 0 {
         let label_width = usize::from(axis_width - 1);
-        let ceiling = crate::ui::format::format_rate_compact(max_val, "0B");
+        let zero = options.rate_unit.compact_zero();
+        let ceiling = crate::ui::format::format_rate_compact(max_val, zero, options.rate_unit);
         let ceiling = crate::ui::format::truncate_with_ellipsis(&ceiling, label_width);
         let midpoint_row = plot.height / 2;
         let midpoint_ratio =
             1.0 - f64::from(midpoint_row) / f64::from(plot.height.saturating_sub(1).max(1));
         let midpoint_value = max_val * midpoint_ratio;
-        let midpoint = crate::ui::format::format_rate_compact(midpoint_value, "0B");
+        let midpoint =
+            crate::ui::format::format_rate_compact(midpoint_value, zero, options.rate_unit);
         let midpoint = crate::ui::format::truncate_with_ellipsis(&midpoint, label_width);
         let labels: Vec<_> = (0..plot.height)
             .map(|row| {
@@ -569,10 +607,14 @@ pub(in crate::ui) fn mirrored_wave_panel(
     area: Rect,
     upper: MirroredSeries<'_>,
     lower: MirroredSeries<'_>,
-    frac: f64,
-    window: usize,
-    time_window_seconds: u64,
+    options: MirroredPanelOptions,
 ) {
+    let MirroredPanelOptions {
+        frac,
+        window,
+        time_window_seconds,
+        rate_unit,
+    } = options;
     if area.height < 2 || area.width == 0 || upper.samples.is_empty() || lower.samples.is_empty() {
         return;
     }
@@ -591,6 +633,7 @@ pub(in crate::ui) fn mirrored_wave_panel(
             header_color: Some(upper.header_color),
             average: upper.average,
             wave: upper.wave,
+            rate_unit,
         },
     );
     render_rate_header(
@@ -603,6 +646,7 @@ pub(in crate::ui) fn mirrored_wave_panel(
             header_color: Some(lower.header_color),
             average: lower.average,
             wave: lower.wave,
+            rate_unit,
         },
     );
 
@@ -644,6 +688,7 @@ pub(in crate::ui) fn mirrored_wave_panel(
             Rect::new(area.x, upper_y, axis_width, upper_height),
             upper_max,
             WaveOrientation::Up,
+            rate_unit,
         );
     }
 
@@ -681,19 +726,27 @@ pub(in crate::ui) fn mirrored_wave_panel(
             Rect::new(area.x, lower_y, axis_width, lower_height),
             lower_max,
             WaveOrientation::Down,
+            rate_unit,
         );
     }
 }
 
-fn render_mirrored_y_axis(f: &mut Frame, area: Rect, max_val: f64, orientation: WaveOrientation) {
+fn render_mirrored_y_axis(
+    f: &mut Frame,
+    area: Rect,
+    max_val: f64,
+    orientation: WaveOrientation,
+    rate_unit: RateUnit,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let label_width = usize::from(area.width - 1);
-    let ceiling = crate::ui::format::format_rate_compact(max_val, "0B");
+    let zero = rate_unit.compact_zero();
+    let ceiling = crate::ui::format::format_rate_compact(max_val, zero, rate_unit);
     let ceiling = crate::ui::format::truncate_with_ellipsis(&ceiling, label_width);
     let midpoint_row = area.height / 2;
-    let midpoint = crate::ui::format::format_rate_compact(max_val / 2.0, "0B");
+    let midpoint = crate::ui::format::format_rate_compact(max_val / 2.0, zero, rate_unit);
     let midpoint = crate::ui::format::truncate_with_ellipsis(&midpoint, label_width);
     let ceiling_row = match orientation {
         WaveOrientation::Up => 0,
@@ -1207,12 +1260,19 @@ mod tests {
     #[test]
     fn wave_header_rate_slots_keep_a_constant_width() {
         let rates = [0.0, 730.0, 1_020.0, 12_345.0, 2_500_000.0];
-        for rate in rates {
-            assert_eq!(format_header_rate(rate).chars().count(), HEADER_RATE_WIDTH);
-            assert_eq!(
-                format_peak_rate(rate).chars().count(),
-                "peak ".len() + HEADER_RATE_WIDTH
-            );
+        for unit in RateUnit::ALL {
+            for rate in rates {
+                assert_eq!(
+                    format_header_rate(rate, unit).chars().count(),
+                    HEADER_RATE_WIDTH,
+                    "{unit:?} at {rate}"
+                );
+                assert_eq!(
+                    format_peak_rate(rate, unit).chars().count(),
+                    "peak ".len() + HEADER_RATE_WIDTH,
+                    "{unit:?} at {rate}"
+                );
+            }
         }
     }
 
@@ -1306,9 +1366,7 @@ mod tests {
                     header_color: theme::tx(),
                     wave: theme::tx_wave,
                 },
-                0.0,
-                6,
-                60,
+                MirroredPanelOptions::new(0.0, 6, 60),
             );
         });
         let rows: Vec<_> = text.lines().collect();
@@ -1334,6 +1392,54 @@ mod tests {
                 .iter()
                 .any(|row| row.chars().any(|c| ('⠁'..='⣿').contains(&c)))
         );
+    }
+
+    #[test]
+    fn rate_unit_switches_headers_and_y_axis_labels() {
+        use crate::ui::test_support::render;
+
+        let rx = [0, 125_000, 125_000];
+        let tx = [0, 125_000, 125_000];
+        let mirrored_bits = render(80, 11, |f| {
+            mirrored_wave_panel(
+                f,
+                f.area(),
+                MirroredSeries {
+                    samples: &rx,
+                    label: "↓ RX",
+                    max_val: 125_000.0,
+                    average: None,
+                    header_color: theme::rx(),
+                    wave: theme::rx_wave,
+                },
+                MirroredSeries {
+                    samples: &tx,
+                    label: "↑ TX",
+                    max_val: 125_000.0,
+                    average: None,
+                    header_color: theme::tx(),
+                    wave: theme::tx_wave,
+                },
+                MirroredPanelOptions::new(0.0, 3, 60).with_rate_unit(RateUnit::Bits),
+            );
+        });
+        assert!(mirrored_bits.contains("1.00 Mbps"), "{mirrored_bits}");
+        assert!(mirrored_bits.contains("1.0Mb│"), "{mirrored_bits}");
+
+        let split_bits = render(80, 11, |f| {
+            wave_panel(
+                f,
+                f.area(),
+                &tx,
+                "↓ RX",
+                WavePanelOptions::new(0.0, 3)
+                    .with_max_val(125_000.0)
+                    .with_rate_unit(RateUnit::Bits),
+                theme::rx_wave,
+            );
+        });
+        assert!(split_bits.contains("1.00 Mbps"), "{split_bits}");
+        assert!(split_bits.contains("1.0Mb│"), "{split_bits}");
     }
 
     #[test]
@@ -1364,9 +1470,7 @@ mod tests {
                             header_color: theme::tx(),
                             wave: theme::tx_wave,
                         },
-                        0.25,
-                        60,
-                        60,
+                        MirroredPanelOptions::new(0.25, 60, 60),
                     );
                 });
             }

@@ -13,6 +13,11 @@ pub const THEME_PRESETS: [&str; 6] = [
     "nord",
 ];
 
+/// Supported rate display unit names. Spelled out as literals because build.rs
+/// `include!`s this file and cannot reach `crate::ui`; a unit test in
+/// `ui::format` asserts the list stays in sync with `RateUnit::ALL`.
+pub const RATE_UNITS: [&str; 2] = ["bytes", "bits"];
+
 #[cfg(target_os = "linux")]
 const INTERFACE_HELP: &str = "Network interface to monitor (use \"any\" to capture all interfaces)";
 
@@ -201,6 +206,14 @@ pub fn build_cli() -> Command {
                 .required(false),
         )
         .arg(
+            Arg::new("rate-unit")
+                .long("rate-unit")
+                .value_name("UNIT")
+                .help("Traffic rate display units: bytes (default: B/s, KiB/s, MiB/s) or bits (SI: bps, kbps, Mbps, Gbps). Overrides [view] rate_unit in the config file (~/.config/rustnet/config.toml)")
+                .value_parser(RATE_UNITS)
+                .required(false),
+        )
+        .arg(
             Arg::new("geoip-country")
                 .long("geoip-country")
                 .value_name("PATH")
@@ -343,6 +356,34 @@ mod tests {
                 .try_get_matches_from(["rustnet", "--theme", "bogus"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn rate_unit_has_no_default_and_accepts_all_modes() {
+        // No default: an absent --rate-unit must defer to the config file.
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet"])
+            .expect("no --rate-unit should parse");
+        assert_eq!(matches.get_one::<String>("rate-unit"), None);
+
+        for name in RATE_UNITS {
+            let matches = build_cli()
+                .try_get_matches_from(["rustnet", "--rate-unit", name])
+                .unwrap_or_else(|e| panic!("--rate-unit {name} should parse: {e}"));
+            assert_eq!(
+                matches.get_one::<String>("rate-unit").map(String::as_str),
+                Some(name)
+            );
+        }
+
+        for invalid in ["iec-bits", "bogus"] {
+            assert!(
+                build_cli()
+                    .try_get_matches_from(["rustnet", "--rate-unit", invalid])
+                    .is_err(),
+                "--rate-unit {invalid} should be rejected"
+            );
+        }
     }
 
     #[test]

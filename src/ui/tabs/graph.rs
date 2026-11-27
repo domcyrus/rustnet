@@ -19,8 +19,8 @@ use crate::network::types::{
     AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
 };
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, PaneScroll, UiState,
-    draw_placeholder,
+    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, PaneScroll, RateUnit,
+    UiState, draw_placeholder,
     format::{format_rate, truncate_with_ellipsis},
     section_header, section_title,
     state::GraphSection,
@@ -163,14 +163,19 @@ fn draw_graph_tab(
                 &traffic_history,
                 traffic_scope,
                 ui_state.graph_mirrored,
+                ui_state.rate_unit,
                 inner,
             )),
             GraphSection::Health => {
                 draw_health_panels(f, app, &traffic_history, &analytics, ui_state, inner)
             }
-            GraphSection::Distribution => {
-                draw_distribution_panels(f, &analytics, inner, &ui_state.bar_animations)
-            }
+            GraphSection::Distribution => draw_distribution_panels(
+                f,
+                &analytics,
+                inner,
+                &ui_state.bar_animations,
+                ui_state.rate_unit,
+            ),
         }
         return;
     }
@@ -187,10 +192,17 @@ fn draw_graph_tab(
         &traffic_history,
         traffic_scope,
         ui_state.graph_mirrored,
+        ui_state.rate_unit,
         sections[0],
     ));
     draw_health_panels(f, app, &traffic_history, &analytics, ui_state, sections[1]);
-    draw_distribution_panels(f, &analytics, sections[2], &ui_state.bar_animations);
+    draw_distribution_panels(
+        f,
+        &analytics,
+        sections[2],
+        &ui_state.bar_animations,
+        ui_state.rate_unit,
+    );
 }
 
 fn draw_traffic_panels(
@@ -198,6 +210,7 @@ fn draw_traffic_panels(
     history: &TrafficHistory,
     scope: &str,
     mirrored: bool,
+    rate_unit: RateUnit,
     area: Rect,
 ) -> bool {
     let narrow = area.width < 100;
@@ -214,7 +227,7 @@ fn draw_traffic_panels(
             [Constraint::Percentage(70), Constraint::Percentage(30)]
         })
         .split(area);
-    draw_traffic_chart(f, history, scope, mirrored, panels[0]);
+    draw_traffic_chart(f, history, scope, mirrored, rate_unit, panels[0]);
     draw_connection_lifecycle(f, history, panels[1]);
     history.has_enough_data()
         && panels
@@ -264,12 +277,13 @@ fn draw_distribution_panels(
     analytics: &GraphAnalytics<'_>,
     area: Rect,
     animation: &glow_bar::BarAnimations,
+    rate_unit: RateUnit,
 ) {
     let panels = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
         .spacing(2)
         .split(area);
     draw_app_distribution(f, &analytics.app_distribution, panels[0], animation);
-    draw_top_processes(f, &analytics.process_traffic, panels[1]);
+    draw_top_processes(f, &analytics.process_traffic, panels[1], rate_unit);
 }
 
 /// Draw the RX/TX traffic waves: mirrored around a shared center time axis
@@ -280,12 +294,16 @@ fn draw_traffic_chart(
     history: &TrafficHistory,
     scope: &str,
     mirrored: bool,
+    rate_unit: RateUnit,
     area: Rect,
 ) {
     let inner = section_header(
         f,
         area,
-        section_title(format!(" Traffic Over Time · {scope} · 60s · B/s")),
+        section_title(format!(
+            " Traffic Over Time · {scope} · 60s · {}",
+            rate_unit.axis_unit_label()
+        )),
     );
 
     if !history.has_enough_traffic_data() {
@@ -322,9 +340,7 @@ fn draw_traffic_chart(
                 header_color: theme::tx(),
                 wave: theme::tx_wave,
             },
-            frac,
-            window,
-            60,
+            braille_graph::MirroredPanelOptions::new(frac, window, 60).with_rate_unit(rate_unit),
         );
         return;
     }
@@ -349,7 +365,8 @@ fn draw_traffic_chart(
             .with_time_axis(60)
             .with_average(average.map(|rates| rates.0))
             .with_max_val(rx_ceiling)
-            .with_header_color(theme::rx()),
+            .with_header_color(theme::rx())
+            .with_rate_unit(rate_unit),
         theme::rx_wave,
     );
     braille_graph::wave_panel(
@@ -361,7 +378,8 @@ fn draw_traffic_chart(
             .with_time_axis(60)
             .with_average(average.map(|rates| rates.1))
             .with_max_val(tx_ceiling)
-            .with_header_color(theme::tx()),
+            .with_header_color(theme::tx())
+            .with_rate_unit(rate_unit),
         theme::tx_wave,
     );
 }
@@ -568,7 +586,12 @@ fn draw_app_distribution(
     f.render_widget(paragraph, inner);
 }
 
-fn draw_top_processes(f: &mut Frame, process_traffic: &HashMap<&str, f64>, area: Rect) {
+fn draw_top_processes(
+    f: &mut Frame,
+    process_traffic: &HashMap<&str, f64>,
+    area: Rect,
+    rate_unit: RateUnit,
+) {
     let inner = section_header(f, area, section_title(" Top Processes · smoothed 10s avg"));
 
     let top_processes =
@@ -584,7 +607,7 @@ fn draw_top_processes(f: &mut Frame, process_traffic: &HashMap<&str, f64>, area:
             let display_name = truncate_with_ellipsis(name, name_width);
             Row::new(vec![
                 Cell::from(display_name),
-                Cell::from(Line::from(format_rate(rate)).right_aligned())
+                Cell::from(Line::from(format_rate(rate, rate_unit)).right_aligned())
                     .style(theme::fg(theme::accent())),
             ])
         })
@@ -914,7 +937,7 @@ mod tests {
         }
         for width in [28, 80, 160] {
             let output = crate::ui::test_support::render(width, 10, |f| {
-                draw_top_processes(f, &traffic, Rect::new(0, 0, width, 10));
+                draw_top_processes(f, &traffic, Rect::new(0, 0, width, 10), RateUnit::Bytes);
             });
             assert!(
                 output.contains("p06"),
@@ -923,7 +946,7 @@ mod tests {
             assert!(!output.contains("p07"));
             let expected = truncate_with_ellipsis(name, usize::from(width - 13));
             let buffer = crate::ui::test_support::render_buffer(width, 10, |f| {
-                draw_top_processes(f, &traffic, Rect::new(0, 0, width, 10));
+                draw_top_processes(f, &traffic, Rect::new(0, 0, width, 10), RateUnit::Bytes);
             });
             // Compare rendered graphemes, omitting the continuation cells of wide glyphs.
             let mut rendered = String::new();

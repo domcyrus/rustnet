@@ -6227,3 +6227,87 @@ fn alt_arrows_walk_tab_history_from_any_tab() {
     );
     assert_eq!(state.selected_tab, 0);
 }
+
+#[test]
+fn rate_unit_bits_renders_across_views() {
+    use crate::network::types::ConnectionLifecycleSample;
+
+    let app = test_app();
+    let mut history = TrafficHistory::new(60);
+    for _ in 0..60 {
+        history.add_sample_with_lifecycle(
+            125_000,
+            1_250_000,
+            ConnectionLifecycleSample::default(),
+            10,
+            1,
+            Some(10.0),
+        );
+    }
+    app.set_traffic_history_for_test(history);
+    app.set_interface_stats_for_test(
+        "eth0",
+        InterfaceStats {
+            interface_name: "eth0".to_string(),
+            is_loopback: false,
+            rx_bytes: 1,
+            tx_bytes: 1,
+            rx_packets: 10,
+            tx_packets: 10,
+            rx_errors: 0,
+            tx_errors: 0,
+            rx_dropped: 0,
+            tx_dropped: 0,
+            collisions: 0,
+            timestamp: SystemTime::UNIX_EPOCH,
+        },
+    );
+    app.set_interface_rates_for_test(
+        "eth0",
+        InterfaceRates {
+            rx_bytes_per_sec: 125_000,
+            tx_bytes_per_sec: 1_250_000,
+        },
+    );
+
+    let mut conn = local_tcp(443, "curl");
+    conn.current_incoming_rate_bps = 125_000.0;
+    conn.current_outgoing_rate_bps = 1_250_000.0;
+    let connections = vec![conn];
+
+    let default_state = UiState::default();
+    assert_eq!(default_state.rate_unit, RateUnit::Bytes);
+    let mut default_graph_state = UiState {
+        selected_tab: 3,
+        ..Default::default()
+    };
+    let default_graph = render_app(&app, &mut default_graph_state, &connections, None, 100, 35);
+    assert!(default_graph.contains("60s · B/s"), "{default_graph}");
+
+    let config = crate::config::UserConfig {
+        rate_unit: Some("bits".to_string()),
+        ..Default::default()
+    };
+    let mut state = UiState::from_config(&config);
+    assert_eq!(state.rate_unit, RateUnit::Bits);
+
+    let overview_bits = render_app(&app, &mut state, &connections, None, 100, 24);
+    assert!(overview_bits.contains("1.0Mb/10Mb"), "{overview_bits}");
+
+    state.selected_tab = 1;
+    let details_bits = render_app(&app, &mut state, &connections, None, 160, 48);
+    assert!(details_bits.contains("1.00 Mbps"), "{details_bits}");
+    assert!(details_bits.contains("10.00 Mbps"), "{details_bits}");
+    assert!(details_bits.contains("60s · bps"), "{details_bits}");
+
+    state.selected_tab = 3;
+    let graph_bits = render_app(&app, &mut state, &connections, None, 100, 35);
+    assert!(graph_bits.contains("60s · bps"), "{graph_bits}");
+    assert!(graph_bits.contains("1.00 Mbps"), "{graph_bits}");
+
+    state.selected_tab = 4;
+    state.host_view = HostView::Interfaces;
+    let iface_bits = render_app(&app, &mut state, &connections, None, 140, 12);
+    assert!(iface_bits.contains("1.00 Mbps"), "{iface_bits}");
+    assert!(iface_bits.contains("10.00 Mbps"), "{iface_bits}");
+}

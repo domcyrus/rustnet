@@ -7,6 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
 
 use crate::network::time_window::TimeWindow;
+use crate::ui::RateUnit;
 use ratatui::layout::Rect;
 
 #[cfg(test)]
@@ -669,6 +670,8 @@ pub struct UiState {
     pub graph_mirrored: bool,
     /// Configured mirrored-graph preference restored by reset view.
     pub default_graph_mirrored: bool,
+    /// Display unit scale for live traffic rates (`bytes` or SI `bits`).
+    pub rate_unit: RateUnit,
     pub graph_states_scroll: PaneScroll,
     /// Whether the last Graph frame showed only the selected section.
     pub graph_compact: Cell<bool>,
@@ -749,6 +752,7 @@ impl Default for UiState {
             graph_section: GraphSection::default(),
             graph_mirrored: true,
             default_graph_mirrored: true,
+            rate_unit: RateUnit::default(),
             graph_states_scroll: PaneScroll::default(),
             graph_compact: Cell::new(false),
             graph_animation_visible: Cell::new(false),
@@ -806,11 +810,17 @@ impl UiState {
     }
 
     pub(crate) fn from_config(config: &crate::config::UserConfig) -> Self {
+        let rate_unit = config
+            .rate_unit
+            .as_deref()
+            .and_then(RateUnit::from_name)
+            .unwrap_or_default();
         Self {
             grouping_enabled: config.group_by_process,
             default_grouping_enabled: config.group_by_process,
             graph_mirrored: config.mirrored_traffic_graph,
             default_graph_mirrored: config.mirrored_traffic_graph,
+            rate_unit,
             ..Self::default()
         }
     }
@@ -1408,6 +1418,27 @@ mod tests {
             assert!(ui.expanded_groups.is_empty());
             assert!(ui.selected_group.is_none());
             assert!(ui.filter_query.is_empty());
+        }
+    }
+
+    #[test]
+    fn configured_rate_unit_applies_at_startup_and_survives_reset() {
+        for (configured, expected) in [
+            (None, RateUnit::Bytes),
+            (Some("bytes"), RateUnit::Bytes),
+            (Some("bits"), RateUnit::Bits),
+            (Some("iec-bits"), RateUnit::Bytes),
+            (Some("unknown"), RateUnit::Bytes),
+        ] {
+            let config = crate::config::UserConfig {
+                rate_unit: configured.map(str::to_string),
+                ..Default::default()
+            };
+            let mut ui = UiState::from_config(&config);
+            assert_eq!(ui.rate_unit, expected);
+
+            ui.reset_view();
+            assert_eq!(ui.rate_unit, expected);
         }
     }
 

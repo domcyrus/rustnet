@@ -12,8 +12,8 @@ use ratatui::{
 use crate::app::App;
 use crate::network::interface_stats::{InterfaceErrorCounts, InterfaceRates, InterfaceStats};
 use crate::ui::{
-    UiState,
-    format::format_bytes,
+    RateUnit, UiState,
+    format::format_rate,
     section_header, section_title, theme,
     widgets::scrollbar::{draw_scrolled_text, render_scrolled_table},
 };
@@ -65,6 +65,7 @@ pub(in crate::ui) fn draw_interface_stats(
                 stat,
                 rates.get(&stat.interface_name),
                 errors.get(&stat.interface_name),
+                ui_state.rate_unit,
             )
         })
         .collect();
@@ -216,6 +217,7 @@ impl InterfaceRow {
         stat: &InterfaceStats,
         rate: Option<&InterfaceRates>,
         selected: Option<&InterfaceErrorCounts>,
+        rate_unit: RateUnit,
     ) -> Self {
         let pair = |value: Option<u64>, total: u64, color: Color| {
             Line::from(vec![
@@ -223,14 +225,17 @@ impl InterfaceRow {
                 Span::raw(format!("/{total}")),
             ])
         };
-        let format_rate = |value: Option<u64>| {
-            Line::from(value.map_or_else(|| "-".into(), |n| format!("{}/s", format_bytes(n))))
+        let format_rate_cell = |value: Option<u64>| {
+            Line::from(value.map_or_else(
+                || "-".into(),
+                |n| format_rate(n as f64, rate_unit).into_owned(),
+            ))
         };
         Self {
             values: [
                 Line::from(stat.interface_name.clone()),
-                format_rate(rate.map(|r| r.rx_bytes_per_sec)),
-                format_rate(rate.map(|r| r.tx_bytes_per_sec)),
+                format_rate_cell(rate.map(|r| r.rx_bytes_per_sec)),
+                format_rate_cell(rate.map(|r| r.tx_bytes_per_sec)),
                 Line::from(stat.rx_packets.to_string()),
                 Line::from(stat.tx_packets.to_string()),
                 pair(selected.map(|c| c.rx_errors), stat.rx_errors, theme::err()),

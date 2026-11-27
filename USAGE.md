@@ -115,6 +115,9 @@ Options:
       --theme <PRESET>                   Color theme: muted (default), vivid, catppuccin-mocha,
                                          tokyo-night, gruvbox, nord. Overrides the theme set in the
                                          config file (~/.config/rustnet/config.toml)
+      --rate-unit <UNIT>                 Traffic rate display units: bytes (default: B/s, KiB/s, MiB/s)
+                                         or bits (SI: bps, kbps, Mbps, Gbps). Overrides [view]
+                                         rate_unit in the config file (~/.config/rustnet/config.toml)
       --geoip-country <PATH>             Path to GeoLite2-Country.mmdb (auto-discovered if not specified)
       --geoip-asn <PATH>                 Path to GeoLite2-ASN.mmdb (auto-discovered if not specified)
       --geoip-city <PATH>                Path to GeoLite2-City.mmdb (auto-discovered if not specified)
@@ -416,14 +419,32 @@ group_by_process = true
 
 **Unreleased.** To start Graph with separate RX and TX plots, set
 `mirrored_traffic_graph = false` under `[view]` in `config.toml`. The default is
-`true`. Pressing `r` in Overview resets view settings, including the graph layout,
-to their configured values.
+`true`. To set the startup rate display unit (`bytes` or `bits`), set
+`rate_unit = "bits"` under `[view]` in `config.toml`. Pressing `r` in Overview
+resets view settings, including the graph layout, to their configured values.
 
 For an optional Help shadow, add `[ui]` with `popup_shadow = true` to the same
 config file (default: `false`). `NO_COLOR` or `--no-color` disables the shadow.
 
 Related: `--no-color` disables all colors entirely (also honors the `NO_COLOR`
 environment variable).
+
+#### `--rate-unit <UNIT>`
+
+**Unreleased.** Choose the unit scale used for live traffic rates in the
+interactive TUI:
+
+- **`bytes`** (default): Binary IEC bytes per second (`B/s`, `KiB/s`, `MiB/s`, `GiB/s`)
+- **`bits`**: Decimal SI bits per second (`bps`, `kbps`, `Mbps`, `Gbps`)
+
+```bash
+# Display live traffic rates in Mbps / kbps
+rustnet --rate-unit bits
+```
+
+Precedence: `--rate-unit` on the command line overrides `[view] rate_unit` in
+`config.toml`, which overrides the `bytes` default. Cumulative byte totals and
+headless JSON output always remain in bytes.
 
 #### `-f, --bpf-filter <FILTER>`
 
@@ -560,9 +581,11 @@ shared time axis and TX extends below it. While Traffic is visible, press `m`
 to switch between mirrored and split layouts for the current session.
 
 Graph and Details preserve sampled bursts on independent automatic linear RX/TX
-scales in bytes per second (KiB/MiB/GiB are binary units). Compare numeric readings
+scales in the active rate unit (defaulting to binary bytes per second: `B/s`,
+`KiB/s`, `MiB/s`, `GiB/s`; pass `--rate-unit bits` or set `[view] rate_unit = "bits"`
+for SI `bps`/`Mbps`). Compare numeric readings
 across directions. Headers show current rate, window peak, and `2s avg` when space
-permits. `0 B/s` means observed idle traffic; a placeholder means unavailable data.
+permits. `0 B/s` (or `0 bps`) means observed idle traffic; a placeholder means unavailable data.
 Details and Top Processes use smoothed connection rates; Graph uses interface rates.
 
 In Activity, `s` selects `2s Avg TX/RX` sorting and `d` switches TX/RX. Share bars

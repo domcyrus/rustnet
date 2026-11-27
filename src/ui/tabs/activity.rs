@@ -14,7 +14,7 @@ use crate::app::App;
 use crate::network::process_activity::{ProcessActivity, ProcessActivitySnapshot};
 use crate::ui::{
     ActivityDirection, ActivitySection, ActivitySort, ActivityView, ClickAction, ClickableRegions,
-    Component, ComponentContext, Effect, HandlerContext, UiState, draw_placeholder,
+    Component, ComponentContext, Effect, HandlerContext, RateUnit, UiState, draw_placeholder,
     format::{format_bytes, format_rate, format_rate_compact, truncate_with_ellipsis},
     section_header, section_title,
     state::Motion,
@@ -261,6 +261,7 @@ fn draw_activity(
             f,
             app,
             state.activity_direction,
+            state.rate_unit,
             summaries[1],
             &state.bar_animations,
         );
@@ -376,6 +377,7 @@ fn draw_interface_share(
     f: &mut Frame,
     app: &App,
     direction: ActivityDirection,
+    rate_unit: RateUnit,
     area: Rect,
     animation: &glow_bar::BarAnimations,
 ) {
@@ -425,9 +427,9 @@ fn draw_interface_share(
                     usize::from(bar_width),
                     direction_color(direction),
                 ))),
-                Cell::from(summary_rate("TX", rate.tx_bytes_per_sec as f64))
+                Cell::from(summary_rate("TX", rate.tx_bytes_per_sec as f64, rate_unit))
                     .style(theme::fg(theme::tx())),
-                Cell::from(summary_rate("RX", rate.rx_bytes_per_sec as f64))
+                Cell::from(summary_rate("RX", rate.rx_bytes_per_sec as f64, rate_unit))
                     .style(theme::fg(theme::rx())),
             ])
         });
@@ -455,12 +457,12 @@ fn coverage_text(fraction: Option<f64>, exact: bool) -> String {
 
 /// Fixed numeric and unit slots keep both directions anchored as rates cross
 /// digit and unit boundaries, including the idle placeholder.
-fn summary_rate(label: &str, rate: f64) -> String {
-    let formatted = format_rate(rate);
+fn summary_rate(label: &str, rate: f64, rate_unit: RateUnit) -> String {
+    let formatted = format_rate(rate, rate_unit);
     let (value, unit) = formatted.split_once(' ').unwrap_or((&formatted, ""));
-    // Very large GiB/s values use scientific notation instead of widening the slot.
+    // Very large giga values use scientific notation instead of widening the slot.
     if value.len() > 7 {
-        let value = format!("{:.1e}", rate / 1024.0_f64.powi(3));
+        let value = format!("{:.1e}", rate_unit.giga_value(rate));
         format!("{label} {value:>7} {unit:<5}")
     } else {
         format!("{label} {value:>7} {unit:<5}")
@@ -476,12 +478,12 @@ fn draw_summary(
 ) {
     let mut rates = Line::from(vec![
         Span::styled(
-            summary_rate("TX", snapshot.current_tx_bps),
+            summary_rate("TX", snapshot.current_tx_bps, state.rate_unit),
             theme::bold_fg(theme::tx()),
         ),
         Span::raw("   "),
         Span::styled(
-            summary_rate("RX", snapshot.current_rx_bps),
+            summary_rate("RX", snapshot.current_rx_bps, state.rate_unit),
             theme::bold_fg(theme::rx()),
         ),
     ]);
@@ -735,9 +737,12 @@ fn draw_process_details(
         lines.extend([
             field(
                 "Current rate",
-                format_rate(current_rate(process, direction)),
+                format_rate(current_rate(process, direction), state.rate_unit),
             ),
-            field("Peak rate", format_rate(peak_rate(process, direction))),
+            field(
+                "Peak rate",
+                format_rate(peak_rate(process, direction), state.rate_unit),
+            ),
             field("Last 60s", format_bytes(window_bytes(process, direction))),
             field(
                 "Share of captured 60s",
@@ -1023,6 +1028,7 @@ fn draw_process_table(
                         current_rate(process, direction)
                     },
                     "-",
+                    state.rate_unit,
                 ))
                 .style(theme::fg(direction_color(direction))),
             ];
@@ -1056,6 +1062,7 @@ fn draw_process_table(
                 cells.push(right_cell(format_rate_compact(
                     peak_rate(process, direction),
                     "-",
+                    state.rate_unit,
                 )));
             }
             regions.register(
@@ -1140,10 +1147,16 @@ mod tests {
     fn live_summary_keeps_labels_numbers_and_units_anchored() {
         use crate::ui::test_support::render;
         assert_eq!(
-            summary_rate("TX", 100_000.0 * 1024.0_f64.powi(3)),
+            summary_rate("TX", 100_000.0 * 1024.0_f64.powi(3), RateUnit::Bytes),
             "TX   1.0e5 GiB/s"
         );
-        assert_eq!(summary_rate("RX", f64::MAX).len(), 16);
+        for unit in RateUnit::ALL {
+            assert_eq!(summary_rate("RX", f64::MAX, unit).len(), 16, "{unit:?}");
+        }
+        assert_eq!(
+            summary_rate("TX", 12_500_000.0, RateUnit::Bits),
+            "TX  100.00 Mbps "
+        );
         let basis = InterfaceBasis {
             label: "eth0".into(),
             tx_window_bytes: 1,
@@ -1184,7 +1197,7 @@ mod tests {
                         format!("· all traffic{}", " ".repeat(usize::from(width) - 49))
                     );
                     for (rate, value_start, unit_start) in [(tx, 3, 11), (rx, 22, 30)] {
-                        let formatted = format_rate(rate);
+                        let formatted = format_rate(rate, RateUnit::Bytes);
                         let (value, unit) = formatted.split_once(' ').unwrap_or((&formatted, ""));
                         assert_eq!(row[value_start..value_start + 7].trim(), value);
                         assert_eq!(row[unit_start..unit_start + 5].trim(), unit);
@@ -1216,6 +1229,7 @@ mod tests {
                     f,
                     &app,
                     ActivityDirection::Egress,
+                    RateUnit::Bytes,
                     f.area(),
                     &glow_bar::BarAnimations::default(),
                 )
@@ -1232,6 +1246,7 @@ mod tests {
                     f,
                     &app,
                     ActivityDirection::Egress,
+                    RateUnit::Bytes,
                     f.area(),
                     &glow_bar::BarAnimations::default(),
                 )
@@ -1254,6 +1269,7 @@ mod tests {
                     f,
                     &app,
                     ActivityDirection::Ingress,
+                    RateUnit::Bytes,
                     f.area(),
                     &glow_bar::BarAnimations::default(),
                 )

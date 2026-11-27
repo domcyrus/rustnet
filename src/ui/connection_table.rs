@@ -30,7 +30,7 @@ use std::net::SocketAddr;
 use crate::network::dns::DnsResolver;
 use crate::network::types::{AddrKind, ApplicationProtocol, Connection, Protocol};
 use crate::ui::{
-    ClickAction, ClickableRegions, NONE_PLACEHOLDER, SortColumn, UiState, dpi_color,
+    ClickAction, ClickableRegions, NONE_PLACEHOLDER, RateUnit, SortColumn, UiState, dpi_color,
     format::{format_countdown, format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
     state_color, theme,
     widgets::scrollbar::draw_scrollbar,
@@ -574,7 +574,9 @@ pub(in crate::ui) fn connection_row<'a>(
             }
             ColumnId::Rtt => rtt_cell(conn, paint.signal()),
             ColumnId::Health => health_cell(conn, paint.signal()),
-            ColumnId::Bandwidth => connection_bandwidth_cell(conn, paint.signal()),
+            ColumnId::Bandwidth => {
+                connection_bandwidth_cell(conn, paint.signal(), ui_state.rate_unit)
+            }
         })
         .collect();
 
@@ -590,7 +592,11 @@ pub(in crate::ui) fn connection_row<'a>(
 /// otherwise the live rates. The countdown carries the row's urgency
 /// color, yellow through orange to red as removal nears; the rest of the
 /// row only softens, so the hue stays on the one cell that explains it.
-fn connection_bandwidth_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a> {
+fn connection_bandwidth_cell<'a>(
+    conn: &Connection,
+    paint: CellPaint,
+    rate_unit: RateUnit,
+) -> Cell<'a> {
     if conn.is_historic {
         return Cell::from(Line::from("n/a").right_aligned());
     }
@@ -602,6 +608,7 @@ fn connection_bandwidth_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a
         conn.current_incoming_rate_bps,
         conn.current_outgoing_rate_bps,
         paint,
+        rate_unit,
     )
 }
 
@@ -833,9 +840,14 @@ fn health_count_text(count: u64) -> String {
 /// ↓/↑ arrows live in the column header, not on every row. Takes raw
 /// rates so the grouped view can feed per-group aggregates through the
 /// same formatting.
-pub(in crate::ui) fn bandwidth_cell<'a>(rx_bps: f64, tx_bps: f64, paint: CellPaint) -> Cell<'a> {
-    let rx = format_rate_compact(rx_bps, NONE_PLACEHOLDER);
-    let tx = format_rate_compact(tx_bps, NONE_PLACEHOLDER);
+pub(in crate::ui) fn bandwidth_cell<'a>(
+    rx_bps: f64,
+    tx_bps: f64,
+    paint: CellPaint,
+    rate_unit: RateUnit,
+) -> Cell<'a> {
+    let rx = format_rate_compact(rx_bps, NONE_PLACEHOLDER, rate_unit);
+    let tx = format_rate_compact(tx_bps, NONE_PLACEHOLDER, rate_unit);
     let active = rx_bps > 0.0 || tx_bps > 0.0;
 
     let line = if !paint.colored() {
@@ -970,7 +982,12 @@ mod tests {
                 let area = Rect::new(0, 0, BANDWIDTH_WIDTH, 1);
                 let mut buffer = Buffer::empty(area);
                 Table::new(
-                    [Row::new([bandwidth_cell(rate, rate, paint)])],
+                    [Row::new([bandwidth_cell(
+                        rate,
+                        rate,
+                        paint,
+                        RateUnit::Bytes,
+                    )])],
                     [Constraint::Length(BANDWIDTH_WIDTH)],
                 )
                 .render(area, &mut buffer);
@@ -979,6 +996,26 @@ mod tests {
                     .collect();
                 assert_eq!(actual.trim(), format!("{expected}/{expected}"));
             }
+        }
+        for (unit, rate, expected) in [
+            (RateUnit::Bits, 12_500_000.0, "100Mb/100Mb"),
+            (RateUnit::Bits, 125_000.0, "1.0Mb/1.0Mb"),
+        ] {
+            let width = u16::try_from(expected.len()).unwrap().max(BANDWIDTH_WIDTH);
+            let area = Rect::new(0, 0, width, 1);
+            let mut buffer = Buffer::empty(area);
+            Table::new(
+                [Row::new([bandwidth_cell(
+                    rate,
+                    rate,
+                    CellPaint::FRESH,
+                    unit,
+                )])],
+                [Constraint::Length(width)],
+            )
+            .render(area, &mut buffer);
+            let actual: String = (0..width).map(|x| buffer[(x, 0)].symbol()).collect();
+            assert_eq!(actual.trim(), expected);
         }
     }
 

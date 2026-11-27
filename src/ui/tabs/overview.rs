@@ -23,13 +23,13 @@ use crate::network::dns_analytics::{DEGRADED_FAILURE_PERCENT, DnsAnalyticsSnapsh
 use crate::network::types::Connection;
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER, OverviewSection, PaneScroll, SelectionMove, SortColumn, UiState,
+    NONE_PLACEHOLDER, OverviewSection, PaneScroll, RateUnit, SelectionMove, SortColumn, UiState,
     clear_all_with_confirmation,
     connection_table::{
         CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
         connection_row, render_row_table, select_columns, visible_window,
     },
-    format::{format_bytes, format_rtt_compact, truncate_with_ellipsis},
+    format::{format_rate, format_rtt_compact, truncate_with_ellipsis},
     section_header, section_title,
     state::ProcessGroupStats,
     theme, try_handle_connection_nav, try_handle_pane_scroll, try_handle_pane_wheel,
@@ -774,6 +774,7 @@ fn group_header_row<'a>(
                 stats.total_incoming_rate_bps,
                 stats.total_outgoing_rate_bps,
                 CellPaint::FRESH,
+                ui_state.rate_unit,
             ),
             _ => Cell::from(""),
         })
@@ -1381,9 +1382,15 @@ fn draw_stats_panel(
         let rx = history.get_rx_sparkline_data(1).last().copied();
         let tx = history.get_tx_sparkline_data(1).last().copied();
         lines.push(Line::from(vec![
-            Span::styled(format!("RX {}", sidebar_rate(rx)), theme::fg(theme::rx())),
+            Span::styled(
+                format!("RX {}", sidebar_rate(rx, state.rate_unit)),
+                theme::fg(theme::rx()),
+            ),
             Span::raw(" · "),
-            Span::styled(format!("TX {}", sidebar_rate(tx)), theme::fg(theme::tx())),
+            Span::styled(
+                format!("TX {}", sidebar_rate(tx, state.rate_unit)),
+                theme::fg(theme::tx()),
+            ),
         ]));
         lines.push(section_separator(inner_area.width.saturating_sub(2)));
         lines.extend(interface_error_lines(app, usize::MAX));
@@ -1504,10 +1511,10 @@ fn mini_wave(
     )
 }
 
-fn sidebar_rate(rate: Option<u64>) -> String {
+fn sidebar_rate(rate: Option<u64>, rate_unit: RateUnit) -> String {
     rate.map_or_else(
         || NONE_PLACEHOLDER.to_string(),
-        |rate| format!("{}/s", format_bytes(rate)),
+        |rate| format_rate(rate as f64, rate_unit).into_owned(),
     )
 }
 
@@ -1612,12 +1619,12 @@ fn draw_interface_stats_with_graph(
 
     let rates_text = Line::from(vec![
         Span::styled(
-            format!("↓{}", sidebar_rate(current_rx)),
+            format!("↓{}", sidebar_rate(current_rx, state.rate_unit)),
             theme::fg(theme::rx_wave(MINI_WAVE_INTENSITY)),
         ),
         Span::raw(" "),
         Span::styled(
-            format!("↑{}", sidebar_rate(current_tx)),
+            format!("↑{}", sidebar_rate(current_tx, state.rate_unit)),
             theme::fg(theme::tx_wave(MINI_WAVE_INTENSITY)),
         ),
     ]);
