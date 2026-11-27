@@ -445,6 +445,7 @@ impl App {
         let mut prev_connections_archived =
             stats.total_connections_archived.load(Ordering::Relaxed);
         let mut previous_sample_at = Instant::now();
+        let mut previous_conn_sample: Option<(Instant, SystemTime)> = None;
 
         // Update twice per second for a more responsive graph.
         spawn_loop(
@@ -459,30 +460,29 @@ impl App {
                     .ok()
                     .and_then(|rates| traffic_rates(&rates, traffic_interface.as_deref()));
 
-                // Get active connection count from snapshot (excludes
-                // historic) and record per-connection rate samples on
-                // the same cadence as the aggregate history.
+                let sampled_at = Instant::now();
+                let wall_now = SystemTime::now();
+                // Sample per-connection byte deltas directly from live tracker
+                // counters so short sub-second bursts appear in Details' 60s
+                // wave graphs rather than flattening to zero.
+                if let Ok(mut rates) = conn_rate_history.write() {
+                    for entry in tracker.connections().iter() {
+                        let conn = entry.value();
+                        rates.entry(conn.key()).or_default().observe_counters(
+                            conn,
+                            sampled_at,
+                            previous_conn_sample,
+                            TRAFFIC_HISTORY_CAPACITY,
+                        );
+                    }
+                    rates.retain(|_, history| history.was_sampled_at(sampled_at));
+                }
+                previous_conn_sample = Some((sampled_at, wall_now));
+
+                // Get active connection count from snapshot (excludes historic).
                 let connection_count = connections_snapshot
                     .read()
-                    .map(|snap| {
-                        if let Ok(mut rates) = conn_rate_history.write() {
-                            let alive: std::collections::HashSet<String> = snap
-                                .iter()
-                                .filter(|c| !c.is_historic)
-                                .map(|c| c.key())
-                                .collect();
-                            rates.retain(|key, _| alive.contains(key));
-                            for conn in snap.iter().filter(|c| !c.is_historic) {
-                                rates.entry(conn.key()).or_default().push_for_generation(
-                                    conn.created_at,
-                                    conn.current_incoming_rate_bps as u64,
-                                    conn.current_outgoing_rate_bps as u64,
-                                    TRAFFIC_HISTORY_CAPACITY,
-                                );
-                            }
-                        }
-                        snap.iter().filter(|c| !c.is_historic).count()
-                    })
+                    .map(|snap| snap.iter().filter(|c| !c.is_historic).count())
                     .unwrap_or(0);
 
                 let current_packets = stats.packets_processed.load(Ordering::Relaxed);
@@ -499,7 +499,6 @@ impl App {
                 let connections_archived_delta =
                     current_connections_archived.saturating_sub(prev_connections_archived);
 
-                let sampled_at = Instant::now();
                 let sample_seconds = sampled_at.duration_since(previous_sample_at).as_secs_f64();
                 let packets_per_sec = per_second_rate(packets_delta, sample_seconds, 1.0);
                 let retransmits_per_sec = per_second_rate(retransmits_delta, sample_seconds, 1.0);

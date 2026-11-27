@@ -33,7 +33,7 @@ use crate::ui::{
     ClickAction, ClickableRegions, NONE_PLACEHOLDER, RateUnit, SortColumn, UiState, dpi_color,
     format::{format_countdown, format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
     state_color, theme,
-    trend::{TREND_SAMPLES, trend_line},
+    trend::{IDLE as TREND_IDLE, TREND_SAMPLES, trend_line},
     widgets::scrollbar::draw_scrollbar,
 };
 
@@ -613,8 +613,7 @@ fn trend_cell<'a>(
         return Cell::from("");
     }
     let samples = ui_state.trend_history.samples(conn);
-    let on_tint = selected && theme::selection_has_bg();
-    Cell::from(trend_line(samples, paint.colored(), on_tint))
+    Cell::from(trend_line(samples, paint.colored(), selected))
 }
 
 /// Bandwidth cell for one connection row: "n/a" once historic, the
@@ -928,16 +927,15 @@ pub(in crate::ui) fn table_rows_area(area: Rect) -> Rect {
     )
 }
 
-/// Strip `REVERSED` (and `BOLD`) from the Trend sparkline cell on the
+/// Strip `REVERSED` (and `BOLD`) from active Trend sparkline bars on the
 /// selected row when the active theme highlights rows with `REVERSED`
 /// instead of a background tint (`!theme::selection_has_bg()`).
 ///
 /// `Table` patches `row_highlight_style` onto the whole row after
 /// rendering its cells. Reversing eighth-block bar glyphs (`▁`..`█`)
-/// and the idle track (`·`) turns low bars into tall inverted blocks,
-/// full bars into dark holes, and idle dots into a solid rectangle.
-/// Blank cells (historic rows) stay reversed so their selection band
-/// remains continuous.
+/// turns low bars into tall inverted blocks and full bars into dark holes.
+/// Idle track cells (`·`) and blank historic cells stay reversed so the
+/// selection highlight band stays continuous across quiet rows.
 pub(in crate::ui) fn preserve_trend_glyphs_on_selection(
     f: &mut Frame,
     table_area: Rect,
@@ -975,6 +973,7 @@ pub(in crate::ui) fn preserve_trend_glyphs_on_selection(
     for x in start_x..end_x {
         if let Some(cell) = buf.cell_mut((x, row_y))
             && cell.symbol() != " "
+            && cell.symbol() != TREND_IDLE
         {
             cell.modifier.remove(Modifier::REVERSED | Modifier::BOLD);
         }
@@ -1672,19 +1671,71 @@ mod tests {
     }
 
     #[test]
-    fn selected_trend_cell_drops_reversed_for_live_rows_only() {
+    fn selected_trend_cell_drops_reversed_for_active_bars_only() {
         use crate::ui::test_support::render_buffer;
+        use std::time::Instant;
 
-        let ui_state = UiState::default();
+        let mut ui_state = UiState::default();
         let columns = select_columns(138, false);
         let (trend_x, trend_width) = trend_column_span(&columns).expect("Trend visible");
         assert!(!theme::selection_has_bg());
 
-        let live = local_tcp(45000, "firefox");
-        let mut historic = local_tcp(45001, "old");
+        let mut active = local_tcp(45000, "firefox");
+        let idle = local_tcp(45001, "idle");
+        let mut historic = local_tcp(45002, "old");
         historic.is_historic = true;
 
-        for (conn, expect_reversed) in [(&live, false), (&historic, true)] {
+        let start = Instant::now();
+        let wall = SystemTime::now();
+        ui_state
+            .trend_history
+            .record(start, wall, "", |visit| visit(&active, true));
+        active.bytes_received += 4_096;
+        ui_state.trend_history.record(
+            start + Duration::from_secs(1),
+            wall + Duration::from_secs(1),
+            "",
+            |visit| visit(&active, true),
+        );
+
+        // Active row: the 7 leading idle dots stay REVERSED so the highlight band
+        // is continuous, while the 1 active bar on the right strips REVERSED.
+        let mut regions = ClickableRegions::default();
+        let buf = render_buffer(140, 6, |f| {
+            let rows = vec![connection_row(
+                &active, &columns, &ui_state, None, None, true,
+            )];
+            render_row_table(
+                f,
+                Rect::new(0, 0, 140, 6),
+                build_header(&columns, &ui_state),
+                rows,
+                &columns,
+                RowWindow {
+                    selected: Some(0),
+                    scroll_offset: 0,
+                    total_rows: 1,
+                    visible_rows: 4,
+                },
+                &mut regions,
+            );
+        });
+        assert!(buf[(2, 2)].modifier.contains(Modifier::REVERSED));
+        for x in trend_x..trend_x + trend_width - 1 {
+            assert!(
+                buf[(x, 2)].modifier.contains(Modifier::REVERSED),
+                "idle dot at x={x} should stay reversed"
+            );
+        }
+        assert!(
+            !buf[(trend_x + trend_width - 1, 2)]
+                .modifier
+                .contains(Modifier::REVERSED),
+            "active bar should not be reversed"
+        );
+
+        // Idle and historic rows keep REVERSED across the entire Trend cell.
+        for conn in [&idle, &historic] {
             let mut regions = ClickableRegions::default();
             let buf = render_buffer(140, 6, |f| {
                 let rows = vec![connection_row(conn, &columns, &ui_state, None, None, true)];
@@ -1703,11 +1754,11 @@ mod tests {
                     &mut regions,
                 );
             });
-            // Process cell keeps REVERSED; Trend strips it only when it draws glyphs.
-            assert!(buf[(2, 2)].modifier.contains(Modifier::REVERSED));
             for x in trend_x..trend_x + trend_width {
-                let reversed = buf[(x, 2)].modifier.contains(Modifier::REVERSED);
-                assert_eq!(reversed, expect_reversed, "column x={x}");
+                assert!(
+                    buf[(x, 2)].modifier.contains(Modifier::REVERSED),
+                    "idle/historic column x={x} should stay reversed"
+                );
             }
         }
     }
@@ -1715,18 +1766,32 @@ mod tests {
     #[test]
     fn selected_trend_cell_tracks_table_scroll_offset() {
         use crate::ui::test_support::render_buffer;
+        use std::time::Instant;
 
-        let ui_state = UiState::default();
+        let mut ui_state = UiState::default();
         let columns = select_columns(138, false);
         let widths = column_constraints(&columns);
         let (trend_x, trend_width) = trend_column_span(&columns).expect("Trend visible");
         assert!(!theme::selection_has_bg());
 
-        let conns = [
+        let mut conns = [
             local_tcp(45010, "one"),
             local_tcp(45011, "two"),
             local_tcp(45012, "three"),
         ];
+        let start = Instant::now();
+        let wall = SystemTime::now();
+        ui_state
+            .trend_history
+            .record(start, wall, "", |visit| visit(&conns[2], true));
+        conns[2].bytes_received += 4_096;
+        ui_state.trend_history.record(
+            start + Duration::from_secs(1),
+            wall + Duration::from_secs(1),
+            "",
+            |visit| visit(&conns[2], true),
+        );
+
         // Height 3 = 2 header rows + 1 data row, so selecting index 2 forces
         // ratatui's TableState::offset() to advance to 2.
         let area = Rect::new(0, 0, 138, 3);
@@ -1747,11 +1812,11 @@ mod tests {
             preserve_trend_glyphs_on_selection(f, area, &columns, &state);
         });
         assert!(buf[(2, 2)].modifier.contains(Modifier::REVERSED));
-        for x in trend_x..trend_x + trend_width {
-            assert!(
-                !buf[(x, 2)].modifier.contains(Modifier::REVERSED),
-                "scrolled Trend cell at x={x} should not be reversed"
-            );
-        }
+        assert!(
+            !buf[(trend_x + trend_width - 1, 2)]
+                .modifier
+                .contains(Modifier::REVERSED),
+            "scrolled active Trend bar should not be reversed"
+        );
     }
 }

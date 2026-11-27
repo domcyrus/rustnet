@@ -265,7 +265,7 @@ const CONNECTION_DISPLAY: &[HelpRow] = &[
     ("R+", "Counts of 10 or more; Details has the exact numbers"),
     (
         "Trend",
-        "8s traffic sparkline; color follows dominant direction (RX/TX)",
+        "8s throughput sparkline; color shows RX, TX, or mixed traffic",
     ),
 ];
 

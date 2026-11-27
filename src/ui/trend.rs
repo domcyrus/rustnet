@@ -41,7 +41,7 @@ const MIN_CEILING_BPS: f64 = 1024.0;
 /// Bar glyphs from one eighth to a full cell.
 const LEVELS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 /// Track glyph for a second with no traffic (matches the glow bars).
-const IDLE: &str = "·";
+pub(in crate::ui) const IDLE: &str = "·";
 
 /// One interval's average rates, in bytes per second.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -227,12 +227,13 @@ impl TrendHistory {
 /// at the right edge and older ones to its left. Seconds before the first
 /// sample show the idle track too: a connection that did not exist yet
 /// moved no traffic. `colored` false drops every style, for rows painted
-/// whole by the historic pass; `on_selection_tint` lifts the idle track
-/// from `faint` to `muted` so it stays readable on a tinted selection band.
+/// whole by the historic pass. On selected rows, idle dots lift from `faint`
+/// to `muted` on tinted themes and drop foreground overrides on `REVERSED`
+/// themes so the selection band stays continuous across idle intervals.
 pub(in crate::ui) fn trend_line(
     samples: Option<&VecDeque<TrendSample>>,
     colored: bool,
-    on_selection_tint: bool,
+    selected: bool,
 ) -> Line<'static> {
     let count = samples.map_or(0, VecDeque::len);
     let ceiling = samples
@@ -242,8 +243,10 @@ pub(in crate::ui) fn trend_line(
         .fold(MIN_CEILING_BPS, f64::max);
     let idle = if !colored {
         Style::default()
-    } else if on_selection_tint {
+    } else if selected && theme::selection_has_bg() {
         theme::fg(theme::muted())
+    } else if selected {
+        Style::default()
     } else {
         theme::fg(theme::faint())
     };
@@ -260,8 +263,9 @@ pub(in crate::ui) fn trend_line(
 }
 
 /// One bar: height from the sample's share of `ceiling` (any traffic at
-/// all draws at least the lowest bar), color from the dominant direction's
-/// wave gradient at that height.
+/// all draws at least the lowest bar). Color follows RX or TX when one
+/// direction carries over 75% of the interval's bytes, or the bidirectional
+/// mixed hue when both directions carry at least 25% so neither hides the other.
 fn sample_span(sample: TrendSample, ceiling: f64, colored: bool, idle: Style) -> Span<'static> {
     let total = sample.total();
     if !total.is_finite() || total <= 0.0 {
@@ -274,7 +278,11 @@ fn sample_span(sample: TrendSample, ceiling: f64, colored: bool, idle: Style) ->
         return Span::raw(glyph);
     }
     let t = level as f64 / (LEVELS.len() - 1) as f64;
-    let color = if sample.rx_bps >= sample.tx_bps {
+    let small = sample.rx_bps.min(sample.tx_bps);
+    let large = sample.rx_bps.max(sample.tx_bps);
+    let color = if small * 3.0 >= large {
+        theme::mixed_wave(t)
+    } else if sample.rx_bps >= sample.tx_bps {
         theme::rx_wave(t)
     } else {
         theme::tx_wave(t)
@@ -679,24 +687,43 @@ mod tests {
     }
 
     #[test]
-    fn colored_bars_follow_the_dominant_direction() {
+    fn colored_bars_distinguish_rx_tx_and_mixed_traffic() {
         let samples: VecDeque<TrendSample> = [
+            // Mostly RX (small TCP ACKs stay RX-colored).
             TrendSample {
-                rx_bps: 2_048.0,
-                tx_bps: 0.0,
+                rx_bps: 2_000.0,
+                tx_bps: 100.0,
             },
+            // Mostly TX.
             TrendSample {
-                rx_bps: 0.0,
-                tx_bps: 2_048.0,
+                rx_bps: 100.0,
+                tx_bps: 2_000.0,
+            },
+            // Balanced bidirectional (both >= 25% of total).
+            TrendSample {
+                rx_bps: 1_050.0,
+                tx_bps: 1_050.0,
             },
         ]
         .into_iter()
         .collect();
         let line = trend_line(Some(&samples), true, false);
-        let rx = &line.spans[TREND_SAMPLES - 2];
-        let tx = &line.spans[TREND_SAMPLES - 1];
+        let rx = &line.spans[TREND_SAMPLES - 3];
+        let tx = &line.spans[TREND_SAMPLES - 2];
+        let mixed = &line.spans[TREND_SAMPLES - 1];
         assert_eq!(rx.style, theme::fg(theme::rx_wave(1.0)));
         assert_eq!(tx.style, theme::fg(theme::tx_wave(1.0)));
+        assert_eq!(mixed.style, theme::fg(theme::mixed_wave(1.0)));
+    }
+
+    #[test]
+    fn selected_idle_track_keeps_default_style_on_reversed_themes() {
+        assert!(!theme::selection_has_bg());
+        let unselected = trend_line(None, true, false);
+        assert_eq!(unselected.spans[0].style, theme::fg(theme::faint()));
+
+        let selected = trend_line(None, true, true);
+        assert_eq!(selected.spans[0].style, Style::default());
     }
 
     #[test]

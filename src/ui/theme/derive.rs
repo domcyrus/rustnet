@@ -35,6 +35,7 @@ pub struct Theme {
     // resolved token for waves too, unless the user explicitly overrides it.
     pub(super) rx_wave_color: Option<Color>,
     pub(super) tx_wave_color: Option<Color>,
+    pub(super) mixed_wave_color: Option<Color>,
 
     // Background tints; `None` unless the theme is truecolor or the user
     // explicitly overrode the slot.
@@ -170,6 +171,7 @@ impl Theme {
                 .then(|| color(spec.rx)),
             tx_wave_color: (spec.tx_wave.is_none() && !matches!(color(spec.tx), Color::Rgb(..)))
                 .then(|| color(spec.tx)),
+            mixed_wave_color: (!matches!(special, Color::Rgb(..))).then_some(special),
             selection_bg: bg(spec.selection_bg),
             selection_fg: bg(spec.selection_fg),
             status_bg: bg(spec.status_bg),

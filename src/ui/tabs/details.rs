@@ -1734,7 +1734,7 @@ fn draw_traffic(
         f,
         area,
         section_title(format!(
-            " Traffic Statistics · smoothed avg · 60s · {}",
+            " Traffic Statistics · 60s · {}",
             ui_state.rate_unit.axis_unit_label()
         )),
     );

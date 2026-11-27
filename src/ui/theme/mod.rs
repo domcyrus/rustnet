@@ -167,6 +167,14 @@ pub(super) fn tx_wave(t: f64) -> Color {
         .unwrap_or_else(|| walk_ramp(&active().tx_ramp, t))
 }
 
+/// Wave color for balanced bidirectional traffic (both RX and TX substantial),
+/// using the theme's `special` token/ramp so neither direction hides the other.
+pub(super) fn mixed_wave(t: f64) -> Color {
+    active()
+        .mixed_wave_color
+        .unwrap_or_else(|| walk_ramp(&active().special_ramp, t))
+}
+
 /// Style for the removal countdown of a stale row at fade intensity `t`
 /// from [`staleness_fade_intensity`]: the one lifecycle cell that borrows
 /// the warn/err hues, because its text ("2m left") says what the color

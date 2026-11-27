@@ -786,7 +786,7 @@ fn group_header_row<'a>(
                     Cell::from(trend_line(
                         ui_state.trend_history.group_samples(process_name),
                         true,
-                        selected && theme::selection_has_bg(),
+                        selected,
                     ))
                 }
             }
