@@ -1050,11 +1050,18 @@ pub(in crate::ui) fn draw_connection_details(
     // Network enrichment is a fixed card. Fields remain in the same rows even
     // while asynchronous DNS and GeoIP data arrives, which prevents the lower
     // dashboard and traffic section from jumping during connection navigation.
+    // Skip ARP (DNS lookups generate ARP traffic) and broadcast/multicast
+    // endpoints (including subnet-directed broadcasts).
     let (local_hostname, remote_hostname) = dns_resolver
+        .filter(|_| conn.protocol != Protocol::Arp)
         .map(|resolver| {
             (
-                resolver.get_hostname(&conn.local_addr.ip()),
-                resolver.get_hostname(&conn.remote_addr.ip()),
+                (conn.local_addr_kind == AddrKind::Unicast)
+                    .then(|| resolver.get_hostname(&conn.local_addr.ip()))
+                    .flatten(),
+                (conn.remote_addr_kind == AddrKind::Unicast)
+                    .then(|| resolver.get_hostname(&conn.remote_addr.ip()))
+                    .flatten(),
             )
         })
         .unwrap_or((None, None));
