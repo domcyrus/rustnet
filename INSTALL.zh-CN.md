@@ -171,20 +171,18 @@ ARM64 DEB 支持 Ubuntu 22.04+ 和 Debian 12/13；ARMv7 DEB 支持 Debian 12/13�
 # - Rustnet_LinuxDEB_arm64.deb（ARM64）
 # - Rustnet_LinuxDEB_armhf.deb（ARMv7）
 
-# 安装包（安装后脚本会尝试设置 Linux capabilities）
-sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
+# 安装包
+sudo apt install ./Rustnet_LinuxDEB_amd64.deb
 
-# 如有需要安装依赖
-sudo apt-get install -f
+# 使用 sudo 运行（RustNet 会在初始化后自动降权）
+sudo rustnet
 
-# 验证 Linux capabilities
-getcap /usr/bin/rustnet
-
-# 若存在 CAP_NET_RAW，可无需 sudo 运行；否则使用 sudo
+# 或手动授予 Linux capabilities 以普通用户身份运行（现代内核 5.8+）
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**注意：** .deb 包的安装后脚本会在 `setcap` 可用时尝试设置 Linux capabilities。请用 `getcap /usr/bin/rustnet` 验证；若缺少 `CAP_NET_RAW`，请手动配置 capabilities 或使用 `sudo`。
+**注意：** GitHub Release 中的 `.deb` 包不包含安装后脚本，默认不会为 `/usr/bin/rustnet` 授予 capabilities。请使用 `sudo rustnet` 运行，或手动配置 capabilities（详见[权限配置](#permissions-setup)）。
 
 #### RedHat/Fedora/CentOS（.rpm 包）<a id="redhatfedoracentos-rpm-packages"></a>
 
@@ -195,19 +193,20 @@ rustnet
 # - Rustnet_LinuxRPM_x86_64.rpm
 # - Rustnet_LinuxRPM_aarch64.rpm
 
-# 安装包（安装后脚本会尝试设置 Linux capabilities）
+# 安装包
+sudo dnf install ./Rustnet_LinuxRPM_x86_64.rpm
+# 或使用 rpm：
 sudo rpm -i Rustnet_LinuxRPM_x86_64.rpm
-# 或使用 dnf/yum：
-sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
 
-# 验证 Linux capabilities
-getcap /usr/bin/rustnet
+# 使用 sudo 运行（RustNet 会在初始化后自动降权）
+sudo rustnet
 
-# 若存在 CAP_NET_RAW，可无需 sudo 运行；否则使用 sudo
+# 或手动授予 Linux capabilities 以普通用户身份运行（现代内核 5.8+）
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**注意：** .rpm 包的安装后脚本会在 `setcap` 可用时尝试设置 Linux capabilities。请用 `getcap /usr/bin/rustnet` 验证；若缺少 `CAP_NET_RAW`，请手动配置 capabilities 或使用 `sudo`。
+**注意：** GitHub Release 中的 `.rpm` 包不包含安装后脚本，默认不会为 `/usr/bin/rustnet` 授予 capabilities。请使用 `sudo rustnet` 运行，或手动配置 capabilities（详见[权限配置](#permissions-setup)）。
 
 #### Alpine Linux
 

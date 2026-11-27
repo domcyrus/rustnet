@@ -171,20 +171,18 @@ across the time64 library transition. These fixes do not apply to v1.6.0 assets.
 # - Rustnet_LinuxDEB_arm64.deb (ARM64)
 # - Rustnet_LinuxDEB_armhf.deb (ARMv7)
 
-# Install the package (post-install script attempts to set capabilities)
-sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
+# Install the package
+sudo apt install ./Rustnet_LinuxDEB_amd64.deb
 
-# Install dependencies if needed
-sudo apt-get install -f
+# Run with sudo (RustNet drops root privileges after initialization)
+sudo rustnet
 
-# Verify capabilities
-getcap /usr/bin/rustnet
-
-# Run without sudo if CAP_NET_RAW is present; otherwise use sudo
+# Or grant capabilities to run as a regular user (modern kernel 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**Note:** The .deb post-install script attempts to set Linux capabilities when `setcap` is available. Check with `getcap /usr/bin/rustnet`; if `CAP_NET_RAW` is absent, configure capabilities manually or run with `sudo`.
+**Note:** The GitHub Release `.deb` packages do not include a post-install script and leave `/usr/bin/rustnet` unprivileged by default. Run with `sudo rustnet` or grant capabilities manually (see [Permissions Setup](#permissions-setup)).
 
 #### RedHat/Fedora/CentOS (.rpm packages)
 
@@ -195,19 +193,20 @@ For manual installation or distributions not using COPR:
 # - Rustnet_LinuxRPM_x86_64.rpm
 # - Rustnet_LinuxRPM_aarch64.rpm
 
-# Install the package (post-install script attempts to set capabilities)
+# Install the package
+sudo dnf install ./Rustnet_LinuxRPM_x86_64.rpm
+# Or with rpm:
 sudo rpm -i Rustnet_LinuxRPM_x86_64.rpm
-# Or with dnf/yum:
-sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
 
-# Verify capabilities
-getcap /usr/bin/rustnet
+# Run with sudo (RustNet drops root privileges after initialization)
+sudo rustnet
 
-# Run without sudo if CAP_NET_RAW is present; otherwise use sudo
+# Or grant capabilities to run as a regular user (modern kernel 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**Note:** The .rpm post-install script attempts to set Linux capabilities when `setcap` is available. Check with `getcap /usr/bin/rustnet`; if `CAP_NET_RAW` is absent, configure capabilities manually or run with `sudo`.
+**Note:** The GitHub Release `.rpm` packages do not include a post-install script and leave `/usr/bin/rustnet` unprivileged by default. Run with `sudo rustnet` or grant capabilities manually (see [Permissions Setup](#permissions-setup)).
 
 #### Alpine Linux
 
