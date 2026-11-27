@@ -1,4 +1,4 @@
-<p align="center"><a href="INSTALL.md">English</a> | <strong>简体中文</strong></p>
+<p align="center"><a href="INSTALL.md">English</a> | <strong>简体中文</strong> | <a href="INSTALL.ja.md">日本語（DEB）</a></p>
 
 # 安装指南
 
@@ -148,43 +148,52 @@ sudo apt update
 
 # 安装 rustnet
 sudo apt install rustnet
-
-# 授予 Linux capabilities，以普通用户身份运行（现代内核 5.8+）
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
-rustnet
 ```
+
+如需以普通用户身份抓包，请参阅 [DEB 权限设置说明](#debianubuntu-deb-packages)。
 
 **重要：** 该 PPA 仅支持上述三个系列，因为构建需要 Rust 1.88+（项目中使用了 let-chains）。其他 Ubuntu 系列的仓库中没有足够新的 `rustc`。对于这些版本，请使用 GitHub releases 中的 [.deb 包](#debianubuntu-deb-packages)或[从源码构建](#building-from-source)。
 
 #### Debian/Ubuntu（.deb 包）<a id="debianubuntu-deb-packages"></a>
 
-用于手动安装或非 Ubuntu 的 Debian 系发行版：
+GitHub 发布的 DEB 安装的软件包名为 `rustnet-monitor`，运行命令为 `rustnet`。Ubuntu PPA 中的二进制软件包名为 `rustnet`。
 
 **自 v1.7.0 起可用：** GNU 发布二进制文件要求 glibc 2.35 或更高版本。
 ARM64 DEB 支持 Ubuntu 22.04+ 和 Debian 12/13；ARMv7 DEB 支持 Debian 12/13，
 并静态链接 libpcap，以确保在 time64 库迁移前后数据包时间戳的兼容性。
 这些修复不适用于 v1.6.0 的发布文件。
 
+下载与你的系统架构（`amd64`、`arm64` 或 `armhf`）对应的 [DEB 发布包](https://github.com/domcyrus/rustnet/releases)。在下载目录中用 APT 安装，然后检查已安装的软件包和可执行文件的权限：
+
 ```bash
-# 下载适合你架构的包：
-# - Rustnet_LinuxDEB_amd64.deb（x86_64）
-# - Rustnet_LinuxDEB_arm64.deb（ARM64）
-# - Rustnet_LinuxDEB_armhf.deb（ARMv7）
-
-# 安装包（安装后脚本会尝试设置 Linux capabilities）
-sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
-
-# 如有需要安装依赖
-sudo apt-get install -f
-
-# 验证 Linux capabilities
+sudo apt install "./Rustnet_LinuxDEB_$(dpkg --print-architecture).deb"
+dpkg-query -W rustnet-monitor
 getcap /usr/bin/rustnet
-
-# 若存在 CAP_NET_RAW，可无需 sudo 运行；否则使用 sudo
-rustnet
 ```
 
-**注意：** .deb 包的安装后脚本会在 `setcap` 可用时尝试设置 Linux capabilities。请用 `getcap /usr/bin/rustnet` 验证；若缺少 `CAP_NET_RAW`，请手动配置 capabilities 或使用 `sudo`。
+**v1.7.0：** DEB 发布包缺少设置权限的安装后脚本。如果找不到 `getcap` 或 `setcap`，请安装 `libcap2-bin`。如果 `getcap` 的输出中没有 `cap_net_raw`，请授予抓包权限：
+
+```bash
+sudo apt install libcap2-bin
+sudo setcap 'cap_net_raw+eip' /usr/bin/rustnet
+getcap /usr/bin/rustnet
+```
+
+确认 `cap_net_raw` 已生效（带有 `e` 标志）后，即可以普通用户身份运行 `rustnet`。升级后请再次检查。如需启用可选的 eBPF 进程检测，请参阅[权限设置](#permissions-setup)。
+
+**尚未发布的 DEB（GitHub 发布包和 PPA）：** 首次交互式安装时，安装程序会询问是否允许本机用户无需 sudo 即可抓包。选择 **Yes（是）** 会向 `/usr/bin/rustnet` 授予 `CAP_NET_RAW`，所有能运行该程序的用户都可以抓包。在共享主机或权限受限的服务中，可以选择 **No（否）**，让可执行文件保持无特权状态。
+
+如需更改选择，请运行 `sudo dpkg-reconfigure rustnet-monitor`（PPA 版请运行 `sudo dpkg-reconfigure rustnet`）。无人值守安装默认选择 **No**。升级时保留原选择，不会再次询问。如果在 v1.7.0 中手动设置过权限，升级后请运行一次上述命令以启用抓包。
+
+如需在无人值守安装中启用抓包，请在安装 DEB **之前**预设答案：
+
+```bash
+echo 'rustnet-monitor rustnet/allow-capture boolean true' | sudo debconf-set-selections
+sudo DEBIAN_FRONTEND=noninteractive apt-get install "./Rustnet_LinuxDEB_$(dpkg --print-architecture).deb"
+getcap /usr/bin/rustnet
+```
+
+对于 PPA 版，请将第一项改为 `rustnet`，并安装 `rustnet` 软件包。如需 eBPF 进程检测，还可在同一软件包名下预设 `rustnet/enable-ebpf boolean true`，这样启用抓包时会额外授予 `CAP_BPF` 和 `CAP_PERFMON`。如果配置时无法授予所需权限，可执行文件将保持无特权状态。
 
 #### RedHat/Fedora/CentOS（.rpm 包）<a id="redhatfedoracentos-rpm-packages"></a>
 

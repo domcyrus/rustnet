@@ -1,55 +1,50 @@
 #!/bin/sh
 set -e
 
-#DEBHELPER#
+binary=/usr/bin/rustnet
+
+enable_capabilities() {
+    for capability do
+        if ! capsh --supports="$capability" >/dev/null 2>&1 ||
+           capsh --dropped="$capability" >/dev/null 2>&1; then
+            echo "RustNet: $capability is unavailable during configuration." >&2
+            return 1
+        fi
+    done
+
+    # Join the requested capabilities for setcap without changing the caller's IFS.
+    (IFS=,; setcap "$*=ep" "$binary")
+}
+
+configure_capabilities() {
+    db_get rustnet/allow-capture
+    if [ "$RET" = true ]; then
+        db_get rustnet/enable-ebpf
+        if [ "$RET" = true ]; then
+            enable_capabilities cap_net_raw cap_bpf cap_perfmon && return 0
+        else
+            enable_capabilities cap_net_raw && return 0
+        fi
+    fi
+
+    # Reconfiguring an existing binary must also revoke a previous grant.
+    current=$(getcap "$binary")
+    if [ -n "$current" ]; then
+        setcap -r "$binary"
+    fi
+    echo "RustNet: file capabilities are disabled."
+}
 
 case "$1" in
     configure)
-        # Set narrow capabilities for packet capture and eBPF support without requiring root/sudo.
-        # If eBPF capabilities are unavailable, fall back to packet capture only;
-        # rustnet will degrade to procfs process detection rather than auto-grant CAP_SYS_ADMIN.
-        if command -v setcap >/dev/null 2>&1; then
-            # CAP_NET_RAW: read-only packet capture (non-promiscuous mode)
-            # CAP_BPF, CAP_PERFMON: eBPF support for enhanced process tracking
-            setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet 2>/dev/null || \
-                setcap 'cap_net_raw+eip' /usr/bin/rustnet || true
-        fi
+        . /usr/share/debconf/confmodule
+        configure_capabilities
+        db_stop
 
         cat <<EOF
 
-================================================================================
-RustNet has been installed with eBPF support!
-
-NETWORK PACKET CAPTURE PERMISSIONS:
-  RustNet requires specific Linux capabilities for packet capture and eBPF
-  process detection. These have been automatically set if setcap is available.
-
-  To verify permissions are set correctly:
-    getcap /usr/bin/rustnet
-
-  Expected output (Linux 5.8+ with eBPF support):
-    /usr/bin/rustnet cap_net_raw,cap_bpf,cap_perfmon=eip
-
-  Or, if eBPF capabilities were unavailable during install:
-    /usr/bin/rustnet cap_net_raw=eip
-
-  If capabilities are not set, you can manually set them:
-    # For modern Linux 5.8+ with eBPF support
-    sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
-
-    # Packet capture only (eBPF falls back to procfs)
-    sudo setcap 'cap_net_raw+eip' /usr/bin/rustnet
-
-  Note: RustNet uses read-only packet capture (no promiscuous mode).
-        CAP_NET_ADMIN is NOT required.
-
-  Alternatively, run rustnet with sudo:
-    sudo rustnet
-
-  eBPF FALLBACK:
-    If eBPF fails to load, rustnet will automatically fall back to procfs-based
-    process detection. Check the TUI Statistics panel to see which detection
-    method is active.
+To change capture permissions, run sudo dpkg-reconfigure ${DPKG_MAINTSCRIPT_PACKAGE:-rustnet-monitor}.
+Inspect the result with getcap $binary.
 
 GEOIP (OPTIONAL):
   To show country codes for remote IPs, install GeoLite2 databases:
@@ -68,5 +63,7 @@ For more information, visit: https://github.com/domcyrus/rustnet
 EOF
         ;;
 esac
+
+#DEBHELPER#
 
 exit 0

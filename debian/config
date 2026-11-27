@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+. /usr/share/debconf/confmodule
+
+db_fget rustnet/allow-capture legacy-mode-checked
+legacy_checked=$RET
+if [ "$1" = reconfigure ] || [ -z "${2:-}" ]; then
+    db_input high rustnet/allow-capture || [ "$?" = 30 ]
+    db_go
+elif [ "$legacy_checked" != true ] && [ -f /etc/rustnet/capture-mode ]; then
+    # Import a choice from a pre-debconf build once, respecting preseeding.
+    db_fget rustnet/allow-capture seen
+    if [ "$RET" = false ]; then
+        case "$(cat /etc/rustnet/capture-mode)" in
+            capture) db_set rustnet/allow-capture true ;;
+            ebpf)
+                db_set rustnet/allow-capture true
+                db_fget rustnet/enable-ebpf seen
+                if [ "$RET" = false ]; then db_set rustnet/enable-ebpf true; fi
+                ;;
+        esac
+    fi
+fi
+db_fset rustnet/allow-capture legacy-mode-checked true

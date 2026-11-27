@@ -152,6 +152,25 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
         missing.push("CAP_NET_RAW capability (required for packet capture)".to_string());
     }
 
+    // Only the installed DEB executable has a matching debconf question.
+    // A Cargo or tarball binary can coexist with the packaged one.
+    if std::env::current_exe().is_ok_and(|path| path == std::path::Path::new("/usr/bin/rustnet")) {
+        for package in ["rustnet-monitor", "rustnet"] {
+            let templates = format!("/var/lib/dpkg/info/{package}.templates");
+            if fs::read_to_string(templates).is_ok_and(|text| {
+                text.lines()
+                    .any(|line| line == "Template: rustnet/allow-capture")
+            }) {
+                return Ok(PrivilegeStatus::insufficient(
+                    missing,
+                    vec![format!(
+                        "Configure capture permissions: sudo dpkg-reconfigure {package}"
+                    )],
+                ));
+            }
+        }
+    }
+
     let mut instructions = vec![
         "Run with sudo: sudo rustnet".to_string(),
         "Set capabilities (modern Linux 5.8+, with eBPF): sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)".to_string(),

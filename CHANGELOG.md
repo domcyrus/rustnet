@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retire eligible Linux TCP/UDP flows after verified process exit and socket disappearance, including protected processes and sockets present at startup; preserve shared sockets and show cleanup status in Details (#684)
 
 ### Fixed
+- Ask about non-root capture when installing a release or PPA DEB. Unattended installs default to disabled, upgrades retain the answer, and the permissions message explains how to change it.
 - Keep a STUN `SOFTWARE` value longer than 128 bytes when the 128-byte cap splits a multi-byte UTF-8 character, instead of dropping it
 - Allow pressing `t` directly in `5 Health & Host > Findings` to toggle historic connections immediately (matching the `press t for history` prompt on closed TCP attempts) and show `t history` in the Findings status bar and help overlay
 - Link Windows synchronization APIs explicitly to prevent x86 startup failures and x64 test crashes caused by enclave DLL imports (#731)

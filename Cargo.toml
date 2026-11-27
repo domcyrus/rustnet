@@ -198,7 +198,8 @@ Features:
 - Multi-threaded processing for optimal performance
 - eBPF-enhanced process detection on Linux (with automatic fallback)
 """
-depends = "libc6 (>= 2.35), libgcc-s1, libpcap0.8 | libpcap0.8t64, libelf1 | libelf1t64, zlib1g"
+maintainer-scripts = "debian"
+depends = "debconf | debconf-2.0, libc6 (>= 2.35), libcap2-bin, libgcc-s1, libpcap0.8 | libpcap0.8t64, libelf1 | libelf1t64, zlib1g"
 section = "net"
 priority = "optional"
 assets = [
@@ -228,14 +229,13 @@ assets = [
         "644",
     ],
 ]
-conf-files = []
 
 # The release ARMv7 binary embeds libpcap to avoid the time32/time64 ABI
 # mismatch. Source builds retain the normal distribution dependencies above.
 [package.metadata.deb.variants.armhf]
 name = "rustnet-monitor"
 merge-assets.append = [["resources/packaging/linux/libpcap-LICENSE", "usr/share/doc/rustnet-monitor/libpcap-LICENSE", "644"]]
-depends = "libc6 (>= 2.35), libgcc-s1, libelf1 | libelf1t64, zlib1g"
+depends = "debconf | debconf-2.0, libc6 (>= 2.35), libcap2-bin, libgcc-s1, libelf1 | libelf1t64, zlib1g"
 
 [package.metadata.generate-rpm]
 assets = [

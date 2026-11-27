@@ -20,6 +20,7 @@ on:
       - 'build.rs'
       - 'Cross.toml'
       - 'resources/packaging/linux/**'
+      - 'debian/**'
       - 'scripts/package-deb.sh'
       - 'scripts/verify-linux-abi.py'
       - 'scripts/test-deb-install.sh'

@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import socket
 import struct
@@ -9,6 +10,7 @@ import threading
 import time
 
 binary, interface = sys.argv[1:]
+assert os.geteuid() != 0, 'Run the package capture test as an ordinary user'
 with tempfile.TemporaryDirectory(prefix='rustnet-smoke-') as directory:
     directory = Path(directory)
     listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -62,4 +64,5 @@ with tempfile.TemporaryDirectory(prefix='rustnet-smoke-') as directory:
     assert records, 'No event log records'
     for path in [pcap, events]:
         assert path.stat().st_mode & 0o077 == 0, (path, oct(path.stat().st_mode))
-    print('PASS: timed headless shutdown, loopback capture, JSON snapshot, private PCAP and event log exports')
+    print(f'PASS: UID {os.geteuid()} captured loopback traffic on {interface} '
+          f'({len(data)} PCAP bytes), with timed shutdown, a JSON snapshot and private exports')

@@ -1,4 +1,4 @@
-<p align="center"><strong>English</strong> | <a href="INSTALL.zh-CN.md">简体中文</a> </p>
+<p align="center"><strong>English</strong> | <a href="INSTALL.zh-CN.md">简体中文</a> | <a href="INSTALL.ja.md">日本語（DEB）</a></p>
 
 # Installation Guide
 
@@ -148,43 +148,52 @@ sudo apt update
 
 # Install rustnet
 sudo apt install rustnet
-
-# Grant capabilities to run as a regular user (modern kernel 5.8+)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
-rustnet
 ```
+
+For regular-user capture, see the [DEB permission instructions](#debianubuntu-deb-packages).
 
 **Important:** The PPA supports only the three series listed above because the build requires Rust 1.88+ (used for let-chains in the project). Other Ubuntu series don't ship a recent enough `rustc` in their repositories. For those, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
 
 #### Debian/Ubuntu (.deb packages)
 
-For manual installation or non-Ubuntu Debian-based distributions:
+The GitHub release DEB installs the Debian package `rustnet-monitor` and the command `rustnet`. The Ubuntu PPA binary package is named `rustnet`.
 
 **Available since v1.7.0:** GNU release binaries require glibc 2.35
 or newer. ARM64 DEBs support Ubuntu 22.04+ and Debian 12/13; ARMv7 DEBs
 support Debian 12/13 and embed libpcap to keep its packet timestamps compatible
 across the time64 library transition. These fixes do not apply to v1.6.0 assets.
 
+Download the [release DEB](https://github.com/domcyrus/rustnet/releases) for your architecture (`amd64`, `arm64`, or `armhf`). From the download directory, install it with APT and check the installed package and its file capabilities:
+
 ```bash
-# Download the appropriate package for your architecture:
-# - Rustnet_LinuxDEB_amd64.deb (x86_64)
-# - Rustnet_LinuxDEB_arm64.deb (ARM64)
-# - Rustnet_LinuxDEB_armhf.deb (ARMv7)
-
-# Install the package (post-install script attempts to set capabilities)
-sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
-
-# Install dependencies if needed
-sudo apt-get install -f
-
-# Verify capabilities
+sudo apt install "./Rustnet_LinuxDEB_$(dpkg --print-architecture).deb"
+dpkg-query -W rustnet-monitor
 getcap /usr/bin/rustnet
-
-# Run without sudo if CAP_NET_RAW is present; otherwise use sudo
-rustnet
 ```
 
-**Note:** The .deb post-install script attempts to set Linux capabilities when `setcap` is available. Check with `getcap /usr/bin/rustnet`; if `CAP_NET_RAW` is absent, configure capabilities manually or run with `sudo`.
+**v1.7.0:** The release DEB omits the capability setup script. Install `libcap2-bin` if `getcap` or `setcap` is missing. If `getcap` shows no `cap_net_raw`, grant capture permission:
+
+```bash
+sudo apt install libcap2-bin
+sudo setcap 'cap_net_raw+eip' /usr/bin/rustnet
+getcap /usr/bin/rustnet
+```
+
+Once `cap_net_raw` is present and effective (`e`), start `rustnet` as your regular user. Recheck after upgrading. For optional eBPF process detection, see [Permissions Setup](#permissions-setup).
+
+**Unreleased DEBs (release and PPA).** On a fresh interactive install, choose **Yes** when asked whether local users may capture without sudo. This grants `CAP_NET_RAW` to `/usr/bin/rustnet` so anyone who can run it can capture traffic. Choose **No** to leave the executable unprivileged, for example on a shared machine or in a hardened service.
+
+To change your answer, run `sudo dpkg-reconfigure rustnet-monitor` (PPA: `sudo dpkg-reconfigure rustnet`). Unattended installs default to **No**. Upgrades keep the saved answer without asking again. When upgrading from v1.7.0 with manually assigned capabilities, use the reconfiguration command once to opt in.
+
+For an unattended install with capture enabled, preseed the answer **before** installing the DEB:
+
+```bash
+echo 'rustnet-monitor rustnet/allow-capture boolean true' | sudo debconf-set-selections
+sudo DEBIAN_FRONTEND=noninteractive apt-get install "./Rustnet_LinuxDEB_$(dpkg --print-architecture).deb"
+getcap /usr/bin/rustnet
+```
+
+For the PPA, use `rustnet` as the first field and install the `rustnet` package. For eBPF process detection, also preseed `rustnet/enable-ebpf boolean true` under the same package name. This adds `CAP_BPF` and `CAP_PERFMON` when capture is enabled. If a requested capability is unavailable during configuration, the executable is left unprivileged.
 
 #### RedHat/Fedora/CentOS (.rpm packages)
 

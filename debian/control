@@ -21,9 +21,9 @@ Package: rustnet
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends},
          ${misc:Depends},
+         libcap2-bin,
          libpcap0.8,
          libelf1
-Recommends: libcap2-bin
 Description: Cross-platform network monitoring terminal UI tool
  RustNet provides real-time visibility into network connections with
  detailed state information, connection lifecycle management, deep

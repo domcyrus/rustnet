@@ -14,6 +14,10 @@ export RUSTNET_ASSET_DIR = $(CURDIR)/debian/tmp/assets
 %:
 	dh $@
 
+# The release DEB and PPA share the debconf purge code in debian/postrm.
+override_dh_installdebconf:
+	dh_installdebconf --noscripts
+
 override_dh_auto_clean:
 	$(CARGO) clean || true
 	rm -rf target vendor .cargo

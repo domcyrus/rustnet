@@ -1,0 +1,17 @@
+Template: rustnet/allow-capture
+Type: boolean
+Default: false
+Description: Allow local users to capture network traffic with RustNet without sudo?
+ Enabling this grants CAP_NET_RAW to /usr/bin/rustnet. Anyone who can run
+ this executable can use RustNet to observe traffic on local interfaces.
+Description-zh_CN.UTF-8: 允许本机用户无需 sudo 即可使用 RustNet 抓包吗？
+ 启用后会向 /usr/bin/rustnet 授予 CAP_NET_RAW。所有能运行此程序的用户都可以通过 RustNet 查看本机网络接口上的流量。
+Description-ja.UTF-8: ローカルユーザーが sudo を使わずに RustNet でパケットをキャプチャできるようにしますか？
+ 有効にすると /usr/bin/rustnet に CAP_NET_RAW が付与されます。このプログラムを実行できるすべてのユーザーが、RustNet でローカルインターフェイスの通信を観測できます。
+
+Template: rustnet/enable-ebpf
+Type: boolean
+Default: false
+Description: Also grant eBPF process detection capabilities?
+ This advanced setting grants CAP_BPF and CAP_PERFMON when non-root
+ capture is enabled.

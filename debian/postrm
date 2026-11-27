@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = purge ] && [ -f /usr/share/debconf/confmodule ]; then
+    . /usr/share/debconf/confmodule
+    db_purge
+fi
+
+#DEBHELPER#
