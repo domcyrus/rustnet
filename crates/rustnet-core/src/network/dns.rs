@@ -15,6 +15,31 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+/// Returns `true` for addresses that must never be looked up via `/etc/hosts`
+/// or reverse DNS (PTR).
+///
+/// Unspecified addresses (`0.0.0.0`, `::`) are commonly used as sinkhole targets
+/// in `/etc/hosts` ad/tracker blocklists, which would otherwise cause legitimate
+/// traffic such as DHCP client packets (`0.0.0.0:68`) to resolve to an arbitrary
+/// blocked domain. IPv4-mapped IPv6 addresses (`::ffff:0:0/96`) inherit the
+/// rules of their embedded IPv4 address.
+fn should_skip_reverse_lookup(ip: IpAddr) -> bool {
+    let effective = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        IpAddr::V4(_) => ip,
+    };
+
+    matches!(
+        classify(effective),
+        Scope::Unspecified
+            | Scope::Loopback
+            | Scope::LinkLocal
+            | Scope::Broadcast
+            | Scope::Multicast
+            | Scope::Discard
+    )
+}
+
 /// Resolution state for a cached entry
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolutionState {
@@ -213,7 +238,15 @@ impl DnsResolver {
 
     fn start_with_spawner(
         &self,
+        spawn: impl FnMut(String, Worker) -> std::io::Result<JoinHandle<()>>,
+    ) -> anyhow::Result<()> {
+        self.start_with_spawner_and_lookup(spawn, |ip| Ok(lookup_addr(&ip)?))
+    }
+
+    fn start_with_spawner_and_lookup(
+        &self,
         mut spawn: impl FnMut(String, Worker) -> std::io::Result<JoinHandle<()>>,
+        lookup: impl Fn(IpAddr) -> std::io::Result<String> + Send + Sync + 'static,
     ) -> anyhow::Result<()> {
         let mut lifecycle = self
             .lifecycle
@@ -228,12 +261,14 @@ impl DnsResolver {
         // all be joined without starting a potentially blocking resolver call.
         let startup_gate = Arc::new((Mutex::new(None), Condvar::new()));
         let mut handles = Vec::with_capacity(self.config.resolver_threads + 1);
+        let lookup = Arc::new(lookup);
 
         for index in 0..self.config.resolver_threads {
             let rx = self.request_rx.clone();
             let cache = Arc::clone(&self.cache);
             let should_stop = Arc::clone(&self.should_stop);
             let worker_gate = Arc::clone(&startup_gate);
+            let lookup = Arc::clone(&lookup);
 
             let worker: Worker = Box::new(move || {
                 if !wait_for_startup(&worker_gate) {
@@ -254,7 +289,7 @@ impl DnsResolver {
                                 continue;
                             }
 
-                            let result = match lookup_addr(&request.ip) {
+                            let result = match lookup(request.ip) {
                                 Ok(hostname) => {
                                     debug!("Resolved {} -> {}", request.ip, hostname);
                                     CachedHostname::resolved(hostname)
@@ -369,9 +404,7 @@ impl DnsResolver {
 
     /// Request resolution for an IP address (non-blocking)
     pub fn request_resolution(&self, ip: IpAddr) {
-        if self.should_stop.load(Ordering::Acquire)
-            || matches!(classify(ip), Scope::Loopback | Scope::LinkLocal)
-        {
+        if self.should_stop.load(Ordering::Acquire) || should_skip_reverse_lookup(ip) {
             return;
         }
 
@@ -407,6 +440,10 @@ impl DnsResolver {
 
     /// Get hostname for IP if resolved, otherwise return None
     pub fn get_hostname(&self, ip: &IpAddr) -> Option<String> {
+        if should_skip_reverse_lookup(*ip) {
+            return None;
+        }
+
         self.request_resolution(*ip);
 
         self.cache.get(ip).and_then(|entry| {
@@ -817,5 +854,112 @@ mod tests {
         assert_eq!(config.request_queue_capacity, 10000);
         assert_eq!(config.resolver_threads, 4);
         assert_eq!(config.shutdown_timeout, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn special_purpose_ips_are_not_queued_for_reverse_lookup() {
+        let resolver = DnsResolver::new_deferred(DnsResolverConfig {
+            resolver_threads: 0,
+            ..Default::default()
+        });
+
+        for addr in [
+            "0.0.0.0",
+            "::",
+            "::ffff:0.0.0.0",
+            "127.0.0.1",
+            "::1",
+            "::ffff:127.0.0.1",
+            "169.254.1.1",
+            "fe80::1",
+            "::ffff:169.254.1.1",
+            "255.255.255.255",
+            "::ffff:255.255.255.255",
+            "224.0.0.251",
+            "ff02::1",
+            "::ffff:224.0.0.251",
+            "100::1",
+        ] {
+            let ip: IpAddr = addr.parse().unwrap();
+            assert!(resolver.get_hostname(&ip).is_none(), "{addr} skipped");
+        }
+
+        assert!(resolver.request_rx.is_empty());
+        assert!(resolver.cache.is_empty());
+    }
+
+    #[test]
+    fn unspecified_ips_are_never_resolved_while_normal_ips_resolve() {
+        let resolver = DnsResolver::new_deferred(DnsResolverConfig {
+            resolver_threads: 1,
+            ..Default::default()
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_worker = Arc::clone(&seen);
+
+        let expected: [(&str, &str); 7] = [
+            ("192.168.1.10", "router.lan"),
+            ("10.0.0.5", "workstation.internal"),
+            ("fd00::10", "nas.ula.lan"),
+            ("100.64.0.5", "node.ts.net"),
+            ("93.184.216.34", "example.com"),
+            ("2606:4700:4700::1111", "one.one.one.one"),
+            ("::ffff:192.168.1.10", "mapped-router.lan"),
+        ];
+
+        resolver
+            .start_with_spawner_and_lookup(
+                |name, worker| thread::Builder::new().name(name).spawn(worker),
+                move |ip| {
+                    seen_worker.lock().unwrap().push(ip);
+                    let s = ip.to_string();
+                    if matches!(s.as_str(), "0.0.0.0" | "::" | "::ffff:0.0.0.0") {
+                        return Ok("ad-tracker.blocked.example".to_string());
+                    }
+                    expected
+                        .iter()
+                        .find(|(addr, _)| *addr == s)
+                        .map(|(_, host)| (*host).to_string())
+                        .ok_or_else(|| {
+                            std::io::Error::new(std::io::ErrorKind::NotFound, "no record")
+                        })
+                },
+            )
+            .unwrap();
+
+        let unspecified: [IpAddr; 3] = [
+            "0.0.0.0".parse().unwrap(),
+            "::".parse().unwrap(),
+            "::ffff:0.0.0.0".parse().unwrap(),
+        ];
+        for ip in unspecified {
+            assert!(resolver.get_hostname(&ip).is_none());
+        }
+
+        for (addr, host) in expected {
+            let ip: IpAddr = addr.parse().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let resolved = loop {
+                if let Some(name) = resolver.get_hostname(&ip) {
+                    break Some(name);
+                }
+                if Instant::now() >= deadline {
+                    break None;
+                }
+                thread::sleep(Duration::from_millis(5));
+            };
+            assert_eq!(resolved.as_deref(), Some(host), "resolve {addr}");
+        }
+
+        let looked_up = seen.lock().unwrap();
+        for ip in unspecified {
+            assert!(!looked_up.contains(&ip), "lookup called for {ip}");
+            resolver
+                .cache
+                .insert(ip, CachedHostname::resolved("sinkholed.example".into()));
+            assert!(resolver.get_hostname(&ip).is_none());
+        }
+
+        assert_eq!(resolver.stop().timed_out, 0);
     }
 }

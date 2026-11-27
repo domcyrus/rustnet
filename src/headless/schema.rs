@@ -11,7 +11,7 @@ use serde_json::value::RawValue;
 use crate::app::{App, AppStats, StopReport};
 use crate::network::findings::FindingsReport;
 use crate::network::time_window::TimeWindow;
-use crate::network::types::{AttributionSource, Connection, ConnectionKey};
+use crate::network::types::{AddrKind, AttributionSource, Connection, ConnectionKey, Protocol};
 
 use super::{SCHEMA_VERSION, TerminationReason};
 
@@ -85,9 +85,17 @@ impl SnapshotEnvelope {
                     snapshot.details.network_context = NetworkContextSnapshot {
                         local_hostname: resolver
                             .as_ref()
+                            .filter(|_| {
+                                connection.protocol != Protocol::Arp
+                                    && connection.local_addr_kind == AddrKind::Unicast
+                            })
                             .and_then(|r| r.get_hostname(&connection.local_addr.ip())),
                         remote_hostname: resolver
                             .as_ref()
+                            .filter(|_| {
+                                connection.protocol != Protocol::Arp
+                                    && connection.remote_addr_kind == AddrKind::Unicast
+                            })
                             .and_then(|r| r.get_hostname(&connection.remote_addr.ip())),
                         local_mac: app
                             .lookup_neighbor(connection.local_addr.ip())

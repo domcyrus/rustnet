@@ -286,12 +286,17 @@ pub(super) fn log_connection_event(
     );
 
     // ARP connections are skipped: DNS lookups generate ARP traffic, so
-    // resolving them would feed back on itself.
+    // resolving them would feed back on itself. Broadcast and multicast
+    // endpoints (including subnet-directed broadcasts) never name a host.
     if let Some(resolver) = dns_resolver.filter(|_| conn.protocol != Protocol::Arp) {
-        if let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip()) {
+        if conn.remote_addr_kind == AddrKind::Unicast
+            && let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip())
+        {
             event["destination_hostname"] = json!(hostname);
         }
-        if let Some(hostname) = resolver.get_hostname(&conn.local_addr.ip()) {
+        if conn.local_addr_kind == AddrKind::Unicast
+            && let Some(hostname) = resolver.get_hostname(&conn.local_addr.ip())
+        {
             event["source_hostname"] = json!(hostname);
         }
     }
