@@ -1109,6 +1109,10 @@ impl App {
             history.clear();
         }
 
+        if let Ok(mut rates) = self.conn_rate_history.write() {
+            rates.clear();
+        }
+
         if let Ok(mut activity) = self.process_activity.write() {
             activity.clear();
         }

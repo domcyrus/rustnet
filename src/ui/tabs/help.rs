@@ -263,6 +263,10 @@ const CONNECTION_DISPLAY: &[HelpRow] = &[
     ("R2/T1", "Health for UDP requests: retries and timeouts"),
     ("ok, -", "Healthy connection, or an ungraded protocol"),
     ("R+", "Counts of 10 or more; Details has the exact numbers"),
+    (
+        "Trend",
+        "8s throughput sparkline; color shows RX, TX, or mixed traffic",
+    ),
 ];
 
 const DETAILS_KEYS: &[HelpRow] = &[

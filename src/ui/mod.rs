@@ -143,6 +143,7 @@ pub use tabs::health::Finding as HealthFinding;
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
 mod connection_table;
+mod trend;
 
 mod sorting;
 pub use sorting::sort_connections;

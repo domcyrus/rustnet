@@ -21,9 +21,9 @@ use std::time::{Duration, SystemTime};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Row, Table};
+use ratatui::widgets::{Cell, Row, Table, TableState};
 
 use std::net::SocketAddr;
 
@@ -33,6 +33,7 @@ use crate::ui::{
     ClickAction, ClickableRegions, NONE_PLACEHOLDER, RateUnit, SortColumn, UiState, dpi_color,
     format::{format_countdown, format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
     state_color, theme,
+    trend::{IDLE as TREND_IDLE, TREND_SAMPLES, trend_line},
     widgets::scrollbar::draw_scrollbar,
 };
 
@@ -56,6 +57,8 @@ const APP_WIDTH_COMPACT: u16 = 14;
 const STATE_WIDTH: u16 = 11; // longest TCP state: "ESTABLISHED" (11)
 const RTT_WIDTH: u16 = 7; // "234ms", "1.2s"; header "RTT ↓" when sorted
 const HEALTH_WIDTH: u16 = 5; // "R3/O1", "R1/V0", or "R2/T1"
+/// One cell per second of history in the Trend sparkline.
+const TREND_WIDTH: u16 = TREND_SAMPLES as u16;
 const BANDWIDTH_WIDTH: u16 = 11;
 /// Floor for the Remote column; bare "ip:port" for IPv4 fits in 21.
 const REMOTE_MIN_WIDTH: u16 = 21;
@@ -85,6 +88,8 @@ pub(in crate::ui) enum ColumnId {
     Rtt,
     /// Protocol-aware observable health badge.
     Health,
+    /// Per-second throughput sparkline over the last few seconds.
+    Trend,
     Bandwidth,
 }
 
@@ -109,6 +114,7 @@ impl Column {
             ColumnId::State => Some(SortColumn::State),
             ColumnId::Rtt => Some(SortColumn::Rtt),
             ColumnId::Health => Some(SortColumn::Health),
+            ColumnId::Trend => None,
             ColumnId::Bandwidth => Some(SortColumn::BandwidthTotal),
         };
         Self { id, width, sort }
@@ -130,10 +136,12 @@ fn table_chrome(column_count: usize) -> u16 {
 /// never affects the layout, so columns stay put while scrolling.
 ///
 /// Too narrow: whole columns are hidden in a fixed degradation order
-/// (Location → Service → Local → RTT → Health → Application shrinks to
-/// compact → State) rather than truncating cells. The floor is Process ·
-/// Remote · App · Bandwidth; below that ratatui clips columns from the
-/// right.
+/// (Location → Service → Trend → Local → RTT → Health → Application
+/// shrinks to compact → State) rather than truncating cells. Trend
+/// outranks Service, which mostly repeats what the App column already
+/// says ("https" next to "TCP·HTTPS"), and yields to everything else.
+/// The floor is Process · Remote · App · Bandwidth; below that ratatui
+/// clips columns from the right.
 ///
 /// Width to spare: the surplus is distributed to the flexible columns
 /// proportionally to their weight (Remote 4 · App 3 · Process 2 ·
@@ -155,6 +163,7 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
         Column::new(ColumnId::State, STATE_WIDTH),
         Column::new(ColumnId::Rtt, RTT_WIDTH),
         Column::new(ColumnId::Health, HEALTH_WIDTH),
+        Column::new(ColumnId::Trend, TREND_WIDTH),
         Column::new(ColumnId::Bandwidth, BANDWIDTH_WIDTH),
     ]);
 
@@ -166,6 +175,7 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
     for id in [
         ColumnId::Location,
         ColumnId::Service,
+        ColumnId::Trend,
         ColumnId::Local,
         ColumnId::Rtt,
         ColumnId::Health,
@@ -354,6 +364,7 @@ fn header_label(id: ColumnId, ui_state: &UiState) -> &'static str {
         ColumnId::State => "State",
         ColumnId::Rtt => "RTT",
         ColumnId::Health => "Hlth",
+        ColumnId::Trend => "Trend",
         ColumnId::Bandwidth => "", // built as spans in build_header
     }
 }
@@ -574,6 +585,7 @@ pub(in crate::ui) fn connection_row<'a>(
             }
             ColumnId::Rtt => rtt_cell(conn, paint.signal()),
             ColumnId::Health => health_cell(conn, paint.signal()),
+            ColumnId::Trend => trend_cell(conn, ui_state, paint.signal(), selected),
             ColumnId::Bandwidth => {
                 connection_bandwidth_cell(conn, paint.signal(), ui_state.rate_unit)
             }
@@ -585,6 +597,23 @@ pub(in crate::ui) fn connection_row<'a>(
         Some(style) => row.style(style),
         None => row,
     }
+}
+
+/// Trend cell: the connection's per-second throughput sparkline from the
+/// UI-side [`TrendHistory`](crate::ui::trend::TrendHistory). Historic
+/// rows have no live traffic to chart and stay blank, like their "n/a"
+/// bandwidth says.
+fn trend_cell<'a>(
+    conn: &Connection,
+    ui_state: &UiState,
+    paint: CellPaint,
+    selected: bool,
+) -> Cell<'a> {
+    if conn.is_historic {
+        return Cell::from("");
+    }
+    let samples = ui_state.trend_history.samples(conn);
+    Cell::from(trend_line(samples, paint.colored(), selected))
 }
 
 /// Bandwidth cell for one connection row: "n/a" once historic, the
@@ -898,6 +927,73 @@ pub(in crate::ui) fn table_rows_area(area: Rect) -> Rect {
     )
 }
 
+/// Strip `REVERSED` (and `BOLD`) from active Trend sparkline bars on the
+/// selected row when the active theme highlights rows with `REVERSED`
+/// instead of a background tint (`!theme::selection_has_bg()`).
+///
+/// `Table` patches `row_highlight_style` onto the whole row after
+/// rendering its cells. Reversing eighth-block bar glyphs (`▁`..`█`)
+/// turns low bars into tall inverted blocks and full bars into dark holes.
+/// Idle track cells (`·`) and blank historic cells stay reversed so the
+/// selection highlight band stays continuous across quiet rows.
+pub(in crate::ui) fn preserve_trend_glyphs_on_selection(
+    f: &mut Frame,
+    table_area: Rect,
+    columns: &[Column],
+    state: &TableState,
+) {
+    if theme::selection_has_bg() {
+        return;
+    }
+    let Some(visible_row) = state
+        .selected()
+        .and_then(|selected| selected.checked_sub(state.offset()))
+    else {
+        return;
+    };
+    let Some((offset, width)) = trend_column_span(columns) else {
+        return;
+    };
+    // Header (1 row) + bottom margin (1 row) sit above row 0.
+    let Some(row_y) = table_area
+        .y
+        .checked_add(2)
+        .and_then(|y| y.checked_add(u16::try_from(visible_row).ok()?))
+    else {
+        return;
+    };
+    if row_y >= table_area.y.saturating_add(table_area.height) {
+        return;
+    }
+    let start_x = table_area.x.saturating_add(offset);
+    let end_x = start_x
+        .saturating_add(width)
+        .min(table_area.x.saturating_add(table_area.width));
+    let buf = f.buffer_mut();
+    for x in start_x..end_x {
+        if let Some(cell) = buf.cell_mut((x, row_y))
+            && cell.symbol() != " "
+            && cell.symbol() != TREND_IDLE
+        {
+            cell.modifier.remove(Modifier::REVERSED | Modifier::BOLD);
+        }
+    }
+}
+
+/// Horizontal `(offset, width)` of the Trend column within a rendered
+/// `Table` area that reserves 1 cell for [`SELECTION_BAR`] and uses
+/// `column_spacing(1)`.
+fn trend_column_span(columns: &[Column]) -> Option<(u16, u16)> {
+    let mut x: u16 = 1; // SELECTION_BAR highlight symbol
+    for col in columns {
+        if col.id == ColumnId::Trend {
+            return Some((x, col.width));
+        }
+        x = x.saturating_add(col.width).saturating_add(1);
+    }
+    None
+}
+
 /// Render a windowed connection table plus its scrollbar and click
 /// regions: the shared back half of the flat and grouped Overview
 /// lists. `rows` holds only the visible window described by `window`.
@@ -906,7 +1002,7 @@ pub(in crate::ui) fn render_row_table(
     area: Rect,
     header: Row<'_>,
     rows: Vec<Row<'_>>,
-    widths: &[Constraint],
+    columns: &[Column],
     window: RowWindow,
     click_regions: &mut ClickableRegions,
 ) {
@@ -917,18 +1013,20 @@ pub(in crate::ui) fn render_row_table(
         visible_rows,
     } = window;
 
-    let mut state = ratatui::widgets::TableState::default();
+    let mut state = TableState::default();
     if let Some(selected_index) = selected {
         state.select(Some(selected_index.saturating_sub(scroll_offset)));
     }
 
-    let connections_table = Table::new(rows, widths)
+    let widths = column_constraints(columns);
+    let connections_table = Table::new(rows, &widths)
         .header(header)
         .row_highlight_style(theme::row_highlight())
         .highlight_symbol(Line::styled(SELECTION_BAR, theme::fg(theme::accent())));
 
     let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
     f.render_stateful_widget(connections_table, table_area, &mut state);
+    preserve_trend_glyphs_on_selection(f, table_area, columns, &state);
 
     // Scrollbar tracks the row region (below header + margin).
     let rows_area = table_rows_area(area);
@@ -1034,8 +1132,8 @@ mod tests {
     }
 
     // Width math for the full set with Location at floor widths:
-    // 22+21+18+4+10+24+11+7+5+11 = 133 content + chrome(10 cols) = 10 -> 143.
-    const FULL_WIDTH: u16 = 143;
+    // 22+21+18+4+10+24+11+7+5+8+11 = 141 content + chrome(11 cols) = 11 -> 152.
+    const FULL_WIDTH: u16 = 152;
 
     #[test]
     fn select_columns_shows_everything_when_wide() {
@@ -1052,6 +1150,7 @@ mod tests {
                 ColumnId::State,
                 ColumnId::Rtt,
                 ColumnId::Health,
+                ColumnId::Trend,
                 ColumnId::Bandwidth,
             ]
         );
@@ -1065,9 +1164,19 @@ mod tests {
         assert!(!ids(&cols).contains(&ColumnId::Location));
         assert!(ids(&cols).contains(&ColumnId::Service));
 
-        // 22+21+18+10+24+11+7+5+11 = 129 + chrome(9) = 138 -> below that Service goes.
-        let cols = select_columns(137, true);
+        // 22+21+18+10+24+11+7+5+8+11 = 137 + chrome(10) = 147 -> below that Service goes.
+        let cols = select_columns(147, true);
+        assert!(ids(&cols).contains(&ColumnId::Service));
+        let cols = select_columns(146, true);
         assert!(!ids(&cols).contains(&ColumnId::Service));
+        assert!(ids(&cols).contains(&ColumnId::Trend));
+        assert!(ids(&cols).contains(&ColumnId::Local));
+
+        // 22+21+18+24+11+7+5+8+11 = 127 + chrome(9) = 136 -> below that Trend goes.
+        let cols = select_columns(136, true);
+        assert!(ids(&cols).contains(&ColumnId::Trend));
+        let cols = select_columns(135, true);
+        assert!(!ids(&cols).contains(&ColumnId::Trend));
         assert!(ids(&cols).contains(&ColumnId::Local));
 
         // 22+21+18+24+11+7+5+11 = 119 + chrome(8) = 127 -> below that Local goes.
@@ -1130,6 +1239,7 @@ mod tests {
         assert_eq!(width_of(&cols, ColumnId::State), STATE_WIDTH);
         assert_eq!(width_of(&cols, ColumnId::Rtt), RTT_WIDTH);
         assert_eq!(width_of(&cols, ColumnId::Health), HEALTH_WIDTH);
+        assert_eq!(width_of(&cols, ColumnId::Trend), TREND_WIDTH);
         assert_eq!(width_of(&cols, ColumnId::Bandwidth), BANDWIDTH_WIDTH);
         // The grid spans the full width exactly, so the Bandwidth
         // column sits flush against the right edge.
@@ -1558,5 +1668,155 @@ mod tests {
         dns.protocol_health.request_retry_count = 3;
         dns.protocol_health.request_timeout_count = 1;
         assert_eq!(health_counts(&dns), Some((HealthKind::Transaction, 3, 1)));
+    }
+
+    #[test]
+    fn selected_trend_cell_drops_reversed_for_active_bars_only() {
+        use crate::ui::test_support::render_buffer;
+        use std::time::Instant;
+
+        let mut ui_state = UiState::default();
+        let columns = select_columns(138, false);
+        let (trend_x, trend_width) = trend_column_span(&columns).expect("Trend visible");
+        assert!(!theme::selection_has_bg());
+
+        let mut active = local_tcp(45000, "firefox");
+        let idle = local_tcp(45001, "idle");
+        let mut historic = local_tcp(45002, "old");
+        historic.is_historic = true;
+
+        let start = Instant::now();
+        let wall = SystemTime::now();
+        ui_state
+            .trend_history
+            .record(start, wall, "", |visit| visit(&active, true));
+        active.bytes_received += 4_096;
+        ui_state.trend_history.record(
+            start + Duration::from_secs(1),
+            wall + Duration::from_secs(1),
+            "",
+            |visit| visit(&active, true),
+        );
+
+        // Active row: the 7 leading idle dots stay REVERSED so the highlight band
+        // is continuous, while the 1 active bar on the right strips REVERSED.
+        let mut regions = ClickableRegions::default();
+        let buf = render_buffer(140, 6, |f| {
+            let rows = vec![connection_row(
+                &active, &columns, &ui_state, None, None, true,
+            )];
+            render_row_table(
+                f,
+                Rect::new(0, 0, 140, 6),
+                build_header(&columns, &ui_state),
+                rows,
+                &columns,
+                RowWindow {
+                    selected: Some(0),
+                    scroll_offset: 0,
+                    total_rows: 1,
+                    visible_rows: 4,
+                },
+                &mut regions,
+            );
+        });
+        assert!(buf[(2, 2)].modifier.contains(Modifier::REVERSED));
+        for x in trend_x..trend_x + trend_width - 1 {
+            assert!(
+                buf[(x, 2)].modifier.contains(Modifier::REVERSED),
+                "idle dot at x={x} should stay reversed"
+            );
+        }
+        assert!(
+            !buf[(trend_x + trend_width - 1, 2)]
+                .modifier
+                .contains(Modifier::REVERSED),
+            "active bar should not be reversed"
+        );
+
+        // Idle and historic rows keep REVERSED across the entire Trend cell.
+        for conn in [&idle, &historic] {
+            let mut regions = ClickableRegions::default();
+            let buf = render_buffer(140, 6, |f| {
+                let rows = vec![connection_row(conn, &columns, &ui_state, None, None, true)];
+                render_row_table(
+                    f,
+                    Rect::new(0, 0, 140, 6),
+                    build_header(&columns, &ui_state),
+                    rows,
+                    &columns,
+                    RowWindow {
+                        selected: Some(0),
+                        scroll_offset: 0,
+                        total_rows: 1,
+                        visible_rows: 4,
+                    },
+                    &mut regions,
+                );
+            });
+            for x in trend_x..trend_x + trend_width {
+                assert!(
+                    buf[(x, 2)].modifier.contains(Modifier::REVERSED),
+                    "idle/historic column x={x} should stay reversed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selected_trend_cell_tracks_table_scroll_offset() {
+        use crate::ui::test_support::render_buffer;
+        use std::time::Instant;
+
+        let mut ui_state = UiState::default();
+        let columns = select_columns(138, false);
+        let widths = column_constraints(&columns);
+        let (trend_x, trend_width) = trend_column_span(&columns).expect("Trend visible");
+        assert!(!theme::selection_has_bg());
+
+        let mut conns = [
+            local_tcp(45010, "one"),
+            local_tcp(45011, "two"),
+            local_tcp(45012, "three"),
+        ];
+        let start = Instant::now();
+        let wall = SystemTime::now();
+        ui_state
+            .trend_history
+            .record(start, wall, "", |visit| visit(&conns[2], true));
+        conns[2].bytes_received += 4_096;
+        ui_state.trend_history.record(
+            start + Duration::from_secs(1),
+            wall + Duration::from_secs(1),
+            "",
+            |visit| visit(&conns[2], true),
+        );
+
+        // Height 3 = 2 header rows + 1 data row, so selecting index 2 forces
+        // ratatui's TableState::offset() to advance to 2.
+        let area = Rect::new(0, 0, 138, 3);
+        let buf = render_buffer(138, 3, |f| {
+            let rows: Vec<Row> = conns
+                .iter()
+                .enumerate()
+                .map(|(i, conn)| connection_row(conn, &columns, &ui_state, None, None, i == 2))
+                .collect();
+            let mut state = TableState::default();
+            state.select(Some(2));
+            let table = Table::new(rows, &widths)
+                .header(build_header(&columns, &ui_state))
+                .row_highlight_style(theme::row_highlight())
+                .highlight_symbol(Line::styled(SELECTION_BAR, theme::fg(theme::accent())));
+            f.render_stateful_widget(table, area, &mut state);
+            assert_eq!(state.offset(), 2);
+            preserve_trend_glyphs_on_selection(f, area, &columns, &state);
+        });
+        assert!(buf[(2, 2)].modifier.contains(Modifier::REVERSED));
+        assert!(
+            !buf[(trend_x + trend_width - 1, 2)]
+                .modifier
+                .contains(Modifier::REVERSED),
+            "scrolled active Trend bar should not be reversed"
+        );
     }
 }

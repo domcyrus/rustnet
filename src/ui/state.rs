@@ -678,6 +678,9 @@ pub struct UiState {
     /// A scrolling graph was rendered in the current frame.
     pub graph_animation_visible: Cell<bool>,
     pub(crate) bar_animations: super::widgets::glow_bar::BarAnimations,
+    /// Per-connection rate history behind the connection tables' Trend
+    /// column, sampled from live counters on the one-second UI timer.
+    pub(crate) trend_history: super::trend::TrendHistory,
     /// Scroll state for the Host tab's DNS question table.
     pub dns_questions_scroll: PaneScroll,
     /// Active Host tab subview.
@@ -757,6 +760,7 @@ impl Default for UiState {
             graph_compact: Cell::new(false),
             graph_animation_visible: Cell::new(false),
             bar_animations: Default::default(),
+            trend_history: Default::default(),
             dns_questions_scroll: PaneScroll::default(),
             host_view: HostView::default(),
             dns_sort: DnsSort::default(),

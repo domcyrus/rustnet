@@ -118,6 +118,7 @@ pub fn clear_all_with_confirmation(ui_state: &mut UiState, app: &App) -> bool {
         app.clear_all_connections();
         ui_state.clear_confirmation = false;
         ui_state.reset_findings();
+        ui_state.trend_history.clear();
         ui_state.show_historic = false;
         ui_state.set_connection_key(None);
         ui_state.dns_questions_scroll.reset();

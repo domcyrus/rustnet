@@ -1,7 +1,7 @@
 //! Interactive event loop and rendering orchestration.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use log::{error, info};
@@ -102,6 +102,16 @@ where
             needs_redraw = true;
         }
 
+        let sampled = ui_state.trend_history.record(
+            Instant::now(),
+            SystemTime::now(),
+            &ui_state.filter_query,
+            |visit| {
+                app.visit_live_connections(&ui_state.filter_query, visit);
+            },
+        );
+        needs_redraw |= sampled && ui_state.selected_tab <= 1 && !ui_state.show_help;
+
         // Draw the UI, but only when something warrants it: immediately
         // after input or a data change, otherwise at the idle heartbeat.
         // The sidebar counters are live atomics read at render time, so
@@ -133,12 +143,12 @@ where
             needs_redraw = false;
         }
 
-        // Sleep until the next data tick or redraw heartbeat, whichever
-        // comes first, unless an event arrives earlier.
+        // Wake for the next data tick, trend sample, redraw, or input event.
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::from_secs(0))
-            .min(redraw_interval(app.is_loading(), &ui_state).saturating_sub(last_draw.elapsed()));
+            .min(redraw_interval(app.is_loading(), &ui_state).saturating_sub(last_draw.elapsed()))
+            .min(ui_state.trend_history.time_until_sample(Instant::now()));
 
         if let Some((_, time)) = &ui_state.clipboard_message
             && time.elapsed().as_secs() >= 3

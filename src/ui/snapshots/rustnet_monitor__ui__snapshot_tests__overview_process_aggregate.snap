@@ -5,12 +5,12 @@ expression: render_overview(true)
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Health & Host                                                           ● eth0
 ────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Process Aggregate ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Process               Remote                Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑  
+  Process               Remote                  Local              App                      State           RTT Hlth  Trend        Rx↓/Tx↑  
                                                                                                                                             
-▌▸ curl (1)                                                                                          TCP:1 UDP:0                       -/-  
- ▸ firefox (1)                                                                                       TCP:1 UDP:0               3.1Mi/928Ki  
- ▸ sshd (1)                                                                                          TCP:1 UDP:0               410Ki/1.7Mi  
- ▸ systemd-resolved (1)                                                                              TCP:0 UDP:1                 47Ki/82Ki  
+▌▸ curl (1)                                                                                 TCP:1 UDP:0               ········         -/-  
+ ▸ firefox (1)                                                                              TCP:1 UDP:0               ········ 3.1Mi/928Ki  
+ ▸ sshd (1)                                                                                 TCP:1 UDP:0               ········ 410Ki/1.7Mi  
+ ▸ systemd-resolved (1)                                                                     TCP:0 UDP:1               ········   47Ki/82Ki  
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

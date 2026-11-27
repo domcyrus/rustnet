@@ -939,6 +939,8 @@ When grouping is enabled, the connection list shows process groups:
 - Tree-style prefixes (`├─` / `└─`) with the PID (the group header carries the process name)
 - The same columns as the flat view (addresses, state, application, bandwidth)
 
+**Trend column (development version).** In Overview and the Details connection strip, the eight bars show about eight seconds of live throughput, newest on the right. Each second, RustNet samples byte counters independently of `--refresh-interval`. A process header sums its matching live connections. Bar height shows the combined receive and send rate relative to that row’s peak, with a minimum scale of 1 KiB/s. Color shows whether traffic in that second is mostly RX, mostly TX, or mixed (both directions at least 25%). A dot marks an idle or unsampled interval. Historic rows are blank, and narrow tables hide the column.
+
 ### Expanding and Collapsing Groups
 
 | Key | Action |

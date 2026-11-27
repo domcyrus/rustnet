@@ -6,7 +6,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::types::{Connection, GraphScale, GraphScroll, Protocol};
 
@@ -367,6 +367,18 @@ impl AppStats {
     }
 }
 
+/// Slack before the previous sample's wall clock when classifying a newly
+/// observed flow as born during the current interval (capture batches can
+/// delay committing kernel-timestamped packets by ~100 ms).
+const CONN_RATE_BIRTH_SLACK: Duration = Duration::from_millis(250);
+
+fn per_second_bytes(delta: u64, elapsed_seconds: f64) -> u64 {
+    if elapsed_seconds < super::MIN_RATE_SAMPLE_SECONDS {
+        return 0;
+    }
+    (delta as f64 / elapsed_seconds).round() as u64
+}
+
 /// Ring buffers of per-connection RX/TX rates (bytes/sec), capped at
 /// the same 60-second window as [`TrafficHistory`](crate::network::types::TrafficHistory).
 #[derive(Debug, Clone, Default)]
@@ -378,14 +390,75 @@ pub struct ConnRateHistory {
     pub(super) rx_scale: GraphScale,
     pub(super) tx_scale: GraphScale,
     generation: Option<SystemTime>,
+    last_bytes_received: u64,
+    last_bytes_sent: u64,
+    last_sampled_at: Option<Instant>,
 }
 
 impl ConnRateHistory {
+    /// Record one sample from a live connection's cumulative byte counters.
+    ///
+    /// Diffing `bytes_received` / `bytes_sent` directly preserves short
+    /// sub-second exchanges (such as DNS queries or keepalive pings) that
+    /// `RateTracker`'s 10-second sliding average zeroes out whenever all
+    /// packets in the window span `< 1s`.
+    pub(super) fn observe_counters(
+        &mut self,
+        conn: &Connection,
+        now: Instant,
+        previous_sample: Option<(Instant, SystemTime)>,
+        cap: usize,
+    ) {
+        if self.generation != Some(conn.created_at) {
+            *self = Self {
+                generation: Some(conn.created_at),
+                ..Self::default()
+            };
+        }
+        let (rx, tx) = match self.last_sampled_at {
+            Some(prev_at) => {
+                let elapsed = now.saturating_duration_since(prev_at).as_secs_f64();
+                let rx_delta = conn.bytes_received.saturating_sub(self.last_bytes_received);
+                let tx_delta = conn.bytes_sent.saturating_sub(self.last_bytes_sent);
+                (
+                    per_second_bytes(rx_delta, elapsed),
+                    per_second_bytes(tx_delta, elapsed),
+                )
+            }
+            None => {
+                let born_this_interval = previous_sample.is_some_and(|(_, wall_last)| {
+                    let cutoff = wall_last
+                        .checked_sub(CONN_RATE_BIRTH_SLACK)
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
+                    conn.created_at > cutoff
+                });
+                if born_this_interval && let Some((prev_instant, _)) = previous_sample {
+                    let elapsed = now.saturating_duration_since(prev_instant).as_secs_f64();
+                    (
+                        per_second_bytes(conn.bytes_received, elapsed),
+                        per_second_bytes(conn.bytes_sent, elapsed),
+                    )
+                } else {
+                    (0, 0)
+                }
+            }
+        };
+        self.last_bytes_received = conn.bytes_received;
+        self.last_bytes_sent = conn.bytes_sent;
+        self.last_sampled_at = Some(now);
+        self.push_at(now, rx, tx, cap);
+    }
+
+    pub(super) fn was_sampled_at(&self, now: Instant) -> bool {
+        self.last_sampled_at == Some(now)
+    }
+
     /// Push one sample for the connection generation stamped `created_at`.
     /// Live connection keys are tuple-only, so a replacement generation reuses
     /// its predecessor's map entry; a new generation resets the rings (and
     /// the sticky graph scales) instead of inheriting the old connection's
     /// graph and ceiling.
+    #[cfg(test)]
     pub(super) fn push_for_generation(
         &mut self,
         created_at: SystemTime,
@@ -399,10 +472,15 @@ impl ConnRateHistory {
                 ..Self::default()
             };
         }
-        self.push(rx, tx, cap);
+        self.push_at(Instant::now(), rx, tx, cap);
     }
 
+    #[cfg(test)]
     pub(super) fn push(&mut self, rx: u64, tx: u64, cap: usize) {
+        self.push_at(Instant::now(), rx, tx, cap);
+    }
+
+    fn push_at(&mut self, now: Instant, rx: u64, tx: u64, cap: usize) {
         if self.rx.len() >= cap {
             self.rx.pop_front();
         }
@@ -412,7 +490,6 @@ impl ConnRateHistory {
         if self.timestamps.len() >= cap {
             self.timestamps.pop_front();
         }
-        let now = Instant::now();
         self.scroll.record_at(now);
         self.timestamps.push_back(now);
         self.rx.push_back(rx);
@@ -470,6 +547,53 @@ mod conn_rate_history_tests {
         history.push_for_generation(second_generation, 10, 20, 10);
         assert_eq!(history.rx, [10]);
         assert_eq!(history.tx, [20]);
+    }
+
+    #[test]
+    fn observe_counters_captures_subsecond_bursts_and_baselines_existing_flows() {
+        let mut history = ConnRateHistory::default();
+        let mut conn = crate::test_support::local_tcp(43000, "codex");
+        let start = Instant::now();
+        let wall = SystemTime::now();
+        conn.created_at = wall - Duration::from_secs(30);
+        conn.bytes_received = 1_000;
+        conn.bytes_sent = 1_000;
+
+        // First observation of an existing flow establishes a baseline (0 B/s).
+        history.observe_counters(&conn, start, None, 10);
+        assert_eq!(history.rx, [0]);
+        assert_eq!(history.tx, [0]);
+
+        // A quick keepalive exchange (208 B each way within one 500 ms interval)
+        // produces a real rate spike instead of flattening to zero.
+        conn.bytes_received += 208;
+        conn.bytes_sent += 208;
+        let t1 = start + Duration::from_millis(500);
+        history.observe_counters(&conn, t1, Some((start, wall)), 10);
+        assert_eq!(history.rx, [0, 416]);
+        assert_eq!(history.tx, [0, 416]);
+
+        // Next idle interval decays cleanly to 0 while keeping the spike in history.
+        let t2 = start + Duration::from_millis(1000);
+        history.observe_counters(&conn, t2, Some((t1, wall + Duration::from_millis(500))), 10);
+        assert_eq!(history.rx, [0, 416, 0]);
+        assert_eq!(history.tx, [0, 416, 0]);
+    }
+
+    #[test]
+    fn observe_counters_counts_initial_exchange_for_newly_born_flow() {
+        let mut history = ConnRateHistory::default();
+        let start = Instant::now();
+        let wall = SystemTime::now();
+        let mut conn = crate::test_support::local_tcp(43001, "resolver");
+        conn.created_at = wall + Duration::from_millis(200);
+        conn.bytes_received = 256;
+        conn.bytes_sent = 64;
+
+        let t1 = start + Duration::from_millis(500);
+        history.observe_counters(&conn, t1, Some((start, wall)), 10);
+        assert_eq!(history.rx, [512]);
+        assert_eq!(history.tx, [128]);
     }
 }
 

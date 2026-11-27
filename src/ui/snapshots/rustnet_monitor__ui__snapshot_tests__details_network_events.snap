@@ -4,9 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Health & Host                                                           ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
+  Process               Remote                   Local              App                       State           RTT Hlth  Trend        Rx↓/Tx↑
                                                                                                                                             
-▌ client                192.0.2.1:443           127.0.0.1:1000     -          TCP                      ESTABLISHED       - ok            -/-
+▌ client                192.0.2.1:443            127.0.0.1:1000     TCP                       ESTABLISHED       - ok    ········         -/-
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -42,7 +42,7 @@ Match                 -                                               Observed  
                                                                       Advertised MTU        1400                                            
                                                                       ICMP matched by quoted endpoints (best effort)                        
                                                                                                                                             
-▎ Traffic Statistics · smoothed avg · 60s · B/s ────────────────────────────────────────────────────────────────────────────────────────────
+▎ Traffic Statistics · 60s · B/s ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 ↓ RX Now 0 B/s       →                             peak       0 B/s   ↑ TX Now 0 B/s       →                             peak       0 B/s   
 Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
 Collecting traffic history...                                         Collecting traffic history...                                         
